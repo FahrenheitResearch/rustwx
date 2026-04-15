@@ -16,7 +16,7 @@
 - `GridShape`, `LatLonGrid`, and typed 2D/3D field containers
 - `CanonicalField` and `FieldSelector`
 - model/source/time request types used by the fetch and registry layers
-- selector support for the currently wired upper-air and native convective proofs
+- semantic selector types consumed by the registry and I/O layers
 
 ## Current limits
 

@@ -16,7 +16,10 @@
 - live source probes for supported models
 - cached byte fetches
 - structured GRIB extraction for the selector subset used by current proofs
+- batch selector extraction from one parsed GRIB where possible
 - field cache layout organized by model/date/cycle/fhr/product/source/patterns
+- shared cached grid geometry so repeated fields from the same timestep do not
+  re-serialize identical lat/lon arrays per field
 
 ## Current limits
 
@@ -28,10 +31,19 @@
 
 ```rust
 use rustwx_core::{CanonicalField, FieldSelector};
-use rustwx_io::extract_field_from_bytes;
+use rustwx_io::{extract_field_from_bytes, extract_fields_from_bytes};
 
 let selector = FieldSelector::isobaric(CanonicalField::Temperature, 500);
 let field = extract_field_from_bytes(&bytes, selector)?;
+let fields = extract_fields_from_bytes(
+    &bytes,
+    &[
+        FieldSelector::isobaric(CanonicalField::Temperature, 500),
+        FieldSelector::isobaric(CanonicalField::UWind, 500),
+        FieldSelector::isobaric(CanonicalField::VWind, 500),
+    ],
+)?;
 # let _ = field;
+# let _ = fields;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```

@@ -5,6 +5,7 @@ members = [
     "crates/rustwx-core",
     "crates/rustwx-io",
     "crates/rustwx-models",
+    "crates/rustwx-products",
     "crates/rustwx-prep",
     "crates/rustwx-python",
     "crates/rustwx-render",

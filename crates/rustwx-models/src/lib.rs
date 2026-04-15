@@ -1,6 +1,6 @@
 use rustwx_core::{
     CanonicalField, CycleSpec, FieldSelector, ModelId, ModelRunRequest, ResolvedUrl, RustwxError,
-    SourceId,
+    SourceId, VerticalSelector,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -721,6 +721,39 @@ pub fn plot_recipe_fetch_blockers(
     Ok(plot_recipe_fetch_blockers_for(recipe, model))
 }
 
+pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> bool {
+    match (selector.field, selector.vertical) {
+        (
+            CanonicalField::GeopotentialHeight
+            | CanonicalField::Temperature
+            | CanonicalField::RelativeHumidity
+            | CanonicalField::AbsoluteVorticity
+            | CanonicalField::UWind
+            | CanonicalField::VWind,
+            VerticalSelector::IsobaricHpa(level_hpa),
+        ) if is_supported_upper_air_level(level_hpa) => true,
+        (CanonicalField::Dewpoint, VerticalSelector::IsobaricHpa(level_hpa))
+            if matches!(level_hpa, 700 | 850) =>
+        {
+            true
+        }
+        (CanonicalField::LandSeaMask, VerticalSelector::Surface) => {
+            matches!(model, ModelId::EcmwfOpenData)
+        }
+        (CanonicalField::CompositeReflectivity, VerticalSelector::EntireAtmosphere) => {
+            matches!(model, ModelId::Hrrr | ModelId::RrfsA)
+        }
+        (
+            CanonicalField::UpdraftHelicity,
+            VerticalSelector::HeightAboveGroundLayerMeters {
+                bottom_m: 2000,
+                top_m: 5000,
+            },
+        ) => matches!(model, ModelId::Hrrr | ModelId::RrfsA),
+        _ => false,
+    }
+}
+
 pub fn model_summary(model: ModelId) -> &'static ModelSummary {
     MODELS
         .iter()
@@ -1070,7 +1103,7 @@ fn plot_recipe_field_blocker(
         }
 
         let reason = match field.selector {
-            Some(selector) if selector.supports_model(model) => return None,
+            Some(selector) if selector_supported_for_model(selector, model) => return None,
             Some(selector) => unsupported_selector_reason(selector, model),
             None => field_selector_gap_reason(field).to_string(),
         };
@@ -1102,7 +1135,7 @@ fn plot_recipe_field_blocker(
     }
 
     let reason = match field.selector {
-        Some(selector) if selector.supports_model(model) => return None,
+        Some(selector) if selector_supported_for_model(selector, model) => return None,
         Some(selector) => unsupported_selector_reason(selector, model),
         None => field_selector_gap_reason(field).to_string(),
     };
@@ -1159,14 +1192,18 @@ fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> O
     }
 }
 
+fn is_supported_upper_air_level(level_hpa: u16) -> bool {
+    matches!(level_hpa, 500 | 700 | 850)
+}
+
 fn unsupported_selector_reason(selector: FieldSelector, model: ModelId) -> String {
     format!(
-        "selector '{selector}' is not yet supported for model '{model}' by rustwx-core/rustwx-io"
+        "selector '{selector}' is not yet supported for model '{model}' by the rustwx registry/extractor path"
     )
 }
 
 fn field_selector_gap_reason(_field: &GribFieldSpec) -> &'static str {
-    "recipe field does not yet have a rustwx-core FieldSelector binding"
+    "recipe field does not yet have a rustwx-models FieldSelector binding"
 }
 
 fn summarize_plot_recipe_blockers(blockers: &[PlotRecipeBlocker]) -> String {
@@ -1378,7 +1415,7 @@ mod tests {
         ] {
             if selectors
                 .iter()
-                .all(|selector| selector.supports_model(model))
+                .all(|selector| selector_supported_for_model(*selector, model))
             {
                 let plan = plot_recipe_fetch_plan("700mb_temperature_height_winds", model).unwrap();
                 assert_eq!(plan.selectors(), selectors);
@@ -1609,6 +1646,30 @@ mod tests {
                 reason: "Composite Reflectivity is not wired for model 'gfs'; rustwx-models only has native convective product fetch planning for HRRR/RRFS-A right now".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn selector_support_policy_lives_in_models() {
+        assert!(selector_supported_for_model(
+            FieldSelector::isobaric(CanonicalField::Temperature, 500),
+            ModelId::Gfs,
+        ));
+        assert!(selector_supported_for_model(
+            FieldSelector::isobaric(CanonicalField::Dewpoint, 700),
+            ModelId::RrfsA,
+        ));
+        assert!(!selector_supported_for_model(
+            FieldSelector::isobaric(CanonicalField::RelativeVorticity, 500),
+            ModelId::Gfs,
+        ));
+        assert!(selector_supported_for_model(
+            FieldSelector::surface(CanonicalField::LandSeaMask),
+            ModelId::EcmwfOpenData,
+        ));
+        assert!(!selector_supported_for_model(
+            FieldSelector::surface(CanonicalField::LandSeaMask),
+            ModelId::Hrrr,
+        ));
     }
 
     #[test]

@@ -32,3 +32,31 @@ pub fn ensure_dir(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(path)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+    struct Fixture {
+        name: String,
+        value: u16,
+    }
+
+    #[test]
+    fn bincode_round_trip_works() {
+        let root =
+            std::env::temp_dir().join(format!("rustwx_products_cache_{}", std::process::id()));
+        let path = root.join("fixture.bin");
+        let fixture = Fixture {
+            name: "demo".into(),
+            value: 7,
+        };
+
+        store_bincode(&path, &fixture).unwrap();
+        let loaded = load_bincode::<Fixture>(&path).unwrap().unwrap();
+        assert_eq!(loaded, fixture);
+
+        let _ = fs::remove_dir_all(root);
+    }
+}

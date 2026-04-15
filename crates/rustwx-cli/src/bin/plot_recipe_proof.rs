@@ -9,13 +9,13 @@ mod region;
 use clap::Parser;
 use grib_core::grib2::Grib2File;
 use region::RegionPreset;
-use rustwx_cli::proof_cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_core::{CanonicalField, CycleSpec, FieldSelector, ModelId, ModelRunRequest, SourceId};
 use rustwx_io::{
     FetchRequest, extract_field_from_grib2, fetch_bytes, fetch_bytes_with_cache,
     load_cached_selected_field, store_cached_selected_field,
 };
 use rustwx_models::{ModelError, PlotRecipe, plot_recipe, plot_recipe_fetch_plan};
+use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_render::{
     Color, ColorScale, ContourLayer, DiscreteColorScale, ExtendMode, MapRenderRequest,
     ProjectedDomain, ProjectedExtent, ProjectedLineOverlay, WindBarbLayer, save_png,

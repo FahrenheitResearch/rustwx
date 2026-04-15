@@ -23,6 +23,7 @@
 - URL resolution for all built-in models
 - NOAA-style latest/probe/hour checks
 - recipe planning for selector-backed upper-air plots
+- registry-owned selector/model support policy for wired recipes
 - explicit support/blocker reporting when a recipe is not wired for a model
 
 ## Current limits

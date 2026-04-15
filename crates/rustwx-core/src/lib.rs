@@ -7,11 +7,6 @@ pub enum RustwxError {
     InvalidGridShape { nx: usize, ny: usize },
     #[error("invalid field data length: expected {expected}, got {actual}")]
     InvalidFieldDataLength { expected: usize, actual: usize },
-    #[error("unsupported field selector '{selector}' for model '{model}'")]
-    UnsupportedFieldSelectorForModel {
-        model: ModelId,
-        selector: FieldSelector,
-    },
     #[error("unknown model '{0}'")]
     UnknownModel(String),
     #[error("unknown source '{0}'")]
@@ -270,54 +265,6 @@ impl FieldSelector {
     pub fn native_units(self) -> &'static str {
         self.field.native_units()
     }
-
-    pub fn supports_model(self, model: ModelId) -> bool {
-        match (self.field, self.vertical) {
-            (
-                CanonicalField::GeopotentialHeight
-                | CanonicalField::Temperature
-                | CanonicalField::RelativeHumidity
-                | CanonicalField::AbsoluteVorticity
-                | CanonicalField::UWind
-                | CanonicalField::VWind,
-                VerticalSelector::IsobaricHpa(level_hpa),
-            ) if is_supported_upper_air_level(level_hpa) => true,
-            (CanonicalField::Dewpoint, VerticalSelector::IsobaricHpa(level_hpa))
-                if matches!(level_hpa, 700 | 850) =>
-            {
-                true
-            }
-            (CanonicalField::LandSeaMask, VerticalSelector::Surface) => {
-                matches!(model, ModelId::EcmwfOpenData)
-            }
-            (CanonicalField::CompositeReflectivity, VerticalSelector::EntireAtmosphere) => {
-                matches!(model, ModelId::Hrrr | ModelId::RrfsA)
-            }
-            (
-                CanonicalField::UpdraftHelicity,
-                VerticalSelector::HeightAboveGroundLayerMeters {
-                    bottom_m: 2000,
-                    top_m: 5000,
-                },
-            ) => matches!(model, ModelId::Hrrr | ModelId::RrfsA),
-            _ => false,
-        }
-    }
-
-    pub fn ensure_supported(self, model: ModelId) -> Result<Self, RustwxError> {
-        if self.supports_model(model) {
-            Ok(self)
-        } else {
-            Err(RustwxError::UnsupportedFieldSelectorForModel {
-                model,
-                selector: self,
-            })
-        }
-    }
-}
-
-fn is_supported_upper_air_level(level_hpa: u16) -> bool {
-    matches!(level_hpa, 500 | 700 | 850)
 }
 
 impl std::fmt::Display for FieldSelector {
@@ -847,7 +794,7 @@ mod tests {
     }
 
     #[test]
-    fn field_selector_builds_keys_and_support_matrix() {
+    fn field_selector_builds_keys_and_units() {
         let selector = FieldSelector::isobaric(CanonicalField::Temperature, 500);
         assert_eq!(selector.to_string(), "temperature@500hpa");
         assert_eq!(selector.key(), "temperature_500hpa");
@@ -855,68 +802,40 @@ mod tests {
             selector.product_key().as_named(),
             Some("temperature_500hpa")
         );
-        assert!(selector.supports_model(ModelId::Hrrr));
-        assert!(selector.supports_model(ModelId::Gfs));
-        assert!(selector.supports_model(ModelId::EcmwfOpenData));
-        assert!(selector.supports_model(ModelId::RrfsA));
 
         let temp_700 = FieldSelector::isobaric(CanonicalField::Temperature, 700);
         assert_eq!(temp_700.key(), "temperature_700hpa");
-        assert!(temp_700.supports_model(ModelId::Gfs));
 
         let rh_700 = FieldSelector::isobaric(CanonicalField::RelativeHumidity, 700);
         assert_eq!(rh_700.key(), "relative_humidity_700hpa");
         assert_eq!(rh_700.native_units(), "%");
-        assert!(rh_700.supports_model(ModelId::Hrrr));
 
         let dewpoint_850 = FieldSelector::isobaric(CanonicalField::Dewpoint, 850);
         assert_eq!(dewpoint_850.key(), "dewpoint_850hpa");
         assert_eq!(dewpoint_850.native_units(), "K");
-        assert!(dewpoint_850.supports_model(ModelId::Gfs));
-        assert!(
-            FieldSelector::isobaric(CanonicalField::Dewpoint, 700).supports_model(ModelId::Gfs)
-        );
-        assert!(
-            !FieldSelector::isobaric(CanonicalField::Dewpoint, 500).supports_model(ModelId::Gfs)
-        );
 
         let absolute_vorticity_500 =
             FieldSelector::isobaric(CanonicalField::AbsoluteVorticity, 500);
         assert_eq!(absolute_vorticity_500.key(), "absolute_vorticity_500hpa");
         assert_eq!(absolute_vorticity_500.native_units(), "s^-1");
-        assert!(absolute_vorticity_500.supports_model(ModelId::EcmwfOpenData));
 
         let relative_vorticity_500 =
             FieldSelector::isobaric(CanonicalField::RelativeVorticity, 500);
         assert_eq!(relative_vorticity_500.key(), "relative_vorticity_500hpa");
         assert_eq!(relative_vorticity_500.native_units(), "s^-1");
-        assert!(!relative_vorticity_500.supports_model(ModelId::Gfs));
 
         let reflectivity = FieldSelector::entire_atmosphere(CanonicalField::CompositeReflectivity);
-        assert!(reflectivity.supports_model(ModelId::Hrrr));
-        assert!(reflectivity.supports_model(ModelId::RrfsA));
-        assert!(!reflectivity.supports_model(ModelId::Gfs));
-        assert!(!reflectivity.supports_model(ModelId::EcmwfOpenData));
+        assert_eq!(
+            reflectivity.key(),
+            "composite_reflectivity_entire_atmosphere"
+        );
 
         let lsm = FieldSelector::surface(CanonicalField::LandSeaMask);
         assert_eq!(lsm.key(), "land_sea_mask_surface");
         assert_eq!(lsm.native_units(), "fraction");
-        assert!(!lsm.supports_model(ModelId::Hrrr));
-        assert!(!lsm.supports_model(ModelId::Gfs));
-        assert!(lsm.supports_model(ModelId::EcmwfOpenData));
-        assert!(!lsm.supports_model(ModelId::RrfsA));
 
         let uh = FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000);
-        assert!(uh.supports_model(ModelId::Hrrr));
-        assert!(uh.supports_model(ModelId::RrfsA));
-        assert!(!uh.supports_model(ModelId::Gfs));
-        assert!(matches!(
-            uh.ensure_supported(ModelId::Gfs),
-            Err(RustwxError::UnsupportedFieldSelectorForModel {
-                model: ModelId::Gfs,
-                selector
-            }) if selector == uh
-        ));
+        assert_eq!(uh.key(), "updraft_helicity_2000m_to_5000m_agl");
     }
 
     #[test]

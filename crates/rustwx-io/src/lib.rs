@@ -14,6 +14,7 @@ use rustwx_core::{
 };
 use rustwx_models::{latest_available_run, model_summary, resolve_urls};
 use serde::Serialize;
+use std::collections::HashSet;
 use thiserror::Error;
 use wx_core::download::{DownloadClient, byte_ranges, find_entries, parse_idx};
 
@@ -198,21 +199,69 @@ pub fn extract_field_from_bytes(
     bytes: &[u8],
     selector: FieldSelector,
 ) -> Result<SelectedField2D, IoError> {
+    let mut fields = extract_fields_from_bytes(bytes, &[selector])?;
+    debug_assert_eq!(fields.len(), 1);
+    Ok(fields.swap_remove(0))
+}
+
+pub fn extract_fields_from_bytes(
+    bytes: &[u8],
+    selectors: &[FieldSelector],
+) -> Result<Vec<SelectedField2D>, IoError> {
     let grib = Grib2File::from_bytes(bytes).map_err(|err| IoError::Grib(err.to_string()))?;
-    extract_field_from_grib2(&grib, selector)
+    extract_fields_from_grib2(&grib, selectors)
 }
 
 pub fn extract_field_from_grib2(
     grib: &Grib2File,
     selector: FieldSelector,
 ) -> Result<SelectedField2D, IoError> {
-    let message_selector = StructuredMessageSelector::try_from(selector)?;
-    let message = grib
-        .messages
+    let mut fields = extract_fields_from_grib2(grib, &[selector])?;
+    debug_assert_eq!(fields.len(), 1);
+    Ok(fields.swap_remove(0))
+}
+
+pub fn extract_fields_from_grib2(
+    grib: &Grib2File,
+    selectors: &[FieldSelector],
+) -> Result<Vec<SelectedField2D>, IoError> {
+    if selectors.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let prepared = selectors
         .iter()
-        .find(|message| message_selector.matches(message))
-        .ok_or(IoError::FieldNotFound { selector })?;
-    build_selected_field(message, selector, message_selector.units)
+        .copied()
+        .map(PreparedSelector::new)
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut matched = vec![None; prepared.len()];
+    let mut remaining = prepared.len();
+
+    for message in &grib.messages {
+        for (index, prepared_selector) in prepared.iter().enumerate() {
+            if matched[index].is_none() && prepared_selector.message.matches(message) {
+                matched[index] = Some(message);
+                remaining -= 1;
+            }
+        }
+        if remaining == 0 {
+            break;
+        }
+    }
+
+    let mut out = Vec::with_capacity(prepared.len());
+    for (prepared_selector, message) in prepared.iter().zip(matched.into_iter()) {
+        let message = message.ok_or(IoError::FieldNotFound {
+            selector: prepared_selector.selector,
+        })?;
+        out.push(build_selected_field(
+            message,
+            prepared_selector.selector,
+            prepared_selector.message.units,
+        )?);
+    }
+
+    Ok(out)
 }
 
 pub fn extract_pressure_field_from_bytes(
@@ -270,14 +319,10 @@ fn matching_ranges(idx_text: &str, patterns: &[&str]) -> Result<Vec<(u64, u64)>,
     }
 
     let mut selected = Vec::new();
+    let mut seen_offsets = HashSet::new();
     for pattern in patterns {
         for entry in find_entries(&entries, pattern) {
-            if !selected
-                .iter()
-                .any(|existing: &&wx_core::download::IdxEntry| {
-                    existing.byte_offset == entry.byte_offset
-                })
-            {
+            if seen_offsets.insert(entry.byte_offset) {
                 selected.push(entry);
             }
         }
@@ -328,6 +373,12 @@ struct StructuredMessageSelector {
     parameters: &'static [ParameterCode],
     level: LevelMatch,
     units: &'static str,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PreparedSelector {
+    selector: FieldSelector,
+    message: StructuredMessageSelector,
 }
 
 const PARAMETER_HGT: &[ParameterCode] = &[ParameterCode {
@@ -409,6 +460,15 @@ impl StructuredMessageSelector {
                 && message.product.parameter_category == parameter.category
                 && message.product.parameter_number == parameter.number
         }) && self.level.matches(message)
+    }
+}
+
+impl PreparedSelector {
+    fn new(selector: FieldSelector) -> Result<Self, IoError> {
+        Ok(Self {
+            selector,
+            message: StructuredMessageSelector::try_from(selector)?,
+        })
     }
 }
 
@@ -705,6 +765,17 @@ mod tests {
     }
 
     #[test]
+    fn matching_ranges_dedupes_duplicate_selector_hits() {
+        let ranges = matching_ranges(
+            SAMPLE_IDX,
+            &["TMP:2 m above ground", "TMP:2 m above ground"],
+        )
+        .unwrap();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].0, 0);
+    }
+
+    #[test]
     fn resolve_fetch_urls_uses_registry_order() {
         let request = ModelRunRequest::new(
             ModelId::RrfsA,
@@ -941,6 +1012,43 @@ mod tests {
         assert!(hgt_850.values.iter().any(|value| value.is_finite()));
         assert!(u_700.values.iter().any(|value| value.is_finite()));
         assert!(v_700.values.iter().any(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn extract_fields_from_real_pressure_bytes_batches_parse_and_matching() {
+        let path = sample_pressure_subset_path();
+        assert!(
+            path.exists(),
+            "expected sample pressure subset at {}",
+            path.display()
+        );
+        let bytes = std::fs::read(&path).unwrap();
+        let selectors = [
+            FieldSelector::isobaric(CanonicalField::Temperature, 500),
+            FieldSelector::isobaric(CanonicalField::Temperature, 700),
+            FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 700),
+            FieldSelector::isobaric(CanonicalField::UWind, 700),
+            FieldSelector::isobaric(CanonicalField::VWind, 700),
+        ];
+
+        let batched = extract_fields_from_bytes(&bytes, &selectors).unwrap();
+
+        assert_eq!(batched.len(), selectors.len());
+        for (selector, field) in selectors.iter().zip(batched.iter()) {
+            assert_eq!(&field.selector, selector);
+        }
+
+        let single_temp_500 =
+            extract_pressure_field_from_bytes(&bytes, CanonicalField::Temperature, 500).unwrap();
+        let single_hgt_700 =
+            extract_pressure_field_from_bytes(&bytes, CanonicalField::GeopotentialHeight, 700)
+                .unwrap();
+        let single_u_700 =
+            extract_pressure_field_from_bytes(&bytes, CanonicalField::UWind, 700).unwrap();
+
+        assert_eq!(batched[0], single_temp_500);
+        assert_eq!(batched[2], single_hgt_700);
+        assert_eq!(batched[3], single_u_700);
     }
 
     #[test]

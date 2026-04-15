@@ -1,6 +1,5 @@
 use crate::{FetchRequest, FetchResult, IoError};
-use rustwx_core::FieldSelector;
-use rustwx_core::SelectedField2D;
+use rustwx_core::{FieldSelector, GridShape, LatLonGrid, SelectedField2D};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,6 +27,21 @@ pub struct CachedFieldResult {
     pub field: SelectedField2D,
     pub cache_hit: bool,
     pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct CachedGridPayload {
+    shape: GridShape,
+    lat_deg: Vec<f32>,
+    lon_deg: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct CachedFieldPayload {
+    selector: FieldSelector,
+    units: String,
+    values: Vec<f32>,
+    grid_key: String,
 }
 
 pub fn artifact_cache_dir(cache_root: &Path, fetch: &FetchRequest) -> PathBuf {
@@ -62,6 +76,13 @@ pub fn field_cache_path(
     artifact_cache_dir(cache_root, fetch)
         .join("fields")
         .join(format!("{}.bin", sanitize_component(&selector.key())))
+}
+
+fn grid_cache_path(cache_root: &Path, fetch: &FetchRequest, grid_key: &str) -> PathBuf {
+    artifact_cache_dir(cache_root, fetch)
+        .join("fields")
+        .join("grids")
+        .join(format!("{grid_key}.bin"))
 }
 
 pub fn load_cached_fetch(
@@ -137,7 +158,7 @@ pub fn load_cached_selected_field(
     let Ok(bytes) = fs::read(&path) else {
         return Ok(None);
     };
-    let Ok(field) = bincode::deserialize::<SelectedField2D>(&bytes) else {
+    let Some(field) = load_cached_selected_field_payload(cache_root, fetch, &bytes)? else {
         return Ok(None);
     };
     Ok(Some(CachedFieldResult {
@@ -156,8 +177,31 @@ pub fn store_cached_selected_field(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(cache_error)?;
     }
-    let bytes = bincode::serialize(field).map_err(|err| IoError::Cache(err.to_string()))?;
-    fs::write(&path, bytes).map_err(cache_error)?;
+    let grid_key = grid_cache_key(&field.grid);
+    let grid_path = grid_cache_path(cache_root, fetch, &grid_key);
+    if !grid_path.exists() {
+        if let Some(parent) = grid_path.parent() {
+            fs::create_dir_all(parent).map_err(cache_error)?;
+        }
+        let grid_payload = CachedGridPayload {
+            shape: field.grid.shape,
+            lat_deg: field.grid.lat_deg.clone(),
+            lon_deg: field.grid.lon_deg.clone(),
+        };
+        let grid_bytes =
+            bincode::serialize(&grid_payload).map_err(|err| IoError::Cache(err.to_string()))?;
+        fs::write(&grid_path, grid_bytes).map_err(cache_error)?;
+    }
+
+    let field_payload = CachedFieldPayload {
+        selector: field.selector,
+        units: field.units.clone(),
+        values: field.values.clone(),
+        grid_key,
+    };
+    let field_bytes =
+        bincode::serialize(&field_payload).map_err(|err| IoError::Cache(err.to_string()))?;
+    fs::write(&path, field_bytes).map_err(cache_error)?;
     Ok(CachedFieldResult {
         field: field.clone(),
         cache_hit: false,
@@ -196,6 +240,56 @@ fn sanitize_component(value: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+fn load_cached_selected_field_payload(
+    cache_root: &Path,
+    fetch: &FetchRequest,
+    bytes: &[u8],
+) -> Result<Option<SelectedField2D>, IoError> {
+    if let Ok(payload) = bincode::deserialize::<CachedFieldPayload>(bytes) {
+        let grid_path = grid_cache_path(cache_root, fetch, &payload.grid_key);
+        if let Ok(grid_bytes) = fs::read(&grid_path) {
+            if let Ok(grid_payload) = bincode::deserialize::<CachedGridPayload>(&grid_bytes) {
+                let grid = LatLonGrid::new(
+                    grid_payload.shape,
+                    grid_payload.lat_deg,
+                    grid_payload.lon_deg,
+                )?;
+                let field =
+                    SelectedField2D::new(payload.selector, payload.units, grid, payload.values)?;
+                return Ok(Some(field));
+            }
+        }
+    }
+
+    if let Ok(field) = bincode::deserialize::<SelectedField2D>(bytes) {
+        return Ok(Some(field));
+    }
+
+    Ok(None)
+}
+
+fn grid_cache_key(grid: &LatLonGrid) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    hash = fnv1a_mix(hash, grid.shape.nx as u64);
+    hash = fnv1a_mix(hash, grid.shape.ny as u64);
+    for value in &grid.lat_deg {
+        hash = fnv1a_mix(hash, value.to_bits() as u64);
+    }
+    for value in &grid.lon_deg {
+        hash = fnv1a_mix(hash, value.to_bits() as u64);
+    }
+    format!("{hash:016x}")
+}
+
+fn fnv1a_mix(hash: u64, value: u64) -> u64 {
+    let mut out = hash;
+    for byte in value.to_le_bytes() {
+        out ^= u64::from(byte);
+        out = out.wrapping_mul(0x100000001b3);
+    }
+    out
 }
 
 fn cache_error(err: std::io::Error) -> IoError {
@@ -270,11 +364,61 @@ mod tests {
         let field = sample_field();
         let stored_field = store_cached_selected_field(&cache_root, &fetch, &field).unwrap();
         assert!(!stored_field.cache_hit);
+        let grid_path = grid_cache_path(&cache_root, &fetch, &grid_cache_key(&field.grid));
+        assert!(grid_path.exists());
         let loaded_field = load_cached_selected_field(&cache_root, &fetch, field.selector)
             .unwrap()
             .unwrap();
         assert!(loaded_field.cache_hit);
         assert_eq!(loaded_field.field, field);
+
+        fs::remove_dir_all(cache_root).ok();
+    }
+
+    #[test]
+    fn field_cache_reuses_shared_grid_payload() {
+        let cache_root = temp_cache_root();
+        let fetch = sample_fetch_request();
+        let first = sample_field();
+        let second = SelectedField2D::new(
+            FieldSelector::new(CanonicalField::UWind, VerticalSelector::IsobaricHpa(500)),
+            "m/s",
+            first.grid.clone(),
+            vec![10.0, 11.0, 12.0, 13.0],
+        )
+        .unwrap();
+
+        store_cached_selected_field(&cache_root, &fetch, &first).unwrap();
+        store_cached_selected_field(&cache_root, &fetch, &second).unwrap();
+
+        let grids_dir = artifact_cache_dir(&cache_root, &fetch)
+            .join("fields")
+            .join("grids");
+        let grid_files = fs::read_dir(&grids_dir)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(grid_files.len(), 1);
+
+        fs::remove_dir_all(cache_root).ok();
+    }
+
+    #[test]
+    fn load_cached_selected_field_reads_legacy_embedded_field_payload() {
+        let cache_root = temp_cache_root();
+        let fetch = sample_fetch_request();
+        let field = sample_field();
+        let path = field_cache_path(&cache_root, &fetch, field.selector);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        let legacy_bytes = bincode::serialize(&field).unwrap();
+        fs::write(&path, legacy_bytes).unwrap();
+
+        let loaded = load_cached_selected_field(&cache_root, &fetch, field.selector)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.field, field);
 
         fs::remove_dir_all(cache_root).ok();
     }
