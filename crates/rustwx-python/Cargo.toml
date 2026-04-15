@@ -17,7 +17,5 @@ python = ["dep:pyo3"]
 rustwx-core = { path = "../rustwx-core" }
 rustwx-io = { path = "../rustwx-io" }
 rustwx-models = { path = "../rustwx-models" }
-rustwx-render = { path = "../rustwx-render" }
-rustwx-sounding = { path = "../rustwx-sounding" }
 serde_json.workspace = true
 pyo3 = { version = "0.23", features = ["extension-module"], optional = true }

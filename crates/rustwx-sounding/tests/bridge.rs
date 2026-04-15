@@ -107,6 +107,70 @@ fn converts_generic_column_into_sharprs_profile() {
 }
 
 #[test]
+fn validate_allows_saturated_levels() {
+    let mut column = sample_column();
+    column.dewpoint_c[1] = column.temperature_c[1];
+
+    column
+        .validate()
+        .expect("saturated level should remain valid");
+}
+
+#[test]
+fn rejects_non_finite_values() {
+    let mut column = sample_column();
+    column.u_ms[2] = f64::NAN;
+
+    let error = column.validate().expect_err("NaN wind should be rejected");
+    let message = error.to_string();
+
+    assert!(message.contains("u_ms"));
+    assert!(message.contains("finite"));
+}
+
+#[test]
+fn rejects_pressure_that_increases_with_height() {
+    let mut column = sample_column();
+    column.pressure_hpa[2] = 930.0;
+
+    let error = column
+        .validate()
+        .expect_err("pressure increase should be rejected");
+    let message = error.to_string();
+
+    assert!(message.contains("pressure_hpa"));
+    assert!(message.contains("non-increasing"));
+}
+
+#[test]
+fn rejects_height_that_decreases() {
+    let mut column = sample_column();
+    column.height_m_msl[3] = 1400.0;
+
+    let error = column
+        .validate()
+        .expect_err("height decrease should be rejected");
+    let message = error.to_string();
+
+    assert!(message.contains("height_m_msl"));
+    assert!(message.contains("non-decreasing"));
+}
+
+#[test]
+fn rejects_dewpoint_above_temperature() {
+    let mut column = sample_column();
+    column.dewpoint_c[1] = column.temperature_c[1] + 0.5;
+
+    let error = column
+        .validate()
+        .expect_err("dewpoint above temperature should be rejected");
+    let message = error.to_string();
+
+    assert!(message.contains("dewpoint_c"));
+    assert!(message.contains("above temperature"));
+}
+
+#[test]
 fn roundtrip_from_sharprs_profile_preserves_station_and_level_count() {
     let native = NativeSounding::from_column(&sample_column()).expect("bridge should succeed");
     let roundtrip = SoundingColumn::from_sharprs_profile(&native.profile);

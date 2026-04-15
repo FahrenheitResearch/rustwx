@@ -14,6 +14,8 @@ pub enum SoundingBridgeError {
         expected: usize,
         actual: usize,
     },
+    #[error("field `{field}` contains invalid data: {reason}")]
+    InvalidValue { field: &'static str, reason: String },
     #[error(transparent)]
     SharprsProfile(#[from] sharprs::profile::ProfileError),
     #[error(transparent)]

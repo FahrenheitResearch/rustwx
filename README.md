@@ -67,8 +67,8 @@ Each crate has its own README in `crates/<crate>/README.md`.
 - ECAPE-family grid wrappers, including SB/ML/MU triplet support
 - failure-mask variants for ECAPE debug/verification work
 - CAPE/CIN wrappers
-- SRH, shear, STP, SCP, EHI, SHIP, BRI wrappers
-- bundled “supported severe” proof fields
+- SRH, shear, STP, SCP, EHI, local-proxy SHIP, and BRI wrappers
+- bundled "supported severe" proof fields
 
 ### Rendering
 
@@ -141,7 +141,13 @@ cargo run -p rustwx-cli --release --bin hrrr_ecape8 -- `
 
 ## Proof artifacts
 
-Representative proof outputs are committed under [`proof/`](proof/). The heavy fetch/decode caches are ignored.
+Representative proof outputs are committed under [proof/](proof/). The heavy fetch/decode caches are ignored.
+
+Quantity semantics are explicit where the implementation is narrower than a generic meteorological label:
+
+- the current vorticity proof path is absolute vorticity, not unspecified "vorticity"
+- isobaric dewpoint extraction is currently direct DPT-only where wired, not a generic derived-dewpoint path
+- the current SHIP wrapper is the existing local wrf-rust hail-proxy formula, not yet a full SHARPpy-style canonical SHIP implementation
 
 Useful starting points:
 

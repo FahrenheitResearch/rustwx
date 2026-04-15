@@ -96,11 +96,7 @@ pub fn probe_sources(fetch: &FetchRequest) -> Result<Vec<ProbeResult>, IoError> 
     Ok(urls
         .into_iter()
         .map(|resolved| {
-            let available = resolved
-                .idx_url
-                .as_deref()
-                .map(|idx| client.head_ok(idx))
-                .unwrap_or_else(|| client.head_ok(&resolved.grib_url));
+            let available = client.head_ok(resolved.availability_probe_url());
             ProbeResult {
                 source: resolved.source,
                 available,
@@ -130,8 +126,7 @@ pub fn available_forecast_hours(
             let request = ModelRunRequest::new(model, cycle, forecast_hour, product).ok()?;
             let resolved = resolve_urls(&request).ok()?;
             let target = resolved.into_iter().find(|url| url.source == source)?;
-            let probe_url = target.idx_url.as_deref().unwrap_or(&target.grib_url);
-            if client.head_ok(probe_url) {
+            if client.head_ok(target.availability_probe_url()) {
                 Some(forecast_hour)
             } else {
                 None
@@ -365,8 +360,8 @@ const PARAMETER_VGRD: &[ParameterCode] = &[ParameterCode {
     category: 2,
     number: 3,
 }];
-// Canonical vorticity is scoped to the standard ABSV parameter until relative
-// vorticity gets its own explicit selector.
+// Only absolute vorticity is wired right now. Relative vorticity needs its own
+// explicit selector and GRIB parameter mapping before it should be exposed.
 const PARAMETER_ABSOLUTE_VORTICITY: &[ParameterCode] = &[ParameterCode {
     discipline: 0,
     category: 2,
@@ -455,7 +450,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
                 units: "K",
             }),
             FieldSelector {
-                field: CanonicalField::Vorticity,
+                field: CanonicalField::AbsoluteVorticity,
                 vertical: VerticalSelector::IsobaricHpa(level_hpa),
             } if is_supported_upper_air_level(level_hpa) => Ok(Self {
                 parameters: PARAMETER_ABSOLUTE_VORTICITY,
@@ -804,7 +799,7 @@ mod tests {
         assert!(dewpoint_700.matches(&dewpoint_700_message));
 
         let vorticity_500 = StructuredMessageSelector::try_from(FieldSelector::isobaric(
-            CanonicalField::Vorticity,
+            CanonicalField::AbsoluteVorticity,
             500,
         ))
         .unwrap();
@@ -850,8 +845,15 @@ mod tests {
         ));
         assert!(matches!(
             StructuredMessageSelector::try_from(FieldSelector::isobaric(
-                CanonicalField::Vorticity,
+                CanonicalField::AbsoluteVorticity,
                 925
+            )),
+            Err(IoError::UnsupportedStructuredSelector { .. })
+        ));
+        assert!(matches!(
+            StructuredMessageSelector::try_from(FieldSelector::isobaric(
+                CanonicalField::RelativeVorticity,
+                500
             )),
             Err(IoError::UnsupportedStructuredSelector { .. })
         ));

@@ -47,8 +47,16 @@ impl WrfLakeMaskSpec {
         (self.dx_m * self.dy_m) / 1e6
     }
 
+    pub fn connected_area_km2(self, cell_count: usize) -> f64 {
+        self.grid_area_km2() * cell_count as f64
+    }
+
     pub fn cell_count_threshold(self) -> usize {
-        (self.area_threshold_km2 / self.grid_area_km2()) as usize
+        (self.area_threshold_km2 / self.grid_area_km2()).ceil() as usize
+    }
+
+    pub fn is_small_water_body(self, cell_count: usize) -> bool {
+        self.connected_area_km2(cell_count) < self.area_threshold_km2
     }
 }
 
@@ -107,14 +115,13 @@ pub fn wrf_small_water_mask(
         label_sizes.push(size);
     }
 
-    let count_threshold = spec.cell_count_threshold();
     Ok(labels
         .iter()
         .map(|&label| {
             if label == 0 {
                 return false;
             }
-            label_sizes[label as usize] < count_threshold
+            spec.is_small_water_body(label_sizes[label as usize])
         })
         .collect())
 }
@@ -346,12 +353,13 @@ mod tests {
     }
 
     #[test]
-    fn wrf_small_water_mask_marks_only_small_connected_water() {
+    fn wrf_small_water_mask_masks_connected_water_below_fractional_area_threshold() {
         let spec = WrfLakeMaskSpec::new(shape(5, 5), 1_000.0, 1_000.0, 4.1).unwrap();
         let mut lu = vec![1.0f32; 25];
-        // 3-cell lake, diagonally connected
+        // 4-cell lake, smaller than the 4.1 km^2 threshold
         lu[0] = 21.0;
         lu[1] = 21.0;
+        lu[5] = 21.0;
         lu[6] = 21.0;
         // 5-cell ocean-ish water body
         lu[18] = 16.0;
@@ -364,12 +372,37 @@ mod tests {
 
         assert!(mask[0]);
         assert!(mask[1]);
+        assert!(mask[5]);
         assert!(mask[6]);
         assert!(!mask[18]);
         assert!(!mask[19]);
         assert!(!mask[23]);
         assert!(!mask[24]);
         assert!(!mask[14]);
+    }
+
+    #[test]
+    fn wrf_small_water_mask_keeps_connected_water_equal_to_area_threshold() {
+        let spec = WrfLakeMaskSpec::new(shape(3, 3), 1_000.0, 1_000.0, 4.0).unwrap();
+        let mut lu = vec![1.0f32; 9];
+        lu[0] = 21.0;
+        lu[1] = 21.0;
+        lu[3] = 21.0;
+        lu[4] = 21.0;
+
+        let mask = wrf_small_water_mask(&lu, spec).unwrap();
+
+        assert!(!mask[0]);
+        assert!(!mask[1]);
+        assert!(!mask[3]);
+        assert!(!mask[4]);
+    }
+
+    #[test]
+    fn cell_count_threshold_rounds_up_fractional_thresholds() {
+        let spec = WrfLakeMaskSpec::new(shape(2, 2), 1_000.0, 1_000.0, 4.1).unwrap();
+
+        assert_eq!(spec.cell_count_threshold(), 5);
     }
 
     #[test]

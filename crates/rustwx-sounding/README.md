@@ -4,10 +4,19 @@
 
 ## What is implemented
 
-- validated generic sounding column types
+- validated generic sounding column types with conservative physical QC
 - conversion to `sharprs` profiles
 - native sounding rendering
 - optional external ECAPE annotation block that can be appended to the rendered product
+
+## Input validation
+
+`SoundingColumn::validate()` checks the basic shape constraints and also rejects:
+
+- non-finite values in the required profile vectors and optional omega vector
+- pressure profiles that are not monotonic non-increasing
+- height profiles that are not monotonic non-decreasing
+- dewpoints that exceed temperature, while still allowing saturated levels
 
 ## Important note
 

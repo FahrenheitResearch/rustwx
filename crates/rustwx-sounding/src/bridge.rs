@@ -16,6 +16,9 @@ use crate::error::SoundingBridgeError;
 
 const MS_TO_KTS: f64 = 1.943_844_492_440_604_6;
 const KTS_TO_MS: f64 = 0.514_444_444_444_444_5;
+const PRESSURE_MONOTONIC_TOLERANCE_HPA: f64 = 1.0e-6;
+const HEIGHT_MONOTONIC_TOLERANCE_M: f64 = 1.0e-6;
+const DEWPOINT_TEMPERATURE_TOLERANCE_C: f64 = 1.0e-6;
 
 const ECAPE_BG: [u8; 4] = [10, 10, 22, 255];
 const ECAPE_TITLE_BG: [u8; 4] = [30, 30, 50, 255];
@@ -103,6 +106,32 @@ impl SoundingColumn {
         if !self.omega_pa_s.is_empty() {
             validate_len("omega_pa_s", self.omega_pa_s.len(), expected)?;
         }
+
+        validate_finite("pressure_hpa", &self.pressure_hpa)?;
+        validate_finite("height_m_msl", &self.height_m_msl)?;
+        validate_finite("temperature_c", &self.temperature_c)?;
+        validate_finite("dewpoint_c", &self.dewpoint_c)?;
+        validate_finite("u_ms", &self.u_ms)?;
+        validate_finite("v_ms", &self.v_ms)?;
+        if !self.omega_pa_s.is_empty() {
+            validate_finite("omega_pa_s", &self.omega_pa_s)?;
+        }
+
+        validate_monotonic_non_increasing(
+            "pressure_hpa",
+            &self.pressure_hpa,
+            PRESSURE_MONOTONIC_TOLERANCE_HPA,
+        )?;
+        validate_monotonic_non_decreasing(
+            "height_m_msl",
+            &self.height_m_msl,
+            HEIGHT_MONOTONIC_TOLERANCE_M,
+        )?;
+        validate_dewpoint_not_above_temperature(
+            &self.temperature_c,
+            &self.dewpoint_c,
+            DEWPOINT_TEMPERATURE_TOLERANCE_C,
+        )?;
 
         Ok(())
     }
@@ -503,6 +532,82 @@ fn validate_len(
             actual,
         })
     }
+}
+
+fn validate_finite(field: &'static str, values: &[f64]) -> Result<(), SoundingBridgeError> {
+    for (index, value) in values.iter().copied().enumerate() {
+        if !value.is_finite() {
+            return Err(SoundingBridgeError::InvalidValue {
+                field,
+                reason: format!("index {index} must be finite, got {value}"),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_monotonic_non_increasing(
+    field: &'static str,
+    values: &[f64],
+    tolerance: f64,
+) -> Result<(), SoundingBridgeError> {
+    for index in 1..values.len() {
+        let previous = values[index - 1];
+        let current = values[index];
+        if current > previous + tolerance {
+            return Err(SoundingBridgeError::InvalidValue {
+                field,
+                reason: format!(
+                    "values must be monotonic non-increasing, but index {index} rose from {previous} to {current}"
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_monotonic_non_decreasing(
+    field: &'static str,
+    values: &[f64],
+    tolerance: f64,
+) -> Result<(), SoundingBridgeError> {
+    for index in 1..values.len() {
+        let previous = values[index - 1];
+        let current = values[index];
+        if current + tolerance < previous {
+            return Err(SoundingBridgeError::InvalidValue {
+                field,
+                reason: format!(
+                    "values must be monotonic non-decreasing, but index {index} fell from {previous} to {current}"
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_dewpoint_not_above_temperature(
+    temperature_c: &[f64],
+    dewpoint_c: &[f64],
+    tolerance_c: f64,
+) -> Result<(), SoundingBridgeError> {
+    for index in 0..temperature_c.len() {
+        let temperature = temperature_c[index];
+        let dewpoint = dewpoint_c[index];
+        if dewpoint > temperature + tolerance_c {
+            return Err(SoundingBridgeError::InvalidValue {
+                field: "dewpoint_c",
+                reason: format!(
+                    "index {index} has dewpoint {dewpoint} C above temperature {temperature} C"
+                ),
+            });
+        }
+    }
+
+    Ok(())
 }
 
 fn finite_or_none(value: f64) -> Option<f64> {

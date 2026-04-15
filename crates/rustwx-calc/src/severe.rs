@@ -335,13 +335,15 @@ pub fn compute_scp_ehi(inputs: ScpEhiInputs<'_>) -> Result<ScpEhiOutputs, CalcEr
     Ok(ScpEhiOutputs { scp, ehi })
 }
 
-/// Compute Significant Hail Parameter (SHIP) from precomputed most-unstable
-/// parcel, 500 hPa, and 700-500 hPa ingredient grids.
+/// Compute the current local `wrf-rust` SHIP-style hail proxy from
+/// precomputed most-unstable parcel, 500 hPa, and 700-500 hPa ingredient
+/// grids.
 ///
 /// This mirrors the local `wrf-rust` component math, including the SPC-style
 /// reduction when MUCAPE is below 1300 J/kg. It intentionally does not derive
 /// the 500 hPa temperature/mixing ratio or the 700-500 hPa lapse rate from
-/// profiles; callers must provide those upstream.
+/// profiles; callers must provide those upstream. This should not be treated
+/// as a canonical SHARPpy-style SHIP implementation yet.
 pub fn compute_ship(inputs: ShipInputs<'_>) -> Result<Vec<f64>, CalcError> {
     validate_ship_inputs(inputs)?;
     Ok((0..inputs.grid.len())
@@ -727,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn ship_matches_local_hail_formula_and_low_cape_scaling() {
+    fn ship_matches_local_proxy_formula_and_low_cape_scaling() {
         assert_close(ship_value(2000.0, 20.0, -15.0, 7.0, 10.0), 1.0);
         assert_close(
             ship_value(1000.0, 20.0, -15.0, 7.0, 10.0),

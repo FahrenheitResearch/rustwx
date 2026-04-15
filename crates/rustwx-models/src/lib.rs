@@ -1,4 +1,3 @@
-use rayon::prelude::*;
 use rustwx_core::{
     CanonicalField, CycleSpec, FieldSelector, ModelId, ModelRunRequest, ResolvedUrl, RustwxError,
     SourceId,
@@ -390,7 +389,7 @@ const FIELD_700_DEWPOINT: GribFieldSpec = field_spec(
     GribLevelKind::IsobaricHpa,
     Some(700),
     Some(FieldSelector::isobaric(CanonicalField::Dewpoint, 700)),
-    &["DPT:700 mb", "RH:700 mb", "TMP:700 mb", "SPFH:700 mb"],
+    &["DPT:700 mb"],
 );
 
 const FIELD_850_DEWPOINT: GribFieldSpec = field_spec(
@@ -400,7 +399,7 @@ const FIELD_850_DEWPOINT: GribFieldSpec = field_spec(
     GribLevelKind::IsobaricHpa,
     Some(850),
     Some(FieldSelector::isobaric(CanonicalField::Dewpoint, 850)),
-    &["DPT:850 mb", "RH:850 mb", "TMP:850 mb", "SPFH:850 mb"],
+    &["DPT:850 mb"],
 );
 
 const FIELD_500_RH: GribFieldSpec = field_spec(
@@ -442,34 +441,43 @@ const FIELD_850_RH: GribFieldSpec = field_spec(
     &["RH:850 mb"],
 );
 
-const FIELD_500_VORT: GribFieldSpec = field_spec(
-    "vorticity_500mb",
-    "500mb Vorticity",
+const FIELD_500_ABSOLUTE_VORTICITY: GribFieldSpec = field_spec(
+    "absolute_vorticity_500mb",
+    "500mb Absolute Vorticity",
     ProductFamily::Pressure,
     GribLevelKind::IsobaricHpa,
     Some(500),
-    Some(FieldSelector::isobaric(CanonicalField::Vorticity, 500)),
-    &["ABSV:500 mb", "VORT:500 mb"],
+    Some(FieldSelector::isobaric(
+        CanonicalField::AbsoluteVorticity,
+        500,
+    )),
+    &["ABSV:500 mb"],
 );
 
-const FIELD_700_VORT: GribFieldSpec = field_spec(
-    "vorticity_700mb",
-    "700mb Vorticity",
+const FIELD_700_ABSOLUTE_VORTICITY: GribFieldSpec = field_spec(
+    "absolute_vorticity_700mb",
+    "700mb Absolute Vorticity",
     ProductFamily::Pressure,
     GribLevelKind::IsobaricHpa,
     Some(700),
-    Some(FieldSelector::isobaric(CanonicalField::Vorticity, 700)),
-    &["ABSV:700 mb", "VORT:700 mb"],
+    Some(FieldSelector::isobaric(
+        CanonicalField::AbsoluteVorticity,
+        700,
+    )),
+    &["ABSV:700 mb"],
 );
 
-const FIELD_850_VORT: GribFieldSpec = field_spec(
-    "vorticity_850mb",
-    "850mb Vorticity",
+const FIELD_850_ABSOLUTE_VORTICITY: GribFieldSpec = field_spec(
+    "absolute_vorticity_850mb",
+    "850mb Absolute Vorticity",
     ProductFamily::Pressure,
     GribLevelKind::IsobaricHpa,
     Some(850),
-    Some(FieldSelector::isobaric(CanonicalField::Vorticity, 850)),
-    &["ABSV:850 mb", "VORT:850 mb"],
+    Some(FieldSelector::isobaric(
+        CanonicalField::AbsoluteVorticity,
+        850,
+    )),
+    &["ABSV:850 mb"],
 );
 
 const FIELD_500_U: GribFieldSpec = field_spec(
@@ -632,27 +640,27 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::Solar07Rh,
     },
     PlotRecipe {
-        slug: "500mb_vorticity_height_winds",
-        title: "500mb Vorticity / Height / Winds",
-        filled: FIELD_500_VORT,
+        slug: "500mb_absolute_vorticity_height_winds",
+        title: "500mb Absolute Vorticity / Height / Winds",
+        filled: FIELD_500_ABSOLUTE_VORTICITY,
         contours: Some(FIELD_500_HEIGHT),
         barbs_u: Some(FIELD_500_U),
         barbs_v: Some(FIELD_500_V),
         style: RenderStyle::Solar07Vorticity,
     },
     PlotRecipe {
-        slug: "700mb_vorticity_height_winds",
-        title: "700mb Vorticity / Height / Winds",
-        filled: FIELD_700_VORT,
+        slug: "700mb_absolute_vorticity_height_winds",
+        title: "700mb Absolute Vorticity / Height / Winds",
+        filled: FIELD_700_ABSOLUTE_VORTICITY,
         contours: Some(FIELD_700_HEIGHT),
         barbs_u: Some(FIELD_700_U),
         barbs_v: Some(FIELD_700_V),
         style: RenderStyle::Solar07Vorticity,
     },
     PlotRecipe {
-        slug: "850mb_vorticity_height_winds",
-        title: "850mb Vorticity / Height / Winds",
-        filled: FIELD_850_VORT,
+        slug: "850mb_absolute_vorticity_height_winds",
+        title: "850mb Absolute Vorticity / Height / Winds",
+        filled: FIELD_850_ABSOLUTE_VORTICITY,
         contours: Some(FIELD_850_HEIGHT),
         barbs_u: Some(FIELD_850_U),
         barbs_v: Some(FIELD_850_V),
@@ -687,9 +695,10 @@ pub fn built_in_plot_recipes() -> &'static [PlotRecipe] {
 }
 
 pub fn plot_recipe(slug: &str) -> Option<&'static PlotRecipe> {
+    let wanted = canonical_recipe_token(slug);
     PLOT_RECIPES
         .iter()
-        .find(|recipe| normalize_token(recipe.slug) == normalize_token(slug))
+        .find(|recipe| normalize_token(recipe.slug) == wanted)
 }
 
 pub fn plot_recipe_fetch_plan(
@@ -753,49 +762,45 @@ pub fn latest_available_run(
     source: Option<SourceId>,
     date_yyyymmdd: &str,
 ) -> Result<LatestRun, ModelError> {
+    let agent = build_agent();
+    latest_available_run_with_probe(model, source, date_yyyymmdd, |resolved| {
+        head_ok(&agent, resolved.availability_probe_url())
+    })
+}
+
+fn latest_available_run_with_probe<F>(
+    model: ModelId,
+    source: Option<SourceId>,
+    date_yyyymmdd: &str,
+    mut probe_available: F,
+) -> Result<LatestRun, ModelError>
+where
+    F: FnMut(&ResolvedUrl) -> bool,
+{
     let summary = model_summary(model);
-    let sources = summary
+    let allowed_sources = summary
         .sources
         .iter()
         .filter(|candidate| source.map(|wanted| candidate.id == wanted).unwrap_or(true))
+        .map(|candidate| candidate.id)
         .collect::<Vec<_>>();
-    if sources.is_empty() {
+    if allowed_sources.is_empty() {
         return Err(ModelError::NoAvailableRun { model });
     }
 
-    let probe_hours = summary
-        .cycle_hours_utc
-        .iter()
-        .copied()
-        .rev()
-        .collect::<Vec<_>>();
-    let agent = build_agent();
+    for hour_utc in summary.cycle_hours_utc.iter().rev().copied() {
+        let cycle = CycleSpec::new(date_yyyymmdd, hour_utc)?;
+        let request = ModelRunRequest::new(model, cycle.clone(), 0, summary.default_product)?;
+        let available = resolve_urls(&request)?
+            .into_iter()
+            .filter(|resolved| allowed_sources.contains(&resolved.source))
+            .find(|resolved| probe_available(resolved));
 
-    for source in sources {
-        let available = probe_hours
-            .par_iter()
-            .find_any(|&&hour| {
-                let cycle = match CycleSpec::new(date_yyyymmdd, hour) {
-                    Ok(cycle) => cycle,
-                    Err(_) => return false,
-                };
-                let request = match ModelRunRequest::new(model, cycle, 0, summary.default_product) {
-                    Ok(request) => request,
-                    Err(_) => return false,
-                };
-                let idx_url = match build_grib_url(source.id, &request) {
-                    Ok(url) => format!("{url}.idx"),
-                    Err(_) => return false,
-                };
-                head_ok(&agent, &idx_url)
-            })
-            .copied();
-
-        if let Some(hour_utc) = available {
+        if let Some(resolved) = available {
             return Ok(LatestRun {
                 model,
-                cycle: CycleSpec::new(date_yyyymmdd, hour_utc)?,
-                source: source.id,
+                cycle,
+                source: resolved.source,
             });
         }
     }
@@ -997,6 +1002,16 @@ fn normalize_token(value: &str) -> String {
         .replace(['-', ' ', '.'], "_")
 }
 
+fn canonical_recipe_token(value: &str) -> String {
+    let normalized = normalize_token(value);
+    match normalized.as_str() {
+        "500mb_vorticity_height_winds" => "500mb_absolute_vorticity_height_winds".to_string(),
+        "700mb_vorticity_height_winds" => "700mb_absolute_vorticity_height_winds".to_string(),
+        "850mb_vorticity_height_winds" => "850mb_absolute_vorticity_height_winds".to_string(),
+        _ => normalized,
+    }
+}
+
 fn plot_recipe_fetch_plan_for(
     recipe: &'static PlotRecipe,
     model: ModelId,
@@ -1133,12 +1148,13 @@ fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> O
             "{} is not present in the ECMWF open-data 'oper' pressure product currently wired by rustwx-models; use RH/TMP or add derived dewpoint support for this model",
             field.label
         )),
-        (ModelId::EcmwfOpenData, "vorticity_500mb" | "vorticity_700mb" | "vorticity_850mb") => {
-            Some(format!(
-                "{} is not present in the ECMWF open-data 'oper' pressure product currently wired by rustwx-models",
-                field.label
-            ))
-        }
+        (
+            ModelId::EcmwfOpenData,
+            "absolute_vorticity_500mb" | "absolute_vorticity_700mb" | "absolute_vorticity_850mb",
+        ) => Some(format!(
+            "{} is not present in the ECMWF open-data 'oper' pressure product currently wired by rustwx-models",
+            field.label
+        )),
         _ => None,
     }
 }
@@ -1149,19 +1165,8 @@ fn unsupported_selector_reason(selector: FieldSelector, model: ModelId) -> Strin
     )
 }
 
-fn field_selector_gap_reason(field: &GribFieldSpec) -> &'static str {
-    match field.key {
-        "dewpoint_700mb" | "dewpoint_850mb" => {
-            "dewpoint lacks a canonical FieldSelector in rustwx-core, and rustwx-io has no direct or derived isobaric dewpoint extractor yet"
-        }
-        "rh_500mb" | "rh_700mb" | "rh_850mb" => {
-            "relative humidity lacks a canonical FieldSelector in rustwx-core, and rustwx-io has no structured isobaric RH extractor yet"
-        }
-        "vorticity_500mb" | "vorticity_700mb" | "vorticity_850mb" => {
-            "vorticity lacks a canonical FieldSelector in rustwx-core, and rustwx-io has no structured ABSV/VORT extractor yet"
-        }
-        _ => "recipe field does not yet have a rustwx-core FieldSelector binding",
-    }
+fn field_selector_gap_reason(_field: &GribFieldSpec) -> &'static str {
+    "recipe field does not yet have a rustwx-core FieldSelector binding"
 }
 
 fn summarize_plot_recipe_blockers(blockers: &[PlotRecipeBlocker]) -> String {
@@ -1248,10 +1253,10 @@ mod tests {
         assert!(plot_recipe("850mb_temperature_height_winds").is_some());
         assert!(plot_recipe("700mb_dewpoint_height_winds").is_some());
         assert!(plot_recipe("850mb_dewpoint_height_winds").is_some());
-        assert!(plot_recipe("500mb_vorticity_height_winds").is_some());
+        assert!(plot_recipe("500mb_absolute_vorticity_height_winds").is_some());
         assert!(plot_recipe("500mb_rh_height_winds").is_some());
         assert!(plot_recipe("700mb_rh_height_winds").is_some());
-        assert!(plot_recipe("700mb_vorticity_height_winds").is_some());
+        assert!(plot_recipe("700mb_absolute_vorticity_height_winds").is_some());
         assert!(plot_recipe("composite_reflectivity").is_some());
         assert!(plot_recipe("composite_reflectivity_uh").is_some());
     }
@@ -1265,6 +1270,19 @@ mod tests {
         assert_eq!(
             recipe.filled.selector,
             Some(FieldSelector::isobaric(CanonicalField::Temperature, 500))
+        );
+
+        let absolute_vorticity = plot_recipe("500MB vorticity height winds").unwrap();
+        assert_eq!(
+            absolute_vorticity.slug,
+            "500mb_absolute_vorticity_height_winds"
+        );
+        assert_eq!(
+            absolute_vorticity.filled.selector,
+            Some(FieldSelector::isobaric(
+                CanonicalField::AbsoluteVorticity,
+                500,
+            ))
         );
     }
 
@@ -1415,6 +1433,10 @@ mod tests {
                 FieldSelector::isobaric(CanonicalField::VWind, 700),
             ]
         );
+        assert_eq!(
+            plan.variable_patterns(),
+            vec!["DPT:700 mb", "HGT:700 mb", "UGRD:700 mb", "VGRD:700 mb"]
+        );
 
         let ecmwf_dewpoint =
             plot_recipe_fetch_blockers("700mb_dewpoint_height_winds", ModelId::EcmwfOpenData)
@@ -1430,40 +1452,90 @@ mod tests {
     }
 
     #[test]
-    fn vorticity_recipe_blocker_is_explicit_for_gfs() {
+    fn absolute_vorticity_recipe_blocker_is_explicit_for_gfs() {
         let blockers =
-            plot_recipe_fetch_blockers("850mb_vorticity_height_winds", ModelId::Gfs).unwrap();
+            plot_recipe_fetch_blockers("850mb_absolute_vorticity_height_winds", ModelId::Gfs)
+                .unwrap();
         assert!(blockers.is_empty());
     }
 
     #[test]
-    fn vorticity_700_recipe_retains_explicit_primary_blocker() {
+    fn absolute_vorticity_recipe_retains_explicit_primary_blocker() {
+        let plan =
+            plot_recipe_fetch_plan("700mb_absolute_vorticity_height_winds", ModelId::Gfs).unwrap();
+        assert_eq!(
+            plan.selectors(),
+            vec![
+                FieldSelector::isobaric(CanonicalField::AbsoluteVorticity, 700),
+                FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 700),
+                FieldSelector::isobaric(CanonicalField::UWind, 700),
+                FieldSelector::isobaric(CanonicalField::VWind, 700),
+            ]
+        );
+        assert_eq!(
+            plan.variable_patterns(),
+            vec!["ABSV:700 mb", "HGT:700 mb", "UGRD:700 mb", "VGRD:700 mb"]
+        );
+
         let blockers =
-            plot_recipe_fetch_blockers("700mb_vorticity_height_winds", ModelId::Gfs).unwrap();
+            plot_recipe_fetch_blockers("700mb_absolute_vorticity_height_winds", ModelId::Gfs)
+                .unwrap();
         assert!(blockers.is_empty());
 
-        let err = plot_recipe_fetch_plan("500mb_vorticity_height_winds", ModelId::EcmwfOpenData)
-            .unwrap_err();
+        let err = plot_recipe_fetch_plan(
+            "500mb_absolute_vorticity_height_winds",
+            ModelId::EcmwfOpenData,
+        )
+        .unwrap_err();
         assert!(matches!(
             err,
             ModelError::UnsupportedPlotRecipeModel {
-                recipe: "500mb_vorticity_height_winds",
+                recipe: "500mb_absolute_vorticity_height_winds",
                 model: ModelId::EcmwfOpenData,
                 reason,
-            } if reason == "500mb Vorticity: 500mb Vorticity is not present in the ECMWF open-data 'oper' pressure product currently wired by rustwx-models"
+            } if reason == "500mb Absolute Vorticity: 500mb Absolute Vorticity is not present in the ECMWF open-data 'oper' pressure product currently wired by rustwx-models"
         ));
 
-        let ecmwf_blockers =
-            plot_recipe_fetch_blockers("500mb_vorticity_height_winds", ModelId::EcmwfOpenData)
-                .unwrap();
+        let ecmwf_blockers = plot_recipe_fetch_blockers(
+            "500mb_absolute_vorticity_height_winds",
+            ModelId::EcmwfOpenData,
+        )
+        .unwrap();
         assert_eq!(
             ecmwf_blockers,
             vec![PlotRecipeBlocker {
-                field_key: "vorticity_500mb",
-                field_label: "500mb Vorticity",
-                reason: "500mb Vorticity is not present in the ECMWF open-data 'oper' pressure product currently wired by rustwx-models".to_string(),
+                field_key: "absolute_vorticity_500mb",
+                field_label: "500mb Absolute Vorticity",
+                reason: "500mb Absolute Vorticity is not present in the ECMWF open-data 'oper' pressure product currently wired by rustwx-models".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn latest_available_run_prefers_newest_cycle_over_source_priority() {
+        let latest = latest_available_run_with_probe(ModelId::Gfs, None, "20260414", |resolved| {
+            resolved.source == SourceId::Aws
+                && resolved
+                    .availability_probe_url()
+                    .contains("gfs.t18z.pgrb2.0p25.f000")
+        })
+        .unwrap();
+
+        assert_eq!(latest.cycle.hour_utc, 18);
+        assert_eq!(latest.source, SourceId::Aws);
+    }
+
+    #[test]
+    fn latest_available_run_prefers_source_priority_within_same_cycle() {
+        let latest = latest_available_run_with_probe(ModelId::Gfs, None, "20260414", |resolved| {
+            resolved
+                .availability_probe_url()
+                .contains("gfs.t18z.pgrb2.0p25.f000")
+        })
+        .unwrap();
+
+        assert_eq!(latest.cycle.hour_utc, 18);
+        assert_eq!(latest.source, SourceId::Nomads);
     }
 
     #[test]

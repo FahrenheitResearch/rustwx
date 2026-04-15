@@ -10,6 +10,8 @@ The crate currently ports WRF-style lake cleanup logic:
 - build a small-water mask
 - interpolate masked cells back from nearby land values
 
+`area_threshold_km2` is applied to the physical area of each connected water body; water bodies strictly smaller than the threshold are masked.
+
 ## Why this crate exists
 
 The existing WRF stack handles lake-friendly surface fields as preprocessing, not as a render trick. `rustwx-prep` is the place for that logic in the Rust-first stack.

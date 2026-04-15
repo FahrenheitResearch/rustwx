@@ -122,7 +122,8 @@ pub enum CanonicalField {
     Temperature,
     RelativeHumidity,
     Dewpoint,
-    Vorticity,
+    AbsoluteVorticity,
+    RelativeVorticity,
     UWind,
     VWind,
     LandSeaMask,
@@ -137,7 +138,8 @@ impl CanonicalField {
             Self::Temperature => "temperature",
             Self::RelativeHumidity => "relative_humidity",
             Self::Dewpoint => "dewpoint",
-            Self::Vorticity => "vorticity",
+            Self::AbsoluteVorticity => "absolute_vorticity",
+            Self::RelativeVorticity => "relative_vorticity",
             Self::UWind => "u_wind",
             Self::VWind => "v_wind",
             Self::LandSeaMask => "land_sea_mask",
@@ -152,7 +154,8 @@ impl CanonicalField {
             Self::Temperature => "Temperature",
             Self::RelativeHumidity => "Relative Humidity",
             Self::Dewpoint => "Dewpoint",
-            Self::Vorticity => "Vorticity",
+            Self::AbsoluteVorticity => "Absolute Vorticity",
+            Self::RelativeVorticity => "Relative Vorticity",
             Self::UWind => "U Wind",
             Self::VWind => "V Wind",
             Self::LandSeaMask => "Land-Sea Mask",
@@ -167,7 +170,7 @@ impl CanonicalField {
             Self::Temperature => "K",
             Self::RelativeHumidity => "%",
             Self::Dewpoint => "K",
-            Self::Vorticity => "s^-1",
+            Self::AbsoluteVorticity | Self::RelativeVorticity => "s^-1",
             Self::UWind | Self::VWind => "m/s",
             Self::LandSeaMask => "fraction",
             Self::CompositeReflectivity => "dBZ",
@@ -274,7 +277,7 @@ impl FieldSelector {
                 CanonicalField::GeopotentialHeight
                 | CanonicalField::Temperature
                 | CanonicalField::RelativeHumidity
-                | CanonicalField::Vorticity
+                | CanonicalField::AbsoluteVorticity
                 | CanonicalField::UWind
                 | CanonicalField::VWind,
                 VerticalSelector::IsobaricHpa(level_hpa),
@@ -769,6 +772,12 @@ pub struct ResolvedUrl {
     pub idx_url: Option<String>,
 }
 
+impl ResolvedUrl {
+    pub fn availability_probe_url(&self) -> &str {
+        self.idx_url.as_deref().unwrap_or(&self.grib_url)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForecastDescriptor {
     pub model: String,
@@ -871,10 +880,17 @@ mod tests {
             !FieldSelector::isobaric(CanonicalField::Dewpoint, 500).supports_model(ModelId::Gfs)
         );
 
-        let vorticity_500 = FieldSelector::isobaric(CanonicalField::Vorticity, 500);
-        assert_eq!(vorticity_500.key(), "vorticity_500hpa");
-        assert_eq!(vorticity_500.native_units(), "s^-1");
-        assert!(vorticity_500.supports_model(ModelId::EcmwfOpenData));
+        let absolute_vorticity_500 =
+            FieldSelector::isobaric(CanonicalField::AbsoluteVorticity, 500);
+        assert_eq!(absolute_vorticity_500.key(), "absolute_vorticity_500hpa");
+        assert_eq!(absolute_vorticity_500.native_units(), "s^-1");
+        assert!(absolute_vorticity_500.supports_model(ModelId::EcmwfOpenData));
+
+        let relative_vorticity_500 =
+            FieldSelector::isobaric(CanonicalField::RelativeVorticity, 500);
+        assert_eq!(relative_vorticity_500.key(), "relative_vorticity_500hpa");
+        assert_eq!(relative_vorticity_500.native_units(), "s^-1");
+        assert!(!relative_vorticity_500.supports_model(ModelId::Gfs));
 
         let reflectivity = FieldSelector::entire_atmosphere(CanonicalField::CompositeReflectivity);
         assert!(reflectivity.supports_model(ModelId::Hrrr));
@@ -920,6 +936,29 @@ mod tests {
         assert_eq!(request.product, "prs-conus");
         assert_eq!(timestep.descriptor().cycle.as_str(), "2026-04-15T00:00:00Z");
         assert_eq!(timestep.source, Some(SourceId::Aws));
+    }
+
+    #[test]
+    fn resolved_url_prefers_idx_when_probing_availability() {
+        let with_idx = ResolvedUrl {
+            source: SourceId::Aws,
+            grib_url: "https://example.test/file.grib2".to_string(),
+            idx_url: Some("https://example.test/file.grib2.idx".to_string()),
+        };
+        assert_eq!(
+            with_idx.availability_probe_url(),
+            "https://example.test/file.grib2.idx"
+        );
+
+        let without_idx = ResolvedUrl {
+            source: SourceId::Azure,
+            grib_url: "https://example.test/file.grib2".to_string(),
+            idx_url: None,
+        };
+        assert_eq!(
+            without_idx.availability_probe_url(),
+            "https://example.test/file.grib2"
+        );
     }
 
     #[test]

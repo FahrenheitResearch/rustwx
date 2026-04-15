@@ -5,6 +5,7 @@
 ## Design goal
 
 Keep Python convenient but thin. The hot path should stay in Rust.
+Today that means the crate only depends on the core/model/io path plus optional `pyo3`.
 
 ## What is implemented
 
@@ -20,7 +21,7 @@ The current Python API intentionally returns JSON strings so the Rust surface ca
 
 ## Current limits
 
-- no Python bindings yet for render/fetch/calc end-to-end workflows
+- no Python bindings yet for render/calc workflows or full fetch/download flows
 - no typed Python objects yet
 
 ## Minimal example
