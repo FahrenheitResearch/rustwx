@@ -1,6 +1,7 @@
 use rustwx_core::{
-    CanonicalField, CycleSpec, FieldSelector, ModelId, ModelRunRequest, ResolvedUrl, RustwxError,
-    SourceId, VerticalSelector,
+    CanonicalField, CycleSpec, FieldSelector, ModelId, ModelRunRequest, ProductKeyMetadata,
+    ProductLineage, ProductMaturity, ProductProvenance, ProductSemanticFlag, ProductWindowSpec,
+    ResolvedUrl, RustwxError, SourceId, StatisticalProcess, VerticalSelector,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -20,6 +21,13 @@ impl ProductFamily {
             Self::Pressure => "pressure",
             Self::Native => "native",
             Self::Subhourly => "subhourly",
+        }
+    }
+
+    pub fn default_lineage(self) -> ProductLineage {
+        match self {
+            Self::Surface | Self::Pressure | Self::Native => ProductLineage::Direct,
+            Self::Subhourly => ProductLineage::Windowed,
         }
     }
 }
@@ -63,6 +71,31 @@ pub enum RenderStyle {
     Solar07Ehi,
 }
 
+fn recipe_lineage(slug: &str, family: ProductFamily) -> ProductLineage {
+    match slug {
+        "2m_theta_e_10m_winds" | "2m_heat_index" | "2m_wind_chill" => ProductLineage::Derived,
+        "1h_qpf" => ProductLineage::Windowed,
+        _ => family.default_lineage(),
+    }
+}
+
+fn recipe_maturity(slug: &str) -> ProductMaturity {
+    match slug {
+        "simulated_ir_satellite" | "lightning_flash_density" => ProductMaturity::Experimental,
+        _ => ProductMaturity::Operational,
+    }
+}
+
+fn recipe_flags(slug: &str) -> Vec<ProductSemanticFlag> {
+    match slug {
+        "cloud_cover_levels" | "precipitation_type" | "composite_reflectivity_uh" => {
+            vec![ProductSemanticFlag::Composite]
+        }
+        "1h_qpf" => vec![ProductSemanticFlag::Alias],
+        _ => Vec::new(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GribFieldSpec {
     pub key: &'static str,
@@ -78,6 +111,29 @@ impl GribFieldSpec {
     pub fn idx_patterns(&self) -> &'static [&'static str] {
         self.idx_fallback_patterns
     }
+
+    pub fn provenance(&self) -> ProductProvenance {
+        let mut provenance =
+            ProductProvenance::new(self.family.default_lineage(), ProductMaturity::Operational);
+        if let Some(selector) = self.selector {
+            provenance = provenance.with_selector(selector);
+        }
+        if self.family == ProductFamily::Subhourly {
+            provenance = provenance.with_window(ProductWindowSpec {
+                process: StatisticalProcess::Accumulation,
+                duration_hours: None,
+            });
+        }
+        provenance
+    }
+
+    pub fn product_metadata(&self) -> ProductKeyMetadata {
+        let mut metadata = ProductKeyMetadata::new(self.label).with_category(self.family.as_str());
+        if let Some(selector) = self.selector {
+            metadata = metadata.with_native_units(selector.native_units());
+        }
+        metadata.with_provenance(self.provenance())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -89,6 +145,38 @@ pub struct PlotRecipe {
     pub barbs_u: Option<GribFieldSpec>,
     pub barbs_v: Option<GribFieldSpec>,
     pub style: RenderStyle,
+}
+
+impl PlotRecipe {
+    pub fn provenance(&self) -> ProductProvenance {
+        let mut provenance = ProductProvenance::new(
+            recipe_lineage(self.slug, self.filled.family),
+            recipe_maturity(self.slug),
+        );
+        if let Some(selector) = self.filled.selector {
+            provenance = provenance.with_selector(selector);
+        }
+        if matches!(provenance.lineage, ProductLineage::Windowed) {
+            provenance = provenance.with_window(ProductWindowSpec {
+                process: StatisticalProcess::Accumulation,
+                duration_hours: None,
+            });
+        }
+        for flag in recipe_flags(self.slug) {
+            provenance = provenance.with_flag(flag);
+        }
+        provenance
+    }
+
+    pub fn product_metadata(&self) -> ProductKeyMetadata {
+        let mut metadata = ProductKeyMetadata::new(self.title)
+            .with_category(self.filled.family.as_str())
+            .with_provenance(self.provenance());
+        if let Some(selector) = self.filled.selector {
+            metadata = metadata.with_native_units(selector.native_units());
+        }
+        metadata
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2102,6 +2190,67 @@ mod tests {
     }
 
     #[test]
+    fn grib_field_spec_exposes_typed_product_metadata() {
+        let metadata = FIELD_500_TEMP.product_metadata();
+        assert_eq!(metadata.display_name, "500mb Temperature");
+        assert_eq!(metadata.category.as_deref(), Some("pressure"));
+        assert_eq!(metadata.native_units.as_deref(), Some("K"));
+        let provenance = metadata
+            .provenance
+            .expect("field metadata should carry provenance");
+        assert_eq!(provenance.lineage, ProductLineage::Direct);
+        assert_eq!(provenance.maturity, ProductMaturity::Operational);
+        assert_eq!(
+            provenance.selector,
+            Some(FieldSelector::isobaric(CanonicalField::Temperature, 500))
+        );
+    }
+
+    #[test]
+    fn plot_recipe_metadata_marks_derived_windowed_and_composite_routes() {
+        let heat_index = plot_recipe("2m_heat_index").expect("heat index recipe should exist");
+        assert_eq!(heat_index.provenance().lineage, ProductLineage::Derived);
+
+        let qpf_1h = plot_recipe("1h_qpf").expect("1h qpf recipe should exist");
+        let qpf_provenance = qpf_1h.provenance();
+        assert_eq!(qpf_provenance.lineage, ProductLineage::Windowed);
+        assert_eq!(
+            qpf_provenance.window,
+            Some(ProductWindowSpec {
+                process: StatisticalProcess::Accumulation,
+                duration_hours: None,
+            })
+        );
+        assert!(qpf_provenance.flags.contains(&ProductSemanticFlag::Alias));
+
+        let refl_uh =
+            plot_recipe("composite_reflectivity_uh").expect("reflectivity+UH recipe should exist");
+        assert!(
+            refl_uh
+                .provenance()
+                .flags
+                .contains(&ProductSemanticFlag::Composite)
+        );
+    }
+
+    #[test]
+    fn experimental_recipe_metadata_is_explicit() {
+        let simulated_ir =
+            plot_recipe("simulated_ir_satellite").expect("simulated ir recipe should exist");
+        assert_eq!(
+            simulated_ir.product_metadata().provenance.unwrap().maturity,
+            ProductMaturity::Experimental
+        );
+
+        let lightning =
+            plot_recipe("lightning_flash_density").expect("lightning recipe should exist");
+        assert_eq!(
+            lightning.product_metadata().provenance.unwrap().maturity,
+            ProductMaturity::Experimental
+        );
+    }
+
+    #[test]
     fn plot_recipe_alias_lookup_normalizes_tokens() {
         let recipe = plot_recipe("500MB temperature height winds").unwrap();
         assert_eq!(recipe.slug, "500mb_temperature_height_winds");
@@ -2641,9 +2790,11 @@ mod tests {
         let blockers =
             plot_recipe_fetch_blockers("simulated_ir_satellite", ModelId::EcmwfOpenData).unwrap();
         assert_eq!(blockers.len(), 1);
-        assert!(blockers[0]
-            .reason
-            .contains("GRIB signature is not verified yet"));
+        assert!(
+            blockers[0]
+                .reason
+                .contains("GRIB signature is not verified yet")
+        );
     }
 
     #[test]

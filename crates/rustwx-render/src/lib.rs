@@ -8,8 +8,9 @@ pub use image::RgbaImage;
 pub use panel::{PanelGridLayout, PanelPadding, compose_panel_images, render_panel_grid};
 pub use request::{
     Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, ExtendMode, Field2D,
-    GridShape, LatLonGrid, MapRenderRequest, ProductKey, ProjectedDomain, ProjectedExtent,
-    ProjectedLineOverlay, WindBarbLayer, WindBarbStyle,
+    GridShape, LatLonGrid, MapRenderRequest, ProductKey, ProductMaturity, ProductSemanticFlag,
+    ProductSemantics, ProjectedDomain, ProjectedExtent, ProjectedLineOverlay, WindBarbLayer,
+    WindBarbStyle,
 };
 pub use rustwx_core::{
     Field2D as CoreField2D, GridShape as CoreGridShape, LatLonGrid as CoreLatLonGrid,
@@ -20,98 +21,115 @@ pub use solar07::{
     SEVERE_CLASSIC_PANEL_PRODUCTS, Solar07Palette, Solar07Preset, Solar07Product, palette_scale,
 };
 
-use image::ImageFormat;
+use std::cell::RefCell;
 use std::path::Path;
+use std::sync::OnceLock;
 use wrf_render::{
     BarbOverlay, ContourOverlay, Extend, LeveledColormap, MapExtent, ProjectedGrid,
-    ProjectedPolyline, RenderOpts, Rgba, render_to_png,
+    ProjectedPolyline, RenderOpts, Rgba, render_to_image as wrf_render_to_image, render_to_png,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RustRenderer;
 
+#[derive(Default)]
+struct RenderScratch {
+    f64_buffers: Vec<Vec<f64>>,
+    point_buffers: Vec<Vec<(f64, f64)>>,
+}
+
+impl RenderScratch {
+    fn take_f64_buffer(&mut self, len: usize) -> Vec<f64> {
+        let mut buffer = self.f64_buffers.pop().unwrap_or_default();
+        buffer.clear();
+        if buffer.capacity() < len {
+            buffer.reserve(len - buffer.capacity());
+        }
+        buffer
+    }
+
+    fn fill_f64_from_f32(&mut self, src: &[f32]) -> Vec<f64> {
+        let mut buffer = self.take_f64_buffer(src.len());
+        buffer.extend(src.iter().map(|&value| value as f64));
+        buffer
+    }
+
+    fn fill_f64_from_f64(&mut self, src: &[f64]) -> Vec<f64> {
+        let mut buffer = self.take_f64_buffer(src.len());
+        buffer.extend_from_slice(src);
+        buffer
+    }
+
+    fn fill_f64_constant(&mut self, len: usize, value: f64) -> Vec<f64> {
+        let mut buffer = self.take_f64_buffer(len);
+        buffer.resize(len, value);
+        buffer
+    }
+
+    fn reclaim_f64_buffer(&mut self, mut buffer: Vec<f64>) {
+        buffer.clear();
+        self.f64_buffers.push(buffer);
+    }
+
+    fn take_point_buffer(&mut self, len: usize) -> Vec<(f64, f64)> {
+        let mut buffer = self.point_buffers.pop().unwrap_or_default();
+        buffer.clear();
+        if buffer.capacity() < len {
+            buffer.reserve(len - buffer.capacity());
+        }
+        buffer
+    }
+
+    fn fill_point_buffer(&mut self, src: &[(f64, f64)]) -> Vec<(f64, f64)> {
+        let mut buffer = self.take_point_buffer(src.len());
+        buffer.extend_from_slice(src);
+        buffer
+    }
+
+    fn reclaim_point_buffer(&mut self, mut buffer: Vec<(f64, f64)>) {
+        buffer.clear();
+        self.point_buffers.push(buffer);
+    }
+
+    fn reclaim_render_opts(&mut self, mut opts: RenderOpts, data: Vec<f64>) {
+        self.reclaim_f64_buffer(data);
+
+        if let Some(grid) = opts.projected_grid.take() {
+            self.reclaim_f64_buffer(grid.x);
+            self.reclaim_f64_buffer(grid.y);
+        }
+
+        for line in opts.projected_lines.drain(..) {
+            self.reclaim_point_buffer(line.points);
+        }
+
+        for contour in opts.contours.drain(..) {
+            self.reclaim_f64_buffer(contour.data);
+            self.reclaim_f64_buffer(contour.levels);
+        }
+
+        for barb in opts.barbs.drain(..) {
+            self.reclaim_f64_buffer(barb.u);
+            self.reclaim_f64_buffer(barb.v);
+        }
+    }
+}
+
+thread_local! {
+    static RENDER_SCRATCH: RefCell<RenderScratch> = RefCell::new(RenderScratch::default());
+}
+
 impl RustRenderer {
     pub fn render_png(self, request: &MapRenderRequest) -> Result<Vec<u8>, RustwxRenderError> {
-        validate_request(request)?;
-
-        let shape = request.field.grid.shape;
-        let cmap = build_colormap(&request.scale);
-        let projected_domain = request.projected_domain.as_ref();
-
-        let opts = RenderOpts {
-            width: request.width,
-            height: request.height,
-            cmap,
-            background: request.background.into(),
-            colorbar: request.colorbar,
-            title: request
-                .title
-                .clone()
-                .or_else(|| default_title(&request.field)),
-            subtitle_left: request.subtitle_left.clone(),
-            subtitle_right: request.subtitle_right.clone(),
-            cbar_tick_step: request.cbar_tick_step,
-            map_extent: projected_domain.map(|domain| MapExtent {
-                x_min: domain.extent.x_min,
-                x_max: domain.extent.x_max,
-                y_min: domain.extent.y_min,
-                y_max: domain.extent.y_max,
-            }),
-            projected_grid: projected_domain.map(|domain| ProjectedGrid {
-                x: domain.x.clone(),
-                y: domain.y.clone(),
-                ny: shape.ny,
-                nx: shape.nx,
-            }),
-            projected_lines: request
-                .projected_lines
-                .iter()
-                .map(|line| ProjectedPolyline {
-                    points: line.points.clone(),
-                    color: line.color.into(),
-                    width: line.width,
-                })
-                .collect(),
-            contours: request
-                .contours
-                .iter()
-                .map(|layer| ContourOverlay {
-                    data: layer.data.iter().map(|v| *v as f64).collect(),
-                    ny: shape.ny,
-                    nx: shape.nx,
-                    levels: layer.levels.clone(),
-                    color: layer.color.into(),
-                    width: layer.width,
-                    labels: layer.labels,
-                    show_extrema: layer.show_extrema,
-                })
-                .collect(),
-            barbs: request
-                .wind_barbs
-                .iter()
-                .map(|layer| BarbOverlay {
-                    u: layer.u.iter().map(|v| *v as f64).collect(),
-                    v: layer.v.iter().map(|v| *v as f64).collect(),
-                    ny: shape.ny,
-                    nx: shape.nx,
-                    stride_x: layer.stride_x,
-                    stride_y: layer.stride_y,
-                    color: layer.color.into(),
-                    width: layer.width,
-                    length_px: layer.length_px,
-                })
-                .collect(),
-        };
-
-        let data: Vec<f64> = request.field.values.iter().map(|v| *v as f64).collect();
-        Ok(render_to_png(&data, shape.ny, shape.nx, &opts))
+        with_render_state(request, |data, ny, nx, opts| {
+            Ok(render_to_png(data, ny, nx, opts))
+        })
     }
 
     pub fn render_image(self, request: &MapRenderRequest) -> Result<RgbaImage, RustwxRenderError> {
-        let png = self.render_png(request)?;
-        image::load_from_memory_with_format(&png, ImageFormat::Png)
-            .map(|image| image.to_rgba8())
-            .map_err(|source| RustwxRenderError::DecodeRenderedPng { source })
+        with_render_state(request, |data, ny, nx, opts| {
+            Ok(wrf_render_to_image(data, ny, nx, opts))
+        })
     }
 
     pub fn save_png<P: AsRef<Path>>(
@@ -143,6 +161,104 @@ pub fn save_png<P: AsRef<Path>>(
     RustRenderer.save_png(request, output_path)
 }
 
+fn with_render_state<T>(
+    request: &MapRenderRequest,
+    render: impl FnOnce(&[f64], usize, usize, &RenderOpts) -> Result<T, RustwxRenderError>,
+) -> Result<T, RustwxRenderError> {
+    validate_request(request)?;
+
+    let shape = request.field.grid.shape;
+    let overlay_only = request.is_overlay_only();
+    let cmap = if overlay_only {
+        blank_fill_colormap()
+    } else {
+        build_colormap(&request.scale)
+    };
+    let projected_domain = request.projected_domain.as_ref();
+    let default_title = default_title(&request.field);
+
+    RENDER_SCRATCH.with(|scratch_cell| {
+        let mut scratch = scratch_cell.borrow_mut();
+
+        let data = if overlay_only {
+            scratch.fill_f64_constant(shape.len(), OVERLAY_ONLY_FILL_VALUE)
+        } else {
+            scratch.fill_f64_from_f32(&request.field.values)
+        };
+
+        let projected_grid = projected_domain.map(|domain| ProjectedGrid {
+            x: scratch.fill_f64_from_f64(&domain.x),
+            y: scratch.fill_f64_from_f64(&domain.y),
+            ny: shape.ny,
+            nx: shape.nx,
+        });
+
+        let mut projected_lines = Vec::with_capacity(request.projected_lines.len());
+        for line in &request.projected_lines {
+            projected_lines.push(ProjectedPolyline {
+                points: scratch.fill_point_buffer(&line.points),
+                color: line.color.into(),
+                width: line.width,
+            });
+        }
+
+        let mut contours = Vec::with_capacity(request.contours.len());
+        for layer in &request.contours {
+            contours.push(ContourOverlay {
+                data: scratch.fill_f64_from_f32(&layer.data),
+                ny: shape.ny,
+                nx: shape.nx,
+                levels: scratch.fill_f64_from_f64(&layer.levels),
+                color: layer.color.into(),
+                width: layer.width,
+                labels: layer.labels,
+                show_extrema: layer.show_extrema,
+            });
+        }
+
+        let mut barbs = Vec::with_capacity(request.wind_barbs.len());
+        for layer in &request.wind_barbs {
+            barbs.push(BarbOverlay {
+                u: scratch.fill_f64_from_f32(&layer.u),
+                v: scratch.fill_f64_from_f32(&layer.v),
+                ny: shape.ny,
+                nx: shape.nx,
+                stride_x: layer.stride_x,
+                stride_y: layer.stride_y,
+                color: layer.color.into(),
+                width: layer.width,
+                length_px: layer.length_px,
+            });
+        }
+
+        let opts = RenderOpts {
+            width: request.width,
+            height: request.height,
+            cmap,
+            background: request.background.into(),
+            colorbar: request.colorbar,
+            title: request.title.clone().or(default_title),
+            subtitle_left: request.subtitle_left.clone(),
+            subtitle_right: request.subtitle_right.clone(),
+            cbar_tick_step: request.cbar_tick_step,
+            map_extent: projected_domain.map(|domain| MapExtent {
+                x_min: domain.extent.x_min,
+                x_max: domain.extent.x_max,
+                y_min: domain.extent.y_min,
+                y_max: domain.extent.y_max,
+            }),
+            projected_grid,
+            projected_lines,
+            contours,
+            barbs,
+        };
+
+        let result = render(&data, shape.ny, shape.nx, &opts);
+        scratch.reclaim_render_opts(opts, data);
+        result
+    })
+}
+
 fn build_colormap(scale: &ColorScale) -> LeveledColormap {
     let discrete = match scale {
         ColorScale::Solar07(preset) => preset.scale(),
@@ -156,6 +272,17 @@ fn build_colormap(scale: &ColorScale) -> LeveledColormap {
         discrete.extend.into(),
         discrete.mask_below,
     )
+}
+
+const OVERLAY_ONLY_FILL_VALUE: f64 = 0.5;
+
+fn blank_fill_colormap() -> LeveledColormap {
+    static BLANK_FILL_COLORMAP: OnceLock<LeveledColormap> = OnceLock::new();
+    BLANK_FILL_COLORMAP
+        .get_or_init(|| {
+            LeveledColormap::from_palette(&[Rgba::WHITE], &[0.0, 1.0], Extend::Neither, None)
+        })
+        .clone()
 }
 
 fn default_title(field: &Field2D) -> Option<String> {
@@ -250,6 +377,7 @@ impl From<ExtendMode> for Extend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::ImageFormat;
 
     fn sample_field(product: &str) -> Field2D {
         let shape = GridShape::new(4, 3).unwrap();
@@ -287,6 +415,7 @@ mod tests {
     fn render_png_emits_valid_nonempty_image() {
         let request = MapRenderRequest {
             field: sample_field("sbecape"),
+            product_metadata: None,
             width: 320,
             height: 240,
             scale: ColorScale::Solar07(crate::solar07::Solar07Preset::Cape),
@@ -300,6 +429,7 @@ mod tests {
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),
+            semantics: None,
         };
 
         let png = render_png(&request).unwrap();
@@ -336,6 +466,7 @@ mod tests {
     fn render_image_emits_rgba_canvas_without_png_decode_in_callers() {
         let request = MapRenderRequest {
             field: sample_field("mucape"),
+            product_metadata: None,
             width: 320,
             height: 240,
             scale: ColorScale::Solar07(crate::solar07::Solar07Preset::Cape),
@@ -349,6 +480,7 @@ mod tests {
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),
+            semantics: None,
         };
 
         let image = render_image(&request).unwrap();

@@ -19,8 +19,8 @@ use std::thread;
 use std::time::Instant;
 
 use crate::hrrr::{
-    DomainSpec, HrrrSharedTiming, HrrrSurfaceFields, broadcast_levels_pa, build_projected_map,
-    load_hrrr_timestep_from_parts,
+    DomainSpec, HrrrSharedTiming, HrrrSurfaceFields, PreparedHrrrHourContext, broadcast_levels_pa,
+    build_projected_map, load_hrrr_timestep_from_parts,
 };
 
 const OUTPUT_WIDTH: u32 = 1200;
@@ -240,7 +240,7 @@ pub struct HrrrDerivedLiveArtifact {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum DerivedRecipe {
+pub(crate) enum DerivedRecipe {
     Sbcape,
     Sbcin,
     Sblcl,
@@ -360,44 +360,153 @@ impl DerivedRecipe {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct DerivedComputedFields {
-    sbcape_jkg: Vec<f64>,
-    sbcin_jkg: Vec<f64>,
-    sblcl_m: Vec<f64>,
-    mlcape_jkg: Vec<f64>,
-    mlcin_jkg: Vec<f64>,
-    mucape_jkg: Vec<f64>,
-    mucin_jkg: Vec<f64>,
-    theta_e_2m_k: Vec<f64>,
-    heat_index_2m_c: Vec<f64>,
-    wind_chill_2m_c: Vec<f64>,
-    surface_u10_ms: Vec<f64>,
-    surface_v10_ms: Vec<f64>,
-    lifted_index_c: Vec<f64>,
-    lapse_rate_700_500_cpkm: Vec<f64>,
-    lapse_rate_0_3km_cpkm: Vec<f64>,
-    shear_01km_kt: Vec<f64>,
-    shear_06km_kt: Vec<f64>,
-    srh_01km_m2s2: Vec<f64>,
-    srh_03km_m2s2: Vec<f64>,
-    ehi_01km: Vec<f64>,
-    ehi_03km: Vec<f64>,
-    stp_fixed: Vec<f64>,
-    scp_mu_03km_06km_proxy: Vec<f64>,
-    temperature_advection_700mb_cph: Vec<f64>,
-    temperature_advection_850mb_cph: Vec<f64>,
+    sbcape_jkg: Option<Vec<f64>>,
+    sbcin_jkg: Option<Vec<f64>>,
+    sblcl_m: Option<Vec<f64>>,
+    mlcape_jkg: Option<Vec<f64>>,
+    mlcin_jkg: Option<Vec<f64>>,
+    mucape_jkg: Option<Vec<f64>>,
+    mucin_jkg: Option<Vec<f64>>,
+    theta_e_2m_k: Option<Vec<f64>>,
+    heat_index_2m_c: Option<Vec<f64>>,
+    wind_chill_2m_c: Option<Vec<f64>>,
+    surface_u10_ms: Option<Vec<f64>>,
+    surface_v10_ms: Option<Vec<f64>>,
+    lifted_index_c: Option<Vec<f64>>,
+    lapse_rate_700_500_cpkm: Option<Vec<f64>>,
+    lapse_rate_0_3km_cpkm: Option<Vec<f64>>,
+    shear_01km_kt: Option<Vec<f64>>,
+    shear_06km_kt: Option<Vec<f64>>,
+    srh_01km_m2s2: Option<Vec<f64>>,
+    srh_03km_m2s2: Option<Vec<f64>>,
+    ehi_01km: Option<Vec<f64>>,
+    ehi_03km: Option<Vec<f64>>,
+    stp_fixed: Option<Vec<f64>>,
+    scp_mu_03km_06km_proxy: Option<Vec<f64>>,
+    temperature_advection_700mb_cph: Option<Vec<f64>>,
+    temperature_advection_850mb_cph: Option<Vec<f64>>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DerivedRequirements {
+    sb: bool,
+    ml: bool,
+    mu: bool,
+    surface_thermo: bool,
+    surface_winds: bool,
+    lifted_index: bool,
+    lapse_rate_700_500: bool,
+    lapse_rate_0_3km: bool,
+    shear_01km: bool,
+    shear_06km: bool,
+    srh_01km: bool,
+    srh_03km: bool,
+    ehi_01km: bool,
+    ehi_03km: bool,
+    stp_fixed: bool,
+    scp_mu_03km_06km_proxy: bool,
+    temperature_advection_700mb: bool,
+    temperature_advection_850mb: bool,
+}
+
+impl DerivedRequirements {
+    fn from_recipes(recipes: &[DerivedRecipe]) -> Self {
+        let mut requirements = Self::default();
+        for &recipe in recipes {
+            match recipe {
+                DerivedRecipe::Sbcape | DerivedRecipe::Sbcin | DerivedRecipe::Sblcl => {
+                    requirements.sb = true;
+                }
+                DerivedRecipe::Mlcape | DerivedRecipe::Mlcin => {
+                    requirements.ml = true;
+                }
+                DerivedRecipe::Mucape | DerivedRecipe::Mucin => {
+                    requirements.mu = true;
+                }
+                DerivedRecipe::ThetaE2m10mWinds => {
+                    requirements.surface_thermo = true;
+                    requirements.surface_winds = true;
+                }
+                DerivedRecipe::HeatIndex2m | DerivedRecipe::WindChill2m => {
+                    requirements.surface_thermo = true;
+                }
+                DerivedRecipe::LiftedIndex => {
+                    requirements.lifted_index = true;
+                }
+                DerivedRecipe::LapseRate700500 => {
+                    requirements.lapse_rate_700_500 = true;
+                }
+                DerivedRecipe::LapseRate03km => {
+                    requirements.lapse_rate_0_3km = true;
+                }
+                DerivedRecipe::BulkShear01km => {
+                    requirements.shear_01km = true;
+                }
+                DerivedRecipe::BulkShear06km => {
+                    requirements.shear_06km = true;
+                }
+                DerivedRecipe::Srh01km => {
+                    requirements.srh_01km = true;
+                }
+                DerivedRecipe::Srh03km => {
+                    requirements.srh_03km = true;
+                }
+                DerivedRecipe::Ehi01km => {
+                    requirements.ehi_01km = true;
+                    requirements.sb = true;
+                    requirements.srh_01km = true;
+                }
+                DerivedRecipe::Ehi03km => {
+                    requirements.ehi_03km = true;
+                    requirements.sb = true;
+                    requirements.srh_03km = true;
+                }
+                DerivedRecipe::StpFixed => {
+                    requirements.stp_fixed = true;
+                    requirements.sb = true;
+                    requirements.srh_01km = true;
+                    requirements.shear_06km = true;
+                }
+                DerivedRecipe::ScpMu03km06kmProxy => {
+                    requirements.scp_mu_03km_06km_proxy = true;
+                    requirements.mu = true;
+                    requirements.srh_03km = true;
+                    requirements.shear_06km = true;
+                }
+                DerivedRecipe::TemperatureAdvection700mb => {
+                    requirements.temperature_advection_700mb = true;
+                }
+                DerivedRecipe::TemperatureAdvection850mb => {
+                    requirements.temperature_advection_850mb = true;
+                }
+            }
+        }
+        requirements
+    }
+
+    fn needs_volume(self) -> bool {
+        self.sb
+            || self.ml
+            || self.mu
+            || self.lifted_index
+            || self.lapse_rate_700_500
+            || self.lapse_rate_0_3km
+    }
+
+    fn needs_height_agl(self) -> bool {
+        self.needs_volume() || self.shear_01km || self.shear_06km || self.srh_01km || self.srh_03km
+    }
+
+    fn needs_grid_spacing(self) -> bool {
+        self.temperature_advection_700mb || self.temperature_advection_850mb
+    }
 }
 
 pub fn run_hrrr_derived_batch(
     request: &HrrrDerivedBatchRequest,
 ) -> Result<HrrrDerivedBatchReport, Box<dyn std::error::Error>> {
-    fs::create_dir_all(&request.out_dir)?;
-    if request.use_cache {
-        fs::create_dir_all(&request.cache_root)?;
-    }
-
-    let total_start = Instant::now();
     let recipes = plan_derived_recipes(&request.recipe_slugs)?;
     let timestep = load_hrrr_timestep_from_parts(
         &request.date_yyyymmdd,
@@ -407,40 +516,61 @@ pub fn run_hrrr_derived_batch(
         &request.cache_root,
         request.use_cache,
     )?;
+    run_hrrr_derived_batch_with_context(request, &recipes, &timestep, None)
+}
+
+pub(crate) fn run_hrrr_derived_batch_with_context(
+    request: &HrrrDerivedBatchRequest,
+    recipes: &[DerivedRecipe],
+    timestep: &crate::hrrr::LoadedHrrrTimestep,
+    shared_context: Option<&PreparedHrrrHourContext>,
+) -> Result<HrrrDerivedBatchReport, Box<dyn std::error::Error>> {
+    fs::create_dir_all(&request.out_dir)?;
+    if request.use_cache {
+        fs::create_dir_all(&request.cache_root)?;
+    }
+    let total_start = Instant::now();
 
     let project_start = Instant::now();
-    let projected = build_projected_map(
-        &timestep.surface_decode.value,
-        request.domain.bounds,
-        wrf_render::render::map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
-    )?;
+    let projected = if let Some(projected) =
+        shared_context.and_then(|ctx| ctx.projected_map(OUTPUT_WIDTH, OUTPUT_HEIGHT).cloned())
+    {
+        projected
+    } else {
+        build_projected_map(
+            &timestep.surface_decode().value,
+            request.domain.bounds,
+            wrf_render::render::map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
+        )?
+    };
     let project_ms = project_start.elapsed().as_millis();
 
     let compute_start = Instant::now();
     let computed = compute_derived_fields(
-        &timestep.surface_decode.value,
-        &timestep.pressure_decode.value,
+        &timestep.surface_decode().value,
+        &timestep.pressure_decode().value,
+        recipes,
     )?;
     let compute_ms = compute_start.elapsed().as_millis();
 
     let render_parallelism = png_render_parallelism(recipes.len());
-    let grid = &timestep.grid;
+    let grid = timestep.grid();
     let projected = &projected;
     let date_yyyymmdd = request.date_yyyymmdd.as_str();
-    let cycle_utc = timestep.latest.cycle.hour_utc;
+    let cycle_utc = timestep.latest().cycle.hour_utc;
     let forecast_hour = request.forecast_hour;
-    let source = timestep.latest.source;
+    let source = timestep.latest().source;
     let computed = &computed;
     let rendered = thread::scope(
         |scope| -> Result<Vec<HrrrDerivedRenderedRecipe>, io::Error> {
             let mut rendered = Vec::with_capacity(recipes.len());
             let mut pending = VecDeque::new();
 
-            for recipe in recipes {
+            for &recipe in recipes {
                 let output_path = request.out_dir.join(format!(
                     "rustwx_hrrr_{}_{}z_f{:03}_{}_{}.png",
                     request.date_yyyymmdd,
-                    timestep.latest.cycle.hour_utc,
+                    timestep.latest().cycle.hour_utc,
                     request.forecast_hour,
                     request.domain.slug,
                     recipe.slug()
@@ -490,12 +620,12 @@ pub fn run_hrrr_derived_batch(
 
     Ok(HrrrDerivedBatchReport {
         date_yyyymmdd: request.date_yyyymmdd.clone(),
-        cycle_utc: timestep.latest.cycle.hour_utc,
+        cycle_utc: timestep.latest().cycle.hour_utc,
         forecast_hour: request.forecast_hour,
-        source: timestep.latest.source,
+        source: timestep.latest().source,
         domain: request.domain.clone(),
         shared_timing: HrrrDerivedSharedTiming {
-            fetch_decode: timestep.shared_timing,
+            fetch_decode: timestep.shared_timing().clone(),
             compute_ms,
             project_ms,
         },
@@ -517,7 +647,7 @@ pub fn build_hrrr_live_derived_artifact(
 ) -> Result<HrrrDerivedLiveArtifact, Box<dyn std::error::Error>> {
     let recipe =
         DerivedRecipe::parse(recipe_slug).map_err(|err| format!("{recipe_slug}: {err}"))?;
-    let computed = compute_derived_fields(surface, pressure)?;
+    let computed = compute_derived_fields(surface, pressure, &[recipe])?;
     build_render_artifact(
         recipe,
         grid,
@@ -530,7 +660,7 @@ pub fn build_hrrr_live_derived_artifact(
     )
 }
 
-fn plan_derived_recipes(
+pub(crate) fn plan_derived_recipes(
     recipe_slugs: &[String],
 ) -> Result<Vec<DerivedRecipe>, Box<dyn std::error::Error>> {
     let mut seen = HashSet::<DerivedRecipe>::new();
@@ -547,20 +677,12 @@ fn plan_derived_recipes(
 fn compute_derived_fields(
     surface: &HrrrSurfaceFields,
     pressure: &crate::hrrr::HrrrPressureFields,
+    recipes: &[DerivedRecipe],
 ) -> Result<DerivedComputedFields, Box<dyn std::error::Error>> {
+    let requirements = DerivedRequirements::from_recipes(recipes);
     let grid = CalcGridShape::new(surface.nx, surface.ny)?;
-    let shape = VolumeShape::new(grid, pressure.pressure_levels_hpa.len())?;
-    let pressure_3d_pa = broadcast_levels_pa(&pressure.pressure_levels_hpa, grid.len());
-    let height_agl_3d = crate::hrrr::compute_height_agl_3d(surface, pressure, grid, shape);
-    let volume = EcapeVolumeInputs {
-        pressure_pa: &pressure_3d_pa,
-        temperature_c: &pressure.temperature_c_3d,
-        qvapor_kgkg: &pressure.qvapor_kgkg_3d,
-        height_agl_m: &height_agl_3d,
-        u_ms: &pressure.u_ms_3d,
-        v_ms: &pressure.v_ms_3d,
-        nz: shape.nz,
-    };
+    let mut computed = DerivedComputedFields::default();
+
     let surface_inputs = SurfaceInputs {
         psfc_pa: &surface.psfc_pa,
         t2_k: &surface.t2_k,
@@ -568,137 +690,307 @@ fn compute_derived_fields(
         u10_ms: &surface.u10_ms,
         v10_ms: &surface.v10_ms,
     };
-    let wind = WindGridInputs {
-        shape,
-        u_3d_ms: &pressure.u_ms_3d,
-        v_3d_ms: &pressure.v_ms_3d,
-        height_agl_3d_m: &height_agl_3d,
+
+    let shape = if requirements.needs_height_agl() {
+        Some(VolumeShape::new(grid, pressure.pressure_levels_hpa.len())?)
+    } else {
+        None
+    };
+    let pressure_3d_pa = if requirements.needs_volume() {
+        Some(broadcast_levels_pa(
+            &pressure.pressure_levels_hpa,
+            grid.len(),
+        ))
+    } else {
+        None
+    };
+    let height_agl_3d = if requirements.needs_height_agl() {
+        Some(crate::hrrr::compute_height_agl_3d(
+            surface,
+            pressure,
+            grid,
+            shape.expect("shape should exist when height_agl is required"),
+        ))
+    } else {
+        None
     };
 
-    let sb = compute_sbcape_cin(grid, volume, surface_inputs, None)?;
-    let ml = compute_mlcape_cin(grid, volume, surface_inputs, None)?;
-    let mu = compute_mucape_cin(grid, volume, surface_inputs, None)?;
-    let surface_thermo = compute_surface_thermo(grid, surface_inputs)?;
-    let lifted_index_c = compute_lifted_index(grid, volume, surface_inputs)?;
-    let lapse_rate_700_500_cpkm = compute_lapse_rate_700_500(grid, volume)?;
-    let lapse_rate_0_3km_cpkm = compute_lapse_rate_0_3km(grid, volume, surface_inputs)?;
-    let shear_01km_ms = compute_shear_01km(wind)?;
-    let shear_06km_ms = compute_shear_06km(wind)?;
-    let srh_01km_m2s2 = compute_srh_01km(wind)?;
-    let srh_03km_m2s2 = compute_srh_03km(wind)?;
-    let ehi_01km = compute_ehi_01km(grid, &sb.cape_jkg, &srh_01km_m2s2)?;
-    let ehi_03km = compute_ehi_03km(grid, &sb.cape_jkg, &srh_03km_m2s2)?;
-    let stp_fixed = compute_stp_fixed(FixedStpInputs {
-        grid,
-        sbcape_jkg: &sb.cape_jkg,
-        lcl_m: &sb.lcl_m,
-        srh_1km_m2s2: &srh_01km_m2s2,
-        shear_6km_ms: &shear_06km_ms,
-    })?;
-    let scp_mu_03km_06km_proxy =
-        rustwx_calc::compute_scp(grid, &mu.cape_jkg, &srh_03km_m2s2, &shear_06km_ms)?;
+    let make_volume = || EcapeVolumeInputs {
+        pressure_pa: pressure_3d_pa
+            .as_ref()
+            .expect("pressure volume should exist when volume inputs are required"),
+        temperature_c: &pressure.temperature_c_3d,
+        qvapor_kgkg: &pressure.qvapor_kgkg_3d,
+        height_agl_m: height_agl_3d
+            .as_ref()
+            .expect("height_agl should exist when volume inputs are required"),
+        u_ms: &pressure.u_ms_3d,
+        v_ms: &pressure.v_ms_3d,
+        nz: shape
+            .expect("shape should exist when volume inputs are required")
+            .nz,
+    };
+    let make_wind = || WindGridInputs {
+        shape: shape.expect("shape should exist when wind inputs are required"),
+        u_3d_ms: &pressure.u_ms_3d,
+        v_3d_ms: &pressure.v_ms_3d,
+        height_agl_3d_m: height_agl_3d
+            .as_ref()
+            .expect("height_agl should exist when wind inputs are required"),
+    };
 
-    let (dx_m, dy_m) = estimate_grid_spacing_m(surface)?;
-    let t700 = level_slice(
-        &pressure.temperature_c_3d,
-        &pressure.pressure_levels_hpa,
-        700.0,
-        grid.len(),
-    )
-    .ok_or("missing 700 mb temperature slice in HRRR pressure bundle")?;
-    let u700 = level_slice(
-        &pressure.u_ms_3d,
-        &pressure.pressure_levels_hpa,
-        700.0,
-        grid.len(),
-    )
-    .ok_or("missing 700 mb u-wind slice in HRRR pressure bundle")?;
-    let v700 = level_slice(
-        &pressure.v_ms_3d,
-        &pressure.pressure_levels_hpa,
-        700.0,
-        grid.len(),
-    )
-    .ok_or("missing 700 mb v-wind slice in HRRR pressure bundle")?;
-    let t850 = level_slice(
-        &pressure.temperature_c_3d,
-        &pressure.pressure_levels_hpa,
-        850.0,
-        grid.len(),
-    )
-    .ok_or("missing 850 mb temperature slice in HRRR pressure bundle")?;
-    let u850 = level_slice(
-        &pressure.u_ms_3d,
-        &pressure.pressure_levels_hpa,
-        850.0,
-        grid.len(),
-    )
-    .ok_or("missing 850 mb u-wind slice in HRRR pressure bundle")?;
-    let v850 = level_slice(
-        &pressure.v_ms_3d,
-        &pressure.pressure_levels_hpa,
-        850.0,
-        grid.len(),
-    )
-    .ok_or("missing 850 mb v-wind slice in HRRR pressure bundle")?;
-    let temperature_advection_700mb_cph =
-        rustwx_calc::compute_temperature_advection_700mb(TemperatureAdvectionInputs {
+    let sb = if requirements.sb {
+        Some(compute_sbcape_cin(
             grid,
-            temperature_2d: t700,
-            u_2d_ms: u700,
-            v_2d_ms: v700,
-            dx_m,
-            dy_m,
-        })?
-        .into_iter()
-        .map(|value| value * 3600.0)
-        .collect();
-    let temperature_advection_850mb_cph =
-        rustwx_calc::compute_temperature_advection_850mb(TemperatureAdvectionInputs {
+            make_volume(),
+            surface_inputs,
+            None,
+        )?)
+    } else {
+        None
+    };
+    let ml = if requirements.ml {
+        Some(compute_mlcape_cin(
             grid,
-            temperature_2d: t850,
-            u_2d_ms: u850,
-            v_2d_ms: v850,
-            dx_m,
-            dy_m,
-        })?
-        .into_iter()
-        .map(|value| value * 3600.0)
-        .collect();
+            make_volume(),
+            surface_inputs,
+            None,
+        )?)
+    } else {
+        None
+    };
+    let mu = if requirements.mu {
+        Some(compute_mucape_cin(
+            grid,
+            make_volume(),
+            surface_inputs,
+            None,
+        )?)
+    } else {
+        None
+    };
 
-    Ok(DerivedComputedFields {
-        sbcape_jkg: sb.cape_jkg,
-        sbcin_jkg: sb.cin_jkg,
-        sblcl_m: sb.lcl_m,
-        mlcape_jkg: ml.cape_jkg,
-        mlcin_jkg: ml.cin_jkg,
-        mucape_jkg: mu.cape_jkg,
-        mucin_jkg: mu.cin_jkg,
-        theta_e_2m_k: surface_thermo.theta_e_2m_k,
-        heat_index_2m_c: surface_thermo.heat_index_2m_c,
-        wind_chill_2m_c: surface_thermo.wind_chill_2m_c,
-        surface_u10_ms: surface.u10_ms.clone(),
-        surface_v10_ms: surface.v10_ms.clone(),
-        lifted_index_c,
-        lapse_rate_700_500_cpkm,
-        lapse_rate_0_3km_cpkm,
-        shear_01km_kt: shear_01km_ms
-            .into_iter()
-            .map(|value| value * KNOTS_PER_MS)
-            .collect(),
-        shear_06km_kt: shear_06km_ms
-            .into_iter()
-            .map(|value| value * KNOTS_PER_MS)
-            .collect(),
-        srh_01km_m2s2,
-        srh_03km_m2s2,
-        ehi_01km,
-        ehi_03km,
-        stp_fixed,
-        scp_mu_03km_06km_proxy,
-        temperature_advection_700mb_cph,
-        temperature_advection_850mb_cph,
-    })
+    if let Some(sb) = sb.as_ref() {
+        computed.sbcape_jkg = Some(sb.cape_jkg.clone());
+        computed.sbcin_jkg = Some(sb.cin_jkg.clone());
+        computed.sblcl_m = Some(sb.lcl_m.clone());
+    }
+    if let Some(ml) = ml.as_ref() {
+        computed.mlcape_jkg = Some(ml.cape_jkg.clone());
+        computed.mlcin_jkg = Some(ml.cin_jkg.clone());
+    }
+    if let Some(mu) = mu.as_ref() {
+        computed.mucape_jkg = Some(mu.cape_jkg.clone());
+        computed.mucin_jkg = Some(mu.cin_jkg.clone());
+    }
+
+    if requirements.surface_thermo {
+        let surface_thermo = compute_surface_thermo(grid, surface_inputs)?;
+        if recipes.contains(&DerivedRecipe::ThetaE2m10mWinds) {
+            computed.theta_e_2m_k = Some(surface_thermo.theta_e_2m_k);
+            computed.surface_u10_ms = Some(surface.u10_ms.clone());
+            computed.surface_v10_ms = Some(surface.v10_ms.clone());
+        }
+        if recipes.contains(&DerivedRecipe::HeatIndex2m) {
+            computed.heat_index_2m_c = Some(surface_thermo.heat_index_2m_c);
+        }
+        if recipes.contains(&DerivedRecipe::WindChill2m) {
+            computed.wind_chill_2m_c = Some(surface_thermo.wind_chill_2m_c);
+        }
+    }
+
+    if requirements.lifted_index {
+        computed.lifted_index_c = Some(compute_lifted_index(grid, make_volume(), surface_inputs)?);
+    }
+    if requirements.lapse_rate_700_500 {
+        computed.lapse_rate_700_500_cpkm = Some(compute_lapse_rate_700_500(grid, make_volume())?);
+    }
+    if requirements.lapse_rate_0_3km {
+        computed.lapse_rate_0_3km_cpkm = Some(compute_lapse_rate_0_3km(
+            grid,
+            make_volume(),
+            surface_inputs,
+        )?);
+    }
+
+    let shear_01km_ms = if requirements.shear_01km {
+        Some(compute_shear_01km(make_wind())?)
+    } else {
+        None
+    };
+    let shear_06km_ms = if requirements.shear_06km {
+        Some(compute_shear_06km(make_wind())?)
+    } else {
+        None
+    };
+    let srh_01km_m2s2 = if requirements.srh_01km {
+        Some(compute_srh_01km(make_wind())?)
+    } else {
+        None
+    };
+    let srh_03km_m2s2 = if requirements.srh_03km {
+        Some(compute_srh_03km(make_wind())?)
+    } else {
+        None
+    };
+
+    if let Some(values) = shear_01km_ms {
+        computed.shear_01km_kt = Some(
+            values
+                .into_iter()
+                .map(|value| value * KNOTS_PER_MS)
+                .collect(),
+        );
+    }
+    if let Some(values) = shear_06km_ms.as_ref() {
+        computed.shear_06km_kt = Some(
+            values
+                .iter()
+                .copied()
+                .map(|value| value * KNOTS_PER_MS)
+                .collect(),
+        );
+    }
+    if let Some(values) = srh_01km_m2s2.as_ref() {
+        computed.srh_01km_m2s2 = Some(values.clone());
+    }
+    if let Some(values) = srh_03km_m2s2.as_ref() {
+        computed.srh_03km_m2s2 = Some(values.clone());
+    }
+
+    if requirements.ehi_01km {
+        computed.ehi_01km = Some(compute_ehi_01km(
+            grid,
+            &sb.as_ref()
+                .expect("SBCAPE should exist when EHI 0-1 km is requested")
+                .cape_jkg,
+            srh_01km_m2s2
+                .as_ref()
+                .expect("0-1 km SRH should exist when EHI 0-1 km is requested"),
+        )?);
+    }
+    if requirements.ehi_03km {
+        computed.ehi_03km = Some(compute_ehi_03km(
+            grid,
+            &sb.as_ref()
+                .expect("SBCAPE should exist when EHI 0-3 km is requested")
+                .cape_jkg,
+            srh_03km_m2s2
+                .as_ref()
+                .expect("0-3 km SRH should exist when EHI 0-3 km is requested"),
+        )?);
+    }
+    if requirements.stp_fixed {
+        computed.stp_fixed = Some(compute_stp_fixed(FixedStpInputs {
+            grid,
+            sbcape_jkg: &sb
+                .as_ref()
+                .expect("SBCAPE should exist when STP fixed is requested")
+                .cape_jkg,
+            lcl_m: &sb
+                .as_ref()
+                .expect("SBLCL should exist when STP fixed is requested")
+                .lcl_m,
+            srh_1km_m2s2: srh_01km_m2s2
+                .as_ref()
+                .expect("0-1 km SRH should exist when STP fixed is requested"),
+            shear_6km_ms: shear_06km_ms
+                .as_ref()
+                .expect("0-6 km shear should exist when STP fixed is requested"),
+        })?);
+    }
+    if requirements.scp_mu_03km_06km_proxy {
+        computed.scp_mu_03km_06km_proxy = Some(rustwx_calc::compute_scp(
+            grid,
+            &mu.as_ref()
+                .expect("MUCAPE should exist when SCP proxy is requested")
+                .cape_jkg,
+            srh_03km_m2s2
+                .as_ref()
+                .expect("0-3 km SRH should exist when SCP proxy is requested"),
+            shear_06km_ms
+                .as_ref()
+                .expect("0-6 km shear should exist when SCP proxy is requested"),
+        )?);
+    }
+
+    if requirements.needs_grid_spacing() {
+        let (dx_m, dy_m) = estimate_grid_spacing_m(surface)?;
+        if requirements.temperature_advection_700mb {
+            let t700 = level_slice(
+                &pressure.temperature_c_3d,
+                &pressure.pressure_levels_hpa,
+                700.0,
+                grid.len(),
+            )
+            .ok_or("missing 700 mb temperature slice in HRRR pressure bundle")?;
+            let u700 = level_slice(
+                &pressure.u_ms_3d,
+                &pressure.pressure_levels_hpa,
+                700.0,
+                grid.len(),
+            )
+            .ok_or("missing 700 mb u-wind slice in HRRR pressure bundle")?;
+            let v700 = level_slice(
+                &pressure.v_ms_3d,
+                &pressure.pressure_levels_hpa,
+                700.0,
+                grid.len(),
+            )
+            .ok_or("missing 700 mb v-wind slice in HRRR pressure bundle")?;
+            computed.temperature_advection_700mb_cph = Some(
+                rustwx_calc::compute_temperature_advection_700mb(TemperatureAdvectionInputs {
+                    grid,
+                    temperature_2d: t700,
+                    u_2d_ms: u700,
+                    v_2d_ms: v700,
+                    dx_m,
+                    dy_m,
+                })?
+                .into_iter()
+                .map(|value| value * 3600.0)
+                .collect(),
+            );
+        }
+        if requirements.temperature_advection_850mb {
+            let t850 = level_slice(
+                &pressure.temperature_c_3d,
+                &pressure.pressure_levels_hpa,
+                850.0,
+                grid.len(),
+            )
+            .ok_or("missing 850 mb temperature slice in HRRR pressure bundle")?;
+            let u850 = level_slice(
+                &pressure.u_ms_3d,
+                &pressure.pressure_levels_hpa,
+                850.0,
+                grid.len(),
+            )
+            .ok_or("missing 850 mb u-wind slice in HRRR pressure bundle")?;
+            let v850 = level_slice(
+                &pressure.v_ms_3d,
+                &pressure.pressure_levels_hpa,
+                850.0,
+                grid.len(),
+            )
+            .ok_or("missing 850 mb v-wind slice in HRRR pressure bundle")?;
+            computed.temperature_advection_850mb_cph = Some(
+                rustwx_calc::compute_temperature_advection_850mb(TemperatureAdvectionInputs {
+                    grid,
+                    temperature_2d: t850,
+                    u_2d_ms: u850,
+                    v_2d_ms: v850,
+                    dx_m,
+                    dy_m,
+                })?
+                .into_iter()
+                .map(|value| value * 3600.0)
+                .collect(),
+            );
+        }
+    }
+
+    Ok(computed)
 }
 
 fn build_render_artifact(
@@ -716,56 +1008,56 @@ fn build_render_artifact(
             recipe,
             grid,
             "J/kg",
-            computed.sbcape_jkg.clone(),
+            required_values(&computed.sbcape_jkg, recipe, "sbcape_jkg")?.clone(),
             Solar07Product::Sbcape,
         )?,
         DerivedRecipe::Sbcin => solar07_request(
             recipe,
             grid,
             "J/kg",
-            computed.sbcin_jkg.clone(),
+            required_values(&computed.sbcin_jkg, recipe, "sbcin_jkg")?.clone(),
             Solar07Product::Sbcin,
         )?,
         DerivedRecipe::Sblcl => solar07_request(
             recipe,
             grid,
             "m",
-            computed.sblcl_m.clone(),
+            required_values(&computed.sblcl_m, recipe, "sblcl_m")?.clone(),
             Solar07Product::Lcl,
         )?,
         DerivedRecipe::Mlcape => solar07_request(
             recipe,
             grid,
             "J/kg",
-            computed.mlcape_jkg.clone(),
+            required_values(&computed.mlcape_jkg, recipe, "mlcape_jkg")?.clone(),
             Solar07Product::Mlcape,
         )?,
         DerivedRecipe::Mlcin => solar07_request(
             recipe,
             grid,
             "J/kg",
-            computed.mlcin_jkg.clone(),
+            required_values(&computed.mlcin_jkg, recipe, "mlcin_jkg")?.clone(),
             Solar07Product::Mlcin,
         )?,
         DerivedRecipe::Mucape => solar07_request(
             recipe,
             grid,
             "J/kg",
-            computed.mucape_jkg.clone(),
+            required_values(&computed.mucape_jkg, recipe, "mucape_jkg")?.clone(),
             Solar07Product::Mucape,
         )?,
         DerivedRecipe::Mucin => solar07_request(
             recipe,
             grid,
             "J/kg",
-            computed.mucin_jkg.clone(),
+            required_values(&computed.mucin_jkg, recipe, "mucin_jkg")?.clone(),
             Solar07Product::Mucin,
         )?,
         DerivedRecipe::ThetaE2m10mWinds => palette_request(
             recipe,
             grid,
             "K",
-            computed.theta_e_2m_k.clone(),
+            required_values(&computed.theta_e_2m_k, recipe, "theta_e_2m_k")?.clone(),
             Solar07Palette::Temperature,
             range_step(280.0, 381.0, 4.0),
             ExtendMode::Both,
@@ -775,7 +1067,7 @@ fn build_render_artifact(
             recipe,
             grid,
             "degC",
-            computed.heat_index_2m_c.clone(),
+            required_values(&computed.heat_index_2m_c, recipe, "heat_index_2m_c")?.clone(),
             Solar07Palette::Temperature,
             range_step(-30.0, 51.0, 5.0),
             ExtendMode::Both,
@@ -785,7 +1077,7 @@ fn build_render_artifact(
             recipe,
             grid,
             "degC",
-            computed.wind_chill_2m_c.clone(),
+            required_values(&computed.wind_chill_2m_c, recipe, "wind_chill_2m_c")?.clone(),
             Solar07Palette::Temperature,
             range_step(-40.0, 31.0, 5.0),
             ExtendMode::Both,
@@ -795,23 +1087,37 @@ fn build_render_artifact(
             recipe,
             grid,
             "degC",
-            computed.lifted_index_c.clone(),
+            required_values(&computed.lifted_index_c, recipe, "lifted_index_c")?.clone(),
             Solar07Palette::Temperature,
             range_step(-12.0, 13.0, 1.0),
             ExtendMode::Both,
             Some(1.0),
         )?,
-        DerivedRecipe::LapseRate700500 => {
-            solar07_lapse_request(recipe, grid, computed.lapse_rate_700_500_cpkm.clone())?
-        }
-        DerivedRecipe::LapseRate03km => {
-            solar07_lapse_request(recipe, grid, computed.lapse_rate_0_3km_cpkm.clone())?
-        }
+        DerivedRecipe::LapseRate700500 => solar07_lapse_request(
+            recipe,
+            grid,
+            required_values(
+                &computed.lapse_rate_700_500_cpkm,
+                recipe,
+                "lapse_rate_700_500_cpkm",
+            )?
+            .clone(),
+        )?,
+        DerivedRecipe::LapseRate03km => solar07_lapse_request(
+            recipe,
+            grid,
+            required_values(
+                &computed.lapse_rate_0_3km_cpkm,
+                recipe,
+                "lapse_rate_0_3km_cpkm",
+            )?
+            .clone(),
+        )?,
         DerivedRecipe::BulkShear01km => palette_request(
             recipe,
             grid,
             "kt",
-            computed.shear_01km_kt.clone(),
+            required_values(&computed.shear_01km_kt, recipe, "shear_01km_kt")?.clone(),
             Solar07Palette::Winds,
             range_step(0.0, 85.0, 5.0),
             ExtendMode::Max,
@@ -821,7 +1127,7 @@ fn build_render_artifact(
             recipe,
             grid,
             "kt",
-            computed.shear_06km_kt.clone(),
+            required_values(&computed.shear_06km_kt, recipe, "shear_06km_kt")?.clone(),
             Solar07Palette::Winds,
             range_step(0.0, 85.0, 5.0),
             ExtendMode::Max,
@@ -831,49 +1137,59 @@ fn build_render_artifact(
             recipe,
             grid,
             "m^2/s^2",
-            computed.srh_01km_m2s2.clone(),
+            required_values(&computed.srh_01km_m2s2, recipe, "srh_01km_m2s2")?.clone(),
             Solar07Product::Srh01km,
         )?,
         DerivedRecipe::Srh03km => solar07_request(
             recipe,
             grid,
             "m^2/s^2",
-            computed.srh_03km_m2s2.clone(),
+            required_values(&computed.srh_03km_m2s2, recipe, "srh_03km_m2s2")?.clone(),
             Solar07Product::Srh03km,
         )?,
         DerivedRecipe::Ehi01km => solar07_request(
             recipe,
             grid,
             "dimensionless",
-            computed.ehi_01km.clone(),
+            required_values(&computed.ehi_01km, recipe, "ehi_01km")?.clone(),
             Solar07Product::Ehi,
         )?,
         DerivedRecipe::Ehi03km => solar07_request(
             recipe,
             grid,
             "dimensionless",
-            computed.ehi_03km.clone(),
+            required_values(&computed.ehi_03km, recipe, "ehi_03km")?.clone(),
             Solar07Product::Ehi,
         )?,
         DerivedRecipe::StpFixed => solar07_request(
             recipe,
             grid,
             "dimensionless",
-            computed.stp_fixed.clone(),
+            required_values(&computed.stp_fixed, recipe, "stp_fixed")?.clone(),
             Solar07Product::StpFixed,
         )?,
         DerivedRecipe::ScpMu03km06kmProxy => solar07_request(
             recipe,
             grid,
             "dimensionless",
-            computed.scp_mu_03km_06km_proxy.clone(),
+            required_values(
+                &computed.scp_mu_03km_06km_proxy,
+                recipe,
+                "scp_mu_03km_06km_proxy",
+            )?
+            .clone(),
             Solar07Product::Scp,
         )?,
         DerivedRecipe::TemperatureAdvection700mb => palette_request(
             recipe,
             grid,
             "degC/hr",
-            computed.temperature_advection_700mb_cph.clone(),
+            required_values(
+                &computed.temperature_advection_700mb_cph,
+                recipe,
+                "temperature_advection_700mb_cph",
+            )?
+            .clone(),
             Solar07Palette::Temperature,
             range_step(-12.0, 13.0, 1.0),
             ExtendMode::Both,
@@ -883,7 +1199,12 @@ fn build_render_artifact(
             recipe,
             grid,
             "degC/hr",
-            computed.temperature_advection_850mb_cph.clone(),
+            required_values(
+                &computed.temperature_advection_850mb_cph,
+                recipe,
+                "temperature_advection_850mb_cph",
+            )?
+            .clone(),
             Solar07Palette::Temperature,
             range_step(-12.0, 13.0, 1.0),
             ExtendMode::Both,
@@ -906,8 +1227,8 @@ fn build_render_artifact(
     });
     request.projected_lines = projected.lines.clone();
     if matches!(recipe, DerivedRecipe::ThetaE2m10mWinds) {
-        let u_kt = computed_surface_u10(computed);
-        let v_kt = computed_surface_v10(computed);
+        let u_kt = computed_surface_u10(computed, recipe)?;
+        let v_kt = computed_surface_v10(computed, recipe)?;
         request.wind_barbs.push(surface_wind_barb_layer(
             grid,
             &projected.extent,
@@ -925,20 +1246,42 @@ fn build_render_artifact(
     })
 }
 
-fn computed_surface_u10(computed: &DerivedComputedFields) -> Vec<f32> {
-    computed
-        .surface_u10_ms
-        .iter()
-        .map(|value| (*value * KNOTS_PER_MS) as f32)
-        .collect()
+fn required_values<'a>(
+    values: &'a Option<Vec<f64>>,
+    recipe: DerivedRecipe,
+    field_name: &str,
+) -> Result<&'a Vec<f64>, Box<dyn std::error::Error>> {
+    values.as_ref().ok_or_else(|| {
+        format!(
+            "derived field '{field_name}' was not computed for requested recipe '{}'",
+            recipe.slug()
+        )
+        .into()
+    })
 }
 
-fn computed_surface_v10(computed: &DerivedComputedFields) -> Vec<f32> {
-    computed
-        .surface_v10_ms
-        .iter()
-        .map(|value| (*value * KNOTS_PER_MS) as f32)
-        .collect()
+fn computed_surface_u10(
+    computed: &DerivedComputedFields,
+    recipe: DerivedRecipe,
+) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    Ok(
+        required_values(&computed.surface_u10_ms, recipe, "surface_u10_ms")?
+            .iter()
+            .map(|value| (*value * KNOTS_PER_MS) as f32)
+            .collect(),
+    )
+}
+
+fn computed_surface_v10(
+    computed: &DerivedComputedFields,
+    recipe: DerivedRecipe,
+) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    Ok(
+        required_values(&computed.surface_v10_ms, recipe, "surface_v10_ms")?
+            .iter()
+            .map(|value| (*value * KNOTS_PER_MS) as f32)
+            .collect(),
+    )
 }
 
 fn surface_wind_barb_layer(
@@ -1268,5 +1611,14 @@ mod tests {
             .map(|recipe| recipe.slug)
             .collect::<Vec<_>>();
         assert_eq!(blocked, vec!["stp_effective", "scp", "scp_effective"]);
+    }
+
+    #[test]
+    fn derived_requirements_stay_narrow_for_surface_only_requests() {
+        let requirements = DerivedRequirements::from_recipes(&[DerivedRecipe::HeatIndex2m]);
+        assert!(requirements.surface_thermo);
+        assert!(!requirements.needs_volume());
+        assert!(!requirements.needs_height_agl());
+        assert!(!requirements.needs_grid_spacing());
     }
 }

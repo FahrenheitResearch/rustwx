@@ -1,7 +1,7 @@
 use crate::cache::{load_bincode, store_bincode};
 use crate::hrrr::{
-    DomainSpec, SURFACE_PATTERNS, build_projected_map, decode_cache_path, fetch_hrrr_subset,
-    load_or_decode_surface, resolve_hrrr_run,
+    DomainSpec, PreparedHrrrHourContext, SURFACE_PATTERNS, build_projected_map, decode_cache_path,
+    fetch_hrrr_subset, load_or_decode_surface, resolve_hrrr_run,
 };
 use grib_core::grib2::{Grib2File, Grib2Message, unpack_message_normalized};
 use rustwx_calc::{max_window_fields, sum_window_fields};
@@ -13,7 +13,9 @@ use rustwx_render::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::Instant;
 use wrf_render::render::map_frame_aspect_ratio;
 
@@ -163,6 +165,34 @@ struct ComputedWindowedField {
     scale: ColorScale,
 }
 
+#[derive(Debug)]
+struct LoadedApcpHour {
+    hour: u16,
+    result: Result<HrrrApcpDecode, String>,
+    fetch_ms: u128,
+    decode_ms: u128,
+}
+
+#[derive(Debug)]
+struct LoadedUhHour {
+    hour: u16,
+    result: Result<HrrrUhDecode, String>,
+    fetch_ms: u128,
+    decode_ms: u128,
+}
+
+#[derive(Debug)]
+enum WindowedProductOutcome {
+    Rendered {
+        index: usize,
+        rendered: HrrrWindowedRenderedProduct,
+    },
+    Blocker {
+        index: usize,
+        blocker: HrrrWindowedBlocker,
+    },
+}
+
 pub fn run_hrrr_windowed_batch(
     request: &HrrrWindowedBatchRequest,
 ) -> Result<HrrrWindowedBatchReport, Box<dyn std::error::Error>> {
@@ -171,175 +201,210 @@ pub fn run_hrrr_windowed_batch(
         fs::create_dir_all(&request.cache_root)?;
     }
 
-    let total_start = Instant::now();
     let latest = resolve_hrrr_run(
         &request.date_yyyymmdd,
         request.cycle_override_utc,
         request.source,
     )?;
+    run_hrrr_windowed_batch_with_context(request, &latest, None)
+}
 
-    let geometry_fetch_start = Instant::now();
-    let geometry_subset = fetch_hrrr_subset(
-        latest.cycle.clone(),
-        request.forecast_hour,
-        latest.source,
-        "sfc",
-        SURFACE_PATTERNS,
-        &request.cache_root,
-        request.use_cache,
-    )?;
-    let fetch_geometry_ms = geometry_fetch_start.elapsed().as_millis();
+pub(crate) fn run_hrrr_windowed_batch_with_context(
+    request: &HrrrWindowedBatchRequest,
+    latest: &rustwx_models::LatestRun,
+    shared_context: Option<&PreparedHrrrHourContext>,
+) -> Result<HrrrWindowedBatchReport, Box<dyn std::error::Error>> {
+    fs::create_dir_all(&request.out_dir)?;
+    if request.use_cache {
+        fs::create_dir_all(&request.cache_root)?;
+    }
 
-    let geometry_decode_start = Instant::now();
-    let surface_geometry = load_or_decode_surface(
-        &decode_cache_path(&request.cache_root, &geometry_subset.request, "surface"),
-        &geometry_subset.bytes,
-        request.use_cache,
-    )?;
-    let decode_geometry_ms = geometry_decode_start.elapsed().as_millis();
+    let total_start = Instant::now();
+    let (
+        fetch_geometry_ms,
+        decode_geometry_ms,
+        geometry_fetch_cache_hit,
+        geometry_decode_cache_hit,
+        projected,
+        project_ms,
+        grid,
+    ) = if let Some(ctx) = shared_context {
+        (
+            ctx.timestep().shared_timing().fetch_surface_ms,
+            ctx.timestep().shared_timing().decode_surface_ms,
+            ctx.timestep().shared_timing().fetch_surface_cache_hit,
+            ctx.timestep().shared_timing().decode_surface_cache_hit,
+            ctx.projected_map(OUTPUT_WIDTH, OUTPUT_HEIGHT)
+                .cloned()
+                .ok_or("missing shared projected map for windowed batch")?,
+            0,
+            ctx.timestep().grid().clone(),
+        )
+    } else {
+        let geometry_fetch_start = Instant::now();
+        let geometry_subset = fetch_hrrr_subset(
+            latest.cycle.clone(),
+            request.forecast_hour,
+            latest.source,
+            "sfc",
+            SURFACE_PATTERNS,
+            &request.cache_root,
+            request.use_cache,
+        )?;
+        let fetch_geometry_ms = geometry_fetch_start.elapsed().as_millis();
 
-    let project_start = Instant::now();
-    let projected = build_projected_map(
-        &surface_geometry.value,
-        request.domain.bounds,
-        map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
-    )?;
-    let project_ms = project_start.elapsed().as_millis();
-    let grid = surface_geometry.value.core_grid()?;
+        let geometry_decode_start = Instant::now();
+        let surface_geometry = load_or_decode_surface(
+            &decode_cache_path(&request.cache_root, &geometry_subset.request, "surface"),
+            &geometry_subset.bytes,
+            request.use_cache,
+        )?;
+        let decode_geometry_ms = geometry_decode_start.elapsed().as_millis();
+
+        let project_start = Instant::now();
+        let projected = build_projected_map(
+            &surface_geometry.value,
+            request.domain.bounds,
+            map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
+        )?;
+        let project_ms = project_start.elapsed().as_millis();
+        let grid = surface_geometry.value.core_grid()?;
+        (
+            fetch_geometry_ms,
+            decode_geometry_ms,
+            geometry_subset.fetched.cache_hit,
+            surface_geometry.cache_hit,
+            projected,
+            project_ms,
+            grid,
+        )
+    };
 
     let (planned_products, mut blockers, surface_hours, nat_hours) =
         plan_windowed_products(&request.products, request.forecast_hour);
 
-    let mut fetch_surface_ms = 0u128;
-    let mut decode_surface_ms = 0u128;
-    let mut fetch_nat_ms = 0u128;
-    let mut decode_nat_ms = 0u128;
+    let (apcp_by_hour, fetch_surface_ms, decode_surface_ms) =
+        load_apcp_hours(latest, request, &surface_hours)?;
+    let (uh_by_hour, fetch_nat_ms, decode_nat_ms) = load_uh_hours(latest, request, &nat_hours)?;
 
-    let mut apcp_by_hour = BTreeMap::<u16, Result<HrrrApcpDecode, String>>::new();
-    for hour in &surface_hours {
-        let start = Instant::now();
-        let subset = fetch_hrrr_subset(
-            latest.cycle.clone(),
-            *hour,
-            latest.source,
-            "sfc",
-            APCP_PATTERNS,
-            &request.cache_root,
-            request.use_cache,
-        );
-        fetch_surface_ms += start.elapsed().as_millis();
-        let result = subset.map_err(|err| err.to_string()).and_then(|subset| {
-            let decode_start = Instant::now();
-            let decoded = load_or_decode_apcp(
-                &decode_cache_path(&request.cache_root, &subset.request, "windowed_apcp"),
-                &subset.bytes,
-                request.use_cache,
-            )
-            .map_err(|err| err.to_string());
-            decode_surface_ms += decode_start.elapsed().as_millis();
-            decoded
-        });
-        if !apcp_by_hour.contains_key(hour) {
-            apcp_by_hour.insert(*hour, result);
-        }
-    }
+    let product_parallelism = windowed_parallelism(planned_products.len());
+    let date_yyyymmdd = request.date_yyyymmdd.as_str();
+    let cycle_utc = latest.cycle.hour_utc;
+    let forecast_hour = request.forecast_hour;
+    let domain_slug = request.domain.slug.as_str();
+    let out_dir = &request.out_dir;
+    let source = latest.source;
+    let projected = &projected;
+    let grid = &grid;
+    let apcp_by_hour = &apcp_by_hour;
+    let uh_by_hour = &uh_by_hour;
+    let mut outcomes = thread::scope(|scope| -> Result<Vec<WindowedProductOutcome>, io::Error> {
+        let mut done = Vec::with_capacity(planned_products.len());
+        let mut pending = std::collections::VecDeque::new();
 
-    let mut uh_by_hour = BTreeMap::<u16, Result<HrrrUhDecode, String>>::new();
-    for hour in &nat_hours {
-        let start = Instant::now();
-        let subset = fetch_hrrr_subset(
-            latest.cycle.clone(),
-            *hour,
-            latest.source,
-            "nat",
-            UH25_PATTERNS,
-            &request.cache_root,
-            request.use_cache,
-        );
-        fetch_nat_ms += start.elapsed().as_millis();
-        let result = subset.map_err(|err| err.to_string()).and_then(|subset| {
-            let decode_start = Instant::now();
-            let decoded = load_or_decode_uh25(
-                &decode_cache_path(&request.cache_root, &subset.request, "windowed_uh25"),
-                &subset.bytes,
-                request.use_cache,
-            )
-            .map_err(|err| err.to_string());
-            decode_nat_ms += decode_start.elapsed().as_millis();
-            decoded
-        });
-        if !uh_by_hour.contains_key(hour) {
-            uh_by_hour.insert(*hour, result);
-        }
-    }
+        for (index, &product) in planned_products.iter().enumerate() {
+            pending.push_back(
+                scope.spawn(move || -> Result<WindowedProductOutcome, io::Error> {
+                    let compute_start = Instant::now();
+                    let computed = if product.is_qpf() {
+                        compute_qpf_product(product, forecast_hour, grid, apcp_by_hour)
+                    } else {
+                        compute_uh_product(product, forecast_hour, grid, uh_by_hour)
+                    };
+                    let compute_ms = compute_start.elapsed().as_millis();
 
-    let mut rendered = Vec::new();
-    for product in planned_products {
-        let compute_start = Instant::now();
-        let computed = if product.is_qpf() {
-            compute_qpf_product(product, request.forecast_hour, &grid, &apcp_by_hour)
-        } else {
-            compute_uh_product(product, request.forecast_hour, &grid, &uh_by_hour)
-        };
-        let compute_ms = compute_start.elapsed().as_millis();
+                    let computed = match computed {
+                        Ok(value) => value,
+                        Err(reason) => {
+                            return Ok(WindowedProductOutcome::Blocker {
+                                index,
+                                blocker: HrrrWindowedBlocker { product, reason },
+                            });
+                        }
+                    };
 
-        let computed = match computed {
-            Ok(value) => value,
-            Err(reason) => {
-                blockers.push(HrrrWindowedBlocker { product, reason });
-                continue;
+                    let output_path = out_dir.join(format!(
+                        "rustwx_hrrr_{}_{}z_f{:03}_{}_{}.png",
+                        date_yyyymmdd,
+                        cycle_utc,
+                        forecast_hour,
+                        domain_slug,
+                        product.slug()
+                    ));
+                    let render_start = Instant::now();
+                    let mut render_request = if matches!(
+                        product,
+                        HrrrWindowedProduct::Uh25km1h
+                            | HrrrWindowedProduct::Uh25km3h
+                            | HrrrWindowedProduct::Uh25kmRunMax
+                    ) {
+                        MapRenderRequest::for_core_solar07_product(
+                            computed.field.clone(),
+                            Solar07Product::Uh,
+                        )
+                    } else {
+                        MapRenderRequest::from_core_field(
+                            computed.field.clone(),
+                            computed.scale.clone(),
+                        )
+                    };
+                    render_request.width = OUTPUT_WIDTH;
+                    render_request.height = OUTPUT_HEIGHT;
+                    render_request.title = Some(computed.title.clone());
+                    render_request.subtitle_left = Some(format!(
+                        "{} {}Z F{:03}  HRRR",
+                        date_yyyymmdd, cycle_utc, forecast_hour
+                    ));
+                    render_request.subtitle_right = Some(format!(
+                        "source: {} | {}",
+                        source, computed.metadata.strategy
+                    ));
+                    render_request.projected_domain = Some(rustwx_render::ProjectedDomain {
+                        x: projected.projected_x.clone(),
+                        y: projected.projected_y.clone(),
+                        extent: projected.extent.clone(),
+                    });
+                    render_request.projected_lines = projected.lines.clone();
+                    save_png(&render_request, &output_path).map_err(thread_windowed_error)?;
+                    let render_ms = render_start.elapsed().as_millis();
+
+                    Ok(WindowedProductOutcome::Rendered {
+                        index,
+                        rendered: HrrrWindowedRenderedProduct {
+                            product,
+                            output_path,
+                            timing: HrrrWindowedProductTiming {
+                                compute_ms,
+                                render_ms,
+                                total_ms: compute_ms + render_ms,
+                            },
+                            metadata: computed.metadata,
+                        },
+                    })
+                }),
+            );
+
+            if pending.len() >= product_parallelism {
+                done.push(join_windowed_job(pending.pop_front().unwrap())?);
             }
-        };
+        }
 
-        let output_path = request.out_dir.join(format!(
-            "rustwx_hrrr_{}_{}z_f{:03}_{}_{}.png",
-            request.date_yyyymmdd,
-            latest.cycle.hour_utc,
-            request.forecast_hour,
-            request.domain.slug,
-            product.slug()
-        ));
-        let render_start = Instant::now();
-        let mut render_request = if matches!(
-            product,
-            HrrrWindowedProduct::Uh25km1h
-                | HrrrWindowedProduct::Uh25km3h
-                | HrrrWindowedProduct::Uh25kmRunMax
-        ) {
-            MapRenderRequest::for_core_solar07_product(computed.field.clone(), Solar07Product::Uh)
-        } else {
-            MapRenderRequest::from_core_field(computed.field.clone(), computed.scale.clone())
-        };
-        render_request.width = OUTPUT_WIDTH;
-        render_request.height = OUTPUT_HEIGHT;
-        render_request.title = Some(computed.title.clone());
-        render_request.subtitle_left = Some(format!(
-            "{} {}Z F{:03}  HRRR",
-            request.date_yyyymmdd, latest.cycle.hour_utc, request.forecast_hour
-        ));
-        render_request.subtitle_right = Some(format!(
-            "source: {} | {}",
-            latest.source, computed.metadata.strategy
-        ));
-        render_request.projected_domain = Some(rustwx_render::ProjectedDomain {
-            x: projected.projected_x.clone(),
-            y: projected.projected_y.clone(),
-            extent: projected.extent.clone(),
-        });
-        render_request.projected_lines = projected.lines.clone();
-        save_png(&render_request, &output_path)?;
-        let render_ms = render_start.elapsed().as_millis();
+        while let Some(handle) = pending.pop_front() {
+            done.push(join_windowed_job(handle)?);
+        }
 
-        rendered.push(HrrrWindowedRenderedProduct {
-            product,
-            output_path,
-            timing: HrrrWindowedProductTiming {
-                compute_ms,
-                render_ms,
-                total_ms: compute_ms + render_ms,
-            },
-            metadata: computed.metadata,
-        });
+        Ok(done)
+    })?;
+    outcomes.sort_by_key(|outcome| match outcome {
+        WindowedProductOutcome::Rendered { index, .. } => *index,
+        WindowedProductOutcome::Blocker { index, .. } => *index,
+    });
+    let mut rendered = Vec::new();
+    for outcome in outcomes {
+        match outcome {
+            WindowedProductOutcome::Rendered { rendered: item, .. } => rendered.push(item),
+            WindowedProductOutcome::Blocker { blocker, .. } => blockers.push(blocker),
+        }
     }
 
     Ok(HrrrWindowedBatchReport {
@@ -356,8 +421,8 @@ pub fn run_hrrr_windowed_batch(
             decode_surface_ms,
             fetch_nat_ms,
             decode_nat_ms,
-            geometry_fetch_cache_hit: geometry_subset.fetched.cache_hit,
-            geometry_decode_cache_hit: surface_geometry.cache_hit,
+            geometry_fetch_cache_hit,
+            geometry_decode_cache_hit,
             surface_hours_loaded: surface_hours.into_iter().collect(),
             nat_hours_loaded: nat_hours.into_iter().collect(),
         },
@@ -480,6 +545,170 @@ fn load_or_decode_apcp(
         store_bincode(path, &decoded)?;
     }
     Ok(decoded)
+}
+
+fn load_apcp_hours(
+    latest: &rustwx_models::LatestRun,
+    request: &HrrrWindowedBatchRequest,
+    hours: &BTreeSet<u16>,
+) -> Result<(BTreeMap<u16, Result<HrrrApcpDecode, String>>, u128, u128), io::Error> {
+    let parallelism = windowed_parallelism(hours.len());
+    let mut loaded = thread::scope(|scope| -> Result<Vec<LoadedApcpHour>, io::Error> {
+        let mut done = Vec::with_capacity(hours.len());
+        let mut pending = std::collections::VecDeque::new();
+
+        for &hour in hours {
+            pending.push_back(scope.spawn(move || LoadedApcpHour {
+                hour,
+                ..load_apcp_hour(latest, request, hour)
+            }));
+
+            if pending.len() >= parallelism {
+                done.push(join_windowed_job_value(pending.pop_front().unwrap())?);
+            }
+        }
+
+        while let Some(handle) = pending.pop_front() {
+            done.push(join_windowed_job_value(handle)?);
+        }
+
+        Ok(done)
+    })?;
+    loaded.sort_by_key(|entry| entry.hour);
+
+    let mut out = BTreeMap::new();
+    let mut fetch_ms = 0u128;
+    let mut decode_ms = 0u128;
+    for entry in loaded {
+        fetch_ms += entry.fetch_ms;
+        decode_ms += entry.decode_ms;
+        out.insert(entry.hour, entry.result);
+    }
+    Ok((out, fetch_ms, decode_ms))
+}
+
+fn load_uh_hours(
+    latest: &rustwx_models::LatestRun,
+    request: &HrrrWindowedBatchRequest,
+    hours: &BTreeSet<u16>,
+) -> Result<(BTreeMap<u16, Result<HrrrUhDecode, String>>, u128, u128), io::Error> {
+    let parallelism = windowed_parallelism(hours.len());
+    let mut loaded = thread::scope(|scope| -> Result<Vec<LoadedUhHour>, io::Error> {
+        let mut done = Vec::with_capacity(hours.len());
+        let mut pending = std::collections::VecDeque::new();
+
+        for &hour in hours {
+            pending.push_back(scope.spawn(move || LoadedUhHour {
+                hour,
+                ..load_uh_hour(latest, request, hour)
+            }));
+
+            if pending.len() >= parallelism {
+                done.push(join_windowed_job_value(pending.pop_front().unwrap())?);
+            }
+        }
+
+        while let Some(handle) = pending.pop_front() {
+            done.push(join_windowed_job_value(handle)?);
+        }
+
+        Ok(done)
+    })?;
+    loaded.sort_by_key(|entry| entry.hour);
+
+    let mut out = BTreeMap::new();
+    let mut fetch_ms = 0u128;
+    let mut decode_ms = 0u128;
+    for entry in loaded {
+        fetch_ms += entry.fetch_ms;
+        decode_ms += entry.decode_ms;
+        out.insert(entry.hour, entry.result);
+    }
+    Ok((out, fetch_ms, decode_ms))
+}
+
+fn load_apcp_hour(
+    latest: &rustwx_models::LatestRun,
+    request: &HrrrWindowedBatchRequest,
+    hour: u16,
+) -> LoadedApcpHour {
+    let fetch_start = Instant::now();
+    let subset = fetch_hrrr_subset(
+        latest.cycle.clone(),
+        hour,
+        latest.source,
+        "sfc",
+        APCP_PATTERNS,
+        &request.cache_root,
+        request.use_cache,
+    );
+    let fetch_ms = fetch_start.elapsed().as_millis();
+    match subset {
+        Ok(subset) => {
+            let decode_start = Instant::now();
+            let result = load_or_decode_apcp(
+                &decode_cache_path(&request.cache_root, &subset.request, "windowed_apcp"),
+                &subset.bytes,
+                request.use_cache,
+            )
+            .map_err(|err| err.to_string());
+            let decode_ms = decode_start.elapsed().as_millis();
+            LoadedApcpHour {
+                hour,
+                result,
+                fetch_ms,
+                decode_ms,
+            }
+        }
+        Err(err) => LoadedApcpHour {
+            hour,
+            result: Err(err.to_string()),
+            fetch_ms,
+            decode_ms: 0,
+        },
+    }
+}
+
+fn load_uh_hour(
+    latest: &rustwx_models::LatestRun,
+    request: &HrrrWindowedBatchRequest,
+    hour: u16,
+) -> LoadedUhHour {
+    let fetch_start = Instant::now();
+    let subset = fetch_hrrr_subset(
+        latest.cycle.clone(),
+        hour,
+        latest.source,
+        "nat",
+        UH25_PATTERNS,
+        &request.cache_root,
+        request.use_cache,
+    );
+    let fetch_ms = fetch_start.elapsed().as_millis();
+    match subset {
+        Ok(subset) => {
+            let decode_start = Instant::now();
+            let result = load_or_decode_uh25(
+                &decode_cache_path(&request.cache_root, &subset.request, "windowed_uh25"),
+                &subset.bytes,
+                request.use_cache,
+            )
+            .map_err(|err| err.to_string());
+            let decode_ms = decode_start.elapsed().as_millis();
+            LoadedUhHour {
+                hour,
+                result,
+                fetch_ms,
+                decode_ms,
+            }
+        }
+        Err(err) => LoadedUhHour {
+            hour,
+            result: Err(err.to_string()),
+            fetch_ms,
+            decode_ms: 0,
+        },
+    }
 }
 
 fn load_or_decode_uh25(
@@ -785,6 +1014,49 @@ fn qpf_scale() -> rustwx_render::DiscreteColorScale {
         ExtendMode::Max,
         Some(0.01),
     )
+}
+
+fn windowed_parallelism(job_count: usize) -> usize {
+    thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1)
+        .min(job_count.max(1))
+}
+
+fn thread_windowed_error(err: impl std::fmt::Display) -> io::Error {
+    io::Error::other(err.to_string())
+}
+
+fn join_windowed_job<T>(
+    handle: thread::ScopedJoinHandle<'_, Result<T, io::Error>>,
+) -> Result<T, io::Error> {
+    match handle.join() {
+        Ok(result) => result,
+        Err(panic) => Err(io::Error::other(format!(
+            "windowed worker panicked: {}",
+            panic_message(panic)
+        ))),
+    }
+}
+
+fn join_windowed_job_value<T>(handle: thread::ScopedJoinHandle<'_, T>) -> Result<T, io::Error> {
+    match handle.join() {
+        Ok(result) => Ok(result),
+        Err(panic) => Err(io::Error::other(format!(
+            "windowed worker panicked: {}",
+            panic_message(panic)
+        ))),
+    }
+}
+
+fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = panic.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
 }
 
 #[cfg(test)]

@@ -1097,7 +1097,7 @@ mod tests {
             ModelId::Hrrr,
             rustwx_core::CycleSpec::new("20260414", 18).unwrap(),
             3,
-            rustwx_core::TimeStamp::new("2026-04-14T21:00:00Z"),
+            rustwx_core::TimeStamp::new("2026-04-14T21:00:00Z").unwrap(),
             Some(SourceId::Nomads),
         )
         .unwrap();

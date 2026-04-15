@@ -7,18 +7,12 @@ mod region;
 
 use clap::Parser;
 use region::RegionPreset;
-use rustwx_calc::{
-    EcapeGridInputs, EcapeTripletOptions, GridShape, ScpEhiInputs, VolumeShape, WindGridInputs,
-    compute_ecape_triplet_with_failure_mask, compute_scp_ehi, compute_shear, compute_srh,
-};
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::hrrr::{
-    HrrrPressureFields, HrrrSurfaceFields, PRESSURE_PATTERNS, SURFACE_PATTERNS, Solar07PanelField,
-    Solar07PanelHeader, Solar07PanelLayout, broadcast_levels_pa, build_projected_map,
-    decode_cache_path, fetch_hrrr_subset, load_or_decode_pressure, load_or_decode_surface,
-    render_two_by_four_solar07_panel, resolve_hrrr_run,
+    HrrrPressureFields, HrrrSurfaceFields, Solar07PanelHeader, Solar07PanelLayout,
+    build_projected_map, compute_ecape8_panel_fields, load_hrrr_timestep_from_parts,
+    render_two_by_four_solar07_panel,
 };
-use rustwx_render::Solar07Product;
 use serde_json::json;
 
 #[derive(Debug, Parser)]
@@ -43,10 +37,13 @@ struct Args {
     cache_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_cache: bool,
+    #[arg(long, default_value_t = false)]
+    write_proof_artifacts: bool,
 }
 
 #[derive(Debug, Clone)]
 struct Timing {
+    prepare_ms: u128,
     fetch_surface_ms: u128,
     fetch_pressure_ms: u128,
     decode_surface_ms: u128,
@@ -73,89 +70,72 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let total_start = Instant::now();
-    let latest = resolve_hrrr_run(&args.date, args.cycle, args.source)?;
-    let cycle = latest.cycle.hour_utc;
-
-    let fetch_surface_start = Instant::now();
-    let surface_subset = fetch_hrrr_subset(
-        latest.cycle.clone(),
+    let load_start = Instant::now();
+    let timestep = load_hrrr_timestep_from_parts(
+        &args.date,
+        args.cycle,
         args.forecast_hour,
         args.source,
-        "sfc",
-        SURFACE_PATTERNS,
         &cache_root,
         !args.no_cache,
     )?;
-    let fetch_surface_ms = fetch_surface_start.elapsed().as_millis();
+    let load_ms = load_start.elapsed().as_millis();
+    let cycle = timestep.latest().cycle.hour_utc;
+    let shared_timing = timestep.shared_timing().clone();
 
-    let fetch_pressure_start = Instant::now();
-    let pressure_subset = fetch_hrrr_subset(
-        latest.cycle.clone(),
-        args.forecast_hour,
-        args.source,
-        "prs",
-        PRESSURE_PATTERNS,
-        &cache_root,
-        !args.no_cache,
-    )?;
-    let fetch_pressure_ms = fetch_pressure_start.elapsed().as_millis();
+    let sfc_subset_path = args.write_proof_artifacts.then(|| {
+        args.out_dir.join(format!(
+            "rustwx_hrrr_{}_{}z_f{:02}_sfc_subset.grib2",
+            args.date, cycle, args.forecast_hour
+        ))
+    });
+    let prs_subset_path = args.write_proof_artifacts.then(|| {
+        args.out_dir.join(format!(
+            "rustwx_hrrr_{}_{}z_f{:02}_prs_subset.grib2",
+            args.date, cycle, args.forecast_hour
+        ))
+    });
+    if let Some(path) = &sfc_subset_path {
+        fs::write(path, &timestep.surface_subset().bytes)?;
+    }
+    if let Some(path) = &prs_subset_path {
+        fs::write(path, &timestep.pressure_subset().bytes)?;
+    }
 
-    let sfc_subset_path = args.out_dir.join(format!(
-        "rustwx_hrrr_{}_{}z_f{:02}_sfc_subset.grib2",
-        args.date, cycle, args.forecast_hour
-    ));
-    let prs_subset_path = args.out_dir.join(format!(
-        "rustwx_hrrr_{}_{}z_f{:02}_prs_subset.grib2",
-        args.date, cycle, args.forecast_hour
-    ));
-    fs::write(&sfc_subset_path, &surface_subset.bytes)?;
-    fs::write(&prs_subset_path, &pressure_subset.bytes)?;
-
-    let decode_surface_start = Instant::now();
-    let surface_decode = load_or_decode_surface(
-        &decode_cache_path(&cache_root, &surface_subset.request, "surface"),
-        &surface_subset.bytes,
-        !args.no_cache,
-    )?;
-    let decode_surface_ms = decode_surface_start.elapsed().as_millis();
-
-    let decode_pressure_start = Instant::now();
-    let pressure_decode = load_or_decode_pressure(
-        &decode_cache_path(&cache_root, &pressure_subset.request, "pressure"),
-        &pressure_subset.bytes,
-        surface_decode.value.nx,
-        surface_decode.value.ny,
-        !args.no_cache,
-    )?;
-    let decode_stats_path = args.out_dir.join(format!(
-        "rustwx_hrrr_{}_{}z_f{:02}_decode_stats.json",
-        args.date, cycle, args.forecast_hour
-    ));
-    fs::write(
-        &decode_stats_path,
-        serde_json::to_vec_pretty(&json!({
-            "surface": surface_stats(&surface_decode.value),
-            "pressure": pressure_stats(
-                &pressure_decode.value,
-                surface_decode.value.nx,
-                surface_decode.value.ny
-            ),
-        }))?,
-    )?;
-    let decode_pressure_ms = decode_pressure_start.elapsed().as_millis();
+    let decode_stats_path = args.write_proof_artifacts.then(|| {
+        args.out_dir.join(format!(
+            "rustwx_hrrr_{}_{}z_f{:02}_decode_stats.json",
+            args.date, cycle, args.forecast_hour
+        ))
+    });
+    if let Some(path) = &decode_stats_path {
+        fs::write(
+            path,
+            serde_json::to_vec_pretty(&json!({
+                "surface": surface_stats(&timestep.surface_decode().value),
+                "pressure": pressure_stats(
+                    &timestep.pressure_decode().value,
+                    timestep.surface_decode().value.nx,
+                    timestep.surface_decode().value.ny
+                ),
+            }))?,
+        )?;
+    }
 
     let layout = Solar07PanelLayout::default();
     let project_start = Instant::now();
     let projected = build_projected_map(
-        &surface_decode.value,
+        &timestep.surface_decode().value,
         args.region.bounds(),
         layout.target_aspect_ratio(),
     )?;
     let project_ms = project_start.elapsed().as_millis();
 
     let compute_start = Instant::now();
-    let (fields, failure_count) =
-        compute_panel_fields(&surface_decode.value, &pressure_decode.value)?;
+    let (fields, failure_count) = compute_ecape8_panel_fields(
+        &timestep.surface_decode().value,
+        &timestep.pressure_decode().value,
+    )?;
     let compute_ms = compute_start.elapsed().as_millis();
 
     let render_start = Instant::now();
@@ -175,7 +155,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     render_two_by_four_solar07_panel(
         &panel_path,
-        &surface_decode.value.core_grid()?,
+        timestep.grid(),
         &projected,
         &fields,
         &header,
@@ -184,18 +164,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let render_ms = render_start.elapsed().as_millis();
 
     let timing = Timing {
-        fetch_surface_ms,
-        fetch_pressure_ms,
-        decode_surface_ms,
-        decode_pressure_ms,
+        prepare_ms: load_ms,
+        fetch_surface_ms: shared_timing.fetch_surface_ms,
+        fetch_pressure_ms: shared_timing.fetch_pressure_ms,
+        decode_surface_ms: shared_timing.decode_surface_ms,
+        decode_pressure_ms: shared_timing.decode_pressure_ms,
         project_ms,
         compute_ms,
         render_ms,
         total_ms: total_start.elapsed().as_millis(),
-        fetch_surface_cache_hit: surface_subset.fetched.cache_hit,
-        fetch_pressure_cache_hit: pressure_subset.fetched.cache_hit,
-        decode_surface_cache_hit: surface_decode.cache_hit,
-        decode_pressure_cache_hit: pressure_decode.cache_hit,
+        fetch_surface_cache_hit: shared_timing.fetch_surface_cache_hit,
+        fetch_pressure_cache_hit: shared_timing.fetch_pressure_cache_hit,
+        decode_surface_cache_hit: shared_timing.decode_surface_cache_hit,
+        decode_pressure_cache_hit: shared_timing.decode_pressure_cache_hit,
     };
     let timing_path = args.out_dir.join(format!(
         "rustwx_hrrr_{}_{}z_f{:02}_{}_ecape8_timing.json",
@@ -219,18 +200,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "pressure_fetch_hit": timing.fetch_pressure_cache_hit,
                 "surface_decode_hit": timing.decode_surface_cache_hit,
                 "pressure_decode_hit": timing.decode_pressure_cache_hit,
-                "surface_fetch_bytes_path": surface_subset.fetched.bytes_path,
-                "surface_fetch_meta_path": surface_subset.fetched.metadata_path,
-                "pressure_fetch_bytes_path": pressure_subset.fetched.bytes_path,
-                "pressure_fetch_meta_path": pressure_subset.fetched.metadata_path,
-                "surface_decode_path": surface_decode.path,
-                "pressure_decode_path": pressure_decode.path,
+                "surface_fetch_bytes_path": timestep.surface_subset().fetched.bytes_path,
+                "surface_fetch_meta_path": timestep.surface_subset().fetched.metadata_path,
+                "pressure_fetch_bytes_path": timestep.pressure_subset().fetched.bytes_path,
+                "pressure_fetch_meta_path": timestep.pressure_subset().fetched.metadata_path,
+                "surface_decode_path": timestep.surface_decode().path,
+                "pressure_decode_path": timestep.pressure_decode().path,
             },
             "surface_subset_path": sfc_subset_path,
             "pressure_subset_path": prs_subset_path,
             "decode_stats_path": decode_stats_path,
             "panel_path": panel_path,
             "timing_ms": {
+                "prepare": timing.prepare_ms,
                 "fetch_surface": timing.fetch_surface_ms,
                 "fetch_pressure": timing.fetch_pressure_ms,
                 "decode_surface": timing.decode_surface_ms,
@@ -294,91 +276,4 @@ fn range_stats(values: &[f64]) -> serde_json::Value {
         }
     }
     json!({ "min": min, "max": max })
-}
-
-fn compute_panel_fields(
-    surface: &HrrrSurfaceFields,
-    pressure: &HrrrPressureFields,
-) -> Result<(Vec<Solar07PanelField>, usize), Box<dyn std::error::Error>> {
-    let grid = GridShape::new(surface.nx, surface.ny)?;
-    let shape = VolumeShape::new(grid, pressure.pressure_levels_hpa.len())?;
-
-    let mut height_agl_3d = pressure
-        .gh_m_3d
-        .iter()
-        .enumerate()
-        .map(|(idx, &value)| {
-            let ij = idx % grid.len();
-            (value - surface.orog_m[ij]).max(0.0)
-        })
-        .collect::<Vec<_>>();
-
-    for k in 1..shape.nz {
-        let level_offset = k * grid.len();
-        let prev_offset = (k - 1) * grid.len();
-        for ij in 0..grid.len() {
-            let min_height = height_agl_3d[prev_offset + ij] + 1.0;
-            if height_agl_3d[level_offset + ij] < min_height {
-                height_agl_3d[level_offset + ij] = min_height;
-            }
-        }
-    }
-
-    let pressure_3d_pa = broadcast_levels_pa(&pressure.pressure_levels_hpa, grid.len());
-    let common = EcapeGridInputs {
-        shape,
-        pressure_3d_pa: &pressure_3d_pa,
-        temperature_3d_c: &pressure.temperature_c_3d,
-        qvapor_3d_kgkg: &pressure.qvapor_kgkg_3d,
-        height_agl_3d_m: &height_agl_3d,
-        u_3d_ms: &pressure.u_ms_3d,
-        v_3d_ms: &pressure.v_ms_3d,
-        psfc_pa: &surface.psfc_pa,
-        t2_k: &surface.t2_k,
-        q2_kgkg: &surface.q2_kgkg,
-        u10_ms: &surface.u10_ms,
-        v10_ms: &surface.v10_ms,
-    };
-
-    let triplet =
-        compute_ecape_triplet_with_failure_mask(common, &EcapeTripletOptions::new("right_moving"))?;
-
-    let wind = WindGridInputs {
-        shape,
-        u_3d_ms: &pressure.u_ms_3d,
-        v_3d_ms: &pressure.v_ms_3d,
-        height_agl_3d_m: &height_agl_3d,
-    };
-    let srh_1km = compute_srh(wind, 1000.0)?;
-    let srh_3km = compute_srh(wind, 3000.0)?;
-    let shear_6km = compute_shear(wind, 0.0, 6000.0)?;
-    let experimental = compute_scp_ehi(ScpEhiInputs {
-        grid,
-        scp_cape_jkg: &triplet.mu.fields.ecape_jkg,
-        scp_srh_m2s2: &srh_3km,
-        scp_bulk_wind_difference_ms: &shear_6km,
-        ehi_cape_jkg: &triplet.sb.fields.ecape_jkg,
-        ehi_srh_m2s2: &srh_1km,
-    })?;
-
-    let failure_count = triplet.total_failure_count();
-    let fields = vec![
-        Solar07PanelField::new(Solar07Product::Sbecape, "J/kg", triplet.sb.fields.ecape_jkg),
-        Solar07PanelField::new(Solar07Product::Mlecape, "J/kg", triplet.ml.fields.ecape_jkg),
-        Solar07PanelField::new(Solar07Product::Muecape, "J/kg", triplet.mu.fields.ecape_jkg),
-        Solar07PanelField::new(Solar07Product::Sbncape, "J/kg", triplet.sb.fields.ncape_jkg),
-        Solar07PanelField::new(Solar07Product::Sbecin, "J/kg", triplet.sb.fields.cin_jkg),
-        Solar07PanelField::new(Solar07Product::Mlecin, "J/kg", triplet.ml.fields.cin_jkg),
-        Solar07PanelField::new(
-            Solar07Product::EcapeScpExperimental,
-            "dimensionless",
-            experimental.scp,
-        ),
-        Solar07PanelField::new(
-            Solar07Product::EcapeEhiExperimental,
-            "dimensionless",
-            experimental.ehi,
-        ),
-    ];
-    Ok((fields, failure_count))
 }

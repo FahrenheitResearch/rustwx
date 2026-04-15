@@ -4,24 +4,24 @@ use rustwx_core::{
     CanonicalField, FieldSelector, ModelId, ModelRunRequest, SelectedField2D, SourceId,
 };
 use rustwx_io::{
-    extract_fields_from_grib2, fetch_bytes, fetch_bytes_with_cache, load_cached_selected_field,
-    store_cached_selected_field, CachedFetchResult, FetchRequest,
+    CachedFetchResult, FetchRequest, extract_fields_from_grib2, fetch_bytes,
+    fetch_bytes_with_cache, load_cached_selected_field, store_cached_selected_field,
 };
 use rustwx_models::{
-    plot_recipe, plot_recipe_fetch_plan, LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode,
-    PlotRecipeFetchPlan, RenderStyle,
+    LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
+    plot_recipe, plot_recipe_fetch_plan,
 };
 use rustwx_render::{
-    render_panel_grid, save_png,
-    solar07::{solar07_palette, Solar07Palette},
     Color, ColorScale, ContourLayer, DiscreteColorScale, ExtendMode, MapRenderRequest,
     PanelGridLayout, PanelPadding, ProjectedDomain, ProjectedExtent, ProjectedLineOverlay,
-    WindBarbLayer,
+    WindBarbLayer, render_panel_grid, save_png,
+    solar07::{Solar07Palette, solar07_palette},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 use wrf_render::features::load_styled_conus_features;
@@ -30,7 +30,7 @@ use wrf_render::projection::LambertConformal;
 use wrf_render::render::map_frame_aspect_ratio;
 use wrf_render::text;
 
-use crate::hrrr::{resolve_hrrr_run, DomainSpec};
+use crate::hrrr::{DomainSpec, PreparedHrrrHourContext, ProjectedMap, resolve_hrrr_run};
 
 const OUTPUT_WIDTH: u32 = 1200;
 const OUTPUT_HEIGHT: u32 = 900;
@@ -104,14 +104,6 @@ struct PlannedDirectRecipe {
 }
 
 #[derive(Debug, Clone)]
-struct ProjectedMap {
-    x: Vec<f64>,
-    y: Vec<f64>,
-    extent: ProjectedExtent,
-    lines: Vec<ProjectedLineOverlay>,
-}
-
-#[derive(Debug, Clone)]
 struct FetchGroup {
     product: String,
     fetch_mode: PlotRecipeFetchMode,
@@ -129,8 +121,30 @@ struct CompositePanelSpec {
     component_slugs: &'static [&'static str],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct BarbStrideCacheKey {
+    u_selector: FieldSelector,
+    v_selector: FieldSelector,
+    bounds_bits: [u64; 4],
+}
+
+type SharedBarbStrideCache = Arc<Mutex<HashMap<BarbStrideCacheKey, (usize, usize)>>>;
+
 pub fn run_hrrr_direct_batch(
     request: &HrrrDirectBatchRequest,
+) -> Result<HrrrDirectBatchReport, Box<dyn std::error::Error>> {
+    let latest = resolve_hrrr_run(
+        &request.date_yyyymmdd,
+        request.cycle_override_utc,
+        request.source,
+    )?;
+    run_hrrr_direct_batch_with_context(request, &latest, None)
+}
+
+pub(crate) fn run_hrrr_direct_batch_with_context(
+    request: &HrrrDirectBatchRequest,
+    latest: &LatestRun,
+    shared_context: Option<&PreparedHrrrHourContext>,
 ) -> Result<HrrrDirectBatchReport, Box<dyn std::error::Error>> {
     fs::create_dir_all(&request.out_dir)?;
     if request.use_cache {
@@ -138,11 +152,6 @@ pub fn run_hrrr_direct_batch(
     }
 
     let total_start = Instant::now();
-    let latest = resolve_hrrr_run(
-        &request.date_yyyymmdd,
-        request.cycle_override_utc,
-        request.source,
-    )?;
     let planned = plan_hrrr_direct_recipes(&request.recipe_slugs)?;
     let groups = group_direct_fetches(&planned);
     let mut extracted = HashMap::<FieldSelector, SelectedField2D>::new();
@@ -150,7 +159,7 @@ pub fn run_hrrr_direct_batch(
 
     for group in &groups {
         let (fields, timing) = load_direct_fetch_group(
-            &latest,
+            latest,
             request.forecast_hour,
             group,
             &request.cache_root,
@@ -160,7 +169,7 @@ pub fn run_hrrr_direct_batch(
         fetches.push(timing);
     }
 
-    let rendered = render_direct_recipes(request, &latest, &planned, &extracted)?;
+    let rendered = render_direct_recipes(request, latest, &planned, &extracted, shared_context)?;
 
     Ok(HrrrDirectBatchReport {
         date_yyyymmdd: request.date_yyyymmdd.clone(),
@@ -172,6 +181,23 @@ pub fn run_hrrr_direct_batch(
         recipes: rendered,
         total_ms: total_start.elapsed().as_millis(),
     })
+}
+
+pub(crate) fn required_direct_projection_sizes(recipe_slugs: &[String]) -> Vec<(u32, u32)> {
+    let mut sizes = vec![(OUTPUT_WIDTH, OUTPUT_HEIGHT)];
+    let mut seen = HashSet::<(u32, u32)>::from_iter(sizes.iter().copied());
+    for slug in recipe_slugs {
+        let normalized = plot_recipe(slug)
+            .map(|recipe| recipe.slug)
+            .unwrap_or(slug.as_str());
+        if let Some(spec) = composite_panel_spec(normalized) {
+            let size = (spec.panel_width, spec.panel_height);
+            if seen.insert(size) {
+                sizes.push(size);
+            }
+        }
+    }
+    sizes
 }
 
 fn plan_hrrr_direct_recipes(
@@ -327,12 +353,23 @@ fn render_direct_recipes(
     latest: &LatestRun,
     planned: &[PlannedDirectRecipe],
     extracted: &HashMap<FieldSelector, SelectedField2D>,
+    shared_context: Option<&PreparedHrrrHourContext>,
 ) -> Result<Vec<HrrrDirectRenderedRecipe>, Box<dyn std::error::Error>> {
+    let barb_stride_cache = Arc::new(Mutex::new(HashMap::new()));
     let worker_count = render_worker_count(planned.len());
     if worker_count <= 1 {
         return planned
             .iter()
-            .map(|item| render_direct_recipe(request, latest, item, extracted))
+            .map(|item| {
+                render_direct_recipe(
+                    request,
+                    latest,
+                    item,
+                    extracted,
+                    shared_context,
+                    &barb_stride_cache,
+                )
+            })
             .collect();
     }
 
@@ -342,18 +379,26 @@ fn render_direct_recipes(
     thread::scope(|scope| -> Result<(), std::io::Error> {
         let mut handles = Vec::new();
         for (chunk_index, chunk) in planned.chunks(chunk_size).enumerate() {
+            let barb_stride_cache = Arc::clone(&barb_stride_cache);
             let start_index = chunk_index * chunk_size;
             handles.push(scope.spawn(
                 move || -> Result<Vec<(usize, HrrrDirectRenderedRecipe)>, std::io::Error> {
                     let mut chunk_rendered = Vec::with_capacity(chunk.len());
                     for (offset, item) in chunk.iter().enumerate() {
-                        let rendered = render_direct_recipe(request, latest, item, extracted)
-                            .map_err(|err| {
-                                std::io::Error::other(format!(
-                                    "failed rendering recipe '{}': {err}",
-                                    item.recipe.slug
-                                ))
-                            })?;
+                        let rendered = render_direct_recipe(
+                            request,
+                            latest,
+                            item,
+                            extracted,
+                            shared_context,
+                            &barb_stride_cache,
+                        )
+                        .map_err(|err| {
+                            std::io::Error::other(format!(
+                                "failed rendering recipe '{}': {err}",
+                                item.recipe.slug
+                            ))
+                        })?;
                         chunk_rendered.push((start_index + offset, rendered));
                     }
                     Ok(chunk_rendered)
@@ -419,6 +464,8 @@ fn render_direct_recipe(
     latest: &LatestRun,
     item: &PlannedDirectRecipe,
     extracted: &HashMap<FieldSelector, SelectedField2D>,
+    shared_context: Option<&PreparedHrrrHourContext>,
+    barb_stride_cache: &SharedBarbStrideCache,
 ) -> Result<HrrrDirectRenderedRecipe, Box<dyn std::error::Error>> {
     let render_start = Instant::now();
     let output_path = request.out_dir.join(format!(
@@ -430,7 +477,16 @@ fn render_direct_recipe(
         item.recipe.slug
     ));
     let project_ms = if let Some(spec) = composite_panel_spec(item.recipe.slug) {
-        render_direct_composite_panel(item.recipe, spec, request, latest, extracted, &output_path)?
+        render_direct_composite_panel(
+            item.recipe,
+            spec,
+            request,
+            latest,
+            extracted,
+            &output_path,
+            shared_context,
+            barb_stride_cache,
+        )?
     } else {
         let filled_selector = item
             .recipe
@@ -442,12 +498,18 @@ fn render_direct_recipe(
             .ok_or_else(|| format!("missing filled selector {:?}", filled_selector))?;
 
         let project_start = Instant::now();
-        let projected = build_projected_map(
-            &filled.grid.lat_deg,
-            &filled.grid.lon_deg,
-            request.domain.bounds,
-            map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
-        )?;
+        let projected = if let Some(projected) =
+            shared_context.and_then(|ctx| ctx.projected_map(OUTPUT_WIDTH, OUTPUT_HEIGHT).cloned())
+        {
+            projected
+        } else {
+            build_projected_map(
+                &filled.grid.lat_deg,
+                &filled.grid.lon_deg,
+                request.domain.bounds,
+                map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
+            )?
+        };
         let project_ms = project_start.elapsed().as_millis();
 
         let mut render_request = build_render_request(
@@ -456,6 +518,7 @@ fn render_direct_recipe(
             extracted,
             projected,
             request.domain.bounds,
+            barb_stride_cache,
         )?;
         render_request.subtitle_left = Some(format!(
             "{} {}Z F{:03}  HRRR",
@@ -487,6 +550,8 @@ fn render_direct_composite_panel(
     latest: &LatestRun,
     extracted: &HashMap<FieldSelector, SelectedField2D>,
     output_path: &std::path::Path,
+    shared_context: Option<&PreparedHrrrHourContext>,
+    barb_stride_cache: &SharedBarbStrideCache,
 ) -> Result<u128, Box<dyn std::error::Error>> {
     let first_component = plot_recipe(spec.component_slugs[0])
         .ok_or_else(|| format!("missing component recipe '{}'", spec.component_slugs[0]))?;
@@ -499,12 +564,19 @@ fn render_direct_composite_panel(
         .ok_or_else(|| format!("missing component selector {:?}", first_selector))?;
 
     let project_start = Instant::now();
-    let projected = build_projected_map(
-        &first_field.grid.lat_deg,
-        &first_field.grid.lon_deg,
-        request.domain.bounds,
-        map_frame_aspect_ratio(spec.panel_width, spec.panel_height, true, true),
-    )?;
+    let projected = if let Some(projected) = shared_context.and_then(|ctx| {
+        ctx.projected_map(spec.panel_width, spec.panel_height)
+            .cloned()
+    }) {
+        projected
+    } else {
+        build_projected_map(
+            &first_field.grid.lat_deg,
+            &first_field.grid.lon_deg,
+            request.domain.bounds,
+            map_frame_aspect_ratio(spec.panel_width, spec.panel_height, true, true),
+        )?
+    };
     let project_ms = project_start.elapsed().as_millis();
 
     let mut panel_requests = Vec::with_capacity(spec.component_slugs.len());
@@ -524,6 +596,7 @@ fn render_direct_composite_panel(
             extracted,
             projected.clone(),
             request.domain.bounds,
+            barb_stride_cache,
         )?;
         panel_request.width = spec.panel_width;
         panel_request.height = spec.panel_height;
@@ -563,6 +636,7 @@ fn build_render_request(
     extracted: &HashMap<FieldSelector, SelectedField2D>,
     projected: ProjectedMap,
     bounds: (f64, f64, f64, f64),
+    barb_stride_cache: &SharedBarbStrideCache,
 ) -> Result<MapRenderRequest, Box<dyn std::error::Error>> {
     let filled_field = convert_filled_field(recipe, filled);
     let overlay_only = should_render_overlay_only(filled.selector, recipe.contours.is_some());
@@ -582,17 +656,19 @@ fn build_render_request(
     request.width = OUTPUT_WIDTH;
     request.height = OUTPUT_HEIGHT;
     request.projected_domain = Some(ProjectedDomain {
-        x: projected.x,
-        y: projected.y,
+        x: projected.projected_x,
+        y: projected.projected_y,
         extent: projected.extent,
     });
     request.projected_lines = projected.lines;
     if overlay_only {
-        request.contours.extend(build_contour_layers(recipe, extracted));
+        request
+            .contours
+            .extend(build_contour_layers(recipe, extracted));
     } else {
         request.contours = build_contour_layers(recipe, extracted);
     }
-    request.wind_barbs = build_barb_layers(recipe, extracted, bounds);
+    request.wind_barbs = build_barb_layers(recipe, extracted, bounds, barb_stride_cache);
     Ok(request)
 }
 
@@ -837,6 +913,7 @@ fn build_barb_layers(
     recipe: &PlotRecipe,
     extracted: &HashMap<FieldSelector, SelectedField2D>,
     bounds: (f64, f64, f64, f64),
+    barb_stride_cache: &SharedBarbStrideCache,
 ) -> Vec<WindBarbLayer> {
     let (Some(u_spec), Some(v_spec)) = (&recipe.barbs_u, &recipe.barbs_v) else {
         return Vec::new();
@@ -847,9 +924,8 @@ fn build_barb_layers(
     let (Some(u), Some(v)) = (extracted.get(&u_selector), extracted.get(&v_selector)) else {
         return Vec::new();
     };
-    let (visible_nx, visible_ny) = visible_grid_span(&u.grid, bounds);
-    let stride_x = ((visible_nx as f64 / 24.0).round() as usize).clamp(3, 128);
-    let stride_y = ((visible_ny as f64 / 14.0).round() as usize).clamp(3, 96);
+    let (stride_x, stride_y) =
+        cached_barb_strides(u_selector, v_selector, &u.grid, bounds, barb_stride_cache);
     vec![WindBarbLayer {
         u: u.values.iter().map(|value| value * 1.943_844_5).collect(),
         v: v.values.iter().map(|value| value * 1.943_844_5).collect(),
@@ -859,6 +935,45 @@ fn build_barb_layers(
         width: 1,
         length_px: 20.0,
     }]
+}
+
+fn cached_barb_strides(
+    u_selector: FieldSelector,
+    v_selector: FieldSelector,
+    grid: &rustwx_core::LatLonGrid,
+    bounds: (f64, f64, f64, f64),
+    barb_stride_cache: &SharedBarbStrideCache,
+) -> (usize, usize) {
+    let key = BarbStrideCacheKey {
+        u_selector,
+        v_selector,
+        bounds_bits: [
+            bounds.0.to_bits(),
+            bounds.1.to_bits(),
+            bounds.2.to_bits(),
+            bounds.3.to_bits(),
+        ],
+    };
+
+    {
+        let cache = barb_stride_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(&strides) = cache.get(&key) {
+            return strides;
+        }
+    }
+
+    let (visible_nx, visible_ny) = visible_grid_span(grid, bounds);
+    let strides = (
+        ((visible_nx as f64 / 24.0).round() as usize).clamp(3, 128),
+        ((visible_ny as f64 / 14.0).round() as usize).clamp(3, 96),
+    );
+
+    let mut cache = barb_stride_cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *cache.entry(key).or_insert(strides)
 }
 
 fn build_projected_map(
@@ -926,8 +1041,8 @@ fn build_projected_map(
     }
 
     Ok(ProjectedMap {
-        x: projected_x,
-        y: projected_y,
+        projected_x,
+        projected_y,
         extent: ProjectedExtent {
             x_min: extent.x_min,
             x_max: extent.x_max,
@@ -1022,12 +1137,16 @@ mod tests {
         let groups = group_direct_fetches(&planned);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].product, "prs");
-        assert!(groups[0]
-            .selectors
-            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500)));
-        assert!(groups[0]
-            .selectors
-            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700)));
+        assert!(
+            groups[0]
+                .selectors
+                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500))
+        );
+        assert!(
+            groups[0]
+                .selectors
+                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700))
+        );
         assert!(!groups[0].variable_patterns.is_empty());
     }
 
@@ -1056,14 +1175,18 @@ mod tests {
         let groups = group_direct_fetches(&planned);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].product, "sfc");
-        assert!(groups[0]
-            .selectors
-            .contains(&FieldSelector::entire_atmosphere(
-                CanonicalField::LowCloudCover
-            )));
-        assert!(groups[0]
-            .selectors
-            .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow)));
+        assert!(
+            groups[0]
+                .selectors
+                .contains(&FieldSelector::entire_atmosphere(
+                    CanonicalField::LowCloudCover
+                ))
+        );
+        assert!(
+            groups[0]
+                .selectors
+                .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow))
+        );
     }
 
     #[test]

@@ -13,7 +13,8 @@ Current scope is intentionally conservative:
   UH run-max windows, with explicit blockers when GRIB time-window metadata is
   not available cleanly enough yet
 - supported-products inventory/reporting helpers that summarize current direct,
-  derived, heavy, and windowed product status
+  derived, heavy, and windowed product status, including typed maturity/flag
+  metadata for operational vs experimental vs proof-oriented and proxy cases
 - reusable proof-gallery/index generation from existing manifests plus the
   product catalog, including a static HTML viewer
 - shared projection/basemap assembly for cropped panel products

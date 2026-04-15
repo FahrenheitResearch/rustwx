@@ -136,6 +136,134 @@ pub enum ExtendMode {
     Both,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMaturity {
+    Operational,
+    Experimental,
+    Proof,
+}
+
+impl ProductMaturity {
+    pub fn is_non_operational(self) -> bool {
+        !matches!(self, Self::Operational)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductSemanticFlag {
+    Proxy,
+    Composite,
+    Alias,
+    ProofOriented,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProductSemantics {
+    pub maturity: ProductMaturity,
+    pub flags: Vec<ProductSemanticFlag>,
+}
+
+impl Default for ProductSemantics {
+    fn default() -> Self {
+        Self::operational()
+    }
+}
+
+impl ProductSemantics {
+    pub fn operational() -> Self {
+        Self {
+            maturity: ProductMaturity::Operational,
+            flags: Vec::new(),
+        }
+    }
+
+    pub fn experimental() -> Self {
+        Self {
+            maturity: ProductMaturity::Experimental,
+            flags: Vec::new(),
+        }
+    }
+
+    pub fn proof() -> Self {
+        Self {
+            maturity: ProductMaturity::Proof,
+            flags: vec![ProductSemanticFlag::ProofOriented],
+        }
+    }
+
+    pub fn with_flag(mut self, flag: ProductSemanticFlag) -> Self {
+        if !self.flags.contains(&flag) {
+            self.flags.push(flag);
+        }
+        self
+    }
+
+    pub fn has_flag(&self, flag: ProductSemanticFlag) -> bool {
+        self.flags.contains(&flag)
+    }
+}
+
+impl From<core::ProductMaturity> for ProductMaturity {
+    fn from(value: core::ProductMaturity) -> Self {
+        match value {
+            core::ProductMaturity::Operational => Self::Operational,
+            core::ProductMaturity::Experimental => Self::Experimental,
+            core::ProductMaturity::Proof => Self::Proof,
+        }
+    }
+}
+
+impl From<ProductMaturity> for core::ProductMaturity {
+    fn from(value: ProductMaturity) -> Self {
+        match value {
+            ProductMaturity::Operational => Self::Operational,
+            ProductMaturity::Experimental => Self::Experimental,
+            ProductMaturity::Proof => Self::Proof,
+        }
+    }
+}
+
+impl From<core::ProductSemanticFlag> for ProductSemanticFlag {
+    fn from(value: core::ProductSemanticFlag) -> Self {
+        match value {
+            core::ProductSemanticFlag::Proxy => Self::Proxy,
+            core::ProductSemanticFlag::Composite => Self::Composite,
+            core::ProductSemanticFlag::Alias => Self::Alias,
+            core::ProductSemanticFlag::ProofOriented => Self::ProofOriented,
+        }
+    }
+}
+
+impl From<ProductSemanticFlag> for core::ProductSemanticFlag {
+    fn from(value: ProductSemanticFlag) -> Self {
+        match value {
+            ProductSemanticFlag::Proxy => Self::Proxy,
+            ProductSemanticFlag::Composite => Self::Composite,
+            ProductSemanticFlag::Alias => Self::Alias,
+            ProductSemanticFlag::ProofOriented => Self::ProofOriented,
+        }
+    }
+}
+
+impl From<core::ProductProvenance> for ProductSemantics {
+    fn from(value: core::ProductProvenance) -> Self {
+        let mut semantics = ProductSemantics {
+            maturity: value.maturity.into(),
+            flags: value.flags.into_iter().map(Into::into).collect(),
+        };
+        semantics.flags.sort_by_key(|flag| match flag {
+            ProductSemanticFlag::Proxy => 0,
+            ProductSemanticFlag::Composite => 1,
+            ProductSemanticFlag::Alias => 2,
+            ProductSemanticFlag::ProofOriented => 3,
+        });
+        semantics.flags.dedup();
+        semantics
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiscreteColorScale {
     pub levels: Vec<f64>,
@@ -263,6 +391,7 @@ impl WindBarbLayer {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MapRenderRequest {
     pub field: Field2D,
+    pub product_metadata: Option<core::ProductKeyMetadata>,
     pub width: u32,
     pub height: u32,
     pub scale: ColorScale,
@@ -276,12 +405,14 @@ pub struct MapRenderRequest {
     pub projected_lines: Vec<ProjectedLineOverlay>,
     pub contours: Vec<ContourLayer>,
     pub wind_barbs: Vec<WindBarbLayer>,
+    pub semantics: Option<ProductSemantics>,
 }
 
 impl MapRenderRequest {
     pub fn new(field: Field2D, scale: ColorScale) -> Self {
         Self {
             field,
+            product_metadata: None,
             width: 1100,
             height: 850,
             scale,
@@ -295,6 +426,7 @@ impl MapRenderRequest {
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),
+            semantics: None,
         }
     }
 
@@ -306,6 +438,11 @@ impl MapRenderRequest {
         let mut request = Self::new(field, ColorScale::Solar07(product.scale_preset()));
         request.title = Some(product.display_title().to_string());
         request.cbar_tick_step = product.default_tick_step();
+        request.semantics = Some(product.semantics());
+        request.product_metadata = Some(
+            core::ProductKeyMetadata::new(product.display_title())
+                .with_native_units(request.field.units.clone()),
+        );
         request
     }
 
@@ -323,6 +460,12 @@ impl MapRenderRequest {
         let mut request = Self::new(field, ColorScale::Discrete(product.scale()));
         request.title = Some(product.display_title().to_string());
         request.cbar_tick_step = product.default_tick_step();
+        request.semantics = Some(product.semantics());
+        request.product_metadata = Some(
+            core::ProductKeyMetadata::new(product.display_title())
+                .with_category("derived")
+                .with_native_units(request.field.units.clone()),
+        );
         request
     }
 
@@ -346,11 +489,51 @@ impl MapRenderRequest {
     }
 
     pub fn contour_only(field: Field2D) -> Self {
-        let mut blank_field = field;
-        blank_field.values.fill(0.5);
-        let mut request = Self::new(blank_field, ColorScale::Discrete(blank_fill_scale()));
+        let mut request = Self::new(field, ColorScale::Discrete(blank_fill_scale()));
         request.colorbar = false;
         request
+    }
+
+    pub fn with_semantics(mut self, semantics: ProductSemantics) -> Self {
+        self.semantics = Some(semantics);
+        self
+    }
+
+    pub fn with_product_metadata(mut self, product_metadata: core::ProductKeyMetadata) -> Self {
+        self.product_metadata = Some(product_metadata);
+        self
+    }
+
+    pub fn with_product_provenance(mut self, provenance: core::ProductProvenance) -> Self {
+        let metadata =
+            self.product_metadata.take().unwrap_or_else(|| {
+                core::ProductKeyMetadata::new(self.title.clone().unwrap_or_else(|| {
+                    self.field.product.as_named().unwrap_or("field").to_string()
+                }))
+                .with_native_units(self.field.units.clone())
+            });
+        self.product_metadata = Some(metadata.with_provenance(provenance.clone()));
+        self.semantics = Some(provenance.into());
+        self
+    }
+
+    pub fn resolved_semantics(&self) -> Option<ProductSemantics> {
+        self.semantics.clone().or_else(|| {
+            self.product_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.provenance.clone())
+                .map(Into::into)
+        })
+    }
+
+    pub fn product_provenance(&self) -> Option<&core::ProductProvenance> {
+        self.product_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.provenance.as_ref())
+    }
+
+    pub(crate) fn is_overlay_only(&self) -> bool {
+        !self.colorbar && is_blank_fill_scale(&self.scale)
     }
 
     pub fn add_contour_field(
@@ -417,6 +600,18 @@ fn blank_fill_scale() -> DiscreteColorScale {
         colors: vec![Color::WHITE],
         extend: ExtendMode::Neither,
         mask_below: None,
+    }
+}
+
+fn is_blank_fill_scale(scale: &ColorScale) -> bool {
+    match scale {
+        ColorScale::Discrete(scale) => {
+            scale.levels == [0.0, 1.0]
+                && scale.colors == [Color::WHITE]
+                && scale.extend == ExtendMode::Neither
+                && scale.mask_below.is_none()
+        }
+        ColorScale::Solar07(_) => false,
     }
 }
 
@@ -540,6 +735,13 @@ mod tests {
         ));
         assert_eq!(request.title.as_deref(), Some("MLECAPE"));
         assert_eq!(request.cbar_tick_step, Some(500.0));
+        assert_eq!(
+            request
+                .semantics
+                .as_ref()
+                .map(|semantics| semantics.maturity),
+            Some(ProductMaturity::Operational)
+        );
     }
 
     #[test]
@@ -547,14 +749,9 @@ mod tests {
         let request = MapRenderRequest::contour_only(sample_render_field());
 
         assert!(!request.colorbar);
+        assert!(request.is_overlay_only());
         assert!(matches!(request.scale, ColorScale::Discrete(_)));
-        assert!(
-            request
-                .field
-                .values
-                .iter()
-                .all(|value| (*value - 0.5).abs() < 1.0e-6)
-        );
+        assert_eq!(request.field.values, sample_render_field().values);
     }
 
     #[test]
@@ -610,6 +807,13 @@ mod tests {
 
         assert_eq!(request.title.as_deref(), Some("0-6 KM BULK SHEAR"));
         assert_eq!(request.cbar_tick_step, Some(5.0));
+        assert_eq!(
+            request
+                .semantics
+                .as_ref()
+                .map(|semantics| semantics.maturity),
+            Some(ProductMaturity::Operational)
+        );
         match request.scale {
             ColorScale::Discrete(scale) => {
                 assert_eq!(
@@ -623,5 +827,50 @@ mod tests {
             }
             _ => panic!("expected discrete derived scale"),
         }
+    }
+
+    #[test]
+    fn semantics_builder_attaches_non_operational_flags() {
+        let request = MapRenderRequest::contour_only(sample_render_field())
+            .with_semantics(ProductSemantics::proof().with_flag(ProductSemanticFlag::Proxy));
+
+        let semantics = request
+            .resolved_semantics()
+            .expect("semantics should be attached");
+        assert_eq!(semantics.maturity, ProductMaturity::Proof);
+        assert!(semantics.has_flag(ProductSemanticFlag::ProofOriented));
+        assert!(semantics.has_flag(ProductSemanticFlag::Proxy));
+    }
+
+    #[test]
+    fn metadata_builder_keeps_typed_provenance_visible_on_request() {
+        let provenance = core::ProductProvenance::new(
+            core::ProductLineage::Windowed,
+            core::ProductMaturity::Operational,
+        )
+        .with_flag(core::ProductSemanticFlag::Alias)
+        .with_window(core::ProductWindowSpec::accumulation(Some(1)));
+
+        let request = MapRenderRequest::contour_only(sample_render_field()).with_product_metadata(
+            core::ProductKeyMetadata::new("1-h QPF")
+                .with_category("windowed")
+                .with_native_units("mm")
+                .with_provenance(provenance),
+        );
+
+        let semantics = request
+            .resolved_semantics()
+            .expect("typed metadata should resolve render semantics");
+        assert_eq!(semantics.maturity, ProductMaturity::Operational);
+        assert!(semantics.has_flag(ProductSemanticFlag::Alias));
+        let metadata = request
+            .product_metadata
+            .as_ref()
+            .expect("request should expose product metadata");
+        assert_eq!(metadata.category.as_deref(), Some("windowed"));
+        assert_eq!(
+            request.product_provenance().unwrap().window,
+            Some(core::ProductWindowSpec::accumulation(Some(1)))
+        );
     }
 }

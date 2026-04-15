@@ -15,6 +15,8 @@ pub enum RustwxError {
     InvalidCycleDate(String),
     #[error("invalid cycle hour {0}, expected 0..23")]
     InvalidCycleHour(u8),
+    #[error("invalid UTC timestamp '{0}', expected YYYY-MM-DDTHH:MM:SSZ")]
+    InvalidTimeStamp(String),
     #[error("invalid forecast hour {0}")]
     InvalidForecastHour(u16),
     #[error("pressure-level volume requires at least one level")]
@@ -75,10 +77,10 @@ pub struct TimeStamp {
 }
 
 impl TimeStamp {
-    pub fn new<S: Into<String>>(iso8601_utc: S) -> Self {
-        Self {
-            iso8601_utc: iso8601_utc.into(),
-        }
+    pub fn new<S: Into<String>>(iso8601_utc: S) -> Result<Self, RustwxError> {
+        let iso8601_utc = iso8601_utc.into();
+        validate_utc_timestamp(&iso8601_utc)?;
+        Ok(Self { iso8601_utc })
     }
 
     pub fn as_str(&self) -> &str {
@@ -354,6 +356,106 @@ impl std::fmt::Display for FieldSelector {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductLineage {
+    Direct,
+    Derived,
+    Windowed,
+    Bundled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMaturity {
+    Operational,
+    Experimental,
+    Proof,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductSemanticFlag {
+    Proxy,
+    Composite,
+    Alias,
+    ProofOriented,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatisticalProcess {
+    Instantaneous,
+    Accumulation,
+    Average,
+    Maximum,
+    Minimum,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProductWindowSpec {
+    pub process: StatisticalProcess,
+    pub duration_hours: Option<u16>,
+}
+
+impl ProductWindowSpec {
+    pub fn instantaneous() -> Self {
+        Self {
+            process: StatisticalProcess::Instantaneous,
+            duration_hours: None,
+        }
+    }
+
+    pub fn accumulation(duration_hours: Option<u16>) -> Self {
+        Self {
+            process: StatisticalProcess::Accumulation,
+            duration_hours,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProductProvenance {
+    pub lineage: ProductLineage,
+    pub maturity: ProductMaturity,
+    pub flags: Vec<ProductSemanticFlag>,
+    pub selector: Option<FieldSelector>,
+    pub window: Option<ProductWindowSpec>,
+}
+
+impl ProductProvenance {
+    pub fn new(lineage: ProductLineage, maturity: ProductMaturity) -> Self {
+        Self {
+            lineage,
+            maturity,
+            flags: Vec::new(),
+            selector: None,
+            window: None,
+        }
+    }
+
+    pub fn selector_backed(selector: FieldSelector) -> Self {
+        Self::new(ProductLineage::Direct, ProductMaturity::Operational).with_selector(selector)
+    }
+
+    pub fn with_flag(mut self, flag: ProductSemanticFlag) -> Self {
+        if !self.flags.contains(&flag) {
+            self.flags.push(flag);
+        }
+        self
+    }
+
+    pub fn with_selector(mut self, selector: FieldSelector) -> Self {
+        self.selector = Some(selector);
+        self
+    }
+
+    pub fn with_window(mut self, window: ProductWindowSpec) -> Self {
+        self.window = Some(window);
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SelectedField2D {
     pub selector: FieldSelector,
@@ -406,6 +508,7 @@ pub struct ProductKeyMetadata {
     pub description: Option<String>,
     pub native_units: Option<String>,
     pub category: Option<String>,
+    pub provenance: Option<ProductProvenance>,
 }
 
 impl ProductKeyMetadata {
@@ -415,7 +518,40 @@ impl ProductKeyMetadata {
             description: None,
             native_units: None,
             category: None,
+            provenance: None,
         }
+    }
+
+    pub fn with_description<S: Into<String>>(mut self, description: S) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    pub fn with_native_units<S: Into<String>>(mut self, native_units: S) -> Self {
+        self.native_units = Some(native_units.into());
+        self
+    }
+
+    pub fn with_category<S: Into<String>>(mut self, category: S) -> Self {
+        self.category = Some(category.into());
+        self
+    }
+
+    pub fn with_provenance(mut self, provenance: ProductProvenance) -> Self {
+        self.provenance = Some(provenance);
+        self
+    }
+}
+
+impl FieldSelector {
+    pub fn product_provenance(self) -> ProductProvenance {
+        ProductProvenance::selector_backed(self)
+    }
+
+    pub fn product_metadata(self) -> ProductKeyMetadata {
+        ProductKeyMetadata::new(self.display_name())
+            .with_native_units(self.native_units())
+            .with_provenance(self.product_provenance())
     }
 }
 
@@ -464,6 +600,7 @@ impl ModelTimestep {
     pub fn descriptor(&self) -> ForecastDescriptor {
         ForecastDescriptor::new(
             self.model.as_str(),
+            self.cycle.clone(),
             self.valid_time.clone(),
             self.forecast_hour,
         )
@@ -756,6 +893,7 @@ impl CycleSpec {
         if date_yyyymmdd.len() != 8 || !date_yyyymmdd.chars().all(|ch| ch.is_ascii_digit()) {
             return Err(RustwxError::InvalidCycleDate(date_yyyymmdd));
         }
+        validate_cycle_date(&date_yyyymmdd)?;
         if hour_utc > 23 {
             return Err(RustwxError::InvalidCycleHour(hour_utc));
         }
@@ -809,18 +947,101 @@ impl ResolvedUrl {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForecastDescriptor {
     pub model: String,
-    pub cycle: TimeStamp,
+    pub cycle: CycleSpec,
+    pub valid_time: TimeStamp,
     pub forecast_hour: u16,
 }
 
 impl ForecastDescriptor {
-    pub fn new<S: Into<String>>(model: S, cycle: TimeStamp, forecast_hour: u16) -> Self {
+    pub fn new<S: Into<String>>(
+        model: S,
+        cycle: CycleSpec,
+        valid_time: TimeStamp,
+        forecast_hour: u16,
+    ) -> Self {
         Self {
             model: model.into(),
             cycle,
+            valid_time,
             forecast_hour,
         }
     }
+}
+
+fn validate_cycle_date(date_yyyymmdd: &str) -> Result<(), RustwxError> {
+    let year = date_yyyymmdd[..4]
+        .parse::<u32>()
+        .map_err(|_| RustwxError::InvalidCycleDate(date_yyyymmdd.to_string()))?;
+    let month = date_yyyymmdd[4..6]
+        .parse::<u32>()
+        .map_err(|_| RustwxError::InvalidCycleDate(date_yyyymmdd.to_string()))?;
+    let day = date_yyyymmdd[6..8]
+        .parse::<u32>()
+        .map_err(|_| RustwxError::InvalidCycleDate(date_yyyymmdd.to_string()))?;
+
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if is_leap_year(year) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => return Err(RustwxError::InvalidCycleDate(date_yyyymmdd.to_string())),
+    };
+
+    if day == 0 || day > max_day {
+        return Err(RustwxError::InvalidCycleDate(date_yyyymmdd.to_string()));
+    }
+
+    Ok(())
+}
+
+fn validate_utc_timestamp(iso8601_utc: &str) -> Result<(), RustwxError> {
+    let bytes = iso8601_utc.as_bytes();
+    if bytes.len() != 20
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+        || bytes[19] != b'Z'
+    {
+        return Err(RustwxError::InvalidTimeStamp(iso8601_utc.to_string()));
+    }
+
+    let year = iso8601_utc[..4]
+        .parse::<u32>()
+        .map_err(|_| RustwxError::InvalidTimeStamp(iso8601_utc.to_string()))?;
+    let month = iso8601_utc[5..7]
+        .parse::<u32>()
+        .map_err(|_| RustwxError::InvalidTimeStamp(iso8601_utc.to_string()))?;
+    let day = iso8601_utc[8..10]
+        .parse::<u32>()
+        .map_err(|_| RustwxError::InvalidTimeStamp(iso8601_utc.to_string()))?;
+    let hour = iso8601_utc[11..13]
+        .parse::<u32>()
+        .map_err(|_| RustwxError::InvalidTimeStamp(iso8601_utc.to_string()))?;
+    let minute = iso8601_utc[14..16]
+        .parse::<u32>()
+        .map_err(|_| RustwxError::InvalidTimeStamp(iso8601_utc.to_string()))?;
+    let second = iso8601_utc[17..19]
+        .parse::<u32>()
+        .map_err(|_| RustwxError::InvalidTimeStamp(iso8601_utc.to_string()))?;
+
+    validate_cycle_date(&format!("{year:04}{month:02}{day:02}"))
+        .map_err(|_| RustwxError::InvalidTimeStamp(iso8601_utc.to_string()))?;
+    if hour > 23 || minute > 59 || second > 59 {
+        return Err(RustwxError::InvalidTimeStamp(iso8601_utc.to_string()));
+    }
+
+    Ok(())
+}
+
+fn is_leap_year(year: u32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
 fn validate_pressure_levels(levels_hpa: &[f32]) -> Result<(), RustwxError> {
@@ -857,6 +1078,11 @@ mod tests {
     #[test]
     fn cycle_spec_validates_inputs() {
         assert!(CycleSpec::new("20260414", 20).is_ok());
+        assert!(CycleSpec::new("20240229", 20).is_ok());
+        assert!(matches!(
+            CycleSpec::new("20260229", 20),
+            Err(RustwxError::InvalidCycleDate(_))
+        ));
         assert!(matches!(
             CycleSpec::new("2026-04-14", 20),
             Err(RustwxError::InvalidCycleDate(_))
@@ -872,6 +1098,19 @@ mod tests {
         let key = ProductKey::named("cape_sfc");
         assert_eq!(key.as_named(), Some("cape_sfc"));
         assert_eq!(key.to_string(), "cape_sfc");
+    }
+
+    #[test]
+    fn timestamp_validates_basic_utc_format() {
+        assert!(TimeStamp::new("2026-04-15T00:00:00Z").is_ok());
+        assert!(matches!(
+            TimeStamp::new("2026-04-15 00:00:00Z"),
+            Err(RustwxError::InvalidTimeStamp(_))
+        ));
+        assert!(matches!(
+            TimeStamp::new("2026-02-29T00:00:00Z"),
+            Err(RustwxError::InvalidTimeStamp(_))
+        ));
     }
 
     #[test]
@@ -980,7 +1219,7 @@ mod tests {
             ModelId::RrfsA,
             CycleSpec::new("20260414", 18).unwrap(),
             6,
-            TimeStamp::new("2026-04-15T00:00:00Z"),
+            TimeStamp::new("2026-04-15T00:00:00Z").unwrap(),
             Some(SourceId::Aws),
         )
         .unwrap();
@@ -989,7 +1228,12 @@ mod tests {
         assert_eq!(request.model, ModelId::RrfsA);
         assert_eq!(request.forecast_hour, 6);
         assert_eq!(request.product, "prs-conus");
-        assert_eq!(timestep.descriptor().cycle.as_str(), "2026-04-15T00:00:00Z");
+        assert_eq!(timestep.descriptor().cycle.date_yyyymmdd, "20260414");
+        assert_eq!(timestep.descriptor().cycle.hour_utc, 18);
+        assert_eq!(
+            timestep.descriptor().valid_time.as_str(),
+            "2026-04-15T00:00:00Z"
+        );
         assert_eq!(timestep.source, Some(SourceId::Aws));
     }
 
@@ -1030,7 +1274,7 @@ mod tests {
                 ModelId::Hrrr,
                 CycleSpec::new("20260414", 18).unwrap(),
                 1,
-                TimeStamp::new("2026-04-14T19:00:00Z"),
+                TimeStamp::new("2026-04-14T19:00:00Z").unwrap(),
             )
             .unwrap(),
             ProductKey::named("sbcape"),
@@ -1072,6 +1316,46 @@ mod tests {
     }
 
     #[test]
+    fn selector_product_metadata_carries_typed_provenance() {
+        let selector = FieldSelector::isobaric(CanonicalField::Temperature, 500);
+        let metadata = selector.product_metadata();
+
+        assert_eq!(metadata.display_name, "Temperature (500hpa)");
+        assert_eq!(metadata.native_units.as_deref(), Some("K"));
+        let provenance = metadata
+            .provenance
+            .as_ref()
+            .expect("selector metadata should carry provenance");
+        assert_eq!(provenance.lineage, ProductLineage::Direct);
+        assert_eq!(provenance.maturity, ProductMaturity::Operational);
+        assert_eq!(provenance.selector, Some(selector));
+        assert!(provenance.flags.is_empty());
+        assert!(provenance.window.is_none());
+    }
+
+    #[test]
+    fn product_key_metadata_builder_keeps_additive_provenance_fields() {
+        let metadata = ProductKeyMetadata::new("Run-Max UH")
+            .with_description("Trailing native hourly 2-5 km updraft-helicity maxima")
+            .with_category("windowed")
+            .with_native_units("m^2/s^2")
+            .with_provenance(
+                ProductProvenance::new(ProductLineage::Windowed, ProductMaturity::Operational)
+                    .with_flag(ProductSemanticFlag::Composite)
+                    .with_window(ProductWindowSpec::accumulation(Some(3))),
+            );
+
+        assert_eq!(metadata.category.as_deref(), Some("windowed"));
+        let provenance = metadata.provenance.expect("builder should keep provenance");
+        assert_eq!(provenance.lineage, ProductLineage::Windowed);
+        assert!(provenance.flags.contains(&ProductSemanticFlag::Composite));
+        assert_eq!(
+            provenance.window,
+            Some(ProductWindowSpec::accumulation(Some(3)))
+        );
+    }
+
+    #[test]
     fn pressure_level_volume_exposes_level_slices() {
         let shape = GridShape::new(2, 2).unwrap();
         let grid = LatLonGrid::new(
@@ -1085,7 +1369,7 @@ mod tests {
                 ModelId::Gfs,
                 CycleSpec::new("20260414", 12).unwrap(),
                 9,
-                TimeStamp::new("2026-04-14T21:00:00Z"),
+                TimeStamp::new("2026-04-14T21:00:00Z").unwrap(),
             )
             .unwrap(),
             ProductKey::named("temperature"),
@@ -1120,7 +1404,7 @@ mod tests {
                 ModelId::EcmwfOpenData,
                 CycleSpec::new("20260414", 0).unwrap(),
                 12,
-                TimeStamp::new("2026-04-14T12:00:00Z"),
+                TimeStamp::new("2026-04-14T12:00:00Z").unwrap(),
             )
             .unwrap(),
             ProductKey::named("rh"),

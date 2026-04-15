@@ -239,6 +239,8 @@ mod tests {
         ColorScale, ContourStyle, Field2D, GridShape, LatLonGrid, ProductKey, ProjectedDomain,
         ProjectedExtent, ProjectedLineOverlay, WindBarbStyle,
     };
+    use image::ImageFormat;
+    use std::time::Instant;
 
     fn solid_panel(width: u32, height: u32, rgba: [u8; 4]) -> RgbaImage {
         RgbaImage::from_pixel(width, height, Rgba(rgba))
@@ -287,6 +289,43 @@ mod tests {
             width: 2,
         }];
         request
+    }
+
+    fn sample_two_by_four_requests(width: u32, height: u32) -> Vec<MapRenderRequest> {
+        vec![
+            sample_projected_request("sbecape", width, height),
+            sample_projected_request("mlecape", width, height),
+            sample_projected_request("mucape", width, height),
+            sample_projected_request("sbcin", width, height),
+            sample_projected_request("mlcin", width, height),
+            sample_projected_request("scp", width, height),
+            sample_projected_request("stp", width, height),
+            sample_projected_request("ehi", width, height),
+        ]
+    }
+
+    fn render_panel_grid_legacy(
+        layout: &PanelGridLayout,
+        requests: &[MapRenderRequest],
+    ) -> Result<RgbaImage, RustwxRenderError> {
+        if requests.len() > layout.capacity() {
+            return Err(RustwxRenderError::TooManyPanels {
+                actual: requests.len(),
+                capacity: layout.capacity(),
+            });
+        }
+
+        let mut panels = Vec::with_capacity(requests.len());
+        for (index, request) in requests.iter().enumerate() {
+            validate_panel_size(layout, index, request.width, request.height)?;
+            let png = crate::render_png(request)?;
+            let panel = image::load_from_memory_with_format(&png, ImageFormat::Png)
+                .map_err(|source| RustwxRenderError::DecodeRenderedPng { source })?
+                .to_rgba8();
+            panels.push(panel);
+        }
+
+        compose_panel_images(layout, &panels)
     }
 
     #[test]
@@ -427,5 +466,57 @@ mod tests {
             .filter(|px| px.0 != [255, 255, 255, 255])
             .count();
         assert!(non_white > 10000);
+    }
+
+    #[test]
+    fn render_panel_grid_matches_legacy_png_roundtrip_output() {
+        let layout = PanelGridLayout::two_by_four(140, 100).unwrap();
+        let requests = sample_two_by_four_requests(140, 100);
+
+        let legacy = render_panel_grid_legacy(&layout, &requests).unwrap();
+        let current = render_panel_grid(&layout, &requests).unwrap();
+
+        assert_eq!(legacy.dimensions(), current.dimensions());
+        assert_eq!(legacy.as_raw(), current.as_raw());
+    }
+
+    #[test]
+    #[ignore]
+    fn benchmark_render_panel_grid_vs_legacy_roundtrip() {
+        let layout = PanelGridLayout::two_by_four(140, 100).unwrap();
+        let requests = sample_two_by_four_requests(140, 100);
+        let runs = 12u32;
+
+        let legacy_probe = render_panel_grid_legacy(&layout, &requests).unwrap();
+        let current_probe = render_panel_grid(&layout, &requests).unwrap();
+        assert_eq!(legacy_probe.as_raw(), current_probe.as_raw());
+
+        let mut legacy_total = 0.0f64;
+        let mut current_total = 0.0f64;
+
+        for _ in 0..runs {
+            let started = Instant::now();
+            let _ = render_panel_grid_legacy(&layout, &requests).unwrap();
+            legacy_total += started.elapsed().as_secs_f64() * 1000.0;
+        }
+
+        for _ in 0..runs {
+            let started = Instant::now();
+            let _ = render_panel_grid(&layout, &requests).unwrap();
+            current_total += started.elapsed().as_secs_f64() * 1000.0;
+        }
+
+        let legacy_mean = legacy_total / runs as f64;
+        let current_mean = current_total / runs as f64;
+        let delta_ms = current_mean - legacy_mean;
+        let delta_pct = if legacy_mean.abs() > f64::EPSILON {
+            (delta_ms / legacy_mean) * 100.0
+        } else {
+            0.0
+        };
+
+        println!(
+            "{{\"legacy_mean_ms\":{legacy_mean:.3},\"current_mean_ms\":{current_mean:.3},\"delta_ms\":{delta_ms:.3},\"delta_pct\":{delta_pct:.2}}}"
+        );
     }
 }

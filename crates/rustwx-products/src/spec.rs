@@ -1,0 +1,592 @@
+use rustwx_core::{
+    ProductKeyMetadata, ProductLineage, ProductProvenance, ProductWindowSpec, StatisticalProcess,
+};
+use rustwx_models::{PlotRecipe, RenderStyle, built_in_plot_recipes};
+use rustwx_render::{ProductMaturity, ProductSemanticFlag};
+
+use crate::derived::{
+    BlockedDerivedRecipeInventoryEntry, DerivedRecipeInventoryEntry,
+    blocked_derived_recipe_inventory, supported_derived_recipe_inventory,
+};
+use crate::hrrr::HrrrBatchProduct;
+use crate::windowed::HrrrWindowedProduct;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProductSpecKind {
+    Direct,
+    Derived,
+    Heavy,
+    Windowed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductAliasSpec {
+    pub slug: String,
+    pub title: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProductSpec {
+    pub slug: String,
+    pub title: String,
+    pub kind: ProductSpecKind,
+    pub product_metadata: Option<ProductKeyMetadata>,
+    pub maturity: ProductMaturity,
+    pub flags: Vec<ProductSemanticFlag>,
+    pub render_style: Option<String>,
+    pub aliases: Vec<ProductAliasSpec>,
+    pub notes: Vec<String>,
+    pub blocked_reasons: Vec<String>,
+}
+
+impl ProductSpec {
+    pub fn experimental(&self) -> bool {
+        self.maturity.is_non_operational()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LegacyProductAliasRoute {
+    alias_slug: &'static str,
+    alias_title: &'static str,
+    canonical_slug: &'static str,
+    canonical_kind: ProductSpecKind,
+    note: &'static str,
+}
+
+const LEGACY_NON_ECAPE_ALIAS_ROUTES: &[LegacyProductAliasRoute] = &[
+    LegacyProductAliasRoute {
+        alias_slug: "2m_theta_e_10m_winds",
+        alias_title: "2m AGL Theta-e / 10m Winds",
+        canonical_slug: "theta_e_2m_10m_winds",
+        canonical_kind: ProductSpecKind::Derived,
+        note: "Legacy plot-recipe slug from the big list. HRRR support lives in the derived lane, not as a native/direct GRIB recipe.",
+    },
+    LegacyProductAliasRoute {
+        alias_slug: "2m_heat_index",
+        alias_title: "2m AGL Heat Index",
+        canonical_slug: "heat_index_2m",
+        canonical_kind: ProductSpecKind::Derived,
+        note: "Legacy plot-recipe slug from the big list. HRRR support lives in the derived lane, not as a native/direct GRIB recipe.",
+    },
+    LegacyProductAliasRoute {
+        alias_slug: "2m_wind_chill",
+        alias_title: "2m AGL Wind Chill",
+        canonical_slug: "wind_chill_2m",
+        canonical_kind: ProductSpecKind::Derived,
+        note: "Legacy plot-recipe slug from the big list. HRRR support lives in the derived lane, not as a native/direct GRIB recipe.",
+    },
+    LegacyProductAliasRoute {
+        alias_slug: "1h_qpf",
+        alias_title: "1h QPF",
+        canonical_slug: "qpf_1h",
+        canonical_kind: ProductSpecKind::Windowed,
+        note: "Legacy plot-recipe slug from the big list. The honest HRRR implementation is the 1-hour windowed APCP product; alias wiring belongs in the windowed lane rather than a fake native/direct recipe.",
+    },
+];
+
+pub fn direct_product_specs() -> Vec<ProductSpec> {
+    built_in_plot_recipes()
+        .iter()
+        .filter(|recipe| legacy_alias_route_for_direct_slug(recipe.slug).is_none())
+        .map(direct_product_spec)
+        .collect()
+}
+
+pub fn supported_derived_product_specs() -> Vec<ProductSpec> {
+    supported_derived_recipe_inventory()
+        .iter()
+        .map(supported_derived_product_spec)
+        .collect()
+}
+
+pub fn blocked_derived_product_specs() -> Vec<ProductSpec> {
+    blocked_derived_recipe_inventory()
+        .iter()
+        .map(blocked_derived_product_spec)
+        .collect()
+}
+
+pub fn heavy_product_specs() -> Vec<ProductSpec> {
+    [
+        HrrrBatchProduct::SevereProofPanel,
+        HrrrBatchProduct::Ecape8Panel,
+    ]
+    .into_iter()
+    .map(heavy_product_spec)
+    .collect()
+}
+
+pub fn windowed_product_specs() -> Vec<ProductSpec> {
+    [
+        (
+            HrrrWindowedProduct::Qpf1h,
+            "1-h APCP accumulation ending at the requested forecast hour",
+            "solar07_qpf",
+        ),
+        (
+            HrrrWindowedProduct::Qpf6h,
+            "Uses direct 6-hour APCP from the ending hour when present, else sums hourly APCP increments",
+            "solar07_qpf",
+        ),
+        (
+            HrrrWindowedProduct::Qpf12h,
+            "Uses direct 12-hour APCP from the ending hour when present, else sums hourly APCP increments",
+            "solar07_qpf",
+        ),
+        (
+            HrrrWindowedProduct::Qpf24h,
+            "Uses direct 24-hour APCP from the ending hour when present, else sums hourly APCP increments",
+            "solar07_qpf",
+        ),
+        (
+            HrrrWindowedProduct::QpfTotal,
+            "Uses direct APCP from the ending hour when available, else sums all hourly APCP increments from F001..Fend",
+            "solar07_qpf",
+        ),
+        (
+            HrrrWindowedProduct::Uh25km1h,
+            "Native 2-5 km UH 1-hour max from HRRR wrfnat",
+            "solar07_uh",
+        ),
+        (
+            HrrrWindowedProduct::Uh25km3h,
+            "Max of trailing native hourly 2-5 km UH maxima",
+            "solar07_uh",
+        ),
+        (
+            HrrrWindowedProduct::Uh25kmRunMax,
+            "Run max of native hourly 2-5 km UH maxima from F001..Fend",
+            "solar07_uh",
+        ),
+    ]
+    .into_iter()
+    .map(|(product, note, render_style)| windowed_product_spec(product, note, render_style))
+    .collect()
+}
+
+pub fn direct_product_spec(recipe: &PlotRecipe) -> ProductSpec {
+    ProductSpec {
+        slug: recipe.slug.to_string(),
+        title: recipe.title.to_string(),
+        kind: ProductSpecKind::Direct,
+        product_metadata: Some(recipe.product_metadata()),
+        maturity: ProductMaturity::Operational,
+        flags: Vec::new(),
+        render_style: Some(direct_render_style(recipe).to_string()),
+        aliases: Vec::new(),
+        notes: direct_entry_notes(recipe.slug),
+        blocked_reasons: Vec::new(),
+    }
+}
+
+fn supported_derived_product_spec(recipe: &DerivedRecipeInventoryEntry) -> ProductSpec {
+    let maturity = if recipe.experimental {
+        ProductMaturity::Experimental
+    } else {
+        ProductMaturity::Operational
+    };
+    let flags = derived_entry_flags(recipe.slug);
+    ProductSpec {
+        slug: recipe.slug.to_string(),
+        title: recipe.title.to_string(),
+        kind: ProductSpecKind::Derived,
+        product_metadata: Some(derived_product_metadata(recipe.title, maturity, &flags)),
+        maturity,
+        flags: sorted_flags(&flags),
+        render_style: None,
+        aliases: legacy_aliases(ProductSpecKind::Derived, recipe.slug),
+        notes: derived_entry_notes(recipe.slug, recipe.experimental),
+        blocked_reasons: Vec::new(),
+    }
+}
+
+fn blocked_derived_product_spec(recipe: &BlockedDerivedRecipeInventoryEntry) -> ProductSpec {
+    ProductSpec {
+        slug: recipe.slug.to_string(),
+        title: recipe.title.to_string(),
+        kind: ProductSpecKind::Derived,
+        product_metadata: Some(derived_product_metadata(
+            recipe.title,
+            ProductMaturity::Operational,
+            &[],
+        )),
+        maturity: ProductMaturity::Operational,
+        flags: Vec::new(),
+        render_style: None,
+        aliases: Vec::new(),
+        notes: Vec::new(),
+        blocked_reasons: vec![recipe.reason.to_string()],
+    }
+}
+
+fn heavy_product_spec(product: HrrrBatchProduct) -> ProductSpec {
+    let (title, maturity, flags, notes) = match product {
+        HrrrBatchProduct::SevereProofPanel => (
+            "HRRR Severe Proof Panel",
+            ProductMaturity::Proof,
+            vec![
+                ProductSemanticFlag::ProofOriented,
+                ProductSemanticFlag::Proxy,
+            ],
+            vec![
+                "Proof-oriented bundled panel".to_string(),
+                "Keeps fixed-depth SCP proxy diagnostics until effective-layer SRH and EBWD are wired"
+                    .to_string(),
+            ],
+        ),
+        HrrrBatchProduct::Ecape8Panel => (
+            "HRRR ECAPE 8-Panel",
+            ProductMaturity::Proof,
+            vec![ProductSemanticFlag::ProofOriented],
+            vec![
+                "Proof-oriented bundled panel".to_string(),
+                "Contains experimental ECAPE SCP/EHI fields inside the panel set".to_string(),
+            ],
+        ),
+    };
+
+    ProductSpec {
+        slug: product.slug().to_string(),
+        title: title.to_string(),
+        kind: ProductSpecKind::Heavy,
+        product_metadata: Some(heavy_product_metadata(title, maturity, &flags)),
+        maturity,
+        flags: sorted_flags(&flags),
+        render_style: Some("solar07_panel_grid".to_string()),
+        aliases: Vec::new(),
+        notes,
+        blocked_reasons: Vec::new(),
+    }
+}
+
+fn windowed_product_spec(
+    product: HrrrWindowedProduct,
+    note: &'static str,
+    render_style: &'static str,
+) -> ProductSpec {
+    ProductSpec {
+        slug: product.slug().to_string(),
+        title: product.title().to_string(),
+        kind: ProductSpecKind::Windowed,
+        product_metadata: Some(windowed_product_metadata(
+            product,
+            product.title(),
+            match product {
+                HrrrWindowedProduct::Qpf1h
+                | HrrrWindowedProduct::Qpf6h
+                | HrrrWindowedProduct::Qpf12h
+                | HrrrWindowedProduct::Qpf24h
+                | HrrrWindowedProduct::QpfTotal => Some("mm"),
+                HrrrWindowedProduct::Uh25km1h
+                | HrrrWindowedProduct::Uh25km3h
+                | HrrrWindowedProduct::Uh25kmRunMax => Some("m^2/s^2"),
+            },
+        )),
+        maturity: ProductMaturity::Operational,
+        flags: Vec::new(),
+        render_style: Some(render_style.to_string()),
+        aliases: legacy_aliases(ProductSpecKind::Windowed, product.slug()),
+        notes: {
+            let mut notes = vec![
+                note.to_string(),
+                "Backed by HRRR statistical time-window metadata surfaced through grib-core"
+                    .to_string(),
+            ];
+            notes.extend(legacy_alias_notes(
+                ProductSpecKind::Windowed,
+                product.slug(),
+            ));
+            notes
+        },
+        blocked_reasons: Vec::new(),
+    }
+}
+
+fn sorted_flags(flags: &[ProductSemanticFlag]) -> Vec<ProductSemanticFlag> {
+    let mut values = flags.to_vec();
+    values.sort_by_key(|flag| match flag {
+        ProductSemanticFlag::Proxy => 0,
+        ProductSemanticFlag::Composite => 1,
+        ProductSemanticFlag::Alias => 2,
+        ProductSemanticFlag::ProofOriented => 3,
+    });
+    values.dedup();
+    values
+}
+
+fn typed_metadata(
+    display_name: &str,
+    category: &str,
+    native_units: Option<&str>,
+    lineage: ProductLineage,
+    maturity: ProductMaturity,
+    flags: &[ProductSemanticFlag],
+    window: Option<ProductWindowSpec>,
+) -> ProductKeyMetadata {
+    let mut provenance = ProductProvenance::new(lineage, maturity.into());
+    for flag in flags {
+        provenance = provenance.with_flag((*flag).into());
+    }
+    if let Some(window) = window {
+        provenance = provenance.with_window(window);
+    }
+    let mut metadata = ProductKeyMetadata::new(display_name)
+        .with_category(category)
+        .with_provenance(provenance);
+    if let Some(native_units) = native_units {
+        metadata = metadata.with_native_units(native_units);
+    }
+    metadata
+}
+
+fn derived_product_metadata(
+    title: &str,
+    maturity: ProductMaturity,
+    flags: &[ProductSemanticFlag],
+) -> ProductKeyMetadata {
+    typed_metadata(
+        title,
+        "derived",
+        None,
+        ProductLineage::Derived,
+        maturity,
+        flags,
+        None,
+    )
+}
+
+fn heavy_product_metadata(
+    title: &str,
+    maturity: ProductMaturity,
+    flags: &[ProductSemanticFlag],
+) -> ProductKeyMetadata {
+    typed_metadata(
+        title,
+        "bundled",
+        None,
+        ProductLineage::Bundled,
+        maturity,
+        flags,
+        None,
+    )
+}
+
+fn windowed_product_window(product: HrrrWindowedProduct) -> ProductWindowSpec {
+    match product {
+        HrrrWindowedProduct::Qpf1h => ProductWindowSpec {
+            process: StatisticalProcess::Accumulation,
+            duration_hours: Some(1),
+        },
+        HrrrWindowedProduct::Qpf6h => ProductWindowSpec {
+            process: StatisticalProcess::Accumulation,
+            duration_hours: Some(6),
+        },
+        HrrrWindowedProduct::Qpf12h => ProductWindowSpec {
+            process: StatisticalProcess::Accumulation,
+            duration_hours: Some(12),
+        },
+        HrrrWindowedProduct::Qpf24h => ProductWindowSpec {
+            process: StatisticalProcess::Accumulation,
+            duration_hours: Some(24),
+        },
+        HrrrWindowedProduct::QpfTotal => ProductWindowSpec {
+            process: StatisticalProcess::Accumulation,
+            duration_hours: None,
+        },
+        HrrrWindowedProduct::Uh25km1h => ProductWindowSpec {
+            process: StatisticalProcess::Maximum,
+            duration_hours: Some(1),
+        },
+        HrrrWindowedProduct::Uh25km3h => ProductWindowSpec {
+            process: StatisticalProcess::Maximum,
+            duration_hours: Some(3),
+        },
+        HrrrWindowedProduct::Uh25kmRunMax => ProductWindowSpec {
+            process: StatisticalProcess::Maximum,
+            duration_hours: None,
+        },
+    }
+}
+
+fn windowed_product_metadata(
+    product: HrrrWindowedProduct,
+    title: &str,
+    native_units: Option<&str>,
+) -> ProductKeyMetadata {
+    typed_metadata(
+        title,
+        "windowed",
+        native_units,
+        ProductLineage::Windowed,
+        ProductMaturity::Operational,
+        &[],
+        Some(windowed_product_window(product)),
+    )
+}
+
+fn legacy_alias_route_for_direct_slug(slug: &str) -> Option<&'static LegacyProductAliasRoute> {
+    LEGACY_NON_ECAPE_ALIAS_ROUTES
+        .iter()
+        .find(|route| route.alias_slug == slug)
+}
+
+fn legacy_aliases(kind: ProductSpecKind, canonical_slug: &str) -> Vec<ProductAliasSpec> {
+    LEGACY_NON_ECAPE_ALIAS_ROUTES
+        .iter()
+        .filter(|route| route.canonical_kind == kind && route.canonical_slug == canonical_slug)
+        .map(|route| ProductAliasSpec {
+            slug: route.alias_slug.to_string(),
+            title: route.alias_title.to_string(),
+            note: route.note.to_string(),
+        })
+        .collect()
+}
+
+fn legacy_alias_notes(kind: ProductSpecKind, canonical_slug: &str) -> Vec<String> {
+    LEGACY_NON_ECAPE_ALIAS_ROUTES
+        .iter()
+        .filter(|route| route.canonical_kind == kind && route.canonical_slug == canonical_slug)
+        .map(|route| route.note.to_string())
+        .collect()
+}
+
+fn direct_render_style(recipe: &PlotRecipe) -> &'static str {
+    match recipe.slug {
+        "cloud_cover_levels" | "precipitation_type" => "solar07_panel_grid",
+        _ => render_style_name(recipe.style),
+    }
+}
+
+fn direct_entry_notes(slug: &str) -> Vec<String> {
+    match slug {
+        "cloud_cover_levels" => vec![
+            "Rendered as an honest HRRR direct composite panel over low, middle, and high cloud-cover component fields".to_string(),
+        ],
+        "precipitation_type" => vec![
+            "Rendered as an honest HRRR direct composite panel over categorical rain, freezing-rain, ice-pellet, and snow phase flags".to_string(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+fn derived_entry_flags(slug: &str) -> Vec<ProductSemanticFlag> {
+    match slug {
+        "scp_mu_0_3km_0_6km_proxy" => vec![ProductSemanticFlag::Proxy],
+        _ => Vec::new(),
+    }
+}
+
+fn derived_entry_notes(slug: &str, experimental: bool) -> Vec<String> {
+    let mut notes = Vec::new();
+    match slug {
+        "ehi_0_1km" => notes.push(
+            "Depth-specific EHI using sbCAPE with 0-1 km SRH; not an effective-layer diagnostic"
+                .to_string(),
+        ),
+        "ehi_0_3km" => notes.push(
+            "Depth-specific EHI using sbCAPE with 0-3 km SRH; not an effective-layer diagnostic"
+                .to_string(),
+        ),
+        "scp_mu_0_3km_0_6km_proxy" => notes.push(
+            "Uses muCAPE with 0-3 km SRH and 0-6 km bulk shear; kept explicit because effective-layer SCP is still blocked"
+                .to_string(),
+        ),
+        _ => {}
+    }
+    notes.extend(legacy_alias_notes(ProductSpecKind::Derived, slug));
+    if experimental {
+        notes.push(
+            "Current proof/product runner labels this as a proxy or experimental diagnostic"
+                .to_string(),
+        );
+    }
+    notes
+}
+
+fn render_style_name(style: RenderStyle) -> &'static str {
+    match style {
+        RenderStyle::Solar07Cape => "solar07_cape",
+        RenderStyle::Solar07Cin => "solar07_cin",
+        RenderStyle::Solar07Reflectivity => "solar07_reflectivity",
+        RenderStyle::Solar07Uh => "solar07_uh",
+        RenderStyle::Solar07Temperature => "solar07_temperature",
+        RenderStyle::Solar07Dewpoint => "solar07_dewpoint",
+        RenderStyle::Solar07Rh => "solar07_rh",
+        RenderStyle::Solar07Winds => "solar07_winds",
+        RenderStyle::Solar07Height => "solar07_height",
+        RenderStyle::Solar07Pressure => "solar07_pressure",
+        RenderStyle::Solar07WindGust => "solar07_wind_gust",
+        RenderStyle::Solar07CloudCover => "solar07_cloud_cover",
+        RenderStyle::Solar07PrecipitableWater => "solar07_precipitable_water",
+        RenderStyle::Solar07Qpf => "solar07_qpf",
+        RenderStyle::Solar07Categorical => "solar07_categorical",
+        RenderStyle::Solar07Visibility => "solar07_visibility",
+        RenderStyle::Solar07RadarReflectivity => "solar07_radar_reflectivity",
+        RenderStyle::Solar07Satellite => "solar07_satellite",
+        RenderStyle::Solar07Lightning => "solar07_lightning",
+        RenderStyle::Solar07Vorticity => "solar07_vorticity",
+        RenderStyle::Solar07Stp => "solar07_stp",
+        RenderStyle::Solar07Scp => "solar07_scp",
+        RenderStyle::Solar07Ehi => "solar07_ehi",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_specs_skip_legacy_aliases() {
+        let specs = direct_product_specs();
+        assert!(specs.iter().all(|spec| spec.slug != "1h_qpf"));
+        assert!(
+            specs
+                .iter()
+                .all(|spec| spec.kind == ProductSpecKind::Direct)
+        );
+    }
+
+    #[test]
+    fn derived_specs_capture_aliases_and_provenance() {
+        let theta_e = supported_derived_product_specs()
+            .into_iter()
+            .find(|spec| spec.slug == "theta_e_2m_10m_winds")
+            .expect("theta-e spec should exist");
+        assert!(
+            theta_e
+                .aliases
+                .iter()
+                .any(|alias| alias.slug == "2m_theta_e_10m_winds")
+        );
+        assert_eq!(
+            theta_e
+                .product_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.provenance.as_ref())
+                .expect("derived spec should expose provenance")
+                .lineage,
+            ProductLineage::Derived
+        );
+    }
+
+    #[test]
+    fn windowed_specs_capture_window_metadata() {
+        let qpf_1h = windowed_product_specs()
+            .into_iter()
+            .find(|spec| spec.slug == "qpf_1h")
+            .expect("qpf_1h spec should exist");
+        assert_eq!(
+            qpf_1h
+                .product_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.provenance.as_ref())
+                .and_then(|provenance| provenance.window.clone()),
+            Some(ProductWindowSpec {
+                process: StatisticalProcess::Accumulation,
+                duration_hours: Some(1),
+            })
+        );
+    }
+}

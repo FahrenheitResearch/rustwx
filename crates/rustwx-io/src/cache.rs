@@ -2,7 +2,14 @@ use crate::{FetchRequest, FetchResult, IoError};
 use rustwx_core::{FieldSelector, GridShape, LatLonGrid, SelectedField2D};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const FETCH_METADATA_SCHEMA_VERSION: u32 = 1;
+const GRID_PAYLOAD_SCHEMA_VERSION: u32 = 1;
+const FIELD_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CachedFetchMetadata {
@@ -42,6 +49,18 @@ struct CachedFieldPayload {
     units: String,
     values: Vec<f32>,
     grid_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct VersionedJsonPayload<T> {
+    schema_version: u32,
+    payload: T,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct VersionedBinaryPayload<T> {
+    schema_version: u32,
+    payload: T,
 }
 
 pub fn artifact_cache_dir(cache_root: &Path, fetch: &FetchRequest) -> PathBuf {
@@ -91,17 +110,40 @@ pub fn load_cached_fetch(
 ) -> Result<Option<CachedFetchResult>, IoError> {
     let (bytes_path, metadata_path) = fetch_cache_paths(cache_root, fetch);
     if !bytes_path.exists() || !metadata_path.exists() {
+        if bytes_path.exists() || metadata_path.exists() {
+            quarantine_cache_paths(&[&bytes_path, &metadata_path], "incomplete_fetch_cache");
+        }
         return Ok(None);
     }
-    let Ok(bytes) = fs::read(&bytes_path) else {
+    let bytes = match fs::read(&bytes_path) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            quarantine_cache_paths(&[&bytes_path, &metadata_path], "fetch_bytes_read_error");
+            return Ok(None);
+        }
+    };
+    let metadata_bytes = match fs::read(&metadata_path) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            quarantine_cache_paths(&[&bytes_path, &metadata_path], "fetch_metadata_read_error");
+            return Ok(None);
+        }
+    };
+    let Some(metadata) = load_cached_fetch_metadata(&metadata_bytes) else {
+        quarantine_cache_paths(
+            &[&bytes_path, &metadata_path],
+            "fetch_metadata_decode_error",
+        );
         return Ok(None);
     };
-    let Ok(metadata_bytes) = fs::read(&metadata_path) else {
+    if metadata.bytes_len != bytes.len()
+        || metadata.request != fetch.request
+        || metadata.source_override != fetch.source_override
+        || metadata.variable_patterns != fetch.variable_patterns
+    {
+        quarantine_cache_paths(&[&bytes_path, &metadata_path], "fetch_metadata_mismatch");
         return Ok(None);
-    };
-    let Ok(metadata) = serde_json::from_slice::<CachedFetchMetadata>(&metadata_bytes) else {
-        return Ok(None);
-    };
+    }
     Ok(Some(CachedFetchResult {
         result: FetchResult {
             source: metadata.resolved_source,
@@ -123,7 +165,7 @@ pub fn store_cached_fetch(
     if let Some(parent) = bytes_path.parent() {
         fs::create_dir_all(parent).map_err(cache_error)?;
     }
-    fs::write(&bytes_path, &result.bytes).map_err(cache_error)?;
+    atomic_write_bytes(&bytes_path, &result.bytes)?;
     let metadata = CachedFetchMetadata {
         request: fetch.request.clone(),
         source_override: fetch.source_override,
@@ -132,11 +174,12 @@ pub fn store_cached_fetch(
         resolved_url: result.url.clone(),
         bytes_len: result.bytes.len(),
     };
-    fs::write(
-        &metadata_path,
-        serde_json::to_vec_pretty(&metadata).map_err(|err| IoError::Cache(err.to_string()))?,
-    )
-    .map_err(cache_error)?;
+    let metadata_bytes = serde_json::to_vec_pretty(&VersionedJsonPayload {
+        schema_version: FETCH_METADATA_SCHEMA_VERSION,
+        payload: metadata,
+    })
+    .map_err(|err| IoError::Cache(err.to_string()))?;
+    atomic_write_bytes(&metadata_path, &metadata_bytes)?;
 
     Ok(CachedFetchResult {
         result: result.clone(),
@@ -155,10 +198,16 @@ pub fn load_cached_selected_field(
     if !path.exists() {
         return Ok(None);
     }
-    let Ok(bytes) = fs::read(&path) else {
-        return Ok(None);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            quarantine_cache_paths(&[&path], "selected_field_read_error");
+            return Ok(None);
+        }
     };
-    let Some(field) = load_cached_selected_field_payload(cache_root, fetch, &bytes)? else {
+    let Some(field) =
+        load_cached_selected_field_payload(cache_root, fetch, selector, &path, &bytes)?
+    else {
         return Ok(None);
     };
     Ok(Some(CachedFieldResult {
@@ -188,9 +237,8 @@ pub fn store_cached_selected_field(
             lat_deg: field.grid.lat_deg.clone(),
             lon_deg: field.grid.lon_deg.clone(),
         };
-        let grid_bytes =
-            bincode::serialize(&grid_payload).map_err(|err| IoError::Cache(err.to_string()))?;
-        fs::write(&grid_path, grid_bytes).map_err(cache_error)?;
+        let grid_bytes = serialize_binary_payload(GRID_PAYLOAD_SCHEMA_VERSION, &grid_payload)?;
+        atomic_write_bytes(&grid_path, &grid_bytes)?;
     }
 
     let field_payload = CachedFieldPayload {
@@ -199,9 +247,8 @@ pub fn store_cached_selected_field(
         values: field.values.clone(),
         grid_key,
     };
-    let field_bytes =
-        bincode::serialize(&field_payload).map_err(|err| IoError::Cache(err.to_string()))?;
-    fs::write(&path, field_bytes).map_err(cache_error)?;
+    let field_bytes = serialize_binary_payload(FIELD_PAYLOAD_SCHEMA_VERSION, &field_payload)?;
+    atomic_write_bytes(&path, &field_bytes)?;
     Ok(CachedFieldResult {
         field: field.clone(),
         cache_hit: false,
@@ -245,29 +292,143 @@ fn sanitize_component(value: &str) -> String {
 fn load_cached_selected_field_payload(
     cache_root: &Path,
     fetch: &FetchRequest,
+    expected_selector: FieldSelector,
+    field_path: &Path,
     bytes: &[u8],
 ) -> Result<Option<SelectedField2D>, IoError> {
-    if let Ok(payload) = bincode::deserialize::<CachedFieldPayload>(bytes) {
-        let grid_path = grid_cache_path(cache_root, fetch, &payload.grid_key);
-        if let Ok(grid_bytes) = fs::read(&grid_path) {
-            if let Ok(grid_payload) = bincode::deserialize::<CachedGridPayload>(&grid_bytes) {
-                let grid = LatLonGrid::new(
-                    grid_payload.shape,
-                    grid_payload.lat_deg,
-                    grid_payload.lon_deg,
-                )?;
-                let field =
-                    SelectedField2D::new(payload.selector, payload.units, grid, payload.values)?;
-                return Ok(Some(field));
-            }
+    if let Some(payload) =
+        load_binary_payload::<CachedFieldPayload>(bytes, FIELD_PAYLOAD_SCHEMA_VERSION)
+    {
+        if payload.selector != expected_selector {
+            quarantine_cache_paths(&[field_path], "selected_field_selector_mismatch");
+            return Ok(None);
         }
-    }
-
-    if let Ok(field) = bincode::deserialize::<SelectedField2D>(bytes) {
+        let grid_path = grid_cache_path(cache_root, fetch, &payload.grid_key);
+        let grid_bytes = match fs::read(&grid_path) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                quarantine_cache_paths(&[field_path, &grid_path], "selected_field_grid_read_error");
+                return Ok(None);
+            }
+        };
+        let Some(grid_payload) =
+            load_binary_payload::<CachedGridPayload>(&grid_bytes, GRID_PAYLOAD_SCHEMA_VERSION)
+        else {
+            quarantine_cache_paths(
+                &[field_path, &grid_path],
+                "selected_field_grid_decode_error",
+            );
+            return Ok(None);
+        };
+        let grid = match LatLonGrid::new(
+            grid_payload.shape,
+            grid_payload.lat_deg,
+            grid_payload.lon_deg,
+        ) {
+            Ok(grid) => grid,
+            Err(_) => {
+                quarantine_cache_paths(&[field_path, &grid_path], "selected_field_grid_invalid");
+                return Ok(None);
+            }
+        };
+        let field =
+            match SelectedField2D::new(payload.selector, payload.units, grid, payload.values) {
+                Ok(field) => field,
+                Err(_) => {
+                    quarantine_cache_paths(&[field_path, &grid_path], "selected_field_invalid");
+                    return Ok(None);
+                }
+            };
+        if !selected_field_grid_is_canonical(&field) {
+            quarantine_cache_paths(
+                &[field_path, &grid_path],
+                "selected_field_grid_noncanonical",
+            );
+            return Ok(None);
+        }
         return Ok(Some(field));
     }
 
+    if let Ok(field) = bincode::deserialize::<SelectedField2D>(bytes) {
+        if field.selector != expected_selector {
+            quarantine_cache_paths(&[field_path], "legacy_selected_field_selector_mismatch");
+            return Ok(None);
+        }
+        if !selected_field_grid_is_canonical(&field) {
+            quarantine_cache_paths(&[field_path], "legacy_selected_field_grid_noncanonical");
+            return Ok(None);
+        }
+        return Ok(Some(field));
+    }
+
+    quarantine_cache_paths(&[field_path], "selected_field_decode_error");
     Ok(None)
+}
+
+fn load_cached_fetch_metadata(bytes: &[u8]) -> Option<CachedFetchMetadata> {
+    if let Ok(wrapper) = serde_json::from_slice::<VersionedJsonPayload<CachedFetchMetadata>>(bytes)
+    {
+        if wrapper.schema_version == FETCH_METADATA_SCHEMA_VERSION {
+            return Some(wrapper.payload);
+        }
+        return None;
+    }
+    serde_json::from_slice::<CachedFetchMetadata>(bytes).ok()
+}
+
+fn selected_field_grid_is_canonical(field: &SelectedField2D) -> bool {
+    let nx = field.grid.shape.nx;
+    let ny = field.grid.shape.ny;
+    if nx == 0 || ny == 0 {
+        return false;
+    }
+    if field.grid.lat_deg.len() != nx * ny || field.grid.lon_deg.len() != nx * ny {
+        return false;
+    }
+
+    for row in 0..ny {
+        let start = row * nx;
+        let end = start + nx;
+        let lat_row = &field.grid.lat_deg[start..end];
+        let lon_row = &field.grid.lon_deg[start..end];
+
+        if lat_row.iter().any(|value| !value.is_finite()) {
+            return false;
+        }
+        if lon_row
+            .iter()
+            .any(|value| !value.is_finite() || *value < -180.0 || *value > 180.0)
+        {
+            return false;
+        }
+        if lon_row.windows(2).any(|pair| pair[1] < pair[0]) {
+            return false;
+        }
+    }
+    true
+}
+
+fn serialize_binary_payload<T: Serialize>(
+    schema_version: u32,
+    payload: &T,
+) -> Result<Vec<u8>, IoError> {
+    bincode::serialize(&VersionedBinaryPayload {
+        schema_version,
+        payload,
+    })
+    .map_err(|err| IoError::Cache(err.to_string()))
+}
+
+fn load_binary_payload<T: for<'de> Deserialize<'de>>(
+    bytes: &[u8],
+    expected_schema_version: u32,
+) -> Option<T> {
+    if let Ok(wrapper) = bincode::deserialize::<VersionedBinaryPayload<T>>(bytes) {
+        if wrapper.schema_version == expected_schema_version {
+            return Some(wrapper.payload);
+        }
+    }
+    None
 }
 
 fn grid_cache_key(grid: &LatLonGrid) -> String {
@@ -294,6 +455,81 @@ fn fnv1a_mix(hash: u64, value: u64) -> u64 {
 
 fn cache_error(err: std::io::Error) -> IoError {
     IoError::Cache(err.to_string())
+}
+
+fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), IoError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(cache_error)?;
+    }
+    let tmp_path = temp_path_for(path);
+    let write_result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&tmp_path)
+            .map_err(cache_error)?;
+        file.write_all(bytes).map_err(cache_error)?;
+        file.sync_all().map_err(cache_error)?;
+        Ok::<(), IoError>(())
+    })();
+    if let Err(err) = write_result {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+    fs::rename(&tmp_path, path).map_err(|err| {
+        let _ = fs::remove_file(&tmp_path);
+        cache_error(err)
+    })
+}
+
+fn quarantine_cache_paths(paths: &[&Path], reason: &str) {
+    for path in paths {
+        quarantine_cache_path(path, reason);
+    }
+}
+
+fn quarantine_cache_path(path: &Path, reason: &str) {
+    if !path.exists() {
+        return;
+    }
+    let quarantine_path = quarantine_path_for(path, reason);
+    if let Some(parent) = quarantine_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if fs::rename(path, &quarantine_path).is_err() {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn temp_path_for(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("cache");
+    path.with_file_name(format!(
+        ".{file_name}.tmp-{}-{}",
+        process::id(),
+        unique_suffix()
+    ))
+}
+
+fn quarantine_path_for(path: &Path, reason: &str) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("cache");
+    path.with_file_name(format!(
+        "{file_name}.corrupt-{reason}-{}-{}",
+        process::id(),
+        unique_suffix()
+    ))
+}
+
+fn unique_suffix() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
 }
 
 #[cfg(test)]
@@ -419,6 +655,103 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(loaded.field, field);
+
+        fs::remove_dir_all(cache_root).ok();
+    }
+
+    #[test]
+    fn corrupt_fetch_metadata_is_quarantined_and_treated_as_cache_miss() {
+        let cache_root = temp_cache_root();
+        let fetch = sample_fetch_request();
+        let (bytes_path, metadata_path) = fetch_cache_paths(&cache_root, &fetch);
+        fs::create_dir_all(bytes_path.parent().unwrap()).unwrap();
+        fs::write(&bytes_path, [1_u8, 2, 3, 4]).unwrap();
+        fs::write(&metadata_path, b"{not-json").unwrap();
+
+        let loaded = load_cached_fetch(&cache_root, &fetch).unwrap();
+        assert!(loaded.is_none());
+        assert!(!bytes_path.exists());
+        assert!(!metadata_path.exists());
+        let quarantined = fs::read_dir(bytes_path.parent().unwrap())
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            quarantined
+                .iter()
+                .any(|entry| entry.file_name().to_string_lossy().contains("corrupt"))
+        );
+
+        fs::remove_dir_all(cache_root).ok();
+    }
+
+    #[test]
+    fn store_cached_fetch_writes_versioned_metadata() {
+        let cache_root = temp_cache_root();
+        let fetch = sample_fetch_request();
+        let result = FetchResult {
+            source: SourceId::Aws,
+            url: "https://example.test/sample.grib2".to_string(),
+            bytes: vec![9, 8, 7, 6],
+        };
+
+        store_cached_fetch(&cache_root, &fetch, &result).unwrap();
+        let (_, metadata_path) = fetch_cache_paths(&cache_root, &fetch);
+        let wrapper: VersionedJsonPayload<CachedFetchMetadata> =
+            serde_json::from_slice(&fs::read(&metadata_path).unwrap()).unwrap();
+        assert_eq!(wrapper.schema_version, FETCH_METADATA_SCHEMA_VERSION);
+        assert_eq!(wrapper.payload.resolved_source, SourceId::Aws);
+
+        fs::remove_dir_all(cache_root).ok();
+    }
+
+    #[test]
+    fn corrupt_field_cache_is_quarantined_and_treated_as_cache_miss() {
+        let cache_root = temp_cache_root();
+        let fetch = sample_fetch_request();
+        let field = sample_field();
+        let path = field_cache_path(&cache_root, &fetch, field.selector);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"definitely-not-bincode").unwrap();
+
+        let loaded = load_cached_selected_field(&cache_root, &fetch, field.selector).unwrap();
+        assert!(loaded.is_none());
+        assert!(!path.exists());
+        let quarantined = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            quarantined
+                .iter()
+                .any(|entry| entry.file_name().to_string_lossy().contains("corrupt"))
+        );
+
+        fs::remove_dir_all(cache_root).ok();
+    }
+
+    #[test]
+    fn legacy_noncanonical_field_cache_is_quarantined_and_treated_as_cache_miss() {
+        let cache_root = temp_cache_root();
+        let fetch = sample_fetch_request();
+        let mut field = sample_field();
+        field.grid.lon_deg = vec![260.0, 261.0, 260.0, 261.0];
+        let path = field_cache_path(&cache_root, &fetch, field.selector);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, bincode::serialize(&field).unwrap()).unwrap();
+
+        let loaded = load_cached_selected_field(&cache_root, &fetch, field.selector).unwrap();
+        assert!(loaded.is_none());
+        assert!(!path.exists());
+        let quarantined = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            quarantined
+                .iter()
+                .any(|entry| entry.file_name().to_string_lossy().contains("corrupt"))
+        );
 
         fs::remove_dir_all(cache_root).ok();
     }

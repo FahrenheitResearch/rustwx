@@ -1,6 +1,6 @@
 use rustwx_core::GridShape;
 
-use crate::ecape::{EcapeVolumeInputs, SurfaceInputs, VolumeShape, validate_inputs, validate_len};
+use crate::ecape::{validate_inputs, validate_len, EcapeVolumeInputs, SurfaceInputs, VolumeShape};
 use crate::error::CalcError;
 
 #[derive(Debug, Clone, Copy)]
@@ -109,6 +109,13 @@ pub struct SupportedSevereFields {
     pub ehi_sb_01km_proxy: Vec<f64>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindDiagnosticsBundle {
+    pub srh_01km_m2s2: Vec<f64>,
+    pub srh_03km_m2s2: Vec<f64>,
+    pub shear_06km_ms: Vec<f64>,
+}
+
 pub fn compute_cape_cin(
     grid: GridShape,
     volume: EcapeVolumeInputs<'_>,
@@ -168,6 +175,25 @@ pub fn compute_shear(
         bottom_m,
         top_m,
     ))
+}
+
+pub fn compute_wind_diagnostics_bundle(
+    wind: WindGridInputs<'_>,
+) -> Result<WindDiagnosticsBundle, CalcError> {
+    validate_wind_inputs(wind)?;
+    let diagnostics = metrust::calc::severe::grid::compute_wind_diagnostics_bundle(
+        wind.u_3d_ms,
+        wind.v_3d_ms,
+        wind.height_agl_3d_m,
+        wind.shape.grid.nx,
+        wind.shape.grid.ny,
+        wind.shape.nz,
+    );
+    Ok(WindDiagnosticsBundle {
+        srh_01km_m2s2: diagnostics.srh_01km_m2s2,
+        srh_03km_m2s2: diagnostics.srh_03km_m2s2,
+        shear_06km_ms: diagnostics.shear_06km_ms,
+    })
 }
 
 /// Compute fixed-layer STP from precomputed surface-based CAPE, LCL, 0-1 km SRH,
@@ -404,32 +430,30 @@ pub fn compute_supported_severe_fields(
         v_3d_ms: volume.v_ms,
         height_agl_3d_m: volume.height_agl_m,
     };
-    let srh_01km_m2s2 = compute_srh(wind, 1000.0)?;
-    let srh_03km_m2s2 = compute_srh(wind, 3000.0)?;
-    let shear_06km_ms = compute_shear(wind, 0.0, 6000.0)?;
+    let wind_diagnostics = compute_wind_diagnostics_bundle(wind)?;
     let stp_fixed = compute_stp_fixed(FixedStpInputs {
         grid,
         sbcape_jkg: &sb.cape_jkg,
         lcl_m: &sb.lcl_m,
-        srh_1km_m2s2: &srh_01km_m2s2,
-        shear_6km_ms: &shear_06km_ms,
+        srh_1km_m2s2: &wind_diagnostics.srh_01km_m2s2,
+        shear_6km_ms: &wind_diagnostics.shear_06km_ms,
     })?;
     let scp_ehi = compute_scp_ehi(ScpEhiInputs {
         grid,
         scp_cape_jkg: &mu.cape_jkg,
-        scp_srh_m2s2: &srh_03km_m2s2,
-        scp_bulk_wind_difference_ms: &shear_06km_ms,
+        scp_srh_m2s2: &wind_diagnostics.srh_03km_m2s2,
+        scp_bulk_wind_difference_ms: &wind_diagnostics.shear_06km_ms,
         ehi_cape_jkg: &sb.cape_jkg,
-        ehi_srh_m2s2: &srh_01km_m2s2,
+        ehi_srh_m2s2: &wind_diagnostics.srh_01km_m2s2,
     })?;
 
     Ok(SupportedSevereFields {
         sbcape_jkg: sb.cape_jkg,
         mlcin_jkg: ml.cin_jkg,
         mucape_jkg: mu.cape_jkg,
-        srh_01km_m2s2,
-        srh_03km_m2s2,
-        shear_06km_ms,
+        srh_01km_m2s2: wind_diagnostics.srh_01km_m2s2,
+        srh_03km_m2s2: wind_diagnostics.srh_03km_m2s2,
+        shear_06km_ms: wind_diagnostics.shear_06km_ms,
         stp_fixed,
         scp_mu_03km_06km_proxy: scp_ehi.scp,
         ehi_sb_01km_proxy: scp_ehi.ehi,
@@ -805,5 +829,24 @@ mod tests {
         assert_eq!(supported.stp_fixed, stp_fixed);
         assert_eq!(supported.scp_mu_03km_06km_proxy, proxy.scp);
         assert_eq!(supported.ehi_sb_01km_proxy, proxy.ehi);
+    }
+
+    #[test]
+    fn fused_wind_diagnostics_bundle_matches_individual_wrappers() {
+        let grid = GridShape::new(1, 1).unwrap();
+        let wind = WindGridInputs {
+            shape: VolumeShape::new(grid, 3).unwrap(),
+            u_3d_ms: &[0.0, 10.0, 20.0],
+            v_3d_ms: &[0.0, 0.0, 0.0],
+            height_agl_3d_m: &[0.0, 3000.0, 6000.0],
+        };
+
+        let fused = compute_wind_diagnostics_bundle(wind).unwrap();
+        assert_eq!(fused.srh_01km_m2s2, compute_srh(wind, 1000.0).unwrap());
+        assert_eq!(fused.srh_03km_m2s2, compute_srh(wind, 3000.0).unwrap());
+        assert_eq!(
+            fused.shear_06km_ms,
+            compute_shear(wind, 0.0, 6000.0).unwrap()
+        );
     }
 }

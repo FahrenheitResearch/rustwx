@@ -19,6 +19,8 @@ It wraps the local `wrf-render` engine with `rustwx`-level request types, Solar0
 - projected line overlays
 - PNG and image rendering
 - multi-panel composition helpers
+- optional product semantics metadata on render requests so experimental/proof
+  caveats can travel with the final artifact instead of living only in notes
 
 ## What this crate expects from callers
 

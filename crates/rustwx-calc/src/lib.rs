@@ -5,7 +5,6 @@ mod severe;
 mod windowed;
 
 pub use derived::{
-    EhiLayerOutputs, SurfaceThermoOutputs, TemperatureAdvectionInputs,
     compute_2m_apparent_temperature, compute_2m_dewpoint, compute_2m_heat_index,
     compute_2m_relative_humidity, compute_2m_theta_e, compute_2m_wind_chill, compute_ehi_01km,
     compute_ehi_03km, compute_ehi_layers, compute_lapse_rate_0_3km, compute_lapse_rate_700_500,
@@ -13,37 +12,39 @@ pub use derived::{
     compute_mucape_cin, compute_mucin, compute_sbcape, compute_sbcape_cin, compute_sbcin,
     compute_sblcl, compute_shear_01km, compute_shear_06km, compute_srh_01km, compute_srh_03km,
     compute_surface_thermo, compute_temperature_advection, compute_temperature_advection_700mb,
-    compute_temperature_advection_850mb,
+    compute_temperature_advection_850mb, EhiLayerOutputs, SurfaceThermoOutputs,
+    TemperatureAdvectionInputs,
 };
 pub use ecape::{
-    EcapeFields, EcapeFieldsWithFailureMask, EcapeGridInputs, EcapeOptions, EcapeTripletFields,
-    EcapeTripletFieldsWithFailureMask, EcapeTripletOptions, EcapeVolumeInputs, SurfaceInputs,
-    VolumeShape, compute_ecape, compute_ecape_from_parts, compute_ecape_triplet,
+    compute_ecape, compute_ecape_from_parts, compute_ecape_triplet,
     compute_ecape_triplet_from_parts, compute_ecape_triplet_with_failure_mask,
     compute_ecape_triplet_with_failure_mask_from_parts, compute_ecape_with_failure_mask,
-    compute_ecape_with_failure_mask_from_parts,
+    compute_ecape_with_failure_mask_from_parts, EcapeFields, EcapeFieldsWithFailureMask,
+    EcapeGridInputs, EcapeOptions, EcapeTripletFields, EcapeTripletFieldsWithFailureMask,
+    EcapeTripletOptions, EcapeVolumeInputs, SurfaceInputs, VolumeShape,
 };
 pub use error::CalcError;
 pub use rustwx_core::GridShape;
 pub use severe::{
-    BulkRichardsonInputs, CapeCinOutputs, EffectiveScpInputs, EffectiveSevereInputs,
-    EffectiveSevereOutputs, EffectiveStpInputs, FixedStpInputs, ScpEhiInputs, ScpEhiOutputs,
-    ShipInputs, SupportedSevereFields, WindGridInputs, compute_bri, compute_cape_cin,
-    compute_effective_severe, compute_ehi, compute_scp, compute_scp_effective, compute_scp_ehi,
-    compute_shear, compute_ship, compute_srh, compute_stp, compute_stp_effective,
-    compute_stp_fixed, compute_supported_severe_fields, critical_angle,
-    significant_tornado_parameter, supercell_composite_parameter,
+    compute_bri, compute_cape_cin, compute_effective_severe, compute_ehi, compute_scp,
+    compute_scp_effective, compute_scp_ehi, compute_shear, compute_ship, compute_srh, compute_stp,
+    compute_stp_effective, compute_stp_fixed, compute_supported_severe_fields,
+    compute_wind_diagnostics_bundle, critical_angle, significant_tornado_parameter,
+    supercell_composite_parameter, BulkRichardsonInputs, CapeCinOutputs, EffectiveScpInputs,
+    EffectiveSevereInputs, EffectiveSevereOutputs, EffectiveStpInputs, FixedStpInputs,
+    ScpEhiInputs, ScpEhiOutputs, ShipInputs, SupportedSevereFields, WindDiagnosticsBundle,
+    WindGridInputs,
 };
 pub use windowed::{max_window_fields, sum_window_fields};
 
 #[cfg(test)]
 mod tests {
     use crate::{
-        BulkRichardsonInputs, CalcError, EcapeGridInputs, EcapeOptions, EffectiveSevereInputs,
-        GridShape, ScpEhiInputs, ShipInputs, SurfaceInputs, TemperatureAdvectionInputs,
-        VolumeShape, WindGridInputs, compute_2m_theta_e, compute_bri, compute_ecape,
-        compute_effective_severe, compute_lapse_rate_700_500, compute_scp_ehi, compute_ship,
-        compute_stp, compute_temperature_advection_700mb, significant_tornado_parameter,
+        compute_2m_theta_e, compute_bri, compute_ecape, compute_effective_severe,
+        compute_lapse_rate_700_500, compute_scp_ehi, compute_ship, compute_stp,
+        compute_temperature_advection_700mb, significant_tornado_parameter, BulkRichardsonInputs,
+        CalcError, EcapeGridInputs, EcapeOptions, EffectiveSevereInputs, GridShape, ScpEhiInputs,
+        ShipInputs, SurfaceInputs, TemperatureAdvectionInputs, VolumeShape, WindGridInputs,
     };
 
     #[test]

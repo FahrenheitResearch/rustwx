@@ -1,4 +1,4 @@
-use crate::request::{Color, DiscreteColorScale, ExtendMode};
+use crate::request::{Color, DiscreteColorScale, ExtendMode, ProductSemantics};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Solar07Palette {
@@ -277,6 +277,14 @@ impl Solar07Product {
         }
     }
 
+    pub fn semantics(self) -> ProductSemantics {
+        if self.is_experimental() {
+            ProductSemantics::experimental()
+        } else {
+            ProductSemantics::operational()
+        }
+    }
+
     pub fn is_experimental(self) -> bool {
         matches!(
             self,
@@ -348,6 +356,19 @@ impl DerivedProductStyle {
 
     pub fn default_tick_step(self) -> Option<f64> {
         self.scale_preset().default_tick_step()
+    }
+
+    pub fn semantics(self) -> ProductSemantics {
+        match self {
+            Self::ApparentTemperature | Self::HeatIndex | Self::WindChill => {
+                ProductSemantics::operational()
+            }
+            Self::LiftedIndex
+            | Self::TemperatureAdvection700mb
+            | Self::TemperatureAdvection850mb
+            | Self::BulkShear01km
+            | Self::BulkShear06km => ProductSemantics::operational(),
+        }
     }
 }
 
@@ -591,6 +612,7 @@ fn range_step(start: f64, stop: f64, step: f64) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::request::{ProductMaturity, ProductSemanticFlag};
 
     #[test]
     fn explicit_ecape_panel_products_have_expected_titles_and_experimental_flags() {
@@ -599,6 +621,14 @@ mod tests {
         assert!(Solar07Product::EcapeScpExperimental.is_experimental());
         assert!(Solar07Product::EcapeEhiExperimental.is_experimental());
         assert!(!Solar07Product::Muecape.is_experimental());
+        assert_eq!(
+            Solar07Product::EcapeScpExperimental.semantics().maturity,
+            ProductMaturity::Experimental
+        );
+        assert_eq!(
+            Solar07Product::Sbcape.semantics().maturity,
+            ProductMaturity::Operational
+        );
     }
 
     #[test]
@@ -710,5 +740,16 @@ mod tests {
             DerivedProductStyle::TemperatureAdvection700mb.display_title(),
             "700 MB TEMPERATURE ADVECTION"
         );
+    }
+
+    #[test]
+    fn semantic_flags_stay_narrow_in_render_presets() {
+        let severe = Solar07Product::Scp.semantics();
+        assert_eq!(severe.maturity, ProductMaturity::Operational);
+        assert!(!severe.has_flag(ProductSemanticFlag::Proxy));
+
+        let ecape = Solar07Product::EcapeEhiExperimental.semantics();
+        assert_eq!(ecape.maturity, ProductMaturity::Experimental);
+        assert!(!ecape.has_flag(ProductSemanticFlag::ProofOriented));
     }
 }

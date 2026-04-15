@@ -1,14 +1,28 @@
-use crate::derived::{run_hrrr_derived_batch, HrrrDerivedBatchReport, HrrrDerivedBatchRequest};
-use crate::direct::{run_hrrr_direct_batch, HrrrDirectBatchReport, HrrrDirectBatchRequest};
-use crate::hrrr::{resolve_hrrr_run, DomainSpec};
+use crate::derived::{
+    HrrrDerivedBatchReport, HrrrDerivedBatchRequest, plan_derived_recipes,
+    run_hrrr_derived_batch_with_context,
+};
+use crate::direct::{
+    HrrrDirectBatchReport, HrrrDirectBatchRequest, required_direct_projection_sizes,
+    run_hrrr_direct_batch_with_context,
+};
+use crate::hrrr::{DomainSpec, prepare_hrrr_hour_context};
+use crate::publication::{
+    ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest,
+    default_run_manifest_path, publish_run_manifest,
+};
 use crate::windowed::{
-    run_hrrr_windowed_batch, HrrrWindowedBatchReport, HrrrWindowedBatchRequest, HrrrWindowedProduct,
+    HrrrWindowedBatchReport, HrrrWindowedBatchRequest, HrrrWindowedProduct,
+    run_hrrr_windowed_batch_with_context,
 };
 use rustwx_core::SourceId;
 use rustwx_models::plot_recipe;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
+use std::io;
 use std::path::PathBuf;
+use std::thread;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,19 +88,42 @@ pub fn run_hrrr_non_ecape_hour(
     }
 
     let total_start = Instant::now();
-    let latest = resolve_hrrr_run(
+    let projection_sizes = required_projection_sizes(&normalized);
+    let context = prepare_hrrr_hour_context(
         &request.date_yyyymmdd,
         request.cycle_override_utc,
+        request.forecast_hour,
         request.source,
+        request.domain.bounds,
+        &projection_sizes,
+        &request.cache_root,
+        request.use_cache,
     )?;
+    let latest = context.timestep().latest();
+    let timestep = context.timestep();
+    let context_ref = &context;
     let pinned_date = latest.cycle.date_yyyymmdd.clone();
     let pinned_cycle = Some(latest.cycle.hour_utc);
     let pinned_source = latest.source;
+    let run_slug = format!(
+        "rustwx_hrrr_{}_{}z_f{:03}_{}_non_ecape_hour",
+        pinned_date, latest.cycle.hour_utc, request.forecast_hour, request.domain.slug
+    );
+    let manifest_path = default_run_manifest_path(&request.out_dir, &run_slug);
+    let mut manifest = build_run_manifest(
+        &normalized,
+        &request.out_dir,
+        &run_slug,
+        &pinned_date,
+        latest.cycle.hour_utc,
+        request.forecast_hour,
+        &request.domain.slug,
+    );
+    manifest.mark_running();
+    publish_run_manifest(&manifest_path, &manifest)?;
 
-    let direct = if normalized.direct_recipe_slugs.is_empty() {
-        None
-    } else {
-        Some(run_hrrr_direct_batch(&HrrrDirectBatchRequest {
+    let direct_request =
+        (!normalized.direct_recipe_slugs.is_empty()).then(|| HrrrDirectBatchRequest {
             date_yyyymmdd: pinned_date.clone(),
             cycle_override_utc: pinned_cycle,
             forecast_hour: request.forecast_hour,
@@ -96,29 +133,30 @@ pub fn run_hrrr_non_ecape_hour(
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
             recipe_slugs: normalized.direct_recipe_slugs.clone(),
-        })?)
-    };
+        });
 
-    let derived = if normalized.derived_recipe_slugs.is_empty() {
-        None
-    } else {
-        Some(run_hrrr_derived_batch(&HrrrDerivedBatchRequest {
-            date_yyyymmdd: pinned_date.clone(),
-            cycle_override_utc: pinned_cycle,
-            forecast_hour: request.forecast_hour,
-            source: pinned_source,
-            domain: request.domain.clone(),
-            out_dir: request.out_dir.clone(),
-            cache_root: request.cache_root.clone(),
-            use_cache: request.use_cache,
-            recipe_slugs: normalized.derived_recipe_slugs.clone(),
-        })?)
-    };
+    let derived_request = (!normalized.derived_recipe_slugs.is_empty())
+        .then(|| {
+            let recipes = plan_derived_recipes(&normalized.derived_recipe_slugs)?;
+            Ok::<_, Box<dyn std::error::Error>>((
+                HrrrDerivedBatchRequest {
+                    date_yyyymmdd: pinned_date.clone(),
+                    cycle_override_utc: pinned_cycle,
+                    forecast_hour: request.forecast_hour,
+                    source: pinned_source,
+                    domain: request.domain.clone(),
+                    out_dir: request.out_dir.clone(),
+                    cache_root: request.cache_root.clone(),
+                    use_cache: request.use_cache,
+                    recipe_slugs: normalized.derived_recipe_slugs.clone(),
+                },
+                recipes,
+            ))
+        })
+        .transpose()?;
 
-    let windowed = if normalized.windowed_products.is_empty() {
-        None
-    } else {
-        Some(run_hrrr_windowed_batch(&HrrrWindowedBatchRequest {
+    let windowed_request =
+        (!normalized.windowed_products.is_empty()).then(|| HrrrWindowedBatchRequest {
             date_yyyymmdd: pinned_date.clone(),
             cycle_override_utc: pinned_cycle,
             forecast_hour: request.forecast_hour,
@@ -128,10 +166,61 @@ pub fn run_hrrr_non_ecape_hour(
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
             products: normalized.windowed_products.clone(),
-        })?)
+        });
+
+    let lane_result = thread::scope(|scope| {
+        let direct_handle = direct_request.as_ref().map(|lane_request| {
+            scope.spawn(move || {
+                run_hrrr_direct_batch_with_context(lane_request, latest, Some(context_ref))
+                    .map_err(thread_lane_error)
+            })
+        });
+
+        let derived_handle = derived_request.as_ref().map(|(lane_request, recipes)| {
+            scope.spawn(move || {
+                run_hrrr_derived_batch_with_context(
+                    lane_request,
+                    recipes,
+                    timestep,
+                    Some(context_ref),
+                )
+                .map_err(thread_lane_error)
+            })
+        });
+
+        let windowed_handle = windowed_request.as_ref().map(|lane_request| {
+            scope.spawn(move || {
+                run_hrrr_windowed_batch_with_context(lane_request, latest, Some(context_ref))
+                    .map_err(thread_lane_error)
+            })
+        });
+
+        let direct = direct_handle.map(join_lane_job).transpose()?;
+        let derived = derived_handle.map(join_lane_job).transpose()?;
+        let windowed = windowed_handle.map(join_lane_job).transpose()?;
+        Ok::<_, Box<dyn std::error::Error>>((direct, derived, windowed))
+    });
+
+    let (direct, derived, windowed) = match lane_result {
+        Ok(reports) => reports,
+        Err(err) => {
+            manifest.mark_failed(err.to_string());
+            publish_run_manifest(&manifest_path, &manifest)?;
+            return Err(err);
+        }
     };
 
     let summary = build_summary(&direct, &derived, &windowed);
+    apply_direct_manifest_updates(&mut manifest, &direct);
+    apply_derived_manifest_updates(&mut manifest, &derived);
+    apply_windowed_manifest_updates(&mut manifest, &windowed);
+    let blocked_count = count_blocked_artifacts(&manifest);
+    if blocked_count > 0 {
+        manifest.mark_partial(format!("{blocked_count} artifact(s) blocked"));
+    } else {
+        manifest.mark_complete();
+    }
+    publish_run_manifest(&manifest_path, &manifest)?;
     Ok(HrrrNonEcapeHourReport {
         date_yyyymmdd: pinned_date,
         cycle_utc: latest.cycle.hour_utc,
@@ -148,6 +237,15 @@ pub fn run_hrrr_non_ecape_hour(
         windowed,
         total_ms: total_start.elapsed().as_millis(),
     })
+}
+
+fn required_projection_sizes(request: &HrrrNonEcapeHourRequestedProducts) -> Vec<(u32, u32)> {
+    let mut sizes = required_direct_projection_sizes(&request.direct_recipe_slugs);
+    let default_size = (1200_u32, 900_u32);
+    if !sizes.contains(&default_size) {
+        sizes.push(default_size);
+    }
+    sizes
 }
 
 fn validate_requested_work(
@@ -188,6 +286,32 @@ fn normalize_requested_products(
         direct_recipe_slugs,
         derived_recipe_slugs: request.derived_recipe_slugs.clone(),
         windowed_products,
+    }
+}
+
+fn join_lane_job<T>(
+    handle: thread::ScopedJoinHandle<'_, io::Result<T>>,
+) -> Result<T, Box<dyn std::error::Error>> {
+    match handle.join() {
+        Ok(result) => result.map_err(Box::<dyn std::error::Error>::from),
+        Err(panic) => Err(Box::new(io::Error::other(format!(
+            "non-ECAPE lane worker panicked: {}",
+            panic_message(panic)
+        )))),
+    }
+}
+
+fn thread_lane_error(err: Box<dyn std::error::Error>) -> io::Error {
+    io::Error::other(err.to_string())
+}
+
+fn panic_message(panic: Box<dyn std::any::Any + Send + 'static>) -> String {
+    if let Some(message) = panic.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
     }
 }
 
@@ -246,6 +370,163 @@ fn build_summary(
         output_count: output_paths.len(),
         output_paths,
     }
+}
+
+fn build_run_manifest(
+    request: &HrrrNonEcapeHourRequestedProducts,
+    out_dir: &std::path::Path,
+    run_slug: &str,
+    date_yyyymmdd: &str,
+    cycle_utc: u8,
+    forecast_hour: u16,
+    domain_slug: &str,
+) -> RunPublicationManifest {
+    let mut seen = HashSet::new();
+    let mut artifacts = Vec::new();
+
+    for slug in &request.direct_recipe_slugs {
+        let key = direct_artifact_key(slug);
+        if seen.insert(key.clone()) {
+            artifacts.push(PublishedArtifactRecord::planned(
+                key,
+                expected_output_relative_path(
+                    date_yyyymmdd,
+                    cycle_utc,
+                    forecast_hour,
+                    domain_slug,
+                    slug,
+                ),
+            ));
+        }
+    }
+
+    for slug in &request.derived_recipe_slugs {
+        let key = derived_artifact_key(slug);
+        if seen.insert(key.clone()) {
+            artifacts.push(PublishedArtifactRecord::planned(
+                key,
+                expected_output_relative_path(
+                    date_yyyymmdd,
+                    cycle_utc,
+                    forecast_hour,
+                    domain_slug,
+                    slug,
+                ),
+            ));
+        }
+    }
+
+    for product in &request.windowed_products {
+        let slug = product.slug();
+        let key = windowed_artifact_key(slug);
+        if seen.insert(key.clone()) {
+            artifacts.push(PublishedArtifactRecord::planned(
+                key,
+                expected_output_relative_path(
+                    date_yyyymmdd,
+                    cycle_utc,
+                    forecast_hour,
+                    domain_slug,
+                    slug,
+                ),
+            ));
+        }
+    }
+
+    RunPublicationManifest::new(
+        "hrrr_non_ecape_hour",
+        run_slug.to_string(),
+        out_dir.to_path_buf(),
+    )
+    .with_artifacts(artifacts)
+}
+
+fn expected_output_relative_path(
+    date_yyyymmdd: &str,
+    cycle_utc: u8,
+    forecast_hour: u16,
+    domain_slug: &str,
+    product_slug: &str,
+) -> PathBuf {
+    PathBuf::from(format!(
+        "rustwx_hrrr_{}_{}z_f{:03}_{}_{}.png",
+        date_yyyymmdd, cycle_utc, forecast_hour, domain_slug, product_slug
+    ))
+}
+
+fn direct_artifact_key(slug: &str) -> String {
+    format!("direct:{slug}")
+}
+
+fn derived_artifact_key(slug: &str) -> String {
+    format!("derived:{slug}")
+}
+
+fn windowed_artifact_key(slug: &str) -> String {
+    format!("windowed:{slug}")
+}
+
+fn apply_direct_manifest_updates(
+    manifest: &mut RunPublicationManifest,
+    direct: &Option<HrrrDirectBatchReport>,
+) {
+    let Some(report) = direct else {
+        return;
+    };
+    for recipe in &report.recipes {
+        manifest.update_artifact_state(
+            &direct_artifact_key(&recipe.recipe_slug),
+            ArtifactPublicationState::Complete,
+            None,
+        );
+    }
+}
+
+fn apply_derived_manifest_updates(
+    manifest: &mut RunPublicationManifest,
+    derived: &Option<HrrrDerivedBatchReport>,
+) {
+    let Some(report) = derived else {
+        return;
+    };
+    for recipe in &report.recipes {
+        manifest.update_artifact_state(
+            &derived_artifact_key(&recipe.recipe_slug),
+            ArtifactPublicationState::Complete,
+            None,
+        );
+    }
+}
+
+fn apply_windowed_manifest_updates(
+    manifest: &mut RunPublicationManifest,
+    windowed: &Option<HrrrWindowedBatchReport>,
+) {
+    let Some(report) = windowed else {
+        return;
+    };
+    for product in &report.products {
+        manifest.update_artifact_state(
+            &windowed_artifact_key(product.product.slug()),
+            ArtifactPublicationState::Complete,
+            None,
+        );
+    }
+    for blocker in &report.blockers {
+        manifest.update_artifact_state(
+            &windowed_artifact_key(blocker.product.slug()),
+            ArtifactPublicationState::Blocked,
+            Some(blocker.reason.clone()),
+        );
+    }
+}
+
+fn count_blocked_artifacts(manifest: &RunPublicationManifest) -> usize {
+    manifest
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.state == ArtifactPublicationState::Blocked)
+        .count()
 }
 
 #[cfg(test)]
@@ -412,5 +693,148 @@ mod tests {
                 PathBuf::from("C:\\proof\\windowed.png"),
             ]
         );
+    }
+
+    #[test]
+    fn run_manifest_tracks_planned_complete_and_blocked_artifacts() {
+        let requested = HrrrNonEcapeHourRequestedProducts {
+            direct_recipe_slugs: vec!["500mb_height_winds".into()],
+            derived_recipe_slugs: vec!["sbcape".into()],
+            windowed_products: vec![HrrrWindowedProduct::Qpf6h, HrrrWindowedProduct::Qpf12h],
+        };
+        let mut manifest = build_run_manifest(
+            &requested,
+            std::path::Path::new("C:\\proof\\run"),
+            "rustwx_hrrr_20260415_12z_f006_conus_non_ecape_hour",
+            "20260415",
+            12,
+            6,
+            "conus",
+        );
+        manifest.mark_running();
+
+        let direct = HrrrDirectBatchReport {
+            date_yyyymmdd: "20260415".into(),
+            cycle_utc: 12,
+            forecast_hour: 6,
+            source: SourceId::Aws,
+            domain: domain(),
+            fetches: Vec::new(),
+            recipes: vec![HrrrDirectRenderedRecipe {
+                recipe_slug: "500mb_height_winds".into(),
+                title: "500mb Height / Winds".into(),
+                grib_product: "prs".into(),
+                output_path: PathBuf::from(
+                    "C:\\proof\\run\\rustwx_hrrr_20260415_12z_f006_conus_500mb_height_winds.png",
+                ),
+                timing: HrrrDirectRecipeTiming {
+                    project_ms: 1,
+                    render_ms: 2,
+                    total_ms: 3,
+                },
+            }],
+            total_ms: 10,
+        };
+        let derived = HrrrDerivedBatchReport {
+            date_yyyymmdd: "20260415".into(),
+            cycle_utc: 12,
+            forecast_hour: 6,
+            source: SourceId::Aws,
+            domain: domain(),
+            shared_timing: HrrrDerivedSharedTiming {
+                fetch_decode: HrrrSharedTiming {
+                    fetch_surface_ms: 0,
+                    fetch_pressure_ms: 0,
+                    decode_surface_ms: 0,
+                    decode_pressure_ms: 0,
+                    fetch_surface_cache_hit: false,
+                    fetch_pressure_cache_hit: false,
+                    decode_surface_cache_hit: false,
+                    decode_pressure_cache_hit: false,
+                },
+                compute_ms: 1,
+                project_ms: 1,
+            },
+            recipes: vec![HrrrDerivedRenderedRecipe {
+                recipe_slug: "sbcape".into(),
+                title: "SBCAPE".into(),
+                output_path: PathBuf::from(
+                    "C:\\proof\\run\\rustwx_hrrr_20260415_12z_f006_conus_sbcape.png",
+                ),
+                timing: HrrrDerivedRecipeTiming {
+                    render_ms: 1,
+                    total_ms: 1,
+                },
+            }],
+            total_ms: 5,
+        };
+        let windowed = HrrrWindowedBatchReport {
+            date_yyyymmdd: "20260415".into(),
+            cycle_utc: 12,
+            forecast_hour: 6,
+            source: SourceId::Aws,
+            domain: domain(),
+            shared_timing: HrrrWindowedSharedTiming {
+                fetch_geometry_ms: 0,
+                decode_geometry_ms: 0,
+                project_ms: 0,
+                fetch_surface_ms: 0,
+                decode_surface_ms: 0,
+                fetch_nat_ms: 0,
+                decode_nat_ms: 0,
+                geometry_fetch_cache_hit: false,
+                geometry_decode_cache_hit: false,
+                surface_hours_loaded: vec![6],
+                nat_hours_loaded: vec![6],
+            },
+            products: vec![HrrrWindowedRenderedProduct {
+                product: HrrrWindowedProduct::Qpf6h,
+                output_path: PathBuf::from(
+                    "C:\\proof\\run\\rustwx_hrrr_20260415_12z_f006_conus_qpf_6h.png",
+                ),
+                timing: HrrrWindowedProductTiming {
+                    compute_ms: 1,
+                    render_ms: 1,
+                    total_ms: 2,
+                },
+                metadata: HrrrWindowedProductMetadata {
+                    strategy: "test".into(),
+                    contributing_forecast_hours: vec![1, 2, 3, 4, 5, 6],
+                    window_hours: Some(6),
+                },
+            }],
+            blockers: vec![HrrrWindowedBlocker {
+                product: HrrrWindowedProduct::Qpf12h,
+                reason: "not enough hours".into(),
+            }],
+            total_ms: 2,
+        };
+
+        apply_direct_manifest_updates(&mut manifest, &Some(direct));
+        apply_derived_manifest_updates(&mut manifest, &Some(derived));
+        apply_windowed_manifest_updates(&mut manifest, &Some(windowed));
+        assert_eq!(count_blocked_artifacts(&manifest), 1);
+
+        let direct_record = manifest
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.artifact_key == "direct:500mb_height_winds")
+            .unwrap();
+        assert_eq!(direct_record.state, ArtifactPublicationState::Complete);
+
+        let derived_record = manifest
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.artifact_key == "derived:sbcape")
+            .unwrap();
+        assert_eq!(derived_record.state, ArtifactPublicationState::Complete);
+
+        let blocked_record = manifest
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.artifact_key == "windowed:qpf_12h")
+            .unwrap();
+        assert_eq!(blocked_record.state, ArtifactPublicationState::Blocked);
+        assert_eq!(blocked_record.detail.as_deref(), Some("not enough hours"));
     }
 }

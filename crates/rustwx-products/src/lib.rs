@@ -5,4 +5,6 @@ pub mod direct;
 pub mod gallery;
 pub mod hrrr;
 pub mod non_ecape;
+pub mod publication;
+pub mod spec;
 pub mod windowed;
