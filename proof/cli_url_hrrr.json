@@ -1,0 +1,22 @@
+[
+  {
+    "source": "Nomads",
+    "grib_url": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/hrrr.20260414/conus/hrrr.t20z.wrfsfcf02.grib2",
+    "idx_url": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/hrrr.20260414/conus/hrrr.t20z.wrfsfcf02.grib2.idx"
+  },
+  {
+    "source": "Aws",
+    "grib_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20260414/conus/hrrr.t20z.wrfsfcf02.grib2",
+    "idx_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20260414/conus/hrrr.t20z.wrfsfcf02.grib2.idx"
+  },
+  {
+    "source": "Google",
+    "grib_url": "https://storage.googleapis.com/high-resolution-rapid-refresh/hrrr.20260414/conus/hrrr.t20z.wrfsfcf02.grib2",
+    "idx_url": "https://storage.googleapis.com/high-resolution-rapid-refresh/hrrr.20260414/conus/hrrr.t20z.wrfsfcf02.grib2.idx"
+  },
+  {
+    "source": "Azure",
+    "grib_url": "https://noaahrrr.blob.core.windows.net/hrrr/hrrr.20260414/conus/hrrr.t20z.wrfsfcf02.grib2",
+    "idx_url": null
+  }
+]

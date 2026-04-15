@@ -1,0 +1,37 @@
+{
+  "assumptions": {
+    "effective_layer": "not derived in this proof path",
+    "ehi": "fixed-depth proxy using sbCAPE and 0-1 km SRH",
+    "scp": "fixed-depth proxy using muCAPE, 0-3 km SRH, and 0-6 km bulk shear",
+    "stp": "fixed-layer Thompson-style STP using sbCAPE, sbLCL, 0-1 km SRH, and 0-6 km bulk shear"
+  },
+  "cache": {
+    "pressure_decode_hit": true,
+    "pressure_decode_path": "C:\\Users\\drew\\rustwx\\proof\\cache\\hrrr\\20260414\\23z\\f000\\prs\\aws\\hgt_tmp_spfh_ugrd_vgrd\\decoded\\pressure.bin",
+    "pressure_fetch_bytes_path": "C:\\Users\\drew\\rustwx\\proof\\cache\\hrrr\\20260414\\23z\\f000\\prs\\aws\\hgt_tmp_spfh_ugrd_vgrd\\fetch.grib2",
+    "pressure_fetch_hit": true,
+    "pressure_fetch_meta_path": "C:\\Users\\drew\\rustwx\\proof\\cache\\hrrr\\20260414\\23z\\f000\\prs\\aws\\hgt_tmp_spfh_ugrd_vgrd\\fetch_meta.json",
+    "root": "C:\\Users\\drew\\rustwx\\proof\\cache",
+    "surface_decode_hit": true,
+    "surface_decode_path": "C:\\Users\\drew\\rustwx\\proof\\cache\\hrrr\\20260414\\23z\\f000\\sfc\\aws\\pres_surface_hgt_surface_tmp_2_m_above_ground_spfh_2_m_above_ground_ugrd_10_m_above_ground_vgrd_10_m_above_ground\\decoded\\surface.bin",
+    "surface_fetch_bytes_path": "C:\\Users\\drew\\rustwx\\proof\\cache\\hrrr\\20260414\\23z\\f000\\sfc\\aws\\pres_surface_hgt_surface_tmp_2_m_above_ground_spfh_2_m_above_ground_ugrd_10_m_above_ground_vgrd_10_m_above_ground\\fetch.grib2",
+    "surface_fetch_hit": true,
+    "surface_fetch_meta_path": "C:\\Users\\drew\\rustwx\\proof\\cache\\hrrr\\20260414\\23z\\f000\\sfc\\aws\\pres_surface_hgt_surface_tmp_2_m_above_ground_spfh_2_m_above_ground_ugrd_10_m_above_ground_vgrd_10_m_above_ground\\fetch_meta.json"
+  },
+  "cycle_utc": 23,
+  "date": "20260414",
+  "forecast_hour": 0,
+  "panel_path": "C:\\Users\\drew\\rustwx\\proof\\rustwx_hrrr_20260414_23z_f00_midwest_severe_proof_panel.png",
+  "region": "midwest",
+  "source": "aws",
+  "timing_ms": {
+    "compute": 10925,
+    "decode_pressure": 3725,
+    "decode_surface": 99,
+    "fetch_pressure": 71,
+    "fetch_surface": 3,
+    "project": 82,
+    "render": 823,
+    "total": 15731
+  }
+}

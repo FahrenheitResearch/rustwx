@@ -1,0 +1,8 @@
+[
+  {
+    "source": "Aws",
+    "available": true,
+    "grib_url": "https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_a/rrfs.20260414/21/rrfs.t21z.prslev.3km.f000.conus.grib2",
+    "idx_url": "https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_a/rrfs.20260414/21/rrfs.t21z.prslev.3km.f000.conus.grib2.idx"
+  }
+]

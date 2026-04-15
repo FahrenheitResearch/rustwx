@@ -1,0 +1,15 @@
+/target/
+Cargo.lock
+.DS_Store
+*.pyc
+__pycache__/
+proof/cache/
+proof/cache_reuse_demo/
+proof/cache_run*/
+proof/*.grib2
+proof/*.idx
+proof/*.bin
+proof/tmp_*
+proof/CONFIRMED_*
+proof/*decode_stats.json
+_tmp_check.rs

@@ -1,0 +1,21 @@
+{
+  "cycle_utc": 22,
+  "date": "20260414",
+  "decode_stats_path": "C:\\Users\\drew\\rustwx\\proof\\rustwx_hrrr_20260414_22z_f00_decode_stats.json",
+  "failure_count": 0,
+  "forecast_hour": 0,
+  "panel_path": "C:\\Users\\drew\\rustwx\\proof\\rustwx_hrrr_20260414_22z_f00_ecape8_panel.png",
+  "pressure_subset_path": "C:\\Users\\drew\\rustwx\\proof\\rustwx_hrrr_20260414_22z_f00_prs_subset.grib2",
+  "source": "aws",
+  "surface_subset_path": "C:\\Users\\drew\\rustwx\\proof\\rustwx_hrrr_20260414_22z_f00_sfc_subset.grib2",
+  "timing_ms": {
+    "compute": 235184,
+    "decode_pressure": 5645,
+    "decode_surface": 139,
+    "fetch_pressure": 374,
+    "fetch_surface": 258,
+    "project": 109,
+    "render": 2004,
+    "total": 244558
+  }
+}

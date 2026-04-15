@@ -1,0 +1,27 @@
+{
+  "cache": {
+    "extract_hits": 0,
+    "extract_misses": 2,
+    "fetch_hit": false,
+    "root": "C:\\Users\\drew\\rustwx\\proof\\cache"
+  },
+  "cycle": {
+    "date_yyyymmdd": "20260414",
+    "hour_utc": 23
+  },
+  "forecast_hour": 0,
+  "grib_url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20260414/conus/hrrr.t23z.wrfnatf00.grib2",
+  "model": "hrrr",
+  "panel_path": "C:\\Users\\drew\\rustwx\\proof\\rustwx_hrrr_20260414_23z_f000_midwest_composite_reflectivity_uh.png",
+  "recipe": "composite_reflectivity_uh",
+  "region": "midwest",
+  "source": "aws",
+  "timing_ms": {
+    "extract": 155,
+    "fetch": 357,
+    "parse": 0,
+    "project": 66,
+    "render": 218,
+    "total": 798
+  }
+}

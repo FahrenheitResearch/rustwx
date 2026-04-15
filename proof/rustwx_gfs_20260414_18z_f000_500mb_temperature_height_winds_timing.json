@@ -1,0 +1,20 @@
+{
+  "cycle": {
+    "date_yyyymmdd": "20260414",
+    "hour_utc": 18
+  },
+  "forecast_hour": 0,
+  "grib_url": "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20260414/18/atmos/gfs.t18z.pgrb2.0p25.f000",
+  "model": "gfs",
+  "panel_path": "C:\\Users\\drew\\rustwx\\proof\\rustwx_gfs_20260414_18z_f000_500mb_temperature_height_winds.png",
+  "recipe": "500mb_temperature_height_winds",
+  "source": "aws",
+  "timing_ms": {
+    "extract": 116,
+    "fetch": 322,
+    "parse": 0,
+    "project": 41,
+    "render": 357,
+    "total": 1380
+  }
+}

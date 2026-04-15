@@ -1,0 +1,20 @@
+{
+  "cycle": {
+    "date_yyyymmdd": "20260414",
+    "hour_utc": 23
+  },
+  "forecast_hour": 0,
+  "grib_url": "https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_a/rrfs.20260414/23/rrfs.t23z.prslev.3km.f000.conus.grib2",
+  "model": "rrfs-a",
+  "panel_path": "C:\\Users\\drew\\rustwx\\proof\\rustwx_rrfs_a_20260414_23z_f000_500mb_temperature_height_winds.png",
+  "recipe": "500mb_temperature_height_winds",
+  "source": "aws",
+  "timing_ms": {
+    "extract": 498,
+    "fetch": 352,
+    "parse": 0,
+    "project": 97,
+    "render": 3002,
+    "total": 4454
+  }
+}

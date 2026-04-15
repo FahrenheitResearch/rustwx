@@ -1,0 +1,8 @@
+[
+  {
+    "source": "Nomads",
+    "available": true,
+    "grib_url": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/hrrr.20260414/conus/hrrr.t21z.wrfsfcf00.grib2",
+    "idx_url": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/hrrr.20260414/conus/hrrr.t21z.wrfsfcf00.grib2.idx"
+  }
+]

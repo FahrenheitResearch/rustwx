@@ -1,0 +1,8 @@
+[
+  {
+    "source": "Nomads",
+    "available": true,
+    "grib_url": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gfs.20260414/18/atmos/gfs.t18z.pgrb2.0p25.f000",
+    "idx_url": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gfs.20260414/18/atmos/gfs.t18z.pgrb2.0p25.f000.idx"
+  }
+]

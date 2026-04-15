@@ -1,0 +1,22 @@
+[
+  {
+    "source": "Nomads",
+    "grib_url": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gfs.20260414/18/atmos/gfs.t18z.pgrb2.0p25.f012",
+    "idx_url": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gfs.20260414/18/atmos/gfs.t18z.pgrb2.0p25.f012.idx"
+  },
+  {
+    "source": "Aws",
+    "grib_url": "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20260414/18/atmos/gfs.t18z.pgrb2.0p25.f012",
+    "idx_url": "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20260414/18/atmos/gfs.t18z.pgrb2.0p25.f012.idx"
+  },
+  {
+    "source": "Google",
+    "grib_url": "https://storage.googleapis.com/global-forecast-system/gfs.20260414/18/atmos/gfs.t18z.pgrb2.0p25.f012",
+    "idx_url": "https://storage.googleapis.com/global-forecast-system/gfs.20260414/18/atmos/gfs.t18z.pgrb2.0p25.f012.idx"
+  },
+  {
+    "source": "Ncei",
+    "grib_url": "https://www.ncei.noaa.gov/data/global-forecast-system/access/grid-004-0.5-degree/analysis/202604/20260414/gfs_4_20260414_1800_012.grb2",
+    "idx_url": null
+  }
+]

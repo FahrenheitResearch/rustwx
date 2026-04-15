@@ -1,0 +1,4 @@
+hrrr: HRRR 3 km CONUS rapid-refresh forecast
+gfs: GFS global 0.25 degree atmospheric grid
+ecmwf-open-data: ECMWF open data IFS 0.25 degree feed
+rrfs-a: RRFS-A AWS open data feed with CONUS/NA/HI/PR variants

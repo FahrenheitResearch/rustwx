@@ -1,0 +1,20 @@
+{
+  "cycle": {
+    "date_yyyymmdd": "20260414",
+    "hour_utc": 12
+  },
+  "forecast_hour": 0,
+  "grib_url": "https://data.ecmwf.int/forecasts/20260414/12z/ifs/0p25/oper/20260414120000-0h-oper-fc.grib2",
+  "model": "ecmwf-open-data",
+  "panel_path": "C:\\Users\\drew\\rustwx\\proof\\rustwx_ecmwf_open_data_20260414_12z_f000_500mb_temperature_height_winds.png",
+  "recipe": "500mb_temperature_height_winds",
+  "source": "ecmwf",
+  "timing_ms": {
+    "extract": 133,
+    "fetch": 70,
+    "parse": 39,
+    "project": 43,
+    "render": 245,
+    "total": 531
+  }
+}

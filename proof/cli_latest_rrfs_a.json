@@ -1,0 +1,8 @@
+{
+  "model": "RrfsA",
+  "cycle": {
+    "date_yyyymmdd": "20260414",
+    "hour_utc": 21
+  },
+  "source": "Aws"
+}

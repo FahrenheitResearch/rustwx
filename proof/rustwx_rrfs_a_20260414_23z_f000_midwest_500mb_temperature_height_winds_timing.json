@@ -1,0 +1,27 @@
+{
+  "cache": {
+    "extract_hits": 0,
+    "extract_misses": 4,
+    "fetch_hit": false,
+    "root": "C:\\Users\\drew\\rustwx\\proof\\cache"
+  },
+  "cycle": {
+    "date_yyyymmdd": "20260414",
+    "hour_utc": 23
+  },
+  "forecast_hour": 0,
+  "grib_url": "https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_a/rrfs.20260414/23/rrfs.t23z.prslev.3km.f000.conus.grib2",
+  "model": "rrfs-a",
+  "panel_path": "C:\\Users\\drew\\rustwx\\proof\\rustwx_rrfs_a_20260414_23z_f000_midwest_500mb_temperature_height_winds.png",
+  "recipe": "500mb_temperature_height_winds",
+  "region": "midwest",
+  "source": "aws",
+  "timing_ms": {
+    "extract": 348,
+    "fetch": 404,
+    "parse": 0,
+    "project": 64,
+    "render": 1626,
+    "total": 2444
+  }
+}

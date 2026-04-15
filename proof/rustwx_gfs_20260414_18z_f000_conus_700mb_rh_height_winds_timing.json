@@ -1,0 +1,27 @@
+{
+  "cache": {
+    "extract_hits": 0,
+    "extract_misses": 4,
+    "fetch_hit": false,
+    "root": "C:\\Users\\drew\\rustwx\\proof\\cache"
+  },
+  "cycle": {
+    "date_yyyymmdd": "20260414",
+    "hour_utc": 18
+  },
+  "forecast_hour": 0,
+  "grib_url": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gfs.20260414/18/atmos/gfs.t18z.pgrb2.0p25.f000",
+  "model": "gfs",
+  "panel_path": "C:\\Users\\drew\\rustwx\\proof\\rustwx_gfs_20260414_18z_f000_conus_700mb_rh_height_winds.png",
+  "recipe": "700mb_rh_height_winds",
+  "region": "conus",
+  "source": "nomads",
+  "timing_ms": {
+    "extract": 115,
+    "fetch": 65,
+    "parse": 0,
+    "project": 33,
+    "render": 85,
+    "total": 300
+  }
+}
