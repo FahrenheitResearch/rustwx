@@ -3,6 +3,12 @@ use grib_core::grib2::{
     Grib2File, Grib2Message, flip_rows, grid_latlon, unpack_message_normalized,
 };
 use image::DynamicImage;
+use rustwx_calc::{
+    EcapeGridInputs, EcapeTripletOptions, EcapeVolumeInputs, GridShape as CalcGridShape,
+    ScpEhiInputs, SupportedSevereFields, SurfaceInputs, VolumeShape, WindGridInputs,
+    compute_ecape_triplet_with_failure_mask, compute_scp_ehi, compute_shear, compute_srh,
+    compute_supported_severe_fields,
+};
 use rustwx_core::{
     CycleSpec, Field2D, GridShape, LatLonGrid, ModelId, ModelRunRequest, ProductKey, RustwxError,
     SourceId,
@@ -14,8 +20,12 @@ use rustwx_render::{
     ProjectedLineOverlay, Solar07Product, render_panel_grid,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Instant;
 use wrf_render::features::load_styled_conus_features;
 use wrf_render::projection::LambertConformal;
 use wrf_render::render::map_frame_aspect_ratio;
@@ -31,6 +41,104 @@ pub const SURFACE_PATTERNS: &[&str] = &[
 ];
 
 pub const PRESSURE_PATTERNS: &[&str] = &["HGT:", "TMP:", "SPFH:", "UGRD:", "VGRD:"];
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DomainSpec {
+    pub slug: String,
+    pub bounds: (f64, f64, f64, f64),
+}
+
+impl DomainSpec {
+    pub fn new<S: Into<String>>(slug: S, bounds: (f64, f64, f64, f64)) -> Self {
+        Self {
+            slug: slug.into(),
+            bounds,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum HrrrBatchProduct {
+    SevereProofPanel,
+    Ecape8Panel,
+}
+
+impl HrrrBatchProduct {
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::SevereProofPanel => "severe_proof_panel",
+            Self::Ecape8Panel => "ecape8_panel",
+        }
+    }
+
+    pub fn layout(self) -> Solar07PanelLayout {
+        match self {
+            Self::SevereProofPanel => Solar07PanelLayout {
+                top_padding: 86,
+                ..Default::default()
+            },
+            Self::Ecape8Panel => Solar07PanelLayout::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HrrrBatchRequest {
+    pub date_yyyymmdd: String,
+    pub cycle_override_utc: Option<u8>,
+    pub forecast_hour: u16,
+    pub source: SourceId,
+    pub domain: DomainSpec,
+    pub out_dir: PathBuf,
+    pub cache_root: PathBuf,
+    pub use_cache: bool,
+    pub products: Vec<HrrrBatchProduct>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HrrrSharedTiming {
+    pub fetch_surface_ms: u128,
+    pub fetch_pressure_ms: u128,
+    pub decode_surface_ms: u128,
+    pub decode_pressure_ms: u128,
+    pub fetch_surface_cache_hit: bool,
+    pub fetch_pressure_cache_hit: bool,
+    pub decode_surface_cache_hit: bool,
+    pub decode_pressure_cache_hit: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HrrrProductTiming {
+    pub project_ms: u128,
+    pub compute_ms: u128,
+    pub render_ms: u128,
+    pub total_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HrrrRenderedProduct {
+    pub product: HrrrBatchProduct,
+    pub output_path: PathBuf,
+    pub timing: HrrrProductTiming,
+    pub metadata: HrrrProductMetadata,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HrrrProductMetadata {
+    pub failure_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HrrrBatchReport {
+    pub date_yyyymmdd: String,
+    pub cycle_utc: u8,
+    pub forecast_hour: u16,
+    pub source: SourceId,
+    pub domain: DomainSpec,
+    pub products: Vec<HrrrRenderedProduct>,
+    pub shared_timing: HrrrSharedTiming,
+    pub total_ms: u128,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HrrrSurfaceFields {
@@ -484,6 +592,450 @@ pub fn render_two_by_four_solar07_panel(
     Ok(())
 }
 
+#[derive(Debug)]
+pub(crate) struct LoadedHrrrTimestep {
+    pub(crate) latest: LatestRun,
+    pub(crate) surface_subset: HrrrFetchedSubset,
+    pub(crate) pressure_subset: HrrrFetchedSubset,
+    pub(crate) surface_decode: CachedDecode<HrrrSurfaceFields>,
+    pub(crate) pressure_decode: CachedDecode<HrrrPressureFields>,
+    pub(crate) grid: LatLonGrid,
+    pub(crate) shared_timing: HrrrSharedTiming,
+}
+
+pub fn run_hrrr_batch(
+    request: &HrrrBatchRequest,
+) -> Result<HrrrBatchReport, Box<dyn std::error::Error>> {
+    fs::create_dir_all(&request.out_dir)?;
+    if request.use_cache {
+        fs::create_dir_all(&request.cache_root)?;
+    }
+
+    let total_start = Instant::now();
+    let timestep = load_hrrr_timestep(request)?;
+    let unique_products = dedupe_products(&request.products);
+    let render_parallelism = self::png_render_parallelism(unique_products.len());
+    let mut projected_maps = HashMap::<(u32, u32, u32), ProjectedMap>::new();
+    let mut project_timings = Vec::with_capacity(unique_products.len());
+
+    for product in &unique_products {
+        let layout = product.layout();
+        let key = self::layout_key(layout);
+        let project_start = Instant::now();
+        if !projected_maps.contains_key(&key) {
+            let built = build_projected_map(
+                &timestep.surface_decode.value,
+                request.domain.bounds,
+                layout.target_aspect_ratio(),
+            )?;
+            projected_maps.insert(key, built);
+        }
+        project_timings.push(project_start.elapsed().as_millis());
+    }
+
+    let grid = &timestep.grid;
+    let date_yyyymmdd = request.date_yyyymmdd.as_str();
+    let cycle_utc = timestep.latest.cycle.hour_utc;
+    let forecast_hour = request.forecast_hour;
+    let domain_slug = request.domain.slug.as_str();
+    let surface = &timestep.surface_decode.value;
+    let pressure = &timestep.pressure_decode.value;
+    let products = thread::scope(|scope| -> Result<Vec<HrrrRenderedProduct>, io::Error> {
+        let mut products = Vec::with_capacity(unique_products.len());
+        let mut pending = VecDeque::new();
+
+        for (idx, product) in unique_products.iter().copied().enumerate() {
+            let product_start = Instant::now();
+            let project_ms = project_timings[idx];
+            let layout = product.layout();
+
+            let compute_start = Instant::now();
+            let computed = compute_hrrr_batch_product(
+                product,
+                date_yyyymmdd,
+                cycle_utc,
+                forecast_hour,
+                surface,
+                pressure,
+            )
+            .map_err(self::thread_render_error)?;
+            let compute_ms = compute_start.elapsed().as_millis();
+
+            let output_path = request.out_dir.join(format!(
+                "rustwx_hrrr_{}_{}z_f{:02}_{}_{}.png",
+                date_yyyymmdd,
+                cycle_utc,
+                forecast_hour,
+                domain_slug,
+                product.slug()
+            ));
+            let projected = projected_maps
+                .get(&self::layout_key(layout))
+                .ok_or_else(|| io::Error::other("missing projected map for HRRR batch render"))?;
+
+            pending.push_back(
+                scope.spawn(move || -> Result<HrrrRenderedProduct, io::Error> {
+                    let render_start = Instant::now();
+                    render_two_by_four_solar07_panel(
+                        &output_path,
+                        grid,
+                        projected,
+                        &computed.fields,
+                        &computed.header,
+                        layout,
+                    )
+                    .map_err(self::thread_render_error)?;
+                    let render_ms = render_start.elapsed().as_millis();
+
+                    Ok(HrrrRenderedProduct {
+                        product,
+                        output_path,
+                        timing: HrrrProductTiming {
+                            project_ms,
+                            compute_ms,
+                            render_ms,
+                            total_ms: product_start.elapsed().as_millis(),
+                        },
+                        metadata: computed.metadata,
+                    })
+                }),
+            );
+
+            if pending.len() >= render_parallelism {
+                products.push(self::join_render_job(pending.pop_front().unwrap())?);
+            }
+        }
+
+        while let Some(handle) = pending.pop_front() {
+            products.push(self::join_render_job(handle)?);
+        }
+
+        Ok(products)
+    })
+    .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+
+    Ok(HrrrBatchReport {
+        date_yyyymmdd: request.date_yyyymmdd.clone(),
+        cycle_utc: timestep.latest.cycle.hour_utc,
+        forecast_hour: request.forecast_hour,
+        source: request.source,
+        domain: request.domain.clone(),
+        products,
+        shared_timing: timestep.shared_timing,
+        total_ms: total_start.elapsed().as_millis(),
+    })
+}
+
+fn load_hrrr_timestep(
+    request: &HrrrBatchRequest,
+) -> Result<LoadedHrrrTimestep, Box<dyn std::error::Error>> {
+    load_hrrr_timestep_from_parts(
+        &request.date_yyyymmdd,
+        request.cycle_override_utc,
+        request.forecast_hour,
+        request.source,
+        &request.cache_root,
+        request.use_cache,
+    )
+}
+
+pub(crate) fn load_hrrr_timestep_from_parts(
+    date_yyyymmdd: &str,
+    cycle_override_utc: Option<u8>,
+    forecast_hour: u16,
+    source: SourceId,
+    cache_root: &Path,
+    use_cache: bool,
+) -> Result<LoadedHrrrTimestep, Box<dyn std::error::Error>> {
+    let latest = resolve_hrrr_run(date_yyyymmdd, cycle_override_utc, source)?;
+
+    let fetch_surface_start = Instant::now();
+    let surface_subset = fetch_hrrr_subset(
+        latest.cycle.clone(),
+        forecast_hour,
+        source,
+        "sfc",
+        SURFACE_PATTERNS,
+        cache_root,
+        use_cache,
+    )?;
+    let fetch_surface_ms = fetch_surface_start.elapsed().as_millis();
+
+    let fetch_pressure_start = Instant::now();
+    let pressure_subset = fetch_hrrr_subset(
+        latest.cycle.clone(),
+        forecast_hour,
+        source,
+        "prs",
+        PRESSURE_PATTERNS,
+        cache_root,
+        use_cache,
+    )?;
+    let fetch_pressure_ms = fetch_pressure_start.elapsed().as_millis();
+
+    let decode_surface_start = Instant::now();
+    let surface_decode = load_or_decode_surface(
+        &decode_cache_path(cache_root, &surface_subset.request, "surface"),
+        &surface_subset.bytes,
+        use_cache,
+    )?;
+    let decode_surface_ms = decode_surface_start.elapsed().as_millis();
+
+    let decode_pressure_start = Instant::now();
+    let pressure_decode = load_or_decode_pressure(
+        &decode_cache_path(cache_root, &pressure_subset.request, "pressure"),
+        &pressure_subset.bytes,
+        surface_decode.value.nx,
+        surface_decode.value.ny,
+        use_cache,
+    )?;
+    let decode_pressure_ms = decode_pressure_start.elapsed().as_millis();
+    let grid = surface_decode.value.core_grid()?;
+
+    Ok(LoadedHrrrTimestep {
+        latest,
+        surface_subset,
+        pressure_subset,
+        surface_decode,
+        pressure_decode,
+        grid,
+        shared_timing: HrrrSharedTiming {
+            fetch_surface_ms,
+            fetch_pressure_ms,
+            decode_surface_ms,
+            decode_pressure_ms,
+            fetch_surface_cache_hit: false,
+            fetch_pressure_cache_hit: false,
+            decode_surface_cache_hit: false,
+            decode_pressure_cache_hit: false,
+        },
+    }
+    .with_cache_flags())
+}
+
+impl LoadedHrrrTimestep {
+    fn with_cache_flags(mut self) -> Self {
+        self.shared_timing.fetch_surface_cache_hit = self.surface_subset.fetched.cache_hit;
+        self.shared_timing.fetch_pressure_cache_hit = self.pressure_subset.fetched.cache_hit;
+        self.shared_timing.decode_surface_cache_hit = self.surface_decode.cache_hit;
+        self.shared_timing.decode_pressure_cache_hit = self.pressure_decode.cache_hit;
+        self
+    }
+}
+
+#[derive(Debug)]
+struct ComputedHrrrProduct {
+    fields: Vec<Solar07PanelField>,
+    header: Solar07PanelHeader,
+    metadata: HrrrProductMetadata,
+}
+
+fn compute_hrrr_batch_product(
+    product: HrrrBatchProduct,
+    date_yyyymmdd: &str,
+    cycle_utc: u8,
+    forecast_hour: u16,
+    surface: &HrrrSurfaceFields,
+    pressure: &HrrrPressureFields,
+) -> Result<ComputedHrrrProduct, Box<dyn std::error::Error>> {
+    match product {
+        HrrrBatchProduct::SevereProofPanel => {
+            let fields = compute_severe_panel_fields(surface, pressure)?;
+            let header = Solar07PanelHeader::new(format!(
+                "HRRR Severe Proof Panel  Run: {} {:02}:00 UTC  Forecast Hour: F{:02}",
+                date_yyyymmdd, cycle_utc, forecast_hour
+            ))
+            .with_subtitle_line(
+                "STP is fixed-layer only: sbCAPE + sbLCL + 0-1 km SRH + 0-6 km bulk shear.",
+            )
+            .with_subtitle_line(
+                "SCP stays a fixed-depth proxy here: muCAPE + 0-3 km SRH + 0-6 km shear. EHI 0-1 km uses sbCAPE + 0-1 km SRH. Effective-layer derivation is not wired yet.",
+            );
+            Ok(ComputedHrrrProduct {
+                fields,
+                header,
+                metadata: HrrrProductMetadata::default(),
+            })
+        }
+        HrrrBatchProduct::Ecape8Panel => {
+            let (fields, failure_count) = compute_ecape8_panel_fields(surface, pressure)?;
+            let header = Solar07PanelHeader::new(format!(
+                "HRRR ECAPE Product Panel  Run: {} {:02}:00 UTC  Forecast Hour: F{:02}  zero-fill columns: {}",
+                date_yyyymmdd, cycle_utc, forecast_hour, failure_count
+            ))
+            .with_subtitle_line(
+                "Parcel-specific ECAPE shown for SB, ML, and MU. Single NCAPE context plus SBECIN and MLECIN. Experimental SCP/EHI shown.",
+            );
+            Ok(ComputedHrrrProduct {
+                fields,
+                header,
+                metadata: HrrrProductMetadata {
+                    failure_count: Some(failure_count),
+                },
+            })
+        }
+    }
+}
+
+fn dedupe_products(products: &[HrrrBatchProduct]) -> Vec<HrrrBatchProduct> {
+    let mut seen = std::collections::HashSet::new();
+    let mut unique = Vec::new();
+    for product in products {
+        if seen.insert(*product) {
+            unique.push(*product);
+        }
+    }
+    unique
+}
+
+pub fn severe_panel_fields_from_supported(fields: SupportedSevereFields) -> Vec<Solar07PanelField> {
+    vec![
+        Solar07PanelField::new(Solar07Product::Sbcape, "J/kg", fields.sbcape_jkg),
+        Solar07PanelField::new(Solar07Product::Mlcin, "J/kg", fields.mlcin_jkg),
+        Solar07PanelField::new(Solar07Product::Mucape, "J/kg", fields.mucape_jkg),
+        Solar07PanelField::new(Solar07Product::Srh01km, "m^2/s^2", fields.srh_01km_m2s2),
+        Solar07PanelField::new(Solar07Product::Srh03km, "m^2/s^2", fields.srh_03km_m2s2),
+        Solar07PanelField::new(Solar07Product::StpFixed, "dimensionless", fields.stp_fixed),
+        Solar07PanelField::new(
+            Solar07Product::Scp,
+            "dimensionless",
+            fields.scp_mu_03km_06km_proxy,
+        )
+        .with_title_override("SCP (MU / 0-3 KM / 0-6 KM PROXY)"),
+        Solar07PanelField::new(
+            Solar07Product::Ehi,
+            "dimensionless",
+            fields.ehi_sb_01km_proxy,
+        )
+        .with_title_override("EHI 0-1 KM"),
+    ]
+}
+
+pub fn compute_severe_panel_fields(
+    surface: &HrrrSurfaceFields,
+    pressure: &HrrrPressureFields,
+) -> Result<Vec<Solar07PanelField>, Box<dyn std::error::Error>> {
+    let grid = CalcGridShape::new(surface.nx, surface.ny)?;
+    let shape = VolumeShape::new(grid, pressure.pressure_levels_hpa.len())?;
+    let height_agl_3d = compute_height_agl_3d(surface, pressure, grid, shape);
+    let pressure_3d_pa = broadcast_levels_pa(&pressure.pressure_levels_hpa, grid.len());
+    let fields = compute_supported_severe_fields(
+        grid,
+        EcapeVolumeInputs {
+            pressure_pa: &pressure_3d_pa,
+            temperature_c: &pressure.temperature_c_3d,
+            qvapor_kgkg: &pressure.qvapor_kgkg_3d,
+            height_agl_m: &height_agl_3d,
+            u_ms: &pressure.u_ms_3d,
+            v_ms: &pressure.v_ms_3d,
+            nz: shape.nz,
+        },
+        SurfaceInputs {
+            psfc_pa: &surface.psfc_pa,
+            t2_k: &surface.t2_k,
+            q2_kgkg: &surface.q2_kgkg,
+            u10_ms: &surface.u10_ms,
+            v10_ms: &surface.v10_ms,
+        },
+    )?;
+    Ok(severe_panel_fields_from_supported(fields))
+}
+
+pub fn compute_ecape8_panel_fields(
+    surface: &HrrrSurfaceFields,
+    pressure: &HrrrPressureFields,
+) -> Result<(Vec<Solar07PanelField>, usize), Box<dyn std::error::Error>> {
+    let grid = CalcGridShape::new(surface.nx, surface.ny)?;
+    let shape = VolumeShape::new(grid, pressure.pressure_levels_hpa.len())?;
+    let height_agl_3d = compute_height_agl_3d(surface, pressure, grid, shape);
+    let pressure_3d_pa = broadcast_levels_pa(&pressure.pressure_levels_hpa, grid.len());
+    let common = EcapeGridInputs {
+        shape,
+        pressure_3d_pa: &pressure_3d_pa,
+        temperature_3d_c: &pressure.temperature_c_3d,
+        qvapor_3d_kgkg: &pressure.qvapor_kgkg_3d,
+        height_agl_3d_m: &height_agl_3d,
+        u_3d_ms: &pressure.u_ms_3d,
+        v_3d_ms: &pressure.v_ms_3d,
+        psfc_pa: &surface.psfc_pa,
+        t2_k: &surface.t2_k,
+        q2_kgkg: &surface.q2_kgkg,
+        u10_ms: &surface.u10_ms,
+        v10_ms: &surface.v10_ms,
+    };
+
+    let triplet =
+        compute_ecape_triplet_with_failure_mask(common, &EcapeTripletOptions::new("right_moving"))?;
+    let wind = WindGridInputs {
+        shape,
+        u_3d_ms: &pressure.u_ms_3d,
+        v_3d_ms: &pressure.v_ms_3d,
+        height_agl_3d_m: &height_agl_3d,
+    };
+    let srh_1km = compute_srh(wind, 1000.0)?;
+    let srh_3km = compute_srh(wind, 3000.0)?;
+    let shear_6km = compute_shear(wind, 0.0, 6000.0)?;
+    let experimental = compute_scp_ehi(ScpEhiInputs {
+        grid,
+        scp_cape_jkg: &triplet.mu.fields.ecape_jkg,
+        scp_srh_m2s2: &srh_3km,
+        scp_bulk_wind_difference_ms: &shear_6km,
+        ehi_cape_jkg: &triplet.sb.fields.ecape_jkg,
+        ehi_srh_m2s2: &srh_1km,
+    })?;
+    let failure_count = triplet.total_failure_count();
+
+    let fields = vec![
+        Solar07PanelField::new(Solar07Product::Sbecape, "J/kg", triplet.sb.fields.ecape_jkg),
+        Solar07PanelField::new(Solar07Product::Mlecape, "J/kg", triplet.ml.fields.ecape_jkg),
+        Solar07PanelField::new(Solar07Product::Muecape, "J/kg", triplet.mu.fields.ecape_jkg),
+        Solar07PanelField::new(Solar07Product::Sbncape, "J/kg", triplet.sb.fields.ncape_jkg),
+        Solar07PanelField::new(Solar07Product::Sbecin, "J/kg", triplet.sb.fields.cin_jkg),
+        Solar07PanelField::new(Solar07Product::Mlecin, "J/kg", triplet.ml.fields.cin_jkg),
+        Solar07PanelField::new(
+            Solar07Product::EcapeScpExperimental,
+            "dimensionless",
+            experimental.scp,
+        ),
+        Solar07PanelField::new(
+            Solar07Product::EcapeEhiExperimental,
+            "dimensionless",
+            experimental.ehi,
+        ),
+    ];
+    Ok((fields, failure_count))
+}
+
+pub(crate) fn compute_height_agl_3d(
+    surface: &HrrrSurfaceFields,
+    pressure: &HrrrPressureFields,
+    grid: CalcGridShape,
+    shape: VolumeShape,
+) -> Vec<f64> {
+    let mut height_agl_3d = pressure
+        .gh_m_3d
+        .iter()
+        .enumerate()
+        .map(|(idx, &value)| {
+            let ij = idx % grid.len();
+            (value - surface.orog_m[ij]).max(0.0)
+        })
+        .collect::<Vec<_>>();
+
+    for k in 1..shape.nz {
+        let level_offset = k * grid.len();
+        let prev_offset = (k - 1) * grid.len();
+        for ij in 0..grid.len() {
+            let min_height = height_agl_3d[prev_offset + ij] + 1.0;
+            if height_agl_3d[level_offset + ij] < min_height {
+                height_agl_3d[level_offset + ij] = min_height;
+            }
+        }
+    }
+
+    height_agl_3d
+}
+
 pub fn broadcast_levels_pa(levels_hpa: &[f64], n2d: usize) -> Vec<f64> {
     let mut out = Vec::with_capacity(levels_hpa.len() * n2d);
     for level in levels_hpa {
@@ -560,9 +1112,47 @@ fn normalize_longitude(lon: f64) -> f64 {
     if lon > 180.0 { lon - 360.0 } else { lon }
 }
 
+fn layout_key(layout: Solar07PanelLayout) -> (u32, u32, u32) {
+    (layout.panel_width, layout.panel_height, layout.top_padding)
+}
+
+fn png_render_parallelism(job_count: usize) -> usize {
+    thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1)
+        .min(job_count.max(1))
+}
+
+fn thread_render_error(err: impl std::fmt::Display) -> io::Error {
+    io::Error::other(err.to_string())
+}
+
+fn join_render_job<T>(
+    handle: thread::ScopedJoinHandle<'_, Result<T, io::Error>>,
+) -> Result<T, io::Error> {
+    match handle.join() {
+        Ok(result) => result,
+        Err(panic) => Err(io::Error::other(format!(
+            "render worker panicked: {}",
+            panic_message(panic)
+        ))),
+    }
+}
+
+fn panic_message(panic: Box<dyn std::any::Any + Send + 'static>) -> String {
+    if let Some(message) = panic.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustwx_calc::SupportedSevereFields;
 
     #[test]
     fn explicit_hrrr_cycle_avoids_latest_probe() {
@@ -608,5 +1198,44 @@ mod tests {
         let grid = surface.core_grid().unwrap();
         assert_eq!(grid.shape.nx, 2);
         assert_eq!(grid.shape.ny, 2);
+    }
+
+    #[test]
+    fn batch_product_dedupe_preserves_first_seen_order() {
+        let products = dedupe_products(&[
+            HrrrBatchProduct::Ecape8Panel,
+            HrrrBatchProduct::SevereProofPanel,
+            HrrrBatchProduct::Ecape8Panel,
+        ]);
+        assert_eq!(
+            products,
+            vec![
+                HrrrBatchProduct::Ecape8Panel,
+                HrrrBatchProduct::SevereProofPanel
+            ]
+        );
+    }
+
+    #[test]
+    fn severe_field_titles_keep_current_labels_explicit() {
+        let fields = severe_panel_fields_from_supported(SupportedSevereFields {
+            sbcape_jkg: vec![1.0],
+            mlcin_jkg: vec![-25.0],
+            mucape_jkg: vec![2.0],
+            srh_01km_m2s2: vec![100.0],
+            srh_03km_m2s2: vec![200.0],
+            shear_06km_ms: vec![20.0],
+            stp_fixed: vec![1.5],
+            scp_mu_03km_06km_proxy: vec![5.0],
+            ehi_sb_01km_proxy: vec![2.0],
+        });
+
+        assert_eq!(fields.len(), 8);
+        assert_eq!(fields[5].product, Solar07Product::StpFixed);
+        assert_eq!(
+            fields[6].title_override.as_deref(),
+            Some("SCP (MU / 0-3 KM / 0-6 KM PROXY)")
+        );
+        assert_eq!(fields[7].title_override.as_deref(), Some("EHI 0-1 KM"));
     }
 }

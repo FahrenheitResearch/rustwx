@@ -7,17 +7,17 @@ pub use error::RustwxRenderError;
 pub use image::RgbaImage;
 pub use panel::{PanelGridLayout, PanelPadding, compose_panel_images, render_panel_grid};
 pub use request::{
-    Color, ColorScale, ContourLayer, DiscreteColorScale, ExtendMode, Field2D, GridShape,
-    LatLonGrid, MapRenderRequest, ProductKey, ProjectedDomain, ProjectedExtent,
-    ProjectedLineOverlay, WindBarbLayer,
+    Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, ExtendMode, Field2D,
+    GridShape, LatLonGrid, MapRenderRequest, ProductKey, ProjectedDomain, ProjectedExtent,
+    ProjectedLineOverlay, WindBarbLayer, WindBarbStyle,
 };
 pub use rustwx_core::{
     Field2D as CoreField2D, GridShape as CoreGridShape, LatLonGrid as CoreLatLonGrid,
     ProductKey as CoreProductKey,
 };
 pub use solar07::{
-    ECAPE_SEVERE_PANEL_PRODUCTS, SEVERE_CLASSIC_PANEL_PRODUCTS, Solar07Palette, Solar07Preset,
-    Solar07Product,
+    DerivedProductStyle, DerivedScalePreset, ECAPE_SEVERE_PANEL_PRODUCTS,
+    SEVERE_CLASSIC_PANEL_PRODUCTS, Solar07Palette, Solar07Preset, Solar07Product, palette_scale,
 };
 
 use image::ImageFormat;
@@ -375,5 +375,74 @@ mod tests {
             request.scale,
             ColorScale::Solar07(Solar07Preset::Scp)
         ));
+    }
+
+    #[test]
+    fn derived_product_builder_renders_signed_field_with_builtin_scale() {
+        let shape = GridShape::new(4, 3).unwrap();
+        let lat = vec![35.0; shape.len()];
+        let lon = vec![-97.0; shape.len()];
+        let grid = LatLonGrid::new(shape, lat, lon).unwrap();
+        let field = Field2D::new(
+            ProductKey::named("temperature_advection_850mb"),
+            "K/hr",
+            grid,
+            vec![
+                -10.0, -8.0, -6.0, -4.0, -2.0, 0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0,
+            ],
+        )
+        .unwrap();
+
+        let request = MapRenderRequest::for_derived_product(
+            field,
+            DerivedProductStyle::TemperatureAdvection850mb,
+        );
+        let image = render_image(&request).unwrap();
+
+        let non_white = image
+            .pixels()
+            .filter(|px| px.0 != [255, 255, 255, 255])
+            .count();
+        assert!(non_white > 1000, "derived render should contain content");
+    }
+
+    #[test]
+    fn contour_only_map_with_height_contours_and_barbs_renders_visible_overlays() {
+        let base = sample_field("height");
+        let contours = sample_field("height_contours");
+        let u = sample_field("u_wind");
+        let mut v = sample_field("v_wind");
+        v.values.iter_mut().for_each(|value| *value = 10.0);
+
+        let request = MapRenderRequest::contour_only(base)
+            .with_contour_field(
+                &contours,
+                vec![500.0, 1500.0, 2500.0, 3500.0],
+                ContourStyle {
+                    labels: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .with_wind_barbs(
+                &u,
+                &v,
+                WindBarbStyle {
+                    stride_x: 2,
+                    stride_y: 2,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let image = render_image(&request).unwrap();
+        let non_white = image
+            .pixels()
+            .filter(|px| px.0 != [255, 255, 255, 255])
+            .count();
+        assert!(
+            non_white > 1000,
+            "overlay-only render should remain visible"
+        );
     }
 }

@@ -1,0 +1,578 @@
+use rustwx_core::GridShape;
+
+use crate::ecape::{EcapeVolumeInputs, SurfaceInputs, validate_inputs, validate_len};
+use crate::error::CalcError;
+use crate::severe::{
+    CapeCinOutputs, WindGridInputs, compute_cape_cin, compute_ehi, compute_shear, compute_srh,
+};
+
+#[derive(Debug, Clone, Copy)]
+pub struct TemperatureAdvectionInputs<'a> {
+    pub grid: GridShape,
+    pub temperature_2d: &'a [f64],
+    pub u_2d_ms: &'a [f64],
+    pub v_2d_ms: &'a [f64],
+    pub dx_m: f64,
+    pub dy_m: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceThermoOutputs {
+    pub dewpoint_2m_c: Vec<f64>,
+    pub relative_humidity_2m_pct: Vec<f64>,
+    pub theta_e_2m_k: Vec<f64>,
+    pub heat_index_2m_c: Vec<f64>,
+    pub wind_chill_2m_c: Vec<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EhiLayerOutputs {
+    pub ehi_01km: Vec<f64>,
+    pub ehi_03km: Vec<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SurfaceThermoState {
+    dewpoint_2m_c: Vec<f64>,
+    relative_humidity_2m_pct: Vec<f64>,
+    theta_e_2m_k: Vec<f64>,
+    heat_index_2m_c: Vec<f64>,
+    wind_chill_2m_c: Vec<f64>,
+    apparent_temperature_2m_c: Vec<f64>,
+}
+
+pub fn compute_surface_thermo(
+    grid: GridShape,
+    surface: SurfaceInputs<'_>,
+) -> Result<SurfaceThermoOutputs, CalcError> {
+    let state = compute_surface_thermo_state(grid, surface)?;
+
+    Ok(SurfaceThermoOutputs {
+        dewpoint_2m_c: state.dewpoint_2m_c,
+        relative_humidity_2m_pct: state.relative_humidity_2m_pct,
+        theta_e_2m_k: state.theta_e_2m_k,
+        heat_index_2m_c: state.heat_index_2m_c,
+        wind_chill_2m_c: state.wind_chill_2m_c,
+    })
+}
+
+pub fn compute_2m_dewpoint(
+    grid: GridShape,
+    surface: SurfaceInputs<'_>,
+) -> Result<Vec<f64>, CalcError> {
+    Ok(compute_surface_thermo(grid, surface)?.dewpoint_2m_c)
+}
+
+pub fn compute_2m_relative_humidity(
+    grid: GridShape,
+    surface: SurfaceInputs<'_>,
+) -> Result<Vec<f64>, CalcError> {
+    Ok(compute_surface_thermo(grid, surface)?.relative_humidity_2m_pct)
+}
+
+pub fn compute_2m_theta_e(
+    grid: GridShape,
+    surface: SurfaceInputs<'_>,
+) -> Result<Vec<f64>, CalcError> {
+    Ok(compute_surface_thermo(grid, surface)?.theta_e_2m_k)
+}
+
+pub fn compute_2m_heat_index(
+    grid: GridShape,
+    surface: SurfaceInputs<'_>,
+) -> Result<Vec<f64>, CalcError> {
+    Ok(compute_surface_thermo(grid, surface)?.heat_index_2m_c)
+}
+
+pub fn compute_2m_wind_chill(
+    grid: GridShape,
+    surface: SurfaceInputs<'_>,
+) -> Result<Vec<f64>, CalcError> {
+    Ok(compute_surface_thermo(grid, surface)?.wind_chill_2m_c)
+}
+
+pub fn compute_2m_apparent_temperature(
+    grid: GridShape,
+    surface: SurfaceInputs<'_>,
+) -> Result<Vec<f64>, CalcError> {
+    Ok(compute_surface_thermo_state(grid, surface)?.apparent_temperature_2m_c)
+}
+
+pub fn compute_temperature_advection(
+    inputs: TemperatureAdvectionInputs<'_>,
+) -> Result<Vec<f64>, CalcError> {
+    validate_temperature_advection_inputs(inputs)?;
+    Ok(metrust::calc::kinematics::temperature_advection(
+        inputs.temperature_2d,
+        inputs.u_2d_ms,
+        inputs.v_2d_ms,
+        inputs.grid.nx,
+        inputs.grid.ny,
+        inputs.dx_m,
+        inputs.dy_m,
+    ))
+}
+
+pub fn compute_temperature_advection_700mb(
+    inputs: TemperatureAdvectionInputs<'_>,
+) -> Result<Vec<f64>, CalcError> {
+    compute_temperature_advection(inputs)
+}
+
+pub fn compute_temperature_advection_850mb(
+    inputs: TemperatureAdvectionInputs<'_>,
+) -> Result<Vec<f64>, CalcError> {
+    compute_temperature_advection(inputs)
+}
+
+pub fn compute_lifted_index(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+) -> Result<Vec<f64>, CalcError> {
+    validate_inputs(grid, volume, surface)?;
+
+    let nxy = grid.len();
+    let mut out = Vec::with_capacity(nxy);
+
+    for ij in 0..nxy {
+        let p_prof =
+            column_with_surface_hpa(volume.pressure_pa, surface.psfc_pa, nxy, volume.nz, ij);
+        if !profile_contains_pressure(&p_prof, 500.0) {
+            out.push(f64::NAN);
+            continue;
+        }
+        let mut t_prof = Vec::with_capacity(volume.nz + 1);
+        let mut td_prof = Vec::with_capacity(volume.nz + 1);
+        t_prof.push(surface.t2_k[ij] - 273.15);
+        td_prof.push(dewpoint_from_mixing_ratio(
+            surface.psfc_pa[ij] / 100.0,
+            surface.q2_kgkg[ij],
+        ));
+        for k in 0..volume.nz {
+            let idx = k * nxy + ij;
+            let p_hpa = volume.pressure_pa[idx] / 100.0;
+            t_prof.push(volume.temperature_c[idx]);
+            td_prof.push(dewpoint_from_mixing_ratio(p_hpa, volume.qvapor_kgkg[idx]));
+        }
+
+        out.push(metrust::calc::thermo::lifted_index(
+            &p_prof, &t_prof, &td_prof,
+        ));
+    }
+
+    Ok(out)
+}
+
+pub fn compute_lapse_rate_700_500(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+) -> Result<Vec<f64>, CalcError> {
+    validate_volume_inputs(grid, volume)?;
+    let nxy = grid.len();
+    let mut out = Vec::with_capacity(nxy);
+
+    for ij in 0..nxy {
+        let pressures_hpa = column_hpa(volume.pressure_pa, nxy, volume.nz, ij);
+        let temperatures_c = column(volume.temperature_c, nxy, volume.nz, ij);
+        let heights_m = column(volume.height_agl_m, nxy, volume.nz, ij);
+
+        let Some(t700) = interp_at_pressure(&pressures_hpa, &temperatures_c, 700.0) else {
+            out.push(f64::NAN);
+            continue;
+        };
+        let Some(t500) = interp_at_pressure(&pressures_hpa, &temperatures_c, 500.0) else {
+            out.push(f64::NAN);
+            continue;
+        };
+        let Some(z700) = interp_at_pressure(&pressures_hpa, &heights_m, 700.0) else {
+            out.push(f64::NAN);
+            continue;
+        };
+        let Some(z500) = interp_at_pressure(&pressures_hpa, &heights_m, 500.0) else {
+            out.push(f64::NAN);
+            continue;
+        };
+
+        let dz_km = (z500 - z700) / 1000.0;
+        out.push(if dz_km > 0.0 {
+            (t700 - t500) / dz_km
+        } else {
+            f64::NAN
+        });
+    }
+
+    Ok(out)
+}
+
+pub fn compute_lapse_rate_0_3km(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+) -> Result<Vec<f64>, CalcError> {
+    validate_inputs(grid, volume, surface)?;
+    let nxy = grid.len();
+    let mut out = Vec::with_capacity(nxy);
+
+    for ij in 0..nxy {
+        let mut heights_m = Vec::with_capacity(volume.nz + 1);
+        let mut temperatures_c = Vec::with_capacity(volume.nz + 1);
+        heights_m.push(0.0);
+        temperatures_c.push(surface.t2_k[ij] - 273.15);
+        for k in 0..volume.nz {
+            let idx = k * nxy + ij;
+            heights_m.push(volume.height_agl_m[idx]);
+            temperatures_c.push(volume.temperature_c[idx]);
+        }
+
+        let Some(t_3km) = interp_at_height(&heights_m, &temperatures_c, 3000.0) else {
+            out.push(f64::NAN);
+            continue;
+        };
+        out.push((temperatures_c[0] - t_3km) / 3.0);
+    }
+
+    Ok(out)
+}
+
+pub fn compute_shear_01km(wind: WindGridInputs<'_>) -> Result<Vec<f64>, CalcError> {
+    compute_shear(wind, 0.0, 1000.0)
+}
+
+pub fn compute_shear_06km(wind: WindGridInputs<'_>) -> Result<Vec<f64>, CalcError> {
+    compute_shear(wind, 0.0, 6000.0)
+}
+
+pub fn compute_srh_01km(wind: WindGridInputs<'_>) -> Result<Vec<f64>, CalcError> {
+    compute_srh(wind, 1000.0)
+}
+
+pub fn compute_srh_03km(wind: WindGridInputs<'_>) -> Result<Vec<f64>, CalcError> {
+    compute_srh(wind, 3000.0)
+}
+
+pub fn compute_ehi_01km(
+    grid: GridShape,
+    cape_jkg: &[f64],
+    srh_01km_m2s2: &[f64],
+) -> Result<Vec<f64>, CalcError> {
+    compute_ehi(grid, cape_jkg, srh_01km_m2s2)
+}
+
+pub fn compute_ehi_03km(
+    grid: GridShape,
+    cape_jkg: &[f64],
+    srh_03km_m2s2: &[f64],
+) -> Result<Vec<f64>, CalcError> {
+    compute_ehi(grid, cape_jkg, srh_03km_m2s2)
+}
+
+pub fn compute_ehi_layers(
+    grid: GridShape,
+    cape_jkg: &[f64],
+    srh_01km_m2s2: &[f64],
+    srh_03km_m2s2: &[f64],
+) -> Result<EhiLayerOutputs, CalcError> {
+    Ok(EhiLayerOutputs {
+        ehi_01km: compute_ehi_01km(grid, cape_jkg, srh_01km_m2s2)?,
+        ehi_03km: compute_ehi_03km(grid, cape_jkg, srh_03km_m2s2)?,
+    })
+}
+
+pub fn compute_sbcape_cin(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+    top_m: Option<f64>,
+) -> Result<CapeCinOutputs, CalcError> {
+    compute_cape_cin(grid, volume, surface, "sb", top_m)
+}
+
+pub fn compute_mlcape_cin(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+    top_m: Option<f64>,
+) -> Result<CapeCinOutputs, CalcError> {
+    compute_cape_cin(grid, volume, surface, "ml", top_m)
+}
+
+pub fn compute_mucape_cin(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+    top_m: Option<f64>,
+) -> Result<CapeCinOutputs, CalcError> {
+    compute_cape_cin(grid, volume, surface, "mu", top_m)
+}
+
+pub fn compute_sbcape(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+    top_m: Option<f64>,
+) -> Result<Vec<f64>, CalcError> {
+    Ok(compute_sbcape_cin(grid, volume, surface, top_m)?.cape_jkg)
+}
+
+pub fn compute_sbcin(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+    top_m: Option<f64>,
+) -> Result<Vec<f64>, CalcError> {
+    Ok(compute_sbcape_cin(grid, volume, surface, top_m)?.cin_jkg)
+}
+
+pub fn compute_sblcl(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+    top_m: Option<f64>,
+) -> Result<Vec<f64>, CalcError> {
+    Ok(compute_sbcape_cin(grid, volume, surface, top_m)?.lcl_m)
+}
+
+pub fn compute_mlcape(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+    top_m: Option<f64>,
+) -> Result<Vec<f64>, CalcError> {
+    Ok(compute_mlcape_cin(grid, volume, surface, top_m)?.cape_jkg)
+}
+
+pub fn compute_mlcin(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+    top_m: Option<f64>,
+) -> Result<Vec<f64>, CalcError> {
+    Ok(compute_mlcape_cin(grid, volume, surface, top_m)?.cin_jkg)
+}
+
+pub fn compute_mucape(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+    top_m: Option<f64>,
+) -> Result<Vec<f64>, CalcError> {
+    Ok(compute_mucape_cin(grid, volume, surface, top_m)?.cape_jkg)
+}
+
+pub fn compute_mucin(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+    top_m: Option<f64>,
+) -> Result<Vec<f64>, CalcError> {
+    Ok(compute_mucape_cin(grid, volume, surface, top_m)?.cin_jkg)
+}
+
+fn validate_surface_inputs(grid: GridShape, surface: SurfaceInputs<'_>) -> Result<(), CalcError> {
+    let n = grid.len();
+    validate_len("psfc_pa", surface.psfc_pa.len(), n)?;
+    validate_len("t2_k", surface.t2_k.len(), n)?;
+    validate_len("q2_kgkg", surface.q2_kgkg.len(), n)?;
+    validate_len("u10_ms", surface.u10_ms.len(), n)?;
+    validate_len("v10_ms", surface.v10_ms.len(), n)?;
+    Ok(())
+}
+
+fn validate_volume_inputs(grid: GridShape, volume: EcapeVolumeInputs<'_>) -> Result<(), CalcError> {
+    let n3d = grid.len() * volume.nz;
+    validate_len("pressure_pa", volume.pressure_pa.len(), n3d)?;
+    validate_len("temperature_c", volume.temperature_c.len(), n3d)?;
+    validate_len("qvapor_kgkg", volume.qvapor_kgkg.len(), n3d)?;
+    validate_len("height_agl_m", volume.height_agl_m.len(), n3d)?;
+    validate_len("u_ms", volume.u_ms.len(), n3d)?;
+    validate_len("v_ms", volume.v_ms.len(), n3d)?;
+    Ok(())
+}
+
+fn validate_temperature_advection_inputs(
+    inputs: TemperatureAdvectionInputs<'_>,
+) -> Result<(), CalcError> {
+    let n = inputs.grid.len();
+    validate_len("temperature_2d", inputs.temperature_2d.len(), n)?;
+    validate_len("u_2d_ms", inputs.u_2d_ms.len(), n)?;
+    validate_len("v_2d_ms", inputs.v_2d_ms.len(), n)?;
+    Ok(())
+}
+
+fn compute_surface_thermo_state(
+    grid: GridShape,
+    surface: SurfaceInputs<'_>,
+) -> Result<SurfaceThermoState, CalcError> {
+    validate_surface_inputs(grid, surface)?;
+
+    let mut dewpoint_2m_c = Vec::with_capacity(grid.len());
+    let mut relative_humidity_2m_pct = Vec::with_capacity(grid.len());
+    let mut theta_e_2m_k = Vec::with_capacity(grid.len());
+    let mut heat_index_2m_c = Vec::with_capacity(grid.len());
+    let mut wind_chill_2m_c = Vec::with_capacity(grid.len());
+    let mut apparent_temperature_2m_c = Vec::with_capacity(grid.len());
+
+    for idx in 0..grid.len() {
+        let pressure_hpa = surface.psfc_pa[idx] / 100.0;
+        let temperature_c = surface.t2_k[idx] - 273.15;
+        let dewpoint_c = dewpoint_from_mixing_ratio(pressure_hpa, surface.q2_kgkg[idx]);
+        let relative_humidity_pct =
+            metrust::calc::thermo::relative_humidity_from_dewpoint(temperature_c, dewpoint_c);
+        let wind_speed_ms = (surface.u10_ms[idx] * surface.u10_ms[idx]
+            + surface.v10_ms[idx] * surface.v10_ms[idx])
+            .sqrt();
+
+        dewpoint_2m_c.push(dewpoint_c);
+        relative_humidity_2m_pct.push(relative_humidity_pct);
+        theta_e_2m_k.push(metrust::calc::thermo::equivalent_potential_temperature(
+            pressure_hpa,
+            temperature_c,
+            dewpoint_c,
+        ));
+        heat_index_2m_c.push(metrust::calc::atmo::heat_index(
+            temperature_c,
+            relative_humidity_pct,
+        ));
+        wind_chill_2m_c.push(metrust::calc::atmo::windchill(temperature_c, wind_speed_ms));
+        apparent_temperature_2m_c.push(metrust::calc::atmo::apparent_temperature(
+            temperature_c,
+            relative_humidity_pct,
+            wind_speed_ms,
+        ));
+    }
+
+    Ok(SurfaceThermoState {
+        dewpoint_2m_c,
+        relative_humidity_2m_pct,
+        theta_e_2m_k,
+        heat_index_2m_c,
+        wind_chill_2m_c,
+        apparent_temperature_2m_c,
+    })
+}
+
+fn dewpoint_from_mixing_ratio(pressure_hpa: f64, mixing_ratio_kgkg: f64) -> f64 {
+    let q = mixing_ratio_kgkg.max(0.0);
+    let vapor_pressure_hpa = (q * pressure_hpa / (0.622 + q)).max(1.0e-10);
+    let ln_e = (vapor_pressure_hpa / 6.112).ln();
+    (243.5 * ln_e) / (17.67 - ln_e)
+}
+
+fn column(values: &[f64], nxy: usize, nz: usize, ij: usize) -> Vec<f64> {
+    (0..nz).map(|k| values[k * nxy + ij]).collect()
+}
+
+fn column_hpa(values_pa: &[f64], nxy: usize, nz: usize, ij: usize) -> Vec<f64> {
+    (0..nz).map(|k| values_pa[k * nxy + ij] / 100.0).collect()
+}
+
+fn column_with_surface_hpa(
+    values_pa: &[f64],
+    surface_pa: &[f64],
+    nxy: usize,
+    nz: usize,
+    ij: usize,
+) -> Vec<f64> {
+    let mut column = Vec::with_capacity(nz + 1);
+    column.push(surface_pa[ij] / 100.0);
+    column.extend((0..nz).map(|k| values_pa[k * nxy + ij] / 100.0));
+    column
+}
+
+fn profile_contains_pressure(pressures_hpa: &[f64], target_hpa: f64) -> bool {
+    let Some((&surface_hpa, rest)) = pressures_hpa.split_first() else {
+        return false;
+    };
+    let Some(&top_hpa) = rest.last().or(Some(&surface_hpa)) else {
+        return false;
+    };
+    surface_hpa >= target_hpa && top_hpa <= target_hpa
+}
+
+fn interp_at_pressure(pressures_hpa: &[f64], values: &[f64], target_hpa: f64) -> Option<f64> {
+    if pressures_hpa.len() != values.len() || pressures_hpa.is_empty() {
+        return None;
+    }
+    for i in 0..pressures_hpa.len() - 1 {
+        let p0 = pressures_hpa[i];
+        let p1 = pressures_hpa[i + 1];
+        if (p0 >= target_hpa && p1 <= target_hpa) || (p0 <= target_hpa && p1 >= target_hpa) {
+            let frac = (target_hpa - p0) / (p1 - p0);
+            return Some(values[i] + frac * (values[i + 1] - values[i]));
+        }
+    }
+    None
+}
+
+fn interp_at_height(heights_m: &[f64], values: &[f64], target_m: f64) -> Option<f64> {
+    if heights_m.len() != values.len() || heights_m.is_empty() {
+        return None;
+    }
+    if target_m < heights_m[0] || target_m > *heights_m.last().unwrap() {
+        return None;
+    }
+    for i in 0..heights_m.len() - 1 {
+        let h0 = heights_m[i];
+        let h1 = heights_m[i + 1];
+        if h0 <= target_m && h1 >= target_m {
+            let frac = if (h1 - h0).abs() < f64::EPSILON {
+                0.0
+            } else {
+                (target_m - h0) / (h1 - h0)
+            };
+            return Some(values[i] + frac * (values[i + 1] - values[i]));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dewpoint_from_mixing_ratio_matches_expected_surface_value() {
+        let td = dewpoint_from_mixing_ratio(1000.0, 0.014);
+        assert!(td > 18.0 && td < 21.0, "dewpoint={td}");
+    }
+
+    #[test]
+    fn pressure_interpolation_handles_standard_level() {
+        let pressures = [1000.0, 850.0, 700.0, 500.0];
+        let values = [20.0, 14.0, 8.0, -8.0];
+        assert_eq!(interp_at_pressure(&pressures, &values, 700.0), Some(8.0));
+        assert!(interp_at_pressure(&pressures, &values, 925.0).is_some());
+    }
+
+    #[test]
+    fn height_interpolation_requires_target_inside_profile() {
+        let heights = [0.0, 1500.0, 3000.0];
+        let values = [25.0, 15.0, 5.0];
+        assert_eq!(interp_at_height(&heights, &values, 3000.0), Some(5.0));
+        assert!(interp_at_height(&heights, &values, 4000.0).is_none());
+    }
+
+    #[test]
+    fn temperature_advection_wrapper_matches_metrust_kernel() {
+        let inputs = TemperatureAdvectionInputs {
+            grid: GridShape::new(3, 1).unwrap(),
+            temperature_2d: &[0.0, 1.0, 2.0],
+            u_2d_ms: &[2.0, 2.0, 2.0],
+            v_2d_ms: &[0.0, 0.0, 0.0],
+            dx_m: 1000.0,
+            dy_m: 1000.0,
+        };
+        let wrapper = compute_temperature_advection(inputs).unwrap();
+        let direct = metrust::calc::kinematics::temperature_advection(
+            inputs.temperature_2d,
+            inputs.u_2d_ms,
+            inputs.v_2d_ms,
+            inputs.grid.nx,
+            inputs.grid.ny,
+            inputs.dx_m,
+            inputs.dy_m,
+        );
+        assert_eq!(wrapper, direct);
+    }
+}

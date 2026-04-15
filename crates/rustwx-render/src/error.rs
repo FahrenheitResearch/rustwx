@@ -12,6 +12,8 @@ pub enum RustwxRenderError {
         expected: usize,
         actual: usize,
     },
+    #[error("render request overlay grid does not match base field grid for {layer}")]
+    OverlayGridMismatch { layer: &'static str },
     #[error("render request requires at least two x/y points per dimension")]
     DegenerateProjectedGrid,
     #[error("render request requires matching projected x/y arrays")]

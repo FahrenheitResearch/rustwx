@@ -236,8 +236,8 @@ fn axis_span(
 mod tests {
     use super::*;
     use crate::{
-        ColorScale, Field2D, GridShape, LatLonGrid, ProductKey, ProjectedDomain, ProjectedExtent,
-        ProjectedLineOverlay,
+        ColorScale, ContourStyle, Field2D, GridShape, LatLonGrid, ProductKey, ProjectedDomain,
+        ProjectedExtent, ProjectedLineOverlay, WindBarbStyle,
     };
 
     fn solid_panel(width: u32, height: u32, rgba: [u8; 4]) -> RgbaImage {
@@ -385,5 +385,47 @@ mod tests {
             non_background > 7000,
             "projected multi-panel render should contain plot and overlay content"
         );
+    }
+
+    #[test]
+    fn render_panel_grid_supports_mixed_filled_and_overlay_only_requests() {
+        let layout = PanelGridLayout::new(1, 2, 160, 120).unwrap();
+        let filled = sample_request("temperature", 160, 120);
+        let height_field = sample_request("height", 160, 120).field;
+        let contour_field = sample_request("height_contours", 160, 120).field;
+        let u_field = sample_request("u10", 160, 120).field;
+        let v_field = sample_request("v10", 160, 120).field;
+        let mut overlay_only = crate::MapRenderRequest::contour_only(height_field)
+            .with_contour_field(
+                &contour_field,
+                vec![250.0, 500.0, 750.0, 1000.0],
+                ContourStyle {
+                    labels: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .with_wind_barbs(
+                &u_field,
+                &v_field,
+                WindBarbStyle {
+                    stride_x: 1,
+                    stride_y: 1,
+                    length_px: 14.0,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        overlay_only.width = 160;
+        overlay_only.height = 120;
+
+        let canvas = render_panel_grid(&layout, &[filled, overlay_only]).unwrap();
+        assert_eq!(canvas.width(), 320);
+        assert_eq!(canvas.height(), 120);
+        let non_white = canvas
+            .pixels()
+            .filter(|px| px.0 != [255, 255, 255, 255])
+            .count();
+        assert!(non_white > 10000);
     }
 }

@@ -15,7 +15,13 @@
 
 - live source probes for supported models
 - cached byte fetches
-- structured GRIB extraction for the selector subset used by current proofs
+- structured GRIB extraction for the selector subset used by current proofs and
+  the current direct catalog, including:
+  - 200/300/500/700/850 hPa height, temperature, RH, absolute vorticity, and winds
+  - 2 m AGL temperature, dewpoint, and relative humidity
+  - 10 m AGL u/v wind plus operational 10 m gust matching
+  - MSLP, precipitable water, total cloud cover, and visibility
+  - native composite reflectivity plus 1 km AGL reflectivity where present
 - batch selector extraction from one parsed GRIB where possible
 - field cache layout organized by model/date/cycle/fhr/product/source/patterns
 - shared cached grid geometry so repeated fields from the same timestep do not
@@ -25,6 +31,10 @@
 
 - extraction is still selector-driven rather than a broad general decoder
 - volume-level APIs are not yet the default path
+- simulated IR remains intentionally unsupported here until the GRIB signature is
+  pinned down cleanly enough to keep selector semantics exact
+- relative vorticity, lightning, smoke, and derived surface fields still need
+  their own explicit selector/provenance work
 - this crate still relies on sibling local GRIB/download crates
 
 ## Minimal example

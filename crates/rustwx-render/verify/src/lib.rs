@@ -7,9 +7,9 @@ pub mod solar07;
 
 pub use error::RustwxRenderError;
 pub use request::{
-    Color, ColorScale, ContourLayer, DiscreteColorScale, ExtendMode, Field2D, GridShape,
-    LatLonGrid, MapRenderRequest, ProductKey, ProjectedDomain, ProjectedExtent,
-    ProjectedLineOverlay, WindBarbLayer,
+    Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, ExtendMode, Field2D,
+    GridShape, LatLonGrid, MapRenderRequest, ProductKey, ProjectedDomain, ProjectedExtent,
+    ProjectedLineOverlay, WindBarbLayer, WindBarbStyle,
 };
 
 use std::path::Path;

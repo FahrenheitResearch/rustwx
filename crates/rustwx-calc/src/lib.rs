@@ -1,7 +1,20 @@
+mod derived;
 mod ecape;
 mod error;
 mod severe;
+mod windowed;
 
+pub use derived::{
+    EhiLayerOutputs, SurfaceThermoOutputs, TemperatureAdvectionInputs,
+    compute_2m_apparent_temperature, compute_2m_dewpoint, compute_2m_heat_index,
+    compute_2m_relative_humidity, compute_2m_theta_e, compute_2m_wind_chill, compute_ehi_01km,
+    compute_ehi_03km, compute_ehi_layers, compute_lapse_rate_0_3km, compute_lapse_rate_700_500,
+    compute_lifted_index, compute_mlcape, compute_mlcape_cin, compute_mlcin, compute_mucape,
+    compute_mucape_cin, compute_mucin, compute_sbcape, compute_sbcape_cin, compute_sbcin,
+    compute_sblcl, compute_shear_01km, compute_shear_06km, compute_srh_01km, compute_srh_03km,
+    compute_surface_thermo, compute_temperature_advection, compute_temperature_advection_700mb,
+    compute_temperature_advection_850mb,
+};
 pub use ecape::{
     EcapeFields, EcapeFieldsWithFailureMask, EcapeGridInputs, EcapeOptions, EcapeTripletFields,
     EcapeTripletFieldsWithFailureMask, EcapeTripletOptions, EcapeVolumeInputs, SurfaceInputs,
@@ -21,14 +34,16 @@ pub use severe::{
     compute_stp_fixed, compute_supported_severe_fields, critical_angle,
     significant_tornado_parameter, supercell_composite_parameter,
 };
+pub use windowed::{max_window_fields, sum_window_fields};
 
 #[cfg(test)]
 mod tests {
     use crate::{
         BulkRichardsonInputs, CalcError, EcapeGridInputs, EcapeOptions, EffectiveSevereInputs,
-        GridShape, ScpEhiInputs, ShipInputs, VolumeShape, WindGridInputs, compute_bri,
-        compute_ecape, compute_effective_severe, compute_scp_ehi, compute_ship, compute_stp,
-        significant_tornado_parameter,
+        GridShape, ScpEhiInputs, ShipInputs, SurfaceInputs, TemperatureAdvectionInputs,
+        VolumeShape, WindGridInputs, compute_2m_theta_e, compute_bri, compute_ecape,
+        compute_effective_severe, compute_lapse_rate_700_500, compute_scp_ehi, compute_ship,
+        compute_stp, compute_temperature_advection_700mb, significant_tornado_parameter,
     };
 
     #[test]
@@ -152,5 +167,63 @@ mod tests {
 
         assert_eq!(outputs.scp, vec![9.0]);
         assert_eq!(outputs.ehi, vec![2.5]);
+    }
+
+    #[test]
+    fn surface_theta_e_wrapper_is_finite() {
+        let grid = GridShape::new(1, 1).unwrap();
+        let theta_e = compute_2m_theta_e(
+            grid,
+            SurfaceInputs {
+                psfc_pa: &[100000.0],
+                t2_k: &[303.15],
+                q2_kgkg: &[0.014],
+                u10_ms: &[5.0],
+                v10_ms: &[0.0],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(theta_e.len(), 1);
+        assert!(theta_e[0].is_finite());
+        assert!(theta_e[0] > 300.0);
+    }
+
+    #[test]
+    fn lapse_rate_700_500_wrapper_returns_expected_length() {
+        let grid = GridShape::new(1, 1).unwrap();
+        let lapse_rate = compute_lapse_rate_700_500(
+            grid,
+            crate::EcapeVolumeInputs {
+                pressure_pa: &[90000.0, 70000.0, 50000.0],
+                temperature_c: &[18.0, 6.0, -8.0],
+                qvapor_kgkg: &[0.012, 0.006, 0.001],
+                height_agl_m: &[900.0, 3000.0, 5600.0],
+                u_ms: &[5.0, 10.0, 20.0],
+                v_ms: &[0.0, 5.0, 10.0],
+                nz: 3,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(lapse_rate.len(), 1);
+        assert!(lapse_rate[0].is_finite());
+    }
+
+    #[test]
+    fn temperature_advection_700mb_wrapper_is_finite() {
+        let grid = GridShape::new(3, 1).unwrap();
+        let advection = compute_temperature_advection_700mb(TemperatureAdvectionInputs {
+            grid,
+            temperature_2d: &[0.0, 1.0, 2.0],
+            u_2d_ms: &[2.0, 2.0, 2.0],
+            v_2d_ms: &[0.0, 0.0, 0.0],
+            dx_m: 1000.0,
+            dy_m: 1000.0,
+        })
+        .unwrap();
+
+        assert_eq!(advection.len(), grid.len());
+        assert!(advection.iter().all(|value| value.is_finite()));
     }
 }

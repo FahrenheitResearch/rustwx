@@ -151,7 +151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "STP is fixed-layer only: sbCAPE + sbLCL + 0-1 km SRH + 0-6 km bulk shear.",
     )
     .with_subtitle_line(
-        "SCP and EHI are fixed-depth proxies here: SCP uses muCAPE + 0-3 km SRH + 0-6 km shear. EHI uses sbCAPE + 0-1 km SRH. Effective-layer derivation is not wired yet.",
+        "SCP stays a fixed-depth proxy here: muCAPE + 0-3 km SRH + 0-6 km shear. EHI 0-1 km uses sbCAPE + 0-1 km SRH. Effective-layer derivation is not wired yet.",
     );
     render_two_by_four_solar07_panel(
         &panel_path,
@@ -195,7 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "assumptions": {
                 "stp": "fixed-layer Thompson-style STP using sbCAPE, sbLCL, 0-1 km SRH, and 0-6 km bulk shear",
                 "scp": "fixed-depth proxy using muCAPE, 0-3 km SRH, and 0-6 km bulk shear",
-                "ehi": "fixed-depth proxy using sbCAPE and 0-1 km SRH",
+                "ehi": "0-1 km EHI using sbCAPE and 0-1 km SRH",
                 "effective_layer": "not derived in this proof path"
             },
             "cache": {
@@ -301,7 +301,7 @@ fn panel_fields_from_supported(fields: SupportedSevereFields) -> Vec<Solar07Pane
             "dimensionless",
             fields.ehi_sb_01km_proxy,
         )
-        .with_title_override("EHI (SB / 0-1 KM PROXY)"),
+        .with_title_override("EHI 0-1 KM"),
     ]
 }
 
@@ -310,7 +310,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn severe_panel_products_keep_fixed_and_proxy_labels_explicit() {
+    fn severe_panel_products_keep_current_labels_explicit() {
         let fields = panel_fields_from_supported(SupportedSevereFields {
             sbcape_jkg: vec![1.0],
             mlcin_jkg: vec![-25.0],
@@ -329,9 +329,6 @@ mod tests {
             fields[6].title_override.as_deref(),
             Some("SCP (MU / 0-3 KM / 0-6 KM PROXY)")
         );
-        assert_eq!(
-            fields[7].title_override.as_deref(),
-            Some("EHI (SB / 0-1 KM PROXY)")
-        );
+        assert_eq!(fields[7].title_override.as_deref(), Some("EHI 0-1 KM"));
     }
 }

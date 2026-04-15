@@ -10,10 +10,11 @@ rust-version.workspace = true
 bincode = "1.3"
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde.workspace = true
+serde_json.workspace = true
+rustwx-calc = { path = "../rustwx-calc" }
 rustwx-core = { path = "../rustwx-core" }
 rustwx-io = { path = "../rustwx-io" }
 rustwx-models = { path = "../rustwx-models" }
 rustwx-render = { path = "../rustwx-render" }
 grib-core = { path = "../../../cfrust/crates/grib-core" }
 wrf-render = { path = "../../../wrf-rust-plots/crates/wrf-render" }
-

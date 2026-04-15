@@ -182,6 +182,38 @@ pub struct ContourLayer {
     pub show_extrema: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContourStyle {
+    pub color: Color,
+    pub width: u32,
+    pub labels: bool,
+    pub show_extrema: bool,
+}
+
+impl Default for ContourStyle {
+    fn default() -> Self {
+        Self {
+            color: Color::BLACK,
+            width: 1,
+            labels: false,
+            show_extrema: false,
+        }
+    }
+}
+
+impl ContourLayer {
+    pub fn from_field(field: &Field2D, levels: Vec<f64>, style: ContourStyle) -> Self {
+        Self {
+            data: field.values.clone(),
+            levels,
+            color: style.color,
+            width: style.width,
+            labels: style.labels,
+            show_extrema: style.show_extrema,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WindBarbLayer {
     pub u: Vec<f32>,
@@ -191,6 +223,41 @@ pub struct WindBarbLayer {
     pub color: Color,
     pub width: u32,
     pub length_px: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WindBarbStyle {
+    pub stride_x: usize,
+    pub stride_y: usize,
+    pub color: Color,
+    pub width: u32,
+    pub length_px: f64,
+}
+
+impl Default for WindBarbStyle {
+    fn default() -> Self {
+        Self {
+            stride_x: 8,
+            stride_y: 8,
+            color: Color::BLACK,
+            width: 1,
+            length_px: 20.0,
+        }
+    }
+}
+
+impl WindBarbLayer {
+    pub fn from_fields(u: &Field2D, v: &Field2D, style: WindBarbStyle) -> Self {
+        Self {
+            u: u.values.clone(),
+            v: v.values.clone(),
+            stride_x: style.stride_x.max(1),
+            stride_y: style.stride_y.max(1),
+            color: style.color,
+            width: style.width,
+            length_px: style.length_px,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -247,6 +314,109 @@ impl MapRenderRequest {
         product: crate::solar07::Solar07Product,
     ) -> Self {
         Self::for_solar07_product(field.into(), product)
+    }
+
+    pub fn for_derived_product(
+        field: Field2D,
+        product: crate::solar07::DerivedProductStyle,
+    ) -> Self {
+        let mut request = Self::new(field, ColorScale::Discrete(product.scale()));
+        request.title = Some(product.display_title().to_string());
+        request.cbar_tick_step = product.default_tick_step();
+        request
+    }
+
+    pub fn for_core_derived_product(
+        field: core::Field2D,
+        product: crate::solar07::DerivedProductStyle,
+    ) -> Self {
+        Self::for_derived_product(field.into(), product)
+    }
+
+    pub fn for_palette_fill(
+        field: Field2D,
+        palette: crate::solar07::Solar07Palette,
+        levels: Vec<f64>,
+        extend: ExtendMode,
+    ) -> Self {
+        Self::new(
+            field,
+            ColorScale::Discrete(crate::solar07::palette_scale(palette, levels, extend, None)),
+        )
+    }
+
+    pub fn contour_only(field: Field2D) -> Self {
+        let mut blank_field = field;
+        blank_field.values.fill(0.5);
+        let mut request = Self::new(blank_field, ColorScale::Discrete(blank_fill_scale()));
+        request.colorbar = false;
+        request
+    }
+
+    pub fn add_contour_field(
+        &mut self,
+        field: &Field2D,
+        levels: Vec<f64>,
+        style: ContourStyle,
+    ) -> Result<&mut Self, RustwxRenderError> {
+        ensure_same_grid(&self.field, field, "contour")?;
+        self.contours
+            .push(ContourLayer::from_field(field, levels, style));
+        Ok(self)
+    }
+
+    pub fn with_contour_field(
+        mut self,
+        field: &Field2D,
+        levels: Vec<f64>,
+        style: ContourStyle,
+    ) -> Result<Self, RustwxRenderError> {
+        self.add_contour_field(field, levels, style)?;
+        Ok(self)
+    }
+
+    pub fn add_wind_barbs(
+        &mut self,
+        u: &Field2D,
+        v: &Field2D,
+        style: WindBarbStyle,
+    ) -> Result<&mut Self, RustwxRenderError> {
+        ensure_same_grid(&self.field, u, "wind_barb_u")?;
+        ensure_same_grid(&self.field, v, "wind_barb_v")?;
+        ensure_same_grid(u, v, "wind_barb_uv")?;
+        self.wind_barbs
+            .push(WindBarbLayer::from_fields(u, v, style));
+        Ok(self)
+    }
+
+    pub fn with_wind_barbs(
+        mut self,
+        u: &Field2D,
+        v: &Field2D,
+        style: WindBarbStyle,
+    ) -> Result<Self, RustwxRenderError> {
+        self.add_wind_barbs(u, v, style)?;
+        Ok(self)
+    }
+}
+
+fn ensure_same_grid(
+    base: &Field2D,
+    overlay: &Field2D,
+    layer: &'static str,
+) -> Result<(), RustwxRenderError> {
+    if base.grid != overlay.grid {
+        return Err(RustwxRenderError::OverlayGridMismatch { layer });
+    }
+    Ok(())
+}
+
+fn blank_fill_scale() -> DiscreteColorScale {
+    DiscreteColorScale {
+        levels: vec![0.0, 1.0],
+        colors: vec![Color::WHITE],
+        extend: ExtendMode::Neither,
+        mask_below: None,
     }
 }
 
@@ -370,5 +540,88 @@ mod tests {
         ));
         assert_eq!(request.title.as_deref(), Some("MLECAPE"));
         assert_eq!(request.cbar_tick_step, Some(500.0));
+    }
+
+    #[test]
+    fn contour_only_builder_disables_colorbar_and_uses_blank_fill() {
+        let request = MapRenderRequest::contour_only(sample_render_field());
+
+        assert!(!request.colorbar);
+        assert!(matches!(request.scale, ColorScale::Discrete(_)));
+        assert!(
+            request
+                .field
+                .values
+                .iter()
+                .all(|value| (*value - 0.5).abs() < 1.0e-6)
+        );
+    }
+
+    #[test]
+    fn overlay_builders_require_matching_grids() {
+        let base = sample_render_field();
+        let mut shifted = sample_render_field();
+        shifted.grid.lon_deg[0] = -101.0;
+
+        let contour_error = MapRenderRequest::contour_only(base.clone())
+            .with_contour_field(&shifted, vec![1.0, 2.0], ContourStyle::default())
+            .unwrap_err();
+        assert!(matches!(
+            contour_error,
+            RustwxRenderError::OverlayGridMismatch { layer: "contour" }
+        ));
+
+        let wind_error = MapRenderRequest::contour_only(base)
+            .with_wind_barbs(&shifted, &sample_render_field(), WindBarbStyle::default())
+            .unwrap_err();
+        assert!(matches!(
+            wind_error,
+            RustwxRenderError::OverlayGridMismatch {
+                layer: "wind_barb_u"
+            }
+        ));
+    }
+
+    #[test]
+    fn palette_fill_builder_uses_requested_palette_scale() {
+        let request = MapRenderRequest::for_palette_fill(
+            sample_render_field(),
+            crate::solar07::Solar07Palette::Temperature,
+            vec![-40.0, -20.0, 0.0, 20.0, 40.0],
+            ExtendMode::Both,
+        );
+
+        match request.scale {
+            ColorScale::Discrete(scale) => {
+                assert_eq!(scale.levels, vec![-40.0, -20.0, 0.0, 20.0, 40.0]);
+                assert_eq!(scale.extend, ExtendMode::Both);
+                assert!(!scale.colors.is_empty());
+            }
+            _ => panic!("expected discrete palette scale"),
+        }
+    }
+
+    #[test]
+    fn derived_builder_sets_titles_scale_and_tick_steps() {
+        let request = MapRenderRequest::for_derived_product(
+            sample_render_field(),
+            crate::solar07::DerivedProductStyle::BulkShear06km,
+        );
+
+        assert_eq!(request.title.as_deref(), Some("0-6 KM BULK SHEAR"));
+        assert_eq!(request.cbar_tick_step, Some(5.0));
+        match request.scale {
+            ColorScale::Discrete(scale) => {
+                assert_eq!(
+                    scale.levels,
+                    vec![
+                        0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0
+                    ]
+                );
+                assert_eq!(scale.extend, ExtendMode::Max);
+                assert!(!scale.colors.is_empty());
+            }
+            _ => panic!("expected discrete derived scale"),
+        }
     }
 }

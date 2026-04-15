@@ -16,6 +16,7 @@ pub enum Solar07Palette {
     Dewpoint,
     Rh,
     RelVort,
+    Advection,
     SimIr,
     GeopotAnomaly,
     Precip,
@@ -36,6 +37,26 @@ pub enum Solar07Preset {
     Ehi,
     Uh,
     LapseRate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DerivedScalePreset {
+    LiftedIndex,
+    TemperatureAdvection,
+    BulkShear,
+    SurfaceComfort,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DerivedProductStyle {
+    LiftedIndex,
+    TemperatureAdvection700mb,
+    TemperatureAdvection850mb,
+    BulkShear01km,
+    BulkShear06km,
+    ApparentTemperature,
+    HeatIndex,
+    WindChill,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -270,6 +291,72 @@ impl From<Solar07Product> for Solar07Preset {
     }
 }
 
+impl DerivedProductStyle {
+    pub fn from_product_name(name: &str) -> Option<Self> {
+        match normalize(name).as_str() {
+            "lifted_index" | "li" | "surface_based_lifted_index" | "sbli" => {
+                Some(Self::LiftedIndex)
+            }
+            "temperature_advection_700mb" | "temp_advection_700mb" | "tadv700" => {
+                Some(Self::TemperatureAdvection700mb)
+            }
+            "temperature_advection_850mb" | "temp_advection_850mb" | "tadv850" => {
+                Some(Self::TemperatureAdvection850mb)
+            }
+            "bulk_shear_0_1km" | "bulk_shear_01km" | "shear_01km" | "shear01km" => {
+                Some(Self::BulkShear01km)
+            }
+            "bulk_shear_0_6km" | "bulk_shear_06km" | "shear_06km" | "shear06km" => {
+                Some(Self::BulkShear06km)
+            }
+            "apparent_temperature" | "apparent_temp" => Some(Self::ApparentTemperature),
+            "heat_index" => Some(Self::HeatIndex),
+            "wind_chill" => Some(Self::WindChill),
+            _ => None,
+        }
+    }
+
+    pub fn display_title(self) -> &'static str {
+        match self {
+            Self::LiftedIndex => "LIFTED INDEX",
+            Self::TemperatureAdvection700mb => "700 MB TEMPERATURE ADVECTION",
+            Self::TemperatureAdvection850mb => "850 MB TEMPERATURE ADVECTION",
+            Self::BulkShear01km => "0-1 KM BULK SHEAR",
+            Self::BulkShear06km => "0-6 KM BULK SHEAR",
+            Self::ApparentTemperature => "APPARENT TEMPERATURE",
+            Self::HeatIndex => "HEAT INDEX",
+            Self::WindChill => "WIND CHILL",
+        }
+    }
+
+    pub fn scale_preset(self) -> DerivedScalePreset {
+        match self {
+            Self::LiftedIndex => DerivedScalePreset::LiftedIndex,
+            Self::TemperatureAdvection700mb | Self::TemperatureAdvection850mb => {
+                DerivedScalePreset::TemperatureAdvection
+            }
+            Self::BulkShear01km | Self::BulkShear06km => DerivedScalePreset::BulkShear,
+            Self::ApparentTemperature | Self::HeatIndex | Self::WindChill => {
+                DerivedScalePreset::SurfaceComfort
+            }
+        }
+    }
+
+    pub fn scale(self) -> DiscreteColorScale {
+        self.scale_preset().scale()
+    }
+
+    pub fn default_tick_step(self) -> Option<f64> {
+        self.scale_preset().default_tick_step()
+    }
+}
+
+impl From<DerivedProductStyle> for DerivedScalePreset {
+    fn from(value: DerivedProductStyle) -> Self {
+        value.scale_preset()
+    }
+}
+
 impl Solar07Preset {
     pub fn from_product_name(name: &str) -> Option<Self> {
         if let Some(product) = Solar07Product::from_product_name(name) {
@@ -376,6 +463,50 @@ impl Solar07Preset {
     }
 }
 
+impl DerivedScalePreset {
+    pub fn scale(self) -> DiscreteColorScale {
+        match self {
+            Self::LiftedIndex => {
+                let mut colors = solar07_palette(Solar07Palette::Advection);
+                colors.reverse();
+                DiscreteColorScale {
+                    levels: range_step(-12.0, 14.0, 2.0),
+                    colors,
+                    extend: ExtendMode::Both,
+                    mask_below: None,
+                }
+            }
+            Self::TemperatureAdvection => DiscreteColorScale {
+                levels: range_step(-12.0, 14.0, 2.0),
+                colors: solar07_palette(Solar07Palette::Advection),
+                extend: ExtendMode::Both,
+                mask_below: None,
+            },
+            Self::BulkShear => DiscreteColorScale {
+                levels: range_step(0.0, 65.0, 5.0),
+                colors: solar07_palette(Solar07Palette::Winds),
+                extend: ExtendMode::Max,
+                mask_below: None,
+            },
+            Self::SurfaceComfort => DiscreteColorScale {
+                levels: range_step(-30.0, 50.0, 5.0),
+                colors: solar07_palette(Solar07Palette::Temperature),
+                extend: ExtendMode::Both,
+                mask_below: None,
+            },
+        }
+    }
+
+    pub fn default_tick_step(self) -> Option<f64> {
+        match self {
+            Self::LiftedIndex => Some(2.0),
+            Self::TemperatureAdvection => Some(2.0),
+            Self::BulkShear => Some(5.0),
+            Self::SurfaceComfort => Some(5.0),
+        }
+    }
+}
+
 pub fn solar07_palette(palette: Solar07Palette) -> Vec<Color> {
     use wrf_render::colormaps;
 
@@ -394,6 +525,7 @@ pub fn solar07_palette(palette: Solar07Palette) -> Vec<Color> {
         Solar07Palette::Dewpoint => colormaps::dewpoint(80, 50),
         Solar07Palette::Rh => colormaps::rh(),
         Solar07Palette::RelVort => colormaps::relvort(100),
+        Solar07Palette::Advection => advection_palette(),
         Solar07Palette::SimIr => colormaps::sim_ir(),
         Solar07Palette::GeopotAnomaly => colormaps::geopot_anomaly(100),
         Solar07Palette::Precip => colormaps::precip_in(),
@@ -401,6 +533,45 @@ pub fn solar07_palette(palette: Solar07Palette) -> Vec<Color> {
     };
 
     colors.into_iter().map(Into::into).collect()
+}
+
+pub fn palette_scale(
+    palette: Solar07Palette,
+    levels: Vec<f64>,
+    extend: ExtendMode,
+    mask_below: Option<f64>,
+) -> DiscreteColorScale {
+    DiscreteColorScale {
+        levels,
+        colors: solar07_palette(palette),
+        extend,
+        mask_below,
+    }
+}
+
+fn advection_palette() -> Vec<wrf_render::Rgba> {
+    const ADVECTION_HEX: [&str; 9] = [
+        "#0b3c5d", "#328cc1", "#74b3ce", "#d9ecf2", "#f7f7f7", "#f3d9ca", "#e39b7b", "#c75d43",
+        "#8f2d1f",
+    ];
+
+    ADVECTION_HEX
+        .into_iter()
+        .map(rgba_from_hex)
+        .collect::<Vec<_>>()
+}
+
+fn rgba_from_hex(value: &str) -> wrf_render::Rgba {
+    let trimmed = value.trim_start_matches('#');
+    let red = u8::from_str_radix(&trimmed[0..2], 16).expect("valid red component");
+    let green = u8::from_str_radix(&trimmed[2..4], 16).expect("valid green component");
+    let blue = u8::from_str_radix(&trimmed[4..6], 16).expect("valid blue component");
+    wrf_render::Rgba {
+        r: red,
+        g: green,
+        b: blue,
+        a: u8::MAX,
+    }
 }
 
 fn normalize(name: &str) -> String {
@@ -477,6 +648,67 @@ mod tests {
         assert_eq!(
             Solar07Preset::from_product_name("ecape_ehi"),
             Some(Solar07Preset::Ehi)
+        );
+    }
+
+    #[test]
+    fn palette_scale_wraps_palette_and_levels_into_discrete_scale() {
+        let scale = palette_scale(
+            Solar07Palette::Reflectivity,
+            vec![5.0, 15.0, 25.0, 35.0],
+            ExtendMode::Max,
+            Some(5.0),
+        );
+
+        assert_eq!(scale.levels, vec![5.0, 15.0, 25.0, 35.0]);
+        assert_eq!(scale.extend, ExtendMode::Max);
+        assert_eq!(scale.mask_below, Some(5.0));
+        assert!(!scale.colors.is_empty());
+    }
+
+    #[test]
+    fn derived_product_styles_cover_new_helper_tranche() {
+        assert_eq!(
+            DerivedProductStyle::from_product_name("lifted_index"),
+            Some(DerivedProductStyle::LiftedIndex)
+        );
+        assert_eq!(
+            DerivedProductStyle::from_product_name("temperature_advection_850mb"),
+            Some(DerivedProductStyle::TemperatureAdvection850mb)
+        );
+        assert_eq!(
+            DerivedProductStyle::from_product_name("bulk_shear_0_6km"),
+            Some(DerivedProductStyle::BulkShear06km)
+        );
+        assert_eq!(
+            DerivedProductStyle::from_product_name("apparent_temperature"),
+            Some(DerivedProductStyle::ApparentTemperature)
+        );
+    }
+
+    #[test]
+    fn lifted_index_and_advection_scales_use_diverging_advection_helper() {
+        let li = DerivedScalePreset::LiftedIndex.scale();
+        let advection = DerivedScalePreset::TemperatureAdvection.scale();
+
+        assert_eq!(li.levels, range_step(-12.0, 14.0, 2.0));
+        assert_eq!(advection.levels, range_step(-12.0, 14.0, 2.0));
+        assert_eq!(li.extend, ExtendMode::Both);
+        assert_eq!(advection.extend, ExtendMode::Both);
+        assert_eq!(li.colors.first(), advection.colors.last());
+        assert_eq!(li.colors.last(), advection.colors.first());
+    }
+
+    #[test]
+    fn bulk_shear_and_surface_comfort_have_sane_tick_steps() {
+        assert_eq!(DerivedScalePreset::BulkShear.default_tick_step(), Some(5.0));
+        assert_eq!(
+            DerivedProductStyle::ApparentTemperature.default_tick_step(),
+            Some(5.0)
+        );
+        assert_eq!(
+            DerivedProductStyle::TemperatureAdvection700mb.display_title(),
+            "700 MB TEMPERATURE ADVECTION"
         );
     }
 }

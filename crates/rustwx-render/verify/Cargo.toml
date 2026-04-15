@@ -7,9 +7,8 @@ publish = false
 [workspace]
 
 [dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+rustwx-core = { path = "../../rustwx-core" }
 wrf-render = { path = "../../../../wrf-rust-plots/crates/wrf-render" }
-
-[dev-dependencies]
-image = { version = "0.25", default-features = false, features = ["png"] }

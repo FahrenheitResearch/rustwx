@@ -17,10 +17,16 @@
 - `CanonicalField` and `FieldSelector`
 - model/source/time request types used by the fetch and registry layers
 - semantic selector types consumed by the registry and I/O layers
+- a growing direct-product vocabulary for:
+  - upper-air pressure fields
+  - near-surface thermodynamics and winds
+  - column/surface fields like MSLP, PWAT, cloud cover, and visibility
+  - native radar/convective fields like reflectivity and UH
 
 ## Current limits
 
-- selector coverage is still intentionally narrow
+- semantic selector coverage is broader than extractor support; `rustwx-models`
+  and `rustwx-io` still decide what is actually fetchable today
 - projection metadata is still lighter than the eventual end-state
 - this crate does not know anything about fetch or rendering
 

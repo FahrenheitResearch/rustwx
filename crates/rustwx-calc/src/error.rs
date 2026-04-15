@@ -8,6 +8,8 @@ pub enum CalcError {
         expected: usize,
         actual: usize,
     },
+    #[error("{operation} requires at least one input field")]
+    EmptyWindowInputs { operation: &'static str },
     #[error("storm_u and storm_v must either both be provided or both be omitted")]
     InvalidStormMotionPair,
     #[error("metrust error: {0}")]

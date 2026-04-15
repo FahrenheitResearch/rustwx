@@ -117,10 +117,26 @@ pub enum CanonicalField {
     Temperature,
     RelativeHumidity,
     Dewpoint,
+    PressureReducedToMeanSeaLevel,
     AbsoluteVorticity,
     RelativeVorticity,
     UWind,
     VWind,
+    WindGust,
+    TotalCloudCover,
+    LowCloudCover,
+    MiddleCloudCover,
+    HighCloudCover,
+    PrecipitableWater,
+    TotalPrecipitation,
+    Visibility,
+    SimulatedInfraredBrightnessTemperature,
+    RadarReflectivity,
+    LightningFlashDensity,
+    CategoricalRain,
+    CategoricalFreezingRain,
+    CategoricalIcePellets,
+    CategoricalSnow,
     LandSeaMask,
     CompositeReflectivity,
     UpdraftHelicity,
@@ -133,10 +149,28 @@ impl CanonicalField {
             Self::Temperature => "temperature",
             Self::RelativeHumidity => "relative_humidity",
             Self::Dewpoint => "dewpoint",
+            Self::PressureReducedToMeanSeaLevel => "pressure_reduced_to_mean_sea_level",
             Self::AbsoluteVorticity => "absolute_vorticity",
             Self::RelativeVorticity => "relative_vorticity",
             Self::UWind => "u_wind",
             Self::VWind => "v_wind",
+            Self::WindGust => "wind_gust",
+            Self::TotalCloudCover => "total_cloud_cover",
+            Self::LowCloudCover => "low_cloud_cover",
+            Self::MiddleCloudCover => "middle_cloud_cover",
+            Self::HighCloudCover => "high_cloud_cover",
+            Self::PrecipitableWater => "precipitable_water",
+            Self::TotalPrecipitation => "total_precipitation",
+            Self::Visibility => "visibility",
+            Self::SimulatedInfraredBrightnessTemperature => {
+                "simulated_infrared_brightness_temperature"
+            }
+            Self::RadarReflectivity => "radar_reflectivity",
+            Self::LightningFlashDensity => "lightning_flash_density",
+            Self::CategoricalRain => "categorical_rain",
+            Self::CategoricalFreezingRain => "categorical_freezing_rain",
+            Self::CategoricalIcePellets => "categorical_ice_pellets",
+            Self::CategoricalSnow => "categorical_snow",
             Self::LandSeaMask => "land_sea_mask",
             Self::CompositeReflectivity => "composite_reflectivity",
             Self::UpdraftHelicity => "updraft_helicity",
@@ -149,10 +183,28 @@ impl CanonicalField {
             Self::Temperature => "Temperature",
             Self::RelativeHumidity => "Relative Humidity",
             Self::Dewpoint => "Dewpoint",
+            Self::PressureReducedToMeanSeaLevel => "Pressure Reduced to Mean Sea Level",
             Self::AbsoluteVorticity => "Absolute Vorticity",
             Self::RelativeVorticity => "Relative Vorticity",
             Self::UWind => "U Wind",
             Self::VWind => "V Wind",
+            Self::WindGust => "Wind Gust",
+            Self::TotalCloudCover => "Total Cloud Cover",
+            Self::LowCloudCover => "Low Cloud Cover",
+            Self::MiddleCloudCover => "Middle Cloud Cover",
+            Self::HighCloudCover => "High Cloud Cover",
+            Self::PrecipitableWater => "Precipitable Water",
+            Self::TotalPrecipitation => "Total Precipitation",
+            Self::Visibility => "Visibility",
+            Self::SimulatedInfraredBrightnessTemperature => {
+                "Simulated Infrared Brightness Temperature"
+            }
+            Self::RadarReflectivity => "Radar Reflectivity",
+            Self::LightningFlashDensity => "Lightning Flash Density",
+            Self::CategoricalRain => "Categorical Rain",
+            Self::CategoricalFreezingRain => "Categorical Freezing Rain",
+            Self::CategoricalIcePellets => "Categorical Ice Pellets",
+            Self::CategoricalSnow => "Categorical Snow",
             Self::LandSeaMask => "Land-Sea Mask",
             Self::CompositeReflectivity => "Composite Reflectivity",
             Self::UpdraftHelicity => "Updraft Helicity",
@@ -165,8 +217,22 @@ impl CanonicalField {
             Self::Temperature => "K",
             Self::RelativeHumidity => "%",
             Self::Dewpoint => "K",
+            Self::PressureReducedToMeanSeaLevel => "Pa",
             Self::AbsoluteVorticity | Self::RelativeVorticity => "s^-1",
             Self::UWind | Self::VWind => "m/s",
+            Self::WindGust => "m/s",
+            Self::TotalCloudCover => "%",
+            Self::LowCloudCover | Self::MiddleCloudCover | Self::HighCloudCover => "%",
+            Self::PrecipitableWater => "kg/m^2",
+            Self::TotalPrecipitation => "kg/m^2",
+            Self::Visibility => "m",
+            Self::SimulatedInfraredBrightnessTemperature => "K",
+            Self::RadarReflectivity => "dBZ",
+            Self::LightningFlashDensity => "km^-2 day^-1",
+            Self::CategoricalRain
+            | Self::CategoricalFreezingRain
+            | Self::CategoricalIcePellets
+            | Self::CategoricalSnow => "0/1",
             Self::LandSeaMask => "fraction",
             Self::CompositeReflectivity => "dBZ",
             Self::UpdraftHelicity => "m^2/s^2",
@@ -188,6 +254,7 @@ pub enum VerticalSelector {
     HeightAboveGroundLayerMeters { bottom_m: u16, top_m: u16 },
     IsobaricHpa(u16),
     EntireAtmosphere,
+    NominalTop,
 }
 
 impl VerticalSelector {
@@ -201,6 +268,7 @@ impl VerticalSelector {
             }
             Self::IsobaricHpa(level_hpa) => format!("{level_hpa}hpa"),
             Self::EntireAtmosphere => "entire_atmosphere".to_string(),
+            Self::NominalTop => "nominal_top".to_string(),
         }
     }
 }
@@ -216,6 +284,7 @@ impl std::fmt::Display for VerticalSelector {
             }
             Self::IsobaricHpa(level_hpa) => write!(f, "{level_hpa}hpa"),
             Self::EntireAtmosphere => f.write_str("entire_atmosphere"),
+            Self::NominalTop => f.write_str("nominal_top"),
         }
     }
 }
@@ -239,8 +308,20 @@ impl FieldSelector {
         Self::new(field, VerticalSelector::Surface)
     }
 
+    pub const fn mean_sea_level(field: CanonicalField) -> Self {
+        Self::new(field, VerticalSelector::MeanSeaLevel)
+    }
+
+    pub const fn height_agl(field: CanonicalField, height_m: u16) -> Self {
+        Self::new(field, VerticalSelector::HeightAboveGroundMeters(height_m))
+    }
+
     pub const fn entire_atmosphere(field: CanonicalField) -> Self {
         Self::new(field, VerticalSelector::EntireAtmosphere)
+    }
+
+    pub const fn nominal_top(field: CanonicalField) -> Self {
+        Self::new(field, VerticalSelector::NominalTop)
     }
 
     pub const fn height_layer_agl(field: CanonicalField, bottom_m: u16, top_m: u16) -> Self {
@@ -814,6 +895,33 @@ mod tests {
         assert_eq!(dewpoint_850.key(), "dewpoint_850hpa");
         assert_eq!(dewpoint_850.native_units(), "K");
 
+        let temp_2m = FieldSelector::height_agl(CanonicalField::Temperature, 2);
+        assert_eq!(temp_2m.key(), "temperature_2m_agl");
+        assert_eq!(temp_2m.native_units(), "K");
+
+        let dewpoint_2m = FieldSelector::height_agl(CanonicalField::Dewpoint, 2);
+        assert_eq!(dewpoint_2m.key(), "dewpoint_2m_agl");
+        assert_eq!(dewpoint_2m.native_units(), "K");
+
+        let rh_2m = FieldSelector::height_agl(CanonicalField::RelativeHumidity, 2);
+        assert_eq!(rh_2m.key(), "relative_humidity_2m_agl");
+        assert_eq!(rh_2m.native_units(), "%");
+
+        let wind_10m = FieldSelector::height_agl(CanonicalField::UWind, 10);
+        assert_eq!(wind_10m.key(), "u_wind_10m_agl");
+        assert_eq!(wind_10m.native_units(), "m/s");
+
+        let wind_gust_10m = FieldSelector::height_agl(CanonicalField::WindGust, 10);
+        assert_eq!(wind_gust_10m.key(), "wind_gust_10m_agl");
+        assert_eq!(wind_gust_10m.native_units(), "m/s");
+
+        let mslp = FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel);
+        assert_eq!(
+            mslp.key(),
+            "pressure_reduced_to_mean_sea_level_mean_sea_level"
+        );
+        assert_eq!(mslp.native_units(), "Pa");
+
         let absolute_vorticity_500 =
             FieldSelector::isobaric(CanonicalField::AbsoluteVorticity, 500);
         assert_eq!(absolute_vorticity_500.key(), "absolute_vorticity_500hpa");
@@ -830,9 +938,37 @@ mod tests {
             "composite_reflectivity_entire_atmosphere"
         );
 
+        let reflectivity_1km = FieldSelector::height_agl(CanonicalField::RadarReflectivity, 1000);
+        assert_eq!(reflectivity_1km.key(), "radar_reflectivity_1000m_agl");
+        assert_eq!(reflectivity_1km.native_units(), "dBZ");
+
+        let pwat = FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater);
+        assert_eq!(pwat.key(), "precipitable_water_entire_atmosphere");
+        assert_eq!(pwat.native_units(), "kg/m^2");
+
+        let cloud_cover = FieldSelector::entire_atmosphere(CanonicalField::TotalCloudCover);
+        assert_eq!(cloud_cover.key(), "total_cloud_cover_entire_atmosphere");
+        assert_eq!(cloud_cover.native_units(), "%");
+
+        let simulated_ir =
+            FieldSelector::nominal_top(CanonicalField::SimulatedInfraredBrightnessTemperature);
+        assert_eq!(
+            simulated_ir.key(),
+            "simulated_infrared_brightness_temperature_nominal_top"
+        );
+        assert_eq!(simulated_ir.native_units(), "K");
+
+        let visibility = FieldSelector::surface(CanonicalField::Visibility);
+        assert_eq!(visibility.key(), "visibility_surface");
+        assert_eq!(visibility.native_units(), "m");
+
         let lsm = FieldSelector::surface(CanonicalField::LandSeaMask);
         assert_eq!(lsm.key(), "land_sea_mask_surface");
         assert_eq!(lsm.native_units(), "fraction");
+
+        let lightning = FieldSelector::height_agl(CanonicalField::LightningFlashDensity, 2);
+        assert_eq!(lightning.key(), "lightning_flash_density_2m_agl");
+        assert_eq!(lightning.native_units(), "km^-2 day^-1");
 
         let uh = FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000);
         assert_eq!(uh.key(), "updraft_helicity_2000m_to_5000m_agl");

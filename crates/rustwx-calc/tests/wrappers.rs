@@ -1,11 +1,19 @@
 use rustwx_calc::{
     BulkRichardsonInputs, CalcError, EcapeGridInputs, EcapeOptions, EcapeTripletOptions,
     EffectiveScpInputs, EffectiveSevereInputs, EffectiveStpInputs, FixedStpInputs, GridShape,
-    ScpEhiInputs, ShipInputs, VolumeShape, WindGridInputs, compute_bri, compute_ecape,
-    compute_ecape_triplet, compute_ecape_triplet_with_failure_mask,
-    compute_ecape_with_failure_mask, compute_effective_severe, compute_ehi, compute_scp,
-    compute_scp_effective, compute_scp_ehi, compute_shear, compute_ship, compute_srh, compute_stp,
-    compute_stp_effective, compute_stp_fixed, compute_supported_severe_fields,
+    ScpEhiInputs, ShipInputs, SurfaceInputs, TemperatureAdvectionInputs, VolumeShape,
+    WindGridInputs, compute_2m_apparent_temperature, compute_2m_dewpoint, compute_2m_heat_index,
+    compute_2m_relative_humidity, compute_2m_theta_e, compute_2m_wind_chill, compute_bri,
+    compute_ecape, compute_ecape_triplet, compute_ecape_triplet_with_failure_mask,
+    compute_ecape_with_failure_mask, compute_effective_severe, compute_ehi, compute_ehi_01km,
+    compute_ehi_03km, compute_ehi_layers, compute_lapse_rate_0_3km, compute_lapse_rate_700_500,
+    compute_lifted_index, compute_mlcape, compute_mlcape_cin, compute_mlcin, compute_mucape,
+    compute_mucape_cin, compute_mucin, compute_sbcape, compute_sbcape_cin, compute_sbcin,
+    compute_sblcl, compute_scp, compute_scp_effective, compute_scp_ehi, compute_shear,
+    compute_shear_01km, compute_shear_06km, compute_ship, compute_srh, compute_srh_01km,
+    compute_srh_03km, compute_stp, compute_stp_effective, compute_stp_fixed,
+    compute_supported_severe_fields, compute_temperature_advection,
+    compute_temperature_advection_700mb, compute_temperature_advection_850mb,
 };
 
 fn sample_volume_shape() -> VolumeShape {
@@ -17,6 +25,28 @@ fn assert_close(actual: f64, expected: f64) {
         (actual - expected).abs() < 1.0e-9,
         "expected {expected}, got {actual}"
     );
+}
+
+fn sample_surface_inputs() -> SurfaceInputs<'static> {
+    SurfaceInputs {
+        psfc_pa: &[100000.0],
+        t2_k: &[303.15],
+        q2_kgkg: &[0.014],
+        u10_ms: &[5.0],
+        v10_ms: &[0.0],
+    }
+}
+
+fn sample_volume_inputs() -> rustwx_calc::EcapeVolumeInputs<'static> {
+    rustwx_calc::EcapeVolumeInputs {
+        pressure_pa: &[95000.0, 90000.0, 85000.0, 70000.0, 50000.0, 30000.0],
+        temperature_c: &[26.0, 22.0, 18.0, 8.0, -10.0, -38.0],
+        qvapor_kgkg: &[0.016, 0.013, 0.010, 0.005, 0.0015, 0.0003],
+        height_agl_m: &[150.0, 800.0, 1500.0, 3000.0, 5600.0, 9200.0],
+        u_ms: &[6.0, 9.0, 12.0, 18.0, 26.0, 33.0],
+        v_ms: &[2.0, 5.0, 8.0, 13.0, 20.0, 28.0],
+        nz: 6,
+    }
 }
 
 #[test]
@@ -55,12 +85,12 @@ fn supported_severe_fields_match_component_wrappers_on_single_column_fixture() {
     let shape = sample_volume_shape();
     let inputs = EcapeGridInputs {
         shape,
-        pressure_3d_pa: &[95000.0, 90000.0, 85000.0, 70000.0, 50000.0, 30000.0],
-        temperature_3d_c: &[26.0, 22.0, 18.0, 8.0, -10.0, -38.0],
-        qvapor_3d_kgkg: &[0.016, 0.013, 0.010, 0.005, 0.0015, 0.0003],
-        height_agl_3d_m: &[150.0, 800.0, 1500.0, 3000.0, 5600.0, 9200.0],
-        u_3d_ms: &[6.0, 9.0, 12.0, 18.0, 26.0, 33.0],
-        v_3d_ms: &[2.0, 5.0, 8.0, 13.0, 20.0, 28.0],
+        pressure_3d_pa: sample_volume_inputs().pressure_pa,
+        temperature_3d_c: sample_volume_inputs().temperature_c,
+        qvapor_3d_kgkg: sample_volume_inputs().qvapor_kgkg,
+        height_agl_3d_m: sample_volume_inputs().height_agl_m,
+        u_3d_ms: sample_volume_inputs().u_ms,
+        v_3d_ms: sample_volume_inputs().v_ms,
         psfc_pa: &[100000.0],
         t2_k: &[303.15],
         q2_kgkg: &[0.018],
@@ -165,6 +195,190 @@ fn severe_wrappers_match_underlying_grid_math() {
     assert_eq!(stp, vec![1.0]);
     assert_eq!(ehi, vec![2.5]);
     assert_eq!(scp, vec![9.0]);
+}
+
+#[test]
+fn surface_thermo_wrappers_match_point_formulas() {
+    let grid = GridShape::new(1, 1).unwrap();
+    let surface = sample_surface_inputs();
+
+    let dewpoint = compute_2m_dewpoint(grid, surface).unwrap();
+    let rh = compute_2m_relative_humidity(grid, surface).unwrap();
+    let theta_e = compute_2m_theta_e(grid, surface).unwrap();
+    let heat_index = compute_2m_heat_index(grid, surface).unwrap();
+    let wind_chill = compute_2m_wind_chill(grid, surface).unwrap();
+    let apparent = compute_2m_apparent_temperature(grid, surface).unwrap();
+
+    assert_eq!(dewpoint.len(), 1);
+    assert!(dewpoint[0].is_finite());
+    assert_eq!(rh.len(), 1);
+    assert!(rh[0].is_finite());
+    assert_eq!(theta_e.len(), 1);
+    assert!(theta_e[0].is_finite());
+    assert!(theta_e[0] > 320.0);
+    assert!(heat_index[0].is_finite());
+    assert!(wind_chill[0].is_finite());
+    assert!(apparent[0].is_finite());
+    assert_eq!(apparent, heat_index);
+}
+
+#[test]
+fn lifted_index_wrapper_matches_metrust_point_formula() {
+    let grid = GridShape::new(1, 1).unwrap();
+    let li = compute_lifted_index(grid, sample_volume_inputs(), sample_surface_inputs()).unwrap();
+
+    let p = vec![1000.0, 950.0, 900.0, 850.0, 700.0, 500.0, 300.0];
+    let t = vec![30.0, 26.0, 22.0, 18.0, 8.0, -10.0, -38.0];
+    let td = vec![
+        19.307345920094933,
+        21.824022764292523,
+        18.831544791006665,
+        15.312507796541307,
+        0.4204526302485872,
+        -19.982475091260596,
+        -45.558650096750425,
+    ];
+    let expected = metrust::calc::thermo::lifted_index(&p, &t, &td);
+    assert!(
+        (li[0] - expected).abs() < 0.5,
+        "expected ~{expected}, got {}",
+        li[0]
+    );
+}
+
+#[test]
+fn lapse_rate_wrappers_are_finite_for_supported_columns() {
+    let grid = GridShape::new(1, 1).unwrap();
+    let lr_700_500 = compute_lapse_rate_700_500(grid, sample_volume_inputs()).unwrap();
+    let lr_0_3km =
+        compute_lapse_rate_0_3km(grid, sample_volume_inputs(), sample_surface_inputs()).unwrap();
+
+    assert_eq!(lr_700_500.len(), 1);
+    assert_eq!(lr_0_3km.len(), 1);
+    assert!(lr_700_500[0].is_finite());
+    assert!(lr_0_3km[0].is_finite());
+    assert!(lr_700_500[0] > 0.0);
+    assert!(lr_0_3km[0] > 0.0);
+}
+
+#[test]
+fn layer_specific_wind_and_ehi_wrappers_match_generic_paths() {
+    let shape = VolumeShape::new(GridShape::new(1, 1).unwrap(), 3).unwrap();
+    let wind = WindGridInputs {
+        shape,
+        u_3d_ms: &[0.0, 10.0, 20.0],
+        v_3d_ms: &[0.0, 0.0, 0.0],
+        height_agl_3d_m: &[0.0, 3000.0, 6000.0],
+    };
+    let grid = GridShape::new(1, 1).unwrap();
+
+    let shear_01 = compute_shear_01km(wind).unwrap();
+    let shear_06 = compute_shear_06km(wind).unwrap();
+    let srh_01 = compute_srh_01km(wind).unwrap();
+    let srh_03 = compute_srh_03km(wind).unwrap();
+    let ehi_01 = compute_ehi_01km(grid, &[2000.0], &srh_01).unwrap();
+    let ehi_03 = compute_ehi_03km(grid, &[2000.0], &srh_03).unwrap();
+    let layers = compute_ehi_layers(grid, &[2000.0], &srh_01, &srh_03).unwrap();
+
+    assert_eq!(shear_01, compute_shear(wind, 0.0, 1000.0).unwrap());
+    assert_eq!(shear_06, compute_shear(wind, 0.0, 6000.0).unwrap());
+    assert_eq!(srh_01, compute_srh(wind, 1000.0).unwrap());
+    assert_eq!(srh_03, compute_srh(wind, 3000.0).unwrap());
+    assert_eq!(ehi_01, layers.ehi_01km);
+    assert_eq!(ehi_03, layers.ehi_03km);
+}
+
+#[test]
+fn parcel_specific_cape_wrappers_route_to_generic_compute() {
+    let grid = GridShape::new(1, 1).unwrap();
+    let volume = sample_volume_inputs();
+    let surface = sample_surface_inputs();
+
+    let sb = compute_sbcape_cin(grid, volume, surface, None).unwrap();
+    let ml = compute_mlcape_cin(grid, volume, surface, None).unwrap();
+    let mu = compute_mucape_cin(grid, volume, surface, None).unwrap();
+
+    assert_eq!(
+        sb,
+        rustwx_calc::compute_cape_cin(grid, volume, surface, "sb", None).unwrap()
+    );
+    assert_eq!(
+        ml,
+        rustwx_calc::compute_cape_cin(grid, volume, surface, "ml", None).unwrap()
+    );
+    assert_eq!(
+        mu,
+        rustwx_calc::compute_cape_cin(grid, volume, surface, "mu", None).unwrap()
+    );
+}
+
+#[test]
+fn parcel_specific_single_field_wrappers_match_combined_outputs() {
+    let grid = GridShape::new(1, 1).unwrap();
+    let volume = sample_volume_inputs();
+    let surface = sample_surface_inputs();
+
+    let sb = compute_sbcape_cin(grid, volume, surface, None).unwrap();
+    let ml = compute_mlcape_cin(grid, volume, surface, None).unwrap();
+    let mu = compute_mucape_cin(grid, volume, surface, None).unwrap();
+
+    assert_eq!(
+        compute_sbcape(grid, volume, surface, None).unwrap(),
+        sb.cape_jkg
+    );
+    assert_eq!(
+        compute_sbcin(grid, volume, surface, None).unwrap(),
+        sb.cin_jkg
+    );
+    assert_eq!(
+        compute_sblcl(grid, volume, surface, None).unwrap(),
+        sb.lcl_m
+    );
+    assert_eq!(
+        compute_mlcape(grid, volume, surface, None).unwrap(),
+        ml.cape_jkg
+    );
+    assert_eq!(
+        compute_mlcin(grid, volume, surface, None).unwrap(),
+        ml.cin_jkg
+    );
+    assert_eq!(
+        compute_mucape(grid, volume, surface, None).unwrap(),
+        mu.cape_jkg
+    );
+    assert_eq!(
+        compute_mucin(grid, volume, surface, None).unwrap(),
+        mu.cin_jkg
+    );
+}
+
+#[test]
+fn temperature_advection_wrappers_match_kernel_and_aliases() {
+    let inputs = TemperatureAdvectionInputs {
+        grid: GridShape::new(3, 1).unwrap(),
+        temperature_2d: &[0.0, 1.0, 2.0],
+        u_2d_ms: &[2.0, 2.0, 2.0],
+        v_2d_ms: &[0.0, 0.0, 0.0],
+        dx_m: 1000.0,
+        dy_m: 1000.0,
+    };
+
+    let generic = compute_temperature_advection(inputs).unwrap();
+    let a700 = compute_temperature_advection_700mb(inputs).unwrap();
+    let a850 = compute_temperature_advection_850mb(inputs).unwrap();
+    let direct = metrust::calc::kinematics::temperature_advection(
+        inputs.temperature_2d,
+        inputs.u_2d_ms,
+        inputs.v_2d_ms,
+        inputs.grid.nx,
+        inputs.grid.ny,
+        inputs.dx_m,
+        inputs.dy_m,
+    );
+
+    assert_eq!(generic, direct);
+    assert_eq!(a700, generic);
+    assert_eq!(a850, generic);
 }
 
 #[test]

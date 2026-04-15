@@ -363,9 +363,13 @@ struct ParameterCode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LevelMatch {
     Surface,
+    MeanSeaLevel,
     IsobaricHpa(u16),
     EntireAtmosphere,
+    NominalTop,
+    ExactLevelType(u8),
     HeightAboveGroundMeters(u16),
+    SurfaceOrHeightAboveGroundMeters(u16),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -401,6 +405,64 @@ const PARAMETER_RH: &[ParameterCode] = &[ParameterCode {
     category: 1,
     number: 1,
 }];
+const PARAMETER_PWAT: &[ParameterCode] = &[ParameterCode {
+    discipline: 0,
+    category: 1,
+    number: 3,
+}];
+const PARAMETER_TOTAL_PRECIPITATION: &[ParameterCode] = &[ParameterCode {
+    discipline: 0,
+    category: 1,
+    number: 8,
+}];
+const PARAMETER_CATEGORICAL_RAIN: &[ParameterCode] = &[
+    ParameterCode {
+        discipline: 0,
+        category: 1,
+        number: 192,
+    },
+    ParameterCode {
+        discipline: 0,
+        category: 1,
+        number: 33,
+    },
+];
+const PARAMETER_CATEGORICAL_FREEZING_RAIN: &[ParameterCode] = &[
+    ParameterCode {
+        discipline: 0,
+        category: 1,
+        number: 193,
+    },
+    ParameterCode {
+        discipline: 0,
+        category: 1,
+        number: 34,
+    },
+];
+const PARAMETER_CATEGORICAL_ICE_PELLETS: &[ParameterCode] = &[
+    ParameterCode {
+        discipline: 0,
+        category: 1,
+        number: 194,
+    },
+    ParameterCode {
+        discipline: 0,
+        category: 1,
+        number: 35,
+    },
+];
+const PARAMETER_CATEGORICAL_SNOW: &[ParameterCode] = &[
+    ParameterCode {
+        discipline: 0,
+        category: 1,
+        number: 195,
+    },
+    ParameterCode {
+        discipline: 0,
+        category: 1,
+        number: 36,
+    },
+];
 const PARAMETER_UGRD: &[ParameterCode] = &[ParameterCode {
     discipline: 0,
     category: 2,
@@ -411,6 +473,11 @@ const PARAMETER_VGRD: &[ParameterCode] = &[ParameterCode {
     category: 2,
     number: 3,
 }];
+const PARAMETER_WIND_GUST: &[ParameterCode] = &[ParameterCode {
+    discipline: 0,
+    category: 2,
+    number: 22,
+}];
 // Only absolute vorticity is wired right now. Relative vorticity needs its own
 // explicit selector and GRIB parameter mapping before it should be exposed.
 const PARAMETER_ABSOLUTE_VORTICITY: &[ParameterCode] = &[ParameterCode {
@@ -418,11 +485,70 @@ const PARAMETER_ABSOLUTE_VORTICITY: &[ParameterCode] = &[ParameterCode {
     category: 2,
     number: 10,
 }];
+const PARAMETER_MSLP: &[ParameterCode] = &[
+    ParameterCode {
+        discipline: 0,
+        category: 3,
+        number: 1,
+    },
+    ParameterCode {
+        discipline: 0,
+        category: 3,
+        number: 192,
+    },
+    ParameterCode {
+        discipline: 0,
+        category: 3,
+        number: 198,
+    },
+];
 const PARAMETER_LANDSEA_MASK: &[ParameterCode] = &[ParameterCode {
     discipline: 2,
     category: 0,
     number: 0,
 }];
+const PARAMETER_TOTAL_CLOUD_COVER: &[ParameterCode] = &[ParameterCode {
+    discipline: 0,
+    category: 6,
+    number: 1,
+}];
+const PARAMETER_LOW_CLOUD_COVER: &[ParameterCode] = &[ParameterCode {
+    discipline: 0,
+    category: 6,
+    number: 3,
+}];
+const PARAMETER_MIDDLE_CLOUD_COVER: &[ParameterCode] = &[ParameterCode {
+    discipline: 0,
+    category: 6,
+    number: 4,
+}];
+const PARAMETER_HIGH_CLOUD_COVER: &[ParameterCode] = &[ParameterCode {
+    discipline: 0,
+    category: 6,
+    number: 5,
+}];
+const PARAMETER_VISIBILITY: &[ParameterCode] = &[ParameterCode {
+    discipline: 0,
+    category: 19,
+    number: 0,
+}];
+const PARAMETER_SIMULATED_IR: &[ParameterCode] = &[ParameterCode {
+    discipline: 3,
+    category: 192,
+    number: 7,
+}];
+const PARAMETER_RADAR_REFLECTIVITY: &[ParameterCode] = &[
+    ParameterCode {
+        discipline: 0,
+        category: 16,
+        number: 4,
+    },
+    ParameterCode {
+        discipline: 0,
+        category: 16,
+        number: 195,
+    },
+];
 const PARAMETER_COMPOSITE_REFLECTIVITY: &[ParameterCode] = &[
     ParameterCode {
         discipline: 0,
@@ -510,6 +636,30 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
                 units: "K",
             }),
             FieldSelector {
+                field: CanonicalField::Temperature,
+                vertical: VerticalSelector::HeightAboveGroundMeters(2),
+            } => Ok(Self {
+                parameters: PARAMETER_TMP,
+                level: LevelMatch::HeightAboveGroundMeters(2),
+                units: "K",
+            }),
+            FieldSelector {
+                field: CanonicalField::Dewpoint,
+                vertical: VerticalSelector::HeightAboveGroundMeters(2),
+            } => Ok(Self {
+                parameters: PARAMETER_DPT,
+                level: LevelMatch::HeightAboveGroundMeters(2),
+                units: "K",
+            }),
+            FieldSelector {
+                field: CanonicalField::RelativeHumidity,
+                vertical: VerticalSelector::HeightAboveGroundMeters(2),
+            } => Ok(Self {
+                parameters: PARAMETER_RH,
+                level: LevelMatch::HeightAboveGroundMeters(2),
+                units: "%",
+            }),
+            FieldSelector {
                 field: CanonicalField::AbsoluteVorticity,
                 vertical: VerticalSelector::IsobaricHpa(level_hpa),
             } if is_supported_upper_air_level(level_hpa) => Ok(Self {
@@ -532,6 +682,145 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
                 parameters: PARAMETER_VGRD,
                 level: LevelMatch::IsobaricHpa(level_hpa),
                 units: "m/s",
+            }),
+            FieldSelector {
+                field: CanonicalField::UWind,
+                vertical: VerticalSelector::HeightAboveGroundMeters(10),
+            } => Ok(Self {
+                parameters: PARAMETER_UGRD,
+                level: LevelMatch::HeightAboveGroundMeters(10),
+                units: "m/s",
+            }),
+            FieldSelector {
+                field: CanonicalField::VWind,
+                vertical: VerticalSelector::HeightAboveGroundMeters(10),
+            } => Ok(Self {
+                parameters: PARAMETER_VGRD,
+                level: LevelMatch::HeightAboveGroundMeters(10),
+                units: "m/s",
+            }),
+            FieldSelector {
+                field: CanonicalField::WindGust,
+                vertical: VerticalSelector::HeightAboveGroundMeters(10),
+            } => Ok(Self {
+                parameters: PARAMETER_WIND_GUST,
+                // Operational gust products are often keyed as 10 m AGL in
+                // product catalogs even when the GRIB metadata carries a
+                // surface level type.
+                level: LevelMatch::SurfaceOrHeightAboveGroundMeters(10),
+                units: "m/s",
+            }),
+            FieldSelector {
+                field: CanonicalField::PressureReducedToMeanSeaLevel,
+                vertical: VerticalSelector::MeanSeaLevel,
+            } => Ok(Self {
+                parameters: PARAMETER_MSLP,
+                level: LevelMatch::MeanSeaLevel,
+                units: "Pa",
+            }),
+            FieldSelector {
+                field: CanonicalField::PrecipitableWater,
+                vertical: VerticalSelector::EntireAtmosphere,
+            } => Ok(Self {
+                parameters: PARAMETER_PWAT,
+                level: LevelMatch::EntireAtmosphere,
+                units: "kg/m^2",
+            }),
+            FieldSelector {
+                field: CanonicalField::TotalPrecipitation,
+                vertical: VerticalSelector::Surface,
+            } => Ok(Self {
+                parameters: PARAMETER_TOTAL_PRECIPITATION,
+                level: LevelMatch::Surface,
+                units: "kg/m^2",
+            }),
+            FieldSelector {
+                field: CanonicalField::TotalCloudCover,
+                vertical: VerticalSelector::EntireAtmosphere,
+            } => Ok(Self {
+                parameters: PARAMETER_TOTAL_CLOUD_COVER,
+                level: LevelMatch::EntireAtmosphere,
+                units: "%",
+            }),
+            FieldSelector {
+                field: CanonicalField::LowCloudCover,
+                vertical: VerticalSelector::EntireAtmosphere,
+            } => Ok(Self {
+                parameters: PARAMETER_LOW_CLOUD_COVER,
+                level: LevelMatch::ExactLevelType(214),
+                units: "%",
+            }),
+            FieldSelector {
+                field: CanonicalField::MiddleCloudCover,
+                vertical: VerticalSelector::EntireAtmosphere,
+            } => Ok(Self {
+                parameters: PARAMETER_MIDDLE_CLOUD_COVER,
+                level: LevelMatch::ExactLevelType(224),
+                units: "%",
+            }),
+            FieldSelector {
+                field: CanonicalField::HighCloudCover,
+                vertical: VerticalSelector::EntireAtmosphere,
+            } => Ok(Self {
+                parameters: PARAMETER_HIGH_CLOUD_COVER,
+                level: LevelMatch::ExactLevelType(234),
+                units: "%",
+            }),
+            FieldSelector {
+                field: CanonicalField::Visibility,
+                vertical: VerticalSelector::Surface,
+            } => Ok(Self {
+                parameters: PARAMETER_VISIBILITY,
+                level: LevelMatch::Surface,
+                units: "m",
+            }),
+            FieldSelector {
+                field: CanonicalField::SimulatedInfraredBrightnessTemperature,
+                vertical: VerticalSelector::NominalTop,
+            } => Ok(Self {
+                parameters: PARAMETER_SIMULATED_IR,
+                level: LevelMatch::NominalTop,
+                units: "K",
+            }),
+            FieldSelector {
+                field: CanonicalField::CategoricalRain,
+                vertical: VerticalSelector::Surface,
+            } => Ok(Self {
+                parameters: PARAMETER_CATEGORICAL_RAIN,
+                level: LevelMatch::Surface,
+                units: "0/1",
+            }),
+            FieldSelector {
+                field: CanonicalField::CategoricalFreezingRain,
+                vertical: VerticalSelector::Surface,
+            } => Ok(Self {
+                parameters: PARAMETER_CATEGORICAL_FREEZING_RAIN,
+                level: LevelMatch::Surface,
+                units: "0/1",
+            }),
+            FieldSelector {
+                field: CanonicalField::CategoricalIcePellets,
+                vertical: VerticalSelector::Surface,
+            } => Ok(Self {
+                parameters: PARAMETER_CATEGORICAL_ICE_PELLETS,
+                level: LevelMatch::Surface,
+                units: "0/1",
+            }),
+            FieldSelector {
+                field: CanonicalField::CategoricalSnow,
+                vertical: VerticalSelector::Surface,
+            } => Ok(Self {
+                parameters: PARAMETER_CATEGORICAL_SNOW,
+                level: LevelMatch::Surface,
+                units: "0/1",
+            }),
+            FieldSelector {
+                field: CanonicalField::RadarReflectivity,
+                vertical: VerticalSelector::HeightAboveGroundMeters(1000),
+            } => Ok(Self {
+                parameters: PARAMETER_RADAR_REFLECTIVITY,
+                level: LevelMatch::HeightAboveGroundMeters(1000),
+                units: "dBZ",
             }),
             FieldSelector {
                 field: CanonicalField::LandSeaMask,
@@ -570,13 +859,14 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
 }
 
 fn is_supported_upper_air_level(level_hpa: u16) -> bool {
-    matches!(level_hpa, 500 | 700 | 850)
+    matches!(level_hpa, 200 | 300 | 500 | 700 | 850)
 }
 
 impl LevelMatch {
     fn matches(self, message: &Grib2Message) -> bool {
         match self {
             Self::Surface => message.product.level_type == 1,
+            Self::MeanSeaLevel => message.product.level_type == 101,
             Self::IsobaricHpa(level_hpa) => {
                 message.product.level_type == 100
                     && (normalize_pressure_level_hpa(message.product.level_value)
@@ -585,9 +875,16 @@ impl LevelMatch {
                         < 0.25
             }
             Self::EntireAtmosphere => matches!(message.product.level_type, 10 | 200),
+            Self::NominalTop => message.product.level_type == 8,
+            Self::ExactLevelType(level_type) => message.product.level_type == level_type,
             Self::HeightAboveGroundMeters(level_m) => {
                 matches!(message.product.level_type, 103 | 118)
                     && (message.product.level_value - f64::from(level_m)).abs() < 0.25
+            }
+            Self::SurfaceOrHeightAboveGroundMeters(level_m) => {
+                message.product.level_type == 1
+                    || (matches!(message.product.level_type, 103 | 118)
+                        && (message.product.level_value - f64::from(level_m)).abs() < 0.25)
             }
         }
     }
@@ -825,6 +1122,24 @@ mod tests {
 
     #[test]
     fn structured_selector_matches_supported_upper_air_subset() {
+        let height_200 = StructuredMessageSelector::try_from(FieldSelector::isobaric(
+            CanonicalField::GeopotentialHeight,
+            200,
+        ))
+        .unwrap();
+        let height_200_message =
+            ieee_f32_message(PARAMETER_HGT[0], 100, 20_000.0, &[12_040.0], -99.0, -99.0);
+        assert!(height_200.matches(&height_200_message));
+
+        let wind_300 = StructuredMessageSelector::try_from(FieldSelector::isobaric(
+            CanonicalField::VWind,
+            300,
+        ))
+        .unwrap();
+        let wind_300_message =
+            ieee_f32_message(PARAMETER_VGRD[0], 100, 300.0, &[36.0], -99.0, -99.0);
+        assert!(wind_300.matches(&wind_300_message));
+
         let wind_selector = StructuredMessageSelector::try_from(FieldSelector::isobaric(
             CanonicalField::UWind,
             850,
@@ -891,6 +1206,240 @@ mod tests {
         let lsm_message = ieee_f32_message(PARAMETER_LANDSEA_MASK[0], 1, 0.0, &[1.0], -99.0, -99.0);
         assert!(lsm_surface.matches(&lsm_message));
 
+        let temp_2m = StructuredMessageSelector::try_from(FieldSelector::height_agl(
+            CanonicalField::Temperature,
+            2,
+        ))
+        .unwrap();
+        let temp_2m_message = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[293.2], -99.0, -99.0);
+        assert!(temp_2m.matches(&temp_2m_message));
+
+        let dewpoint_2m = StructuredMessageSelector::try_from(FieldSelector::height_agl(
+            CanonicalField::Dewpoint,
+            2,
+        ))
+        .unwrap();
+        let dewpoint_2m_message =
+            ieee_f32_message(PARAMETER_DPT[0], 103, 2.0, &[286.4], -99.0, -99.0);
+        assert!(dewpoint_2m.matches(&dewpoint_2m_message));
+
+        let rh_2m = StructuredMessageSelector::try_from(FieldSelector::height_agl(
+            CanonicalField::RelativeHumidity,
+            2,
+        ))
+        .unwrap();
+        let rh_2m_message = ieee_f32_message(PARAMETER_RH[0], 103, 2.0, &[64.0], -99.0, -99.0);
+        assert!(rh_2m.matches(&rh_2m_message));
+
+        let u_10m = StructuredMessageSelector::try_from(FieldSelector::height_agl(
+            CanonicalField::UWind,
+            10,
+        ))
+        .unwrap();
+        let u_10m_message = ieee_f32_message(PARAMETER_UGRD[0], 103, 10.0, &[8.0], -99.0, -99.0);
+        assert!(u_10m.matches(&u_10m_message));
+
+        let gust_10m = StructuredMessageSelector::try_from(FieldSelector::height_agl(
+            CanonicalField::WindGust,
+            10,
+        ))
+        .unwrap();
+        let gust_surface_message =
+            ieee_f32_message(PARAMETER_WIND_GUST[0], 1, 0.0, &[18.0], -99.0, -99.0);
+        assert!(gust_10m.matches(&gust_surface_message));
+        let gust_10m_message =
+            ieee_f32_message(PARAMETER_WIND_GUST[0], 103, 10.0, &[18.0], -99.0, -99.0);
+        assert!(gust_10m.matches(&gust_10m_message));
+
+        let mslp = StructuredMessageSelector::try_from(FieldSelector::mean_sea_level(
+            CanonicalField::PressureReducedToMeanSeaLevel,
+        ))
+        .unwrap();
+        let mslp_message =
+            ieee_f32_message(PARAMETER_MSLP[0], 101, 0.0, &[100_925.0], -99.0, -99.0);
+        assert!(mslp.matches(&mslp_message));
+        let mslma_message =
+            ieee_f32_message(PARAMETER_MSLP[2], 101, 0.0, &[100_830.0], -99.0, -99.0);
+        assert!(mslp.matches(&mslma_message));
+
+        let pwat = StructuredMessageSelector::try_from(FieldSelector::entire_atmosphere(
+            CanonicalField::PrecipitableWater,
+        ))
+        .unwrap();
+        let pwat_message = ieee_f32_message(PARAMETER_PWAT[0], 200, 0.0, &[31.0], -99.0, -99.0);
+        assert!(pwat.matches(&pwat_message));
+
+        let qpf = StructuredMessageSelector::try_from(FieldSelector::surface(
+            CanonicalField::TotalPrecipitation,
+        ))
+        .unwrap();
+        let qpf_message = ieee_f32_message(
+            PARAMETER_TOTAL_PRECIPITATION[0],
+            1,
+            0.0,
+            &[12.0],
+            -99.0,
+            -99.0,
+        );
+        assert!(qpf.matches(&qpf_message));
+
+        let tcdc = StructuredMessageSelector::try_from(FieldSelector::entire_atmosphere(
+            CanonicalField::TotalCloudCover,
+        ))
+        .unwrap();
+        let tcdc_message = ieee_f32_message(
+            PARAMETER_TOTAL_CLOUD_COVER[0],
+            200,
+            0.0,
+            &[84.0],
+            -99.0,
+            -99.0,
+        );
+        assert!(tcdc.matches(&tcdc_message));
+
+        let lcdc = StructuredMessageSelector::try_from(FieldSelector::entire_atmosphere(
+            CanonicalField::LowCloudCover,
+        ))
+        .unwrap();
+        let lcdc_message = ieee_f32_message(
+            PARAMETER_LOW_CLOUD_COVER[0],
+            214,
+            0.0,
+            &[40.0],
+            -99.0,
+            -99.0,
+        );
+        assert!(lcdc.matches(&lcdc_message));
+
+        let mcdc = StructuredMessageSelector::try_from(FieldSelector::entire_atmosphere(
+            CanonicalField::MiddleCloudCover,
+        ))
+        .unwrap();
+        let mcdc_message = ieee_f32_message(
+            PARAMETER_MIDDLE_CLOUD_COVER[0],
+            224,
+            0.0,
+            &[55.0],
+            -99.0,
+            -99.0,
+        );
+        assert!(mcdc.matches(&mcdc_message));
+
+        let hcdc = StructuredMessageSelector::try_from(FieldSelector::entire_atmosphere(
+            CanonicalField::HighCloudCover,
+        ))
+        .unwrap();
+        let hcdc_message = ieee_f32_message(
+            PARAMETER_HIGH_CLOUD_COVER[0],
+            234,
+            0.0,
+            &[70.0],
+            -99.0,
+            -99.0,
+        );
+        assert!(hcdc.matches(&hcdc_message));
+
+        let visibility =
+            StructuredMessageSelector::try_from(FieldSelector::surface(CanonicalField::Visibility))
+                .unwrap();
+        let visibility_message =
+            ieee_f32_message(PARAMETER_VISIBILITY[0], 1, 0.0, &[16_000.0], -99.0, -99.0);
+        assert!(visibility.matches(&visibility_message));
+
+        let simulated_ir = StructuredMessageSelector::try_from(FieldSelector::nominal_top(
+            CanonicalField::SimulatedInfraredBrightnessTemperature,
+        ))
+        .unwrap();
+        let simulated_ir_message =
+            ieee_f32_message(PARAMETER_SIMULATED_IR[0], 8, 0.0, &[234.5], -99.0, -99.0);
+        let simulated_ir_wrong_level =
+            ieee_f32_message(PARAMETER_SIMULATED_IR[0], 10, 0.0, &[234.5], -99.0, -99.0);
+        assert!(simulated_ir.matches(&simulated_ir_message));
+        assert!(!simulated_ir.matches(&simulated_ir_wrong_level));
+
+        let categorical_rain = StructuredMessageSelector::try_from(FieldSelector::surface(
+            CanonicalField::CategoricalRain,
+        ))
+        .unwrap();
+        let categorical_rain_message =
+            ieee_f32_message(PARAMETER_CATEGORICAL_RAIN[0], 1, 0.0, &[1.0], -99.0, -99.0);
+        assert!(categorical_rain.matches(&categorical_rain_message));
+        let categorical_rain_hrrr_message =
+            ieee_f32_message(PARAMETER_CATEGORICAL_RAIN[1], 1, 0.0, &[1.0], -99.0, -99.0);
+        assert!(categorical_rain.matches(&categorical_rain_hrrr_message));
+
+        let categorical_freezing_rain = StructuredMessageSelector::try_from(
+            FieldSelector::surface(CanonicalField::CategoricalFreezingRain),
+        )
+        .unwrap();
+        let categorical_freezing_rain_message = ieee_f32_message(
+            PARAMETER_CATEGORICAL_FREEZING_RAIN[0],
+            1,
+            0.0,
+            &[1.0],
+            -99.0,
+            -99.0,
+        );
+        assert!(categorical_freezing_rain.matches(&categorical_freezing_rain_message));
+        let categorical_freezing_rain_hrrr_message = ieee_f32_message(
+            PARAMETER_CATEGORICAL_FREEZING_RAIN[1],
+            1,
+            0.0,
+            &[1.0],
+            -99.0,
+            -99.0,
+        );
+        assert!(categorical_freezing_rain.matches(&categorical_freezing_rain_hrrr_message));
+
+        let categorical_ice_pellets = StructuredMessageSelector::try_from(FieldSelector::surface(
+            CanonicalField::CategoricalIcePellets,
+        ))
+        .unwrap();
+        let categorical_ice_pellets_message = ieee_f32_message(
+            PARAMETER_CATEGORICAL_ICE_PELLETS[0],
+            1,
+            0.0,
+            &[1.0],
+            -99.0,
+            -99.0,
+        );
+        assert!(categorical_ice_pellets.matches(&categorical_ice_pellets_message));
+        let categorical_ice_pellets_hrrr_message = ieee_f32_message(
+            PARAMETER_CATEGORICAL_ICE_PELLETS[1],
+            1,
+            0.0,
+            &[1.0],
+            -99.0,
+            -99.0,
+        );
+        assert!(categorical_ice_pellets.matches(&categorical_ice_pellets_hrrr_message));
+
+        let categorical_snow = StructuredMessageSelector::try_from(FieldSelector::surface(
+            CanonicalField::CategoricalSnow,
+        ))
+        .unwrap();
+        let categorical_snow_message =
+            ieee_f32_message(PARAMETER_CATEGORICAL_SNOW[0], 1, 0.0, &[1.0], -99.0, -99.0);
+        assert!(categorical_snow.matches(&categorical_snow_message));
+        let categorical_snow_hrrr_message =
+            ieee_f32_message(PARAMETER_CATEGORICAL_SNOW[1], 1, 0.0, &[1.0], -99.0, -99.0);
+        assert!(categorical_snow.matches(&categorical_snow_hrrr_message));
+
+        let reflectivity_1km = StructuredMessageSelector::try_from(FieldSelector::height_agl(
+            CanonicalField::RadarReflectivity,
+            1000,
+        ))
+        .unwrap();
+        let reflectivity_message = ieee_f32_message(
+            PARAMETER_RADAR_REFLECTIVITY[0],
+            103,
+            1000.0,
+            &[42.0],
+            -99.0,
+            -99.0,
+        );
+        assert!(reflectivity_1km.matches(&reflectivity_message));
+
         let uh_2_5km = StructuredMessageSelector::try_from(FieldSelector::height_layer_agl(
             CanonicalField::UpdraftHelicity,
             2000,
@@ -933,6 +1482,12 @@ mod tests {
                 CanonicalField::UpdraftHelicity,
                 0,
                 3000
+            )),
+            Err(IoError::UnsupportedStructuredSelector { .. })
+        ));
+        assert!(matches!(
+            StructuredMessageSelector::try_from(FieldSelector::entire_atmosphere(
+                CanonicalField::SimulatedInfraredBrightnessTemperature
             )),
             Err(IoError::UnsupportedStructuredSelector { .. })
         ));
