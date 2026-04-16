@@ -1,4 +1,4 @@
-use rustwx_core::{ModelId, ProductKeyMetadata};
+use rustwx_core::{ModelId, ProductId, ProductKeyMetadata, ProductKind};
 use rustwx_models::{
     PlotRecipeFetchMode, built_in_models, plot_recipe_fetch_blockers, plot_recipe_fetch_plan,
 };
@@ -6,8 +6,8 @@ use rustwx_render::{ProductMaturity, ProductSemanticFlag};
 use serde::{Deserialize, Serialize};
 
 use crate::spec::{
-    ProductSpec, ProductSpecKind, blocked_derived_product_specs, direct_product_specs,
-    heavy_product_specs, supported_derived_product_specs, windowed_product_specs,
+    ProductSpec, blocked_derived_product_specs, direct_product_specs, heavy_product_specs,
+    supported_derived_product_specs, windowed_product_specs,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +61,7 @@ pub struct ProductTargetSupport {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProductCatalogAlias {
+    pub id: ProductId,
     pub slug: String,
     pub title: String,
     pub note: String,
@@ -68,6 +69,7 @@ pub struct ProductCatalogAlias {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProductCatalogEntry {
+    pub id: ProductId,
     pub slug: String,
     pub title: String,
     pub kind: ProductCatalogKind,
@@ -296,6 +298,7 @@ fn build_catalog_entry(
 ) -> ProductCatalogEntry {
     let experimental = spec.experimental();
     ProductCatalogEntry {
+        id: spec.id,
         slug: spec.slug,
         title: spec.title,
         kind: catalog_kind(spec.kind),
@@ -310,6 +313,7 @@ fn build_catalog_entry(
             .aliases
             .into_iter()
             .map(|alias| ProductCatalogAlias {
+                id: alias.id,
                 slug: alias.slug,
                 title: alias.title,
                 note: alias.note,
@@ -320,12 +324,12 @@ fn build_catalog_entry(
     }
 }
 
-fn catalog_kind(kind: ProductSpecKind) -> ProductCatalogKind {
+fn catalog_kind(kind: ProductKind) -> ProductCatalogKind {
     match kind {
-        ProductSpecKind::Direct => ProductCatalogKind::Direct,
-        ProductSpecKind::Derived => ProductCatalogKind::Derived,
-        ProductSpecKind::Heavy => ProductCatalogKind::Heavy,
-        ProductSpecKind::Windowed => ProductCatalogKind::Windowed,
+        ProductKind::Direct => ProductCatalogKind::Direct,
+        ProductKind::Derived => ProductCatalogKind::Derived,
+        ProductKind::Bundled => ProductCatalogKind::Heavy,
+        ProductKind::Windowed => ProductCatalogKind::Windowed,
     }
 }
 
@@ -341,6 +345,10 @@ mod tests {
             .iter()
             .find(|entry| entry.slug == "composite_reflectivity_uh")
             .expect("direct catalog should include native reflectivity + UH");
+        assert_eq!(
+            entry.id,
+            ProductId::new(ProductKind::Direct, "composite_reflectivity_uh")
+        );
         assert_eq!(entry.status, ProductCatalogStatus::Partial);
         assert!(
             entry.support.iter().any(|target| {
@@ -487,6 +495,10 @@ mod tests {
             .iter()
             .find(|entry| entry.slug == "severe_proof_panel")
             .expect("catalog should expose proof heavy panel");
+        assert_eq!(
+            proof.id,
+            ProductId::new(ProductKind::Bundled, "severe_proof_panel")
+        );
         assert_eq!(proof.maturity, ProductMaturity::Proof);
         assert!(proof.experimental);
         assert!(proof.flags.contains(&ProductSemanticFlag::ProofOriented));
@@ -517,6 +529,10 @@ mod tests {
             .iter()
             .find(|entry| entry.slug == "theta_e_2m_10m_winds")
             .expect("catalog should expose canonical theta-e product");
+        assert_eq!(
+            theta_e.id,
+            ProductId::new(ProductKind::Derived, "theta_e_2m_10m_winds")
+        );
         assert!(
             theta_e
                 .aliases
@@ -525,9 +541,27 @@ mod tests {
         );
         assert!(
             theta_e
+                .aliases
+                .iter()
+                .any(|alias| alias.id
+                    == ProductId::new(ProductKind::Derived, "2m_theta_e_10m_winds"))
+        );
+        assert!(
+            theta_e
                 .notes
                 .iter()
                 .any(|note| note.contains("derived lane"))
+        );
+        let identity = theta_e
+            .product_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.identity.as_ref())
+            .expect("catalog entry should expose canonical identity");
+        assert_eq!(identity.canonical, theta_e.id);
+        assert!(
+            identity
+                .alias_slugs
+                .contains(&"2m_theta_e_10m_winds".to_string())
         );
 
         let heat_index = catalog
@@ -567,7 +601,14 @@ mod tests {
             .iter()
             .find(|entry| entry.slug == "qpf_1h")
             .expect("catalog should expose canonical 1-hour QPF windowed product");
+        assert_eq!(qpf_1h.id, ProductId::new(ProductKind::Windowed, "qpf_1h"));
         assert!(qpf_1h.aliases.iter().any(|alias| alias.slug == "1h_qpf"));
+        assert!(
+            qpf_1h
+                .aliases
+                .iter()
+                .any(|alias| alias.id == ProductId::new(ProductKind::Windowed, "1h_qpf"))
+        );
         assert!(
             qpf_1h
                 .notes
@@ -586,6 +627,15 @@ mod tests {
                 process: rustwx_core::StatisticalProcess::Accumulation,
                 duration_hours: Some(1),
             })
+        );
+        assert_eq!(
+            qpf_1h
+                .product_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.identity.as_ref())
+                .expect("windowed entry should expose canonical identity")
+                .canonical,
+            qpf_1h.id
         );
     }
 

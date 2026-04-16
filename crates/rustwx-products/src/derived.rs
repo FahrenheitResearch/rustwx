@@ -694,6 +694,31 @@ fn compute_derived_fields(
     pressure: &crate::hrrr::HrrrPressureFields,
     recipes: &[DerivedRecipe],
 ) -> Result<DerivedComputedFields, Box<dyn std::error::Error>> {
+    fn missing_dependency(name: &str) -> std::io::Error {
+        std::io::Error::other(format!(
+            "derived compute missing required dependency: {name}"
+        ))
+    }
+
+    fn require_option_ref<'a, T>(
+        option: &'a Option<T>,
+        name: &str,
+    ) -> Result<&'a T, Box<dyn std::error::Error>> {
+        option
+            .as_ref()
+            .ok_or_else(|| missing_dependency(name))
+            .map_err(Into::into)
+    }
+
+    fn require_option_copy<T: Copy>(
+        option: Option<T>,
+        name: &str,
+    ) -> Result<T, Box<dyn std::error::Error>> {
+        option
+            .ok_or_else(|| missing_dependency(name))
+            .map_err(Into::into)
+    }
+
     let requirements = DerivedRequirements::from_recipes(recipes);
     let grid = CalcGridShape::new(surface.nx, surface.ny)?;
     let mut computed = DerivedComputedFields::default();
@@ -724,40 +749,42 @@ fn compute_derived_fields(
             surface,
             pressure,
             grid,
-            shape.expect("shape should exist when height_agl is required"),
+            require_option_copy(shape, "volume shape for height_agl")?,
         ))
     } else {
         None
     };
 
-    let make_volume = || EcapeVolumeInputs {
-        pressure_pa: pressure_3d_pa
-            .as_ref()
-            .expect("pressure volume should exist when volume inputs are required"),
-        temperature_c: &pressure.temperature_c_3d,
-        qvapor_kgkg: &pressure.qvapor_kgkg_3d,
-        height_agl_m: height_agl_3d
-            .as_ref()
-            .expect("height_agl should exist when volume inputs are required"),
-        u_ms: &pressure.u_ms_3d,
-        v_ms: &pressure.v_ms_3d,
-        nz: shape
-            .expect("shape should exist when volume inputs are required")
-            .nz,
+    let make_volume = || -> Result<EcapeVolumeInputs<'_>, Box<dyn std::error::Error>> {
+        Ok(EcapeVolumeInputs {
+            pressure_pa: require_option_ref(
+                &pressure_3d_pa,
+                "pressure volume for derived thermodynamics",
+            )?,
+            temperature_c: &pressure.temperature_c_3d,
+            qvapor_kgkg: &pressure.qvapor_kgkg_3d,
+            height_agl_m: require_option_ref(
+                &height_agl_3d,
+                "height_agl for derived thermodynamics",
+            )?,
+            u_ms: &pressure.u_ms_3d,
+            v_ms: &pressure.v_ms_3d,
+            nz: require_option_copy(shape, "volume shape for derived thermodynamics")?.nz,
+        })
     };
-    let make_wind = || WindGridInputs {
-        shape: shape.expect("shape should exist when wind inputs are required"),
-        u_3d_ms: &pressure.u_ms_3d,
-        v_3d_ms: &pressure.v_ms_3d,
-        height_agl_3d_m: height_agl_3d
-            .as_ref()
-            .expect("height_agl should exist when wind inputs are required"),
+    let make_wind = || -> Result<WindGridInputs<'_>, Box<dyn std::error::Error>> {
+        Ok(WindGridInputs {
+            shape: require_option_copy(shape, "volume shape for wind diagnostics")?,
+            u_3d_ms: &pressure.u_ms_3d,
+            v_3d_ms: &pressure.v_ms_3d,
+            height_agl_3d_m: require_option_ref(&height_agl_3d, "height_agl for wind diagnostics")?,
+        })
     };
 
     let sb = if requirements.sb {
         Some(compute_sbcape_cin(
             grid,
-            make_volume(),
+            make_volume()?,
             surface_inputs,
             None,
         )?)
@@ -767,7 +794,7 @@ fn compute_derived_fields(
     let ml = if requirements.ml {
         Some(compute_mlcape_cin(
             grid,
-            make_volume(),
+            make_volume()?,
             surface_inputs,
             None,
         )?)
@@ -777,7 +804,7 @@ fn compute_derived_fields(
     let mu = if requirements.mu {
         Some(compute_mucape_cin(
             grid,
-            make_volume(),
+            make_volume()?,
             surface_inputs,
             None,
         )?)
@@ -819,36 +846,36 @@ fn compute_derived_fields(
     }
 
     if requirements.lifted_index {
-        computed.lifted_index_c = Some(compute_lifted_index(grid, make_volume(), surface_inputs)?);
+        computed.lifted_index_c = Some(compute_lifted_index(grid, make_volume()?, surface_inputs)?);
     }
     if requirements.lapse_rate_700_500 {
-        computed.lapse_rate_700_500_cpkm = Some(compute_lapse_rate_700_500(grid, make_volume())?);
+        computed.lapse_rate_700_500_cpkm = Some(compute_lapse_rate_700_500(grid, make_volume()?)?);
     }
     if requirements.lapse_rate_0_3km {
         computed.lapse_rate_0_3km_cpkm = Some(compute_lapse_rate_0_3km(
             grid,
-            make_volume(),
+            make_volume()?,
             surface_inputs,
         )?);
     }
 
     let shear_01km_ms = if requirements.shear_01km {
-        Some(compute_shear_01km(make_wind())?)
+        Some(compute_shear_01km(make_wind()?)?)
     } else {
         None
     };
     let shear_06km_ms = if requirements.shear_06km {
-        Some(compute_shear_06km(make_wind())?)
+        Some(compute_shear_06km(make_wind()?)?)
     } else {
         None
     };
     let srh_01km_m2s2 = if requirements.srh_01km {
-        Some(compute_srh_01km(make_wind())?)
+        Some(compute_srh_01km(make_wind()?)?)
     } else {
         None
     };
     let srh_03km_m2s2 = if requirements.srh_03km {
-        Some(compute_srh_03km(make_wind())?)
+        Some(compute_srh_03km(make_wind()?)?)
     } else {
         None
     };
@@ -878,58 +905,36 @@ fn compute_derived_fields(
     }
 
     if requirements.ehi_01km {
-        computed.ehi_01km = Some(compute_ehi_01km(
-            grid,
-            &sb.as_ref()
-                .expect("SBCAPE should exist when EHI 0-1 km is requested")
-                .cape_jkg,
-            srh_01km_m2s2
-                .as_ref()
-                .expect("0-1 km SRH should exist when EHI 0-1 km is requested"),
-        )?);
+        let sb = require_option_ref(&sb, "surface-based CAPE/CIN outputs for EHI 0-1 km")?;
+        let srh_01km = require_option_ref(&srh_01km_m2s2, "0-1 km SRH for EHI 0-1 km")?;
+        computed.ehi_01km = Some(compute_ehi_01km(grid, &sb.cape_jkg, srh_01km)?);
     }
     if requirements.ehi_03km {
-        computed.ehi_03km = Some(compute_ehi_03km(
-            grid,
-            &sb.as_ref()
-                .expect("SBCAPE should exist when EHI 0-3 km is requested")
-                .cape_jkg,
-            srh_03km_m2s2
-                .as_ref()
-                .expect("0-3 km SRH should exist when EHI 0-3 km is requested"),
-        )?);
+        let sb = require_option_ref(&sb, "surface-based CAPE/CIN outputs for EHI 0-3 km")?;
+        let srh_03km = require_option_ref(&srh_03km_m2s2, "0-3 km SRH for EHI 0-3 km")?;
+        computed.ehi_03km = Some(compute_ehi_03km(grid, &sb.cape_jkg, srh_03km)?);
     }
     if requirements.stp_fixed {
+        let sb = require_option_ref(&sb, "surface-based CAPE/CIN outputs for STP fixed")?;
+        let srh_01km = require_option_ref(&srh_01km_m2s2, "0-1 km SRH for STP fixed")?;
+        let shear_06km = require_option_ref(&shear_06km_ms, "0-6 km shear for STP fixed")?;
         computed.stp_fixed = Some(compute_stp_fixed(FixedStpInputs {
             grid,
-            sbcape_jkg: &sb
-                .as_ref()
-                .expect("SBCAPE should exist when STP fixed is requested")
-                .cape_jkg,
-            lcl_m: &sb
-                .as_ref()
-                .expect("SBLCL should exist when STP fixed is requested")
-                .lcl_m,
-            srh_1km_m2s2: srh_01km_m2s2
-                .as_ref()
-                .expect("0-1 km SRH should exist when STP fixed is requested"),
-            shear_6km_ms: shear_06km_ms
-                .as_ref()
-                .expect("0-6 km shear should exist when STP fixed is requested"),
+            sbcape_jkg: &sb.cape_jkg,
+            lcl_m: &sb.lcl_m,
+            srh_1km_m2s2: srh_01km,
+            shear_6km_ms: shear_06km,
         })?);
     }
     if requirements.scp_mu_03km_06km_proxy {
+        let mu = require_option_ref(&mu, "most-unstable CAPE/CIN outputs for SCP proxy")?;
+        let srh_03km = require_option_ref(&srh_03km_m2s2, "0-3 km SRH for SCP proxy")?;
+        let shear_06km = require_option_ref(&shear_06km_ms, "0-6 km shear for SCP proxy")?;
         computed.scp_mu_03km_06km_proxy = Some(rustwx_calc::compute_scp(
             grid,
-            &mu.as_ref()
-                .expect("MUCAPE should exist when SCP proxy is requested")
-                .cape_jkg,
-            srh_03km_m2s2
-                .as_ref()
-                .expect("0-3 km SRH should exist when SCP proxy is requested"),
-            shear_06km_ms
-                .as_ref()
-                .expect("0-6 km shear should exist when SCP proxy is requested"),
+            &mu.cape_jkg,
+            srh_03km,
+            shear_06km,
         )?);
     }
 

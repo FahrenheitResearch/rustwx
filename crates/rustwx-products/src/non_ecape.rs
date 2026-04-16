@@ -13,7 +13,7 @@ use crate::publication::{
 };
 use crate::windowed::{
     HrrrWindowedBatchReport, HrrrWindowedBatchRequest, HrrrWindowedProduct,
-    run_hrrr_windowed_batch_with_context,
+    HrrrWindowedRenderedProduct, run_hrrr_windowed_batch_with_context,
 };
 use rustwx_core::SourceId;
 use rustwx_models::plot_recipe;
@@ -508,7 +508,13 @@ fn apply_direct_manifest_updates(
         manifest.update_artifact_state(
             &direct_artifact_key(&recipe.recipe_slug),
             ArtifactPublicationState::Complete,
-            None,
+            Some(format!(
+                "planned_family={} fetched_family={} resolved_source={} resolved_url={}",
+                recipe.grib_product,
+                recipe.fetched_grib_product,
+                recipe.resolved_source,
+                recipe.resolved_url
+            )),
         );
     }
 }
@@ -524,7 +530,15 @@ fn apply_derived_manifest_updates(
         manifest.update_artifact_state(
             &derived_artifact_key(&recipe.recipe_slug),
             ArtifactPublicationState::Complete,
-            None,
+            Some(format!(
+                "shared_surface planned_family={} fetched_family={} resolved_source={}; shared_pressure planned_family={} fetched_family={} resolved_source={}",
+                report.shared_timing.fetch_decode.surface_fetch.planned_product,
+                report.shared_timing.fetch_decode.surface_fetch.fetched_product,
+                report.shared_timing.fetch_decode.surface_fetch.resolved_source,
+                report.shared_timing.fetch_decode.pressure_fetch.planned_product,
+                report.shared_timing.fetch_decode.pressure_fetch.fetched_product,
+                report.shared_timing.fetch_decode.pressure_fetch.resolved_source
+            )),
         );
     }
 }
@@ -537,10 +551,11 @@ fn apply_windowed_manifest_updates(
         return;
     };
     for product in &report.products {
+        let detail = windowed_artifact_detail(product, &report.shared_timing);
         manifest.update_artifact_state(
             &windowed_artifact_key(product.product.slug()),
             ArtifactPublicationState::Complete,
-            None,
+            Some(detail),
         );
     }
     for blocker in &report.blockers {
@@ -550,6 +565,50 @@ fn apply_windowed_manifest_updates(
             Some(blocker.reason.clone()),
         );
     }
+}
+
+fn windowed_artifact_detail(
+    product: &HrrrWindowedRenderedProduct,
+    shared_timing: &crate::windowed::HrrrWindowedSharedTiming,
+) -> String {
+    let is_qpf = matches!(
+        product.product,
+        HrrrWindowedProduct::Qpf1h
+            | HrrrWindowedProduct::Qpf6h
+            | HrrrWindowedProduct::Qpf12h
+            | HrrrWindowedProduct::Qpf24h
+            | HrrrWindowedProduct::QpfTotal
+    );
+    let fetches = if is_qpf {
+        &shared_timing.surface_hour_fetches
+    } else {
+        &shared_timing.uh_hour_fetches
+    };
+    let planned_family = fetches
+        .first()
+        .map(|fetch| fetch.planned_product.as_str())
+        .unwrap_or(if is_qpf { "sfc" } else { "nat" });
+    let fetched_families = unique_join(fetches.iter().map(|fetch| fetch.fetched_product.as_str()));
+    let resolved_sources = unique_join(fetches.iter().map(|fetch| fetch.resolved_source.as_str()));
+    let hours = fetches
+        .iter()
+        .map(|fetch| fetch.hour.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "planned_family={} fetched_families={} resolved_sources={} contributing_fetch_hours=[{}]",
+        planned_family, fetched_families, resolved_sources, hours
+    )
+}
+
+fn unique_join<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
+    let mut unique = Vec::<&'a str>::new();
+    for value in values {
+        if !unique.contains(&value) {
+            unique.push(value);
+        }
+    }
+    unique.join(",")
 }
 
 fn count_blocked_artifacts(manifest: &RunPublicationManifest) -> usize {
@@ -567,10 +626,10 @@ mod tests {
         HrrrDerivedRecipeTiming, HrrrDerivedRenderedRecipe, HrrrDerivedSharedTiming,
     };
     use crate::direct::{HrrrDirectRecipeTiming, HrrrDirectRenderedRecipe};
-    use crate::hrrr::HrrrSharedTiming;
+    use crate::hrrr::{HrrrFetchRuntimeInfo, HrrrSharedTiming};
     use crate::windowed::{
-        HrrrWindowedBlocker, HrrrWindowedProductMetadata, HrrrWindowedProductTiming,
-        HrrrWindowedRenderedProduct, HrrrWindowedSharedTiming,
+        HrrrWindowedBlocker, HrrrWindowedHourFetchInfo, HrrrWindowedProductMetadata,
+        HrrrWindowedProductTiming, HrrrWindowedRenderedProduct, HrrrWindowedSharedTiming,
     };
 
     fn domain() -> DomainSpec {
@@ -635,6 +694,9 @@ mod tests {
                 recipe_slug: "composite_reflectivity".into(),
                 title: "Composite Reflectivity".into(),
                 grib_product: "nat".into(),
+                fetched_grib_product: "sfc".into(),
+                resolved_source: SourceId::Aws,
+                resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
                 output_path: PathBuf::from("C:\\proof\\direct.png"),
                 timing: HrrrDirectRecipeTiming {
                     project_ms: 1,
@@ -660,6 +722,20 @@ mod tests {
                     fetch_pressure_cache_hit: false,
                     decode_surface_cache_hit: false,
                     decode_pressure_cache_hit: false,
+                    surface_fetch: HrrrFetchRuntimeInfo {
+                        planned_product: "sfc".into(),
+                        fetched_product: "sfc".into(),
+                        requested_source: SourceId::Aws,
+                        resolved_source: SourceId::Aws,
+                        resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
+                    },
+                    pressure_fetch: HrrrFetchRuntimeInfo {
+                        planned_product: "prs".into(),
+                        fetched_product: "prs".into(),
+                        requested_source: SourceId::Aws,
+                        resolved_source: SourceId::Aws,
+                        resolved_url: "https://example.test/hrrr.t12z.wrfprsf06.grib2".into(),
+                    },
                 },
                 compute_ms: 4,
                 project_ms: 5,
@@ -693,6 +769,31 @@ mod tests {
                 geometry_decode_cache_hit: false,
                 surface_hours_loaded: vec![6],
                 nat_hours_loaded: vec![6],
+                geometry_fetch: Some(HrrrFetchRuntimeInfo {
+                    planned_product: "sfc".into(),
+                    fetched_product: "sfc".into(),
+                    requested_source: SourceId::Aws,
+                    resolved_source: SourceId::Aws,
+                    resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
+                }),
+                surface_hour_fetches: vec![HrrrWindowedHourFetchInfo {
+                    hour: 6,
+                    planned_product: "sfc".into(),
+                    fetched_product: "sfc".into(),
+                    requested_source: SourceId::Aws,
+                    resolved_source: SourceId::Aws,
+                    resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
+                    fetch_cache_hit: false,
+                }],
+                uh_hour_fetches: vec![HrrrWindowedHourFetchInfo {
+                    hour: 6,
+                    planned_product: "nat".into(),
+                    fetched_product: "sfc".into(),
+                    requested_source: SourceId::Aws,
+                    resolved_source: SourceId::Aws,
+                    resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
+                    fetch_cache_hit: false,
+                }],
             },
             products: vec![HrrrWindowedRenderedProduct {
                 product: HrrrWindowedProduct::Qpf6h,
@@ -761,6 +862,9 @@ mod tests {
                 recipe_slug: "500mb_height_winds".into(),
                 title: "500mb Height / Winds".into(),
                 grib_product: "prs".into(),
+                fetched_grib_product: "prs".into(),
+                resolved_source: SourceId::Aws,
+                resolved_url: "https://example.test/hrrr.t12z.wrfprsf06.grib2".into(),
                 output_path: PathBuf::from(
                     "C:\\proof\\run\\rustwx_hrrr_20260415_12z_f006_conus_500mb_height_winds.png",
                 ),
@@ -788,6 +892,20 @@ mod tests {
                     fetch_pressure_cache_hit: false,
                     decode_surface_cache_hit: false,
                     decode_pressure_cache_hit: false,
+                    surface_fetch: HrrrFetchRuntimeInfo {
+                        planned_product: "sfc".into(),
+                        fetched_product: "sfc".into(),
+                        requested_source: SourceId::Aws,
+                        resolved_source: SourceId::Aws,
+                        resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
+                    },
+                    pressure_fetch: HrrrFetchRuntimeInfo {
+                        planned_product: "prs".into(),
+                        fetched_product: "prs".into(),
+                        requested_source: SourceId::Aws,
+                        resolved_source: SourceId::Aws,
+                        resolved_url: "https://example.test/hrrr.t12z.wrfprsf06.grib2".into(),
+                    },
                 },
                 compute_ms: 1,
                 project_ms: 1,
@@ -823,6 +941,31 @@ mod tests {
                 geometry_decode_cache_hit: false,
                 surface_hours_loaded: vec![6],
                 nat_hours_loaded: vec![6],
+                geometry_fetch: Some(HrrrFetchRuntimeInfo {
+                    planned_product: "sfc".into(),
+                    fetched_product: "sfc".into(),
+                    requested_source: SourceId::Aws,
+                    resolved_source: SourceId::Aws,
+                    resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
+                }),
+                surface_hour_fetches: vec![HrrrWindowedHourFetchInfo {
+                    hour: 6,
+                    planned_product: "sfc".into(),
+                    fetched_product: "sfc".into(),
+                    requested_source: SourceId::Aws,
+                    resolved_source: SourceId::Aws,
+                    resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
+                    fetch_cache_hit: false,
+                }],
+                uh_hour_fetches: vec![HrrrWindowedHourFetchInfo {
+                    hour: 6,
+                    planned_product: "nat".into(),
+                    fetched_product: "sfc".into(),
+                    requested_source: SourceId::Aws,
+                    resolved_source: SourceId::Aws,
+                    resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
+                    fetch_cache_hit: false,
+                }],
             },
             products: vec![HrrrWindowedRenderedProduct {
                 product: HrrrWindowedProduct::Qpf6h,
@@ -858,6 +1001,13 @@ mod tests {
             .find(|artifact| artifact.artifact_key == "direct:500mb_height_winds")
             .unwrap();
         assert_eq!(direct_record.state, ArtifactPublicationState::Complete);
+        assert!(
+            direct_record
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("planned_family=prs fetched_family=prs resolved_source=aws")
+        );
 
         let derived_record = manifest
             .artifacts
@@ -865,6 +1015,11 @@ mod tests {
             .find(|artifact| artifact.artifact_key == "derived:sbcape")
             .unwrap();
         assert_eq!(derived_record.state, ArtifactPublicationState::Complete);
+        assert!(
+            derived_record.detail.as_deref().unwrap().contains(
+                "shared_surface planned_family=sfc fetched_family=sfc resolved_source=aws"
+            )
+        );
 
         let blocked_record = manifest
             .artifacts

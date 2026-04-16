@@ -30,6 +30,9 @@ This crate also contains targeted proof executables such as:
 
 These are currently the fastest way to validate new model/selector/render wiring.
 
+For HRRR operator-facing batch generation, the main non-ECAPE hour runner now
+defaults to `NOMADS` and the full-family ingest path.
+
 ## Current limits
 
 - the main CLI and proof binaries are still separate
@@ -55,6 +58,10 @@ cargo run -p rustwx-cli --bin hrrr_derived_batch -- --recipe sbcape,stp_fixed,te
 
 ```powershell
 cargo run -p rustwx-cli --bin hrrr_windowed_batch -- --forecast-hour 6 --product qpf6h,qpf-total,uh25km-run-max
+```
+
+```powershell
+cargo run -p rustwx-cli --release --bin hrrr_non_ecape_hour -- --date 20260414 --cycle 23 --forecast-hour 1 --region conus
 ```
 
 ```powershell

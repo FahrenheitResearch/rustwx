@@ -1,4 +1,4 @@
-use crate::publication::atomic_write_bytes;
+use crate::publication::{atomic_write_bytes, sha256_hex};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::fs;
@@ -6,10 +6,19 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const BINCODE_CACHE_SCHEMA_VERSION: u32 = 1;
+const BINCODE_CACHE_SCHEMA_VERSION: u32 = 2;
+const LEGACY_BINCODE_CACHE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
-struct VersionedCachePayload<T> {
+struct VersionedCachePayload {
+    schema_version: u32,
+    payload_bincode_len: usize,
+    payload_sha256: String,
+    payload_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+struct LegacyVersionedCachePayload<T> {
     schema_version: u32,
     payload: T,
 }
@@ -25,8 +34,26 @@ pub fn load_bincode<T: DeserializeOwned>(
         return Ok(None);
     }
     let bytes = fs::read(path)?;
-    if let Ok(wrapper) = bincode::deserialize::<VersionedCachePayload<T>>(&bytes) {
+    if let Ok(wrapper) = bincode::deserialize::<VersionedCachePayload>(&bytes) {
         if wrapper.schema_version == BINCODE_CACHE_SCHEMA_VERSION {
+            let payload_sha256 = sha256_hex(&wrapper.payload_bytes);
+            if wrapper.payload_bincode_len != wrapper.payload_bytes.len()
+                || wrapper.payload_sha256 != payload_sha256
+            {
+                quarantine_cache_file(path, "payload_attestation_mismatch");
+                return Ok(None);
+            }
+            return Ok(Some(bincode::deserialize::<T>(&wrapper.payload_bytes)?));
+        }
+        if wrapper.schema_version == LEGACY_BINCODE_CACHE_SCHEMA_VERSION {
+            quarantine_cache_file(path, "schema_mismatch");
+            return Ok(None);
+        }
+        quarantine_cache_file(path, "schema_mismatch");
+        return Ok(None);
+    }
+    if let Ok(wrapper) = bincode::deserialize::<LegacyVersionedCachePayload<T>>(&bytes) {
+        if wrapper.schema_version == LEGACY_BINCODE_CACHE_SCHEMA_VERSION {
             return Ok(Some(wrapper.payload));
         }
         quarantine_cache_file(path, "schema_mismatch");
@@ -46,9 +73,12 @@ pub fn store_bincode<T: Serialize>(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let payload_bytes = bincode::serialize(value)?;
     let bytes = bincode::serialize(&VersionedCachePayload {
         schema_version: BINCODE_CACHE_SCHEMA_VERSION,
-        payload: value,
+        payload_bincode_len: payload_bytes.len(),
+        payload_sha256: sha256_hex(&payload_bytes),
+        payload_bytes,
     })?;
     atomic_write_bytes(path, &bytes)?;
     Ok(())
@@ -87,6 +117,30 @@ mod tests {
     }
 
     #[test]
+    fn versioned_bincode_payload_records_attestation_metadata() {
+        let root = std::env::temp_dir().join(format!(
+            "rustwx_products_cache_attestation_{}",
+            std::process::id()
+        ));
+        let path = root.join("fixture.bin");
+        let fixture = Fixture {
+            name: "attested".into(),
+            value: 11,
+        };
+
+        store_bincode(&path, &fixture).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let wrapper: VersionedCachePayload = bincode::deserialize(&bytes).unwrap();
+        let payload_bytes = bincode::serialize(&fixture).unwrap();
+        assert_eq!(wrapper.schema_version, BINCODE_CACHE_SCHEMA_VERSION);
+        assert_eq!(wrapper.payload_bincode_len, payload_bytes.len());
+        assert_eq!(wrapper.payload_sha256, sha256_hex(&payload_bytes));
+        assert_eq!(wrapper.payload_bytes, payload_bytes);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn legacy_bincode_payload_still_loads() {
         let root = std::env::temp_dir().join(format!(
             "rustwx_products_cache_legacy_{}",
@@ -102,6 +156,45 @@ mod tests {
         fs::write(&path, bincode::serialize(&fixture).unwrap()).unwrap();
         let loaded = load_bincode::<Fixture>(&path).unwrap().unwrap();
         assert_eq!(loaded, fixture);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tampered_versioned_payload_is_quarantined_and_treated_as_cache_miss() {
+        let root = std::env::temp_dir().join(format!(
+            "rustwx_products_cache_tampered_{}",
+            std::process::id()
+        ));
+        let path = root.join("fixture.bin");
+        let fixture = Fixture {
+            name: "tampered".into(),
+            value: 5,
+        };
+
+        fs::create_dir_all(&root).unwrap();
+        let payload_bytes = bincode::serialize(&fixture).unwrap();
+        let bytes = bincode::serialize(&VersionedCachePayload {
+            schema_version: BINCODE_CACHE_SCHEMA_VERSION,
+            payload_bincode_len: payload_bytes.len(),
+            payload_sha256: "deadbeef".into(),
+            payload_bytes,
+        })
+        .unwrap();
+        fs::write(&path, bytes).unwrap();
+
+        let loaded = load_bincode::<Fixture>(&path).unwrap();
+        assert!(loaded.is_none());
+        assert!(!path.exists());
+        let quarantined = fs::read_dir(&root)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            quarantined
+                .iter()
+                .any(|entry| entry.file_name().to_string_lossy().contains("corrupt"))
+        );
 
         let _ = fs::remove_dir_all(root);
     }

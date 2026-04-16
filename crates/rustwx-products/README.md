@@ -5,7 +5,7 @@ Reusable workflow/product orchestration helpers for `rustwx`.
 Current scope is intentionally conservative:
 
 - proof cache helpers shared by CLI binaries
-- shared HRRR fetch/decode/cache helpers for surface + pressure subsets
+- shared HRRR fetch/decode/cache helpers for full `wrfsfc` / `wrfprs` family-file ingest
 - shared HRRR direct/native plot batching from recipe metadata + selector-backed extraction
 - shared HRRR derived plot batching from one fetched/decoded timestep using
   `rustwx-calc` wrappers

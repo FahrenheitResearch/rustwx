@@ -1,7 +1,7 @@
 use crate::cache::{load_bincode, store_bincode};
 use crate::hrrr::{
-    DomainSpec, PreparedHrrrHourContext, build_projected_map, decode_cache_path,
-    fetch_hrrr_family_file, load_or_decode_surface, resolve_hrrr_run,
+    DomainSpec, HrrrFetchRuntimeInfo, PreparedHrrrHourContext, build_projected_map,
+    decode_cache_path, fetch_hrrr_family_file, load_or_decode_surface, resolve_hrrr_run,
 };
 use grib_core::grib2::{Grib2File, Grib2Message, unpack_message_normalized};
 use rustwx_calc::{max_window_fields, sum_window_fields};
@@ -84,6 +84,17 @@ pub struct HrrrWindowedBatchRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HrrrWindowedHourFetchInfo {
+    pub hour: u16,
+    pub planned_product: String,
+    pub fetched_product: String,
+    pub requested_source: SourceId,
+    pub resolved_source: SourceId,
+    pub resolved_url: String,
+    pub fetch_cache_hit: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HrrrWindowedSharedTiming {
     pub fetch_geometry_ms: u128,
     pub decode_geometry_ms: u128,
@@ -96,6 +107,9 @@ pub struct HrrrWindowedSharedTiming {
     pub geometry_decode_cache_hit: bool,
     pub surface_hours_loaded: Vec<u16>,
     pub nat_hours_loaded: Vec<u16>,
+    pub geometry_fetch: Option<HrrrFetchRuntimeInfo>,
+    pub surface_hour_fetches: Vec<HrrrWindowedHourFetchInfo>,
+    pub uh_hour_fetches: Vec<HrrrWindowedHourFetchInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +183,7 @@ struct LoadedApcpHour {
     result: Result<HrrrApcpDecode, String>,
     fetch_ms: u128,
     decode_ms: u128,
+    runtime_fetch: Option<HrrrWindowedHourFetchInfo>,
 }
 
 #[derive(Debug)]
@@ -177,6 +192,7 @@ struct LoadedUhHour {
     result: Result<HrrrUhDecode, String>,
     fetch_ms: u128,
     decode_ms: u128,
+    runtime_fetch: Option<HrrrWindowedHourFetchInfo>,
 }
 
 #[derive(Debug)]
@@ -223,6 +239,7 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
         decode_geometry_ms,
         geometry_fetch_cache_hit,
         geometry_decode_cache_hit,
+        geometry_fetch,
         projected,
         project_ms,
         grid,
@@ -232,6 +249,7 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
             ctx.timestep().shared_timing().decode_surface_ms,
             ctx.timestep().shared_timing().fetch_surface_cache_hit,
             ctx.timestep().shared_timing().decode_surface_cache_hit,
+            Some(ctx.timestep().shared_timing().surface_fetch.clone()),
             ctx.projected_map(OUTPUT_WIDTH, OUTPUT_HEIGHT)
                 .cloned()
                 .ok_or("missing shared projected map for windowed batch")?,
@@ -271,6 +289,7 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
             decode_geometry_ms,
             geometry_subset.fetched.cache_hit,
             surface_geometry.cache_hit,
+            Some(geometry_subset.runtime_info("sfc")),
             projected,
             project_ms,
             grid,
@@ -280,9 +299,10 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
     let (planned_products, mut blockers, surface_hours, nat_hours) =
         plan_windowed_products(&request.products, request.forecast_hour);
 
-    let (apcp_by_hour, fetch_surface_ms, decode_surface_ms) =
+    let (apcp_by_hour, surface_hour_fetches, fetch_surface_ms, decode_surface_ms) =
         load_apcp_hours(latest, request, &surface_hours)?;
-    let (uh_by_hour, fetch_nat_ms, decode_nat_ms) = load_uh_hours(latest, request, &nat_hours)?;
+    let (uh_by_hour, uh_hour_fetches, fetch_nat_ms, decode_nat_ms) =
+        load_uh_hours(latest, request, &nat_hours)?;
 
     let product_parallelism = windowed_parallelism(request.source, planned_products.len());
     let date_yyyymmdd = request.date_yyyymmdd.as_str();
@@ -422,6 +442,9 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
             geometry_decode_cache_hit,
             surface_hours_loaded: surface_hours.into_iter().collect(),
             nat_hours_loaded: nat_hours.into_iter().collect(),
+            geometry_fetch,
+            surface_hour_fetches,
+            uh_hour_fetches,
         },
         products: rendered,
         blockers,
@@ -548,7 +571,15 @@ fn load_apcp_hours(
     latest: &rustwx_models::LatestRun,
     request: &HrrrWindowedBatchRequest,
     hours: &BTreeSet<u16>,
-) -> Result<(BTreeMap<u16, Result<HrrrApcpDecode, String>>, u128, u128), io::Error> {
+) -> Result<
+    (
+        BTreeMap<u16, Result<HrrrApcpDecode, String>>,
+        Vec<HrrrWindowedHourFetchInfo>,
+        u128,
+        u128,
+    ),
+    io::Error,
+> {
     let mut loaded = if should_parallelize_windowed_hour_loads(latest.source) {
         let parallelism = windowed_parallelism(request.source, hours.len());
         thread::scope(|scope| -> Result<Vec<LoadedApcpHour>, io::Error> {
@@ -573,7 +604,8 @@ fn load_apcp_hours(
             Ok(done)
         })?
     } else {
-        hours.iter()
+        hours
+            .iter()
             .copied()
             .map(|hour| LoadedApcpHour {
                 hour,
@@ -584,21 +616,33 @@ fn load_apcp_hours(
     loaded.sort_by_key(|entry| entry.hour);
 
     let mut out = BTreeMap::new();
+    let mut fetches = Vec::new();
     let mut fetch_ms = 0u128;
     let mut decode_ms = 0u128;
     for entry in loaded {
         fetch_ms += entry.fetch_ms;
         decode_ms += entry.decode_ms;
+        if let Some(runtime_fetch) = entry.runtime_fetch {
+            fetches.push(runtime_fetch);
+        }
         out.insert(entry.hour, entry.result);
     }
-    Ok((out, fetch_ms, decode_ms))
+    Ok((out, fetches, fetch_ms, decode_ms))
 }
 
 fn load_uh_hours(
     latest: &rustwx_models::LatestRun,
     request: &HrrrWindowedBatchRequest,
     hours: &BTreeSet<u16>,
-) -> Result<(BTreeMap<u16, Result<HrrrUhDecode, String>>, u128, u128), io::Error> {
+) -> Result<
+    (
+        BTreeMap<u16, Result<HrrrUhDecode, String>>,
+        Vec<HrrrWindowedHourFetchInfo>,
+        u128,
+        u128,
+    ),
+    io::Error,
+> {
     let mut loaded = if should_parallelize_windowed_hour_loads(latest.source) {
         let parallelism = windowed_parallelism(request.source, hours.len());
         thread::scope(|scope| -> Result<Vec<LoadedUhHour>, io::Error> {
@@ -623,7 +667,8 @@ fn load_uh_hours(
             Ok(done)
         })?
     } else {
-        hours.iter()
+        hours
+            .iter()
             .copied()
             .map(|hour| LoadedUhHour {
                 hour,
@@ -634,14 +679,18 @@ fn load_uh_hours(
     loaded.sort_by_key(|entry| entry.hour);
 
     let mut out = BTreeMap::new();
+    let mut fetches = Vec::new();
     let mut fetch_ms = 0u128;
     let mut decode_ms = 0u128;
     for entry in loaded {
         fetch_ms += entry.fetch_ms;
         decode_ms += entry.decode_ms;
+        if let Some(runtime_fetch) = entry.runtime_fetch {
+            fetches.push(runtime_fetch);
+        }
         out.insert(entry.hour, entry.result);
     }
-    Ok((out, fetch_ms, decode_ms))
+    Ok((out, fetches, fetch_ms, decode_ms))
 }
 
 fn load_apcp_hour(
@@ -674,6 +723,18 @@ fn load_apcp_hour(
                 result,
                 fetch_ms,
                 decode_ms,
+                runtime_fetch: Some(HrrrWindowedHourFetchInfo {
+                    hour,
+                    planned_product: "sfc".into(),
+                    fetched_product: subset.request.request.product.clone(),
+                    requested_source: subset
+                        .request
+                        .source_override
+                        .unwrap_or(subset.fetched.result.source),
+                    resolved_source: subset.fetched.result.source,
+                    resolved_url: subset.fetched.result.url.clone(),
+                    fetch_cache_hit: subset.fetched.cache_hit,
+                }),
             }
         }
         Err(err) => LoadedApcpHour {
@@ -681,6 +742,7 @@ fn load_apcp_hour(
             result: Err(err.to_string()),
             fetch_ms,
             decode_ms: 0,
+            runtime_fetch: None,
         },
     }
 }
@@ -715,6 +777,18 @@ fn load_uh_hour(
                 result,
                 fetch_ms,
                 decode_ms,
+                runtime_fetch: Some(HrrrWindowedHourFetchInfo {
+                    hour,
+                    planned_product: "nat".into(),
+                    fetched_product: subset.request.request.product.clone(),
+                    requested_source: subset
+                        .request
+                        .source_override
+                        .unwrap_or(subset.fetched.result.source),
+                    resolved_source: subset.fetched.result.source,
+                    resolved_url: subset.fetched.result.url.clone(),
+                    fetch_cache_hit: subset.fetched.cache_hit,
+                }),
             }
         }
         Err(err) => LoadedUhHour {
@@ -722,6 +796,7 @@ fn load_uh_hour(
             result: Err(err.to_string()),
             fetch_ms,
             decode_ms: 0,
+            runtime_fetch: None,
         },
     }
 }
@@ -1189,5 +1264,22 @@ mod tests {
     fn nomads_windowed_hour_loads_are_serialized() {
         assert!(!should_parallelize_windowed_hour_loads(SourceId::Nomads));
         assert!(should_parallelize_windowed_hour_loads(SourceId::Aws));
+    }
+
+    #[test]
+    fn windowed_fetch_truth_can_show_nat_planned_but_sfc_fetched() {
+        let fetch = HrrrWindowedHourFetchInfo {
+            hour: 1,
+            planned_product: "nat".into(),
+            fetched_product: "sfc".into(),
+            requested_source: SourceId::Nomads,
+            resolved_source: SourceId::Nomads,
+            resolved_url: "https://example.test/hrrr.t23z.wrfsfcf01.grib2".into(),
+            fetch_cache_hit: false,
+        };
+        assert_eq!(fetch.planned_product, "nat");
+        assert_eq!(fetch.fetched_product, "sfc");
+        assert_eq!(fetch.resolved_source, SourceId::Nomads);
+        assert!(fetch.resolved_url.contains("wrfsfc"));
     }
 }

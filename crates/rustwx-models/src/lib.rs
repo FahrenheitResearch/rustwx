@@ -96,6 +96,16 @@ fn recipe_flags(slug: &str) -> Vec<ProductSemanticFlag> {
     }
 }
 
+fn recipe_window(slug: &str, lineage: ProductLineage) -> Option<ProductWindowSpec> {
+    match slug {
+        "1h_qpf" => Some(ProductWindowSpec::accumulation(Some(1))),
+        _ if matches!(lineage, ProductLineage::Windowed) => {
+            Some(ProductWindowSpec::accumulation(None))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GribFieldSpec {
     pub key: &'static str,
@@ -149,18 +159,13 @@ pub struct PlotRecipe {
 
 impl PlotRecipe {
     pub fn provenance(&self) -> ProductProvenance {
-        let mut provenance = ProductProvenance::new(
-            recipe_lineage(self.slug, self.filled.family),
-            recipe_maturity(self.slug),
-        );
+        let lineage = recipe_lineage(self.slug, self.filled.family);
+        let mut provenance = ProductProvenance::new(lineage, recipe_maturity(self.slug));
         if let Some(selector) = self.filled.selector {
             provenance = provenance.with_selector(selector);
         }
-        if matches!(provenance.lineage, ProductLineage::Windowed) {
-            provenance = provenance.with_window(ProductWindowSpec {
-                process: StatisticalProcess::Accumulation,
-                duration_hours: None,
-            });
+        if let Some(window) = recipe_window(self.slug, lineage) {
+            provenance = provenance.with_window(window);
         }
         for flag in recipe_flags(self.slug) {
             provenance = provenance.with_flag(flag);
@@ -2402,10 +2407,7 @@ mod tests {
         assert_eq!(qpf_provenance.lineage, ProductLineage::Windowed);
         assert_eq!(
             qpf_provenance.window,
-            Some(ProductWindowSpec {
-                process: StatisticalProcess::Accumulation,
-                duration_hours: None,
-            })
+            Some(ProductWindowSpec::accumulation(Some(1)))
         );
         assert!(qpf_provenance.flags.contains(&ProductSemanticFlag::Alias));
 

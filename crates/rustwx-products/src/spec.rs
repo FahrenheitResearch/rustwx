@@ -1,5 +1,6 @@
 use rustwx_core::{
-    ProductKeyMetadata, ProductLineage, ProductProvenance, ProductWindowSpec, StatisticalProcess,
+    CanonicalProductIdentity, ProductId, ProductKeyMetadata, ProductKind, ProductLineage,
+    ProductProvenance, ProductWindowSpec, StatisticalProcess,
 };
 use rustwx_models::{PlotRecipe, RenderStyle, built_in_plot_recipes};
 use rustwx_render::{ProductMaturity, ProductSemanticFlag};
@@ -11,16 +12,9 @@ use crate::derived::{
 use crate::hrrr::HrrrBatchProduct;
 use crate::windowed::HrrrWindowedProduct;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProductSpecKind {
-    Direct,
-    Derived,
-    Heavy,
-    Windowed,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductAliasSpec {
+    pub id: ProductId,
     pub slug: String,
     pub title: String,
     pub note: String,
@@ -28,9 +22,10 @@ pub struct ProductAliasSpec {
 
 #[derive(Debug, Clone)]
 pub struct ProductSpec {
+    pub id: ProductId,
     pub slug: String,
     pub title: String,
-    pub kind: ProductSpecKind,
+    pub kind: ProductKind,
     pub product_metadata: Option<ProductKeyMetadata>,
     pub maturity: ProductMaturity,
     pub flags: Vec<ProductSemanticFlag>,
@@ -51,7 +46,7 @@ struct LegacyProductAliasRoute {
     alias_slug: &'static str,
     alias_title: &'static str,
     canonical_slug: &'static str,
-    canonical_kind: ProductSpecKind,
+    canonical_kind: ProductKind,
     note: &'static str,
 }
 
@@ -60,28 +55,28 @@ const LEGACY_NON_ECAPE_ALIAS_ROUTES: &[LegacyProductAliasRoute] = &[
         alias_slug: "2m_theta_e_10m_winds",
         alias_title: "2m AGL Theta-e / 10m Winds",
         canonical_slug: "theta_e_2m_10m_winds",
-        canonical_kind: ProductSpecKind::Derived,
+        canonical_kind: ProductKind::Derived,
         note: "Legacy plot-recipe slug from the big list. HRRR support lives in the derived lane, not as a native/direct GRIB recipe.",
     },
     LegacyProductAliasRoute {
         alias_slug: "2m_heat_index",
         alias_title: "2m AGL Heat Index",
         canonical_slug: "heat_index_2m",
-        canonical_kind: ProductSpecKind::Derived,
+        canonical_kind: ProductKind::Derived,
         note: "Legacy plot-recipe slug from the big list. HRRR support lives in the derived lane, not as a native/direct GRIB recipe.",
     },
     LegacyProductAliasRoute {
         alias_slug: "2m_wind_chill",
         alias_title: "2m AGL Wind Chill",
         canonical_slug: "wind_chill_2m",
-        canonical_kind: ProductSpecKind::Derived,
+        canonical_kind: ProductKind::Derived,
         note: "Legacy plot-recipe slug from the big list. HRRR support lives in the derived lane, not as a native/direct GRIB recipe.",
     },
     LegacyProductAliasRoute {
         alias_slug: "1h_qpf",
         alias_title: "1h QPF",
         canonical_slug: "qpf_1h",
-        canonical_kind: ProductSpecKind::Windowed,
+        canonical_kind: ProductKind::Windowed,
         note: "Legacy plot-recipe slug from the big list. The honest HRRR implementation is the 1-hour windowed APCP product; alias wiring belongs in the windowed lane rather than a fake native/direct recipe.",
     },
 ];
@@ -167,15 +162,22 @@ pub fn windowed_product_specs() -> Vec<ProductSpec> {
 }
 
 pub fn direct_product_spec(recipe: &PlotRecipe) -> ProductSpec {
+    let id = ProductId::new(ProductKind::Direct, recipe.slug);
+    let aliases = legacy_aliases(ProductKind::Direct, recipe.slug);
     ProductSpec {
+        id: id.clone(),
         slug: recipe.slug.to_string(),
         title: recipe.title.to_string(),
-        kind: ProductSpecKind::Direct,
-        product_metadata: Some(recipe.product_metadata()),
+        kind: ProductKind::Direct,
+        product_metadata: Some(with_canonical_identity(
+            recipe.product_metadata(),
+            id,
+            &aliases,
+        )),
         maturity: ProductMaturity::Operational,
         flags: Vec::new(),
         render_style: Some(direct_render_style(recipe).to_string()),
-        aliases: Vec::new(),
+        aliases,
         notes: direct_entry_notes(recipe.slug),
         blocked_reasons: Vec::new(),
     }
@@ -188,28 +190,41 @@ fn supported_derived_product_spec(recipe: &DerivedRecipeInventoryEntry) -> Produ
         ProductMaturity::Operational
     };
     let flags = derived_entry_flags(recipe.slug);
+    let id = ProductId::new(ProductKind::Derived, recipe.slug);
+    let aliases = legacy_aliases(ProductKind::Derived, recipe.slug);
     ProductSpec {
+        id: id.clone(),
         slug: recipe.slug.to_string(),
         title: recipe.title.to_string(),
-        kind: ProductSpecKind::Derived,
-        product_metadata: Some(derived_product_metadata(recipe.title, maturity, &flags)),
+        kind: ProductKind::Derived,
+        product_metadata: Some(derived_product_metadata(
+            recipe.title,
+            maturity,
+            &flags,
+            id,
+            &aliases,
+        )),
         maturity,
         flags: sorted_flags(&flags),
         render_style: None,
-        aliases: legacy_aliases(ProductSpecKind::Derived, recipe.slug),
+        aliases,
         notes: derived_entry_notes(recipe.slug, recipe.experimental),
         blocked_reasons: Vec::new(),
     }
 }
 
 fn blocked_derived_product_spec(recipe: &BlockedDerivedRecipeInventoryEntry) -> ProductSpec {
+    let id = ProductId::new(ProductKind::Derived, recipe.slug);
     ProductSpec {
+        id: id.clone(),
         slug: recipe.slug.to_string(),
         title: recipe.title.to_string(),
-        kind: ProductSpecKind::Derived,
+        kind: ProductKind::Derived,
         product_metadata: Some(derived_product_metadata(
             recipe.title,
             ProductMaturity::Operational,
+            &[],
+            id,
             &[],
         )),
         maturity: ProductMaturity::Operational,
@@ -246,12 +261,14 @@ fn heavy_product_spec(product: HrrrBatchProduct) -> ProductSpec {
             ],
         ),
     };
+    let id = ProductId::new(ProductKind::Bundled, product.slug());
 
     ProductSpec {
+        id: id.clone(),
         slug: product.slug().to_string(),
         title: title.to_string(),
-        kind: ProductSpecKind::Heavy,
-        product_metadata: Some(heavy_product_metadata(title, maturity, &flags)),
+        kind: ProductKind::Bundled,
+        product_metadata: Some(heavy_product_metadata(title, maturity, &flags, id)),
         maturity,
         flags: sorted_flags(&flags),
         render_style: Some("solar07_panel_grid".to_string()),
@@ -266,10 +283,13 @@ fn windowed_product_spec(
     note: &'static str,
     render_style: &'static str,
 ) -> ProductSpec {
+    let id = ProductId::new(ProductKind::Windowed, product.slug());
+    let aliases = legacy_aliases(ProductKind::Windowed, product.slug());
     ProductSpec {
+        id: id.clone(),
         slug: product.slug().to_string(),
         title: product.title().to_string(),
-        kind: ProductSpecKind::Windowed,
+        kind: ProductKind::Windowed,
         product_metadata: Some(windowed_product_metadata(
             product,
             product.title(),
@@ -283,21 +303,20 @@ fn windowed_product_spec(
                 | HrrrWindowedProduct::Uh25km3h
                 | HrrrWindowedProduct::Uh25kmRunMax => Some("m^2/s^2"),
             },
+            id,
+            &aliases,
         )),
         maturity: ProductMaturity::Operational,
         flags: Vec::new(),
         render_style: Some(render_style.to_string()),
-        aliases: legacy_aliases(ProductSpecKind::Windowed, product.slug()),
+        aliases,
         notes: {
             let mut notes = vec![
                 note.to_string(),
                 "Backed by HRRR statistical time-window metadata surfaced through grib-core"
                     .to_string(),
             ];
-            notes.extend(legacy_alias_notes(
-                ProductSpecKind::Windowed,
-                product.slug(),
-            ));
+            notes.extend(legacy_alias_notes(ProductKind::Windowed, product.slug()));
             notes
         },
         blocked_reasons: Vec::new(),
@@ -324,6 +343,8 @@ fn typed_metadata(
     maturity: ProductMaturity,
     flags: &[ProductSemanticFlag],
     window: Option<ProductWindowSpec>,
+    id: ProductId,
+    aliases: &[ProductAliasSpec],
 ) -> ProductKeyMetadata {
     let mut provenance = ProductProvenance::new(lineage, maturity.into());
     for flag in flags {
@@ -334,6 +355,7 @@ fn typed_metadata(
     }
     let mut metadata = ProductKeyMetadata::new(display_name)
         .with_category(category)
+        .with_identity(product_identity(id, aliases))
         .with_provenance(provenance);
     if let Some(native_units) = native_units {
         metadata = metadata.with_native_units(native_units);
@@ -345,6 +367,8 @@ fn derived_product_metadata(
     title: &str,
     maturity: ProductMaturity,
     flags: &[ProductSemanticFlag],
+    id: ProductId,
+    aliases: &[ProductAliasSpec],
 ) -> ProductKeyMetadata {
     typed_metadata(
         title,
@@ -354,6 +378,8 @@ fn derived_product_metadata(
         maturity,
         flags,
         None,
+        id,
+        aliases,
     )
 }
 
@@ -361,6 +387,7 @@ fn heavy_product_metadata(
     title: &str,
     maturity: ProductMaturity,
     flags: &[ProductSemanticFlag],
+    id: ProductId,
 ) -> ProductKeyMetadata {
     typed_metadata(
         title,
@@ -370,6 +397,8 @@ fn heavy_product_metadata(
         maturity,
         flags,
         None,
+        id,
+        &[],
     )
 }
 
@@ -414,6 +443,8 @@ fn windowed_product_metadata(
     product: HrrrWindowedProduct,
     title: &str,
     native_units: Option<&str>,
+    id: ProductId,
+    aliases: &[ProductAliasSpec],
 ) -> ProductKeyMetadata {
     typed_metadata(
         title,
@@ -423,6 +454,8 @@ fn windowed_product_metadata(
         ProductMaturity::Operational,
         &[],
         Some(windowed_product_window(product)),
+        id,
+        aliases,
     )
 }
 
@@ -432,11 +465,12 @@ fn legacy_alias_route_for_direct_slug(slug: &str) -> Option<&'static LegacyProdu
         .find(|route| route.alias_slug == slug)
 }
 
-fn legacy_aliases(kind: ProductSpecKind, canonical_slug: &str) -> Vec<ProductAliasSpec> {
+fn legacy_aliases(kind: ProductKind, canonical_slug: &str) -> Vec<ProductAliasSpec> {
     LEGACY_NON_ECAPE_ALIAS_ROUTES
         .iter()
         .filter(|route| route.canonical_kind == kind && route.canonical_slug == canonical_slug)
         .map(|route| ProductAliasSpec {
+            id: ProductId::new(kind, route.alias_slug),
             slug: route.alias_slug.to_string(),
             title: route.alias_title.to_string(),
             note: route.note.to_string(),
@@ -444,12 +478,28 @@ fn legacy_aliases(kind: ProductSpecKind, canonical_slug: &str) -> Vec<ProductAli
         .collect()
 }
 
-fn legacy_alias_notes(kind: ProductSpecKind, canonical_slug: &str) -> Vec<String> {
+fn legacy_alias_notes(kind: ProductKind, canonical_slug: &str) -> Vec<String> {
     LEGACY_NON_ECAPE_ALIAS_ROUTES
         .iter()
         .filter(|route| route.canonical_kind == kind && route.canonical_slug == canonical_slug)
         .map(|route| route.note.to_string())
         .collect()
+}
+
+fn product_identity(id: ProductId, aliases: &[ProductAliasSpec]) -> CanonicalProductIdentity {
+    aliases
+        .iter()
+        .fold(CanonicalProductIdentity::new(id), |identity, alias| {
+            identity.with_alias_slug(alias.id.as_slug())
+        })
+}
+
+fn with_canonical_identity(
+    metadata: ProductKeyMetadata,
+    id: ProductId,
+    aliases: &[ProductAliasSpec],
+) -> ProductKeyMetadata {
+    metadata.with_identity(product_identity(id, aliases))
 }
 
 fn direct_render_style(recipe: &PlotRecipe) -> &'static str {
@@ -495,7 +545,7 @@ fn derived_entry_notes(slug: &str, experimental: bool) -> Vec<String> {
         ),
         _ => {}
     }
-    notes.extend(legacy_alias_notes(ProductSpecKind::Derived, slug));
+    notes.extend(legacy_alias_notes(ProductKind::Derived, slug));
     if experimental {
         notes.push(
             "Current proof/product runner labels this as a proxy or experimental diagnostic"
@@ -541,24 +591,42 @@ mod tests {
     fn direct_specs_skip_legacy_aliases() {
         let specs = direct_product_specs();
         assert!(specs.iter().all(|spec| spec.slug != "1h_qpf"));
-        assert!(
-            specs
-                .iter()
-                .all(|spec| spec.kind == ProductSpecKind::Direct)
-        );
+        assert!(specs.iter().all(|spec| spec.kind == ProductKind::Direct));
     }
 
     #[test]
-    fn derived_specs_capture_aliases_and_provenance() {
+    fn derived_specs_capture_identity_aliases_and_provenance() {
         let theta_e = supported_derived_product_specs()
             .into_iter()
             .find(|spec| spec.slug == "theta_e_2m_10m_winds")
             .expect("theta-e spec should exist");
+        assert_eq!(
+            theta_e.id,
+            ProductId::new(ProductKind::Derived, "theta_e_2m_10m_winds")
+        );
         assert!(
             theta_e
                 .aliases
                 .iter()
                 .any(|alias| alias.slug == "2m_theta_e_10m_winds")
+        );
+        assert!(
+            theta_e
+                .aliases
+                .iter()
+                .any(|alias| alias.id
+                    == ProductId::new(ProductKind::Derived, "2m_theta_e_10m_winds"))
+        );
+        let identity = theta_e
+            .product_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.identity.as_ref())
+            .expect("derived spec should expose canonical identity");
+        assert_eq!(identity.canonical, theta_e.id);
+        assert!(
+            identity
+                .alias_slugs
+                .contains(&"2m_theta_e_10m_winds".to_string())
         );
         assert_eq!(
             theta_e
@@ -577,6 +645,7 @@ mod tests {
             .into_iter()
             .find(|spec| spec.slug == "qpf_1h")
             .expect("qpf_1h spec should exist");
+        assert_eq!(qpf_1h.id, ProductId::new(ProductKind::Windowed, "qpf_1h"));
         assert_eq!(
             qpf_1h
                 .product_metadata
@@ -587,6 +656,15 @@ mod tests {
                 process: StatisticalProcess::Accumulation,
                 duration_hours: Some(1),
             })
+        );
+        assert_eq!(
+            qpf_1h
+                .product_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.identity.as_ref())
+                .expect("windowed spec should expose canonical identity")
+                .canonical,
+            qpf_1h.id
         );
     }
 }

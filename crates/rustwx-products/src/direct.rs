@@ -57,6 +57,15 @@ pub struct HrrrDirectBatchRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HrrrDirectFetchRuntimeInfo {
+    pub planned_product: String,
+    pub fetched_product: String,
+    pub requested_source: SourceId,
+    pub resolved_source: SourceId,
+    pub resolved_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HrrrDirectRecipeTiming {
     pub project_ms: u128,
     pub render_ms: u128,
@@ -74,6 +83,7 @@ pub struct HrrrDirectFetchTiming {
     pub fetch_cache_hit: bool,
     pub extract_cache_hits: usize,
     pub extract_cache_misses: usize,
+    pub runtime_fetch: HrrrDirectFetchRuntimeInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +91,9 @@ pub struct HrrrDirectRenderedRecipe {
     pub recipe_slug: String,
     pub title: String,
     pub grib_product: String,
+    pub fetched_grib_product: String,
+    pub resolved_source: SourceId,
+    pub resolved_url: String,
     pub output_path: PathBuf,
     pub timing: HrrrDirectRecipeTiming,
 }
@@ -159,6 +172,7 @@ pub(crate) fn run_hrrr_direct_batch_with_context(
     let groups = group_direct_fetches(&planned);
     let mut extracted = HashMap::<FieldSelector, SelectedField2D>::new();
     let mut fetches = Vec::with_capacity(groups.len());
+    let mut fetch_truth_by_planned_product = HashMap::<String, HrrrDirectFetchRuntimeInfo>::new();
 
     for group in &groups {
         let (fields, timing) = load_direct_fetch_group(
@@ -169,10 +183,18 @@ pub(crate) fn run_hrrr_direct_batch_with_context(
             request.use_cache,
         )?;
         extracted.extend(fields.into_iter().map(|field| (field.selector, field)));
+        fetch_truth_by_planned_product.insert(group.product.clone(), timing.runtime_fetch.clone());
         fetches.push(timing);
     }
 
-    let rendered = render_direct_recipes(request, latest, &planned, &extracted, shared_context)?;
+    let rendered = render_direct_recipes(
+        request,
+        latest,
+        &planned,
+        &extracted,
+        &fetch_truth_by_planned_product,
+        shared_context,
+    )?;
 
     Ok(HrrrDirectBatchReport {
         date_yyyymmdd: request.date_yyyymmdd.clone(),
@@ -352,6 +374,15 @@ fn load_direct_fetch_group(
             fetch_cache_hit: fetched.cache_hit,
             extract_cache_hits,
             extract_cache_misses: missing.len(),
+            runtime_fetch: HrrrDirectFetchRuntimeInfo {
+                planned_product: group.product.clone(),
+                fetched_product: fetch_request.request.product.clone(),
+                requested_source: fetch_request
+                    .source_override
+                    .unwrap_or(fetched.result.source),
+                resolved_source: fetched.result.source,
+                resolved_url: fetched.result.url.clone(),
+            },
         },
     ))
 }
@@ -361,6 +392,7 @@ fn render_direct_recipes(
     latest: &LatestRun,
     planned: &[PlannedDirectRecipe],
     extracted: &HashMap<FieldSelector, SelectedField2D>,
+    fetch_truth_by_planned_product: &HashMap<String, HrrrDirectFetchRuntimeInfo>,
     shared_context: Option<&PreparedHrrrHourContext>,
 ) -> Result<Vec<HrrrDirectRenderedRecipe>, Box<dyn std::error::Error>> {
     let barb_stride_cache = Arc::new(Mutex::new(HashMap::new()));
@@ -374,6 +406,7 @@ fn render_direct_recipes(
                     latest,
                     item,
                     extracted,
+                    fetch_truth_by_planned_product,
                     shared_context,
                     &barb_stride_cache,
                 )
@@ -398,6 +431,7 @@ fn render_direct_recipes(
                             latest,
                             item,
                             extracted,
+                            fetch_truth_by_planned_product,
                             shared_context,
                             &barb_stride_cache,
                         )
@@ -472,6 +506,7 @@ fn render_direct_recipe(
     latest: &LatestRun,
     item: &PlannedDirectRecipe,
     extracted: &HashMap<FieldSelector, SelectedField2D>,
+    fetch_truth_by_planned_product: &HashMap<String, HrrrDirectFetchRuntimeInfo>,
     shared_context: Option<&PreparedHrrrHourContext>,
     barb_stride_cache: &SharedBarbStrideCache,
 ) -> Result<HrrrDirectRenderedRecipe, Box<dyn std::error::Error>> {
@@ -484,6 +519,14 @@ fn render_direct_recipe(
         request.domain.slug,
         item.recipe.slug
     ));
+    let runtime_fetch = fetch_truth_by_planned_product
+        .get::<str>(item.plan.product.as_ref())
+        .ok_or_else(|| {
+            format!(
+                "missing direct fetch runtime truth for planned family '{}'",
+                item.plan.product
+            )
+        })?;
     let project_ms = if let Some(spec) = composite_panel_spec(item.recipe.slug) {
         render_direct_composite_panel(
             item.recipe,
@@ -542,6 +585,9 @@ fn render_direct_recipe(
         recipe_slug: item.recipe.slug.to_string(),
         title: item.recipe.title.to_string(),
         grib_product: item.plan.product.to_string(),
+        fetched_grib_product: runtime_fetch.fetched_product.clone(),
+        resolved_source: runtime_fetch.resolved_source,
+        resolved_url: runtime_fetch.resolved_url.clone(),
         output_path,
         timing: HrrrDirectRecipeTiming {
             project_ms,
@@ -1198,6 +1244,35 @@ mod tests {
         };
         let fetch = build_direct_fetch_request(&latest, 6, &group).unwrap();
         assert_eq!(fetch.request.product, "sfc");
+    }
+
+    #[test]
+    fn direct_fetch_timing_keeps_planned_vs_actual_family_truth() {
+        let latest = LatestRun {
+            model: ModelId::Hrrr,
+            cycle: rustwx_core::CycleSpec::new("20260414", 23).unwrap(),
+            source: SourceId::Nomads,
+        };
+        let group = FetchGroup {
+            product: "nat".to_string(),
+            fetch_mode: PlotRecipeFetchMode::WholeFileStructuredExtract,
+            variable_patterns: Vec::new(),
+            selectors: vec![FieldSelector::entire_atmosphere(
+                CanonicalField::CompositeReflectivity,
+            )],
+        };
+        let fetch = build_direct_fetch_request(&latest, 6, &group).unwrap();
+        let runtime = HrrrDirectFetchRuntimeInfo {
+            planned_product: group.product.clone(),
+            fetched_product: fetch.request.product.clone(),
+            requested_source: fetch.source_override.unwrap(),
+            resolved_source: SourceId::Nomads,
+            resolved_url: "https://example.test/hrrr.t23z.wrfsfcf06.grib2".into(),
+        };
+        assert_eq!(runtime.planned_product, "nat");
+        assert_eq!(runtime.fetched_product, "sfc");
+        assert_eq!(runtime.resolved_source, SourceId::Nomads);
+        assert!(runtime.resolved_url.contains("wrfsfc"));
     }
 
     #[test]

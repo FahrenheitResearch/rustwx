@@ -86,6 +86,15 @@ pub struct HrrrBatchRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HrrrFetchRuntimeInfo {
+    pub planned_product: String,
+    pub fetched_product: String,
+    pub requested_source: SourceId,
+    pub resolved_source: SourceId,
+    pub resolved_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HrrrSharedTiming {
     pub fetch_surface_ms: u128,
     pub fetch_pressure_ms: u128,
@@ -95,6 +104,8 @@ pub struct HrrrSharedTiming {
     pub fetch_pressure_cache_hit: bool,
     pub decode_surface_cache_hit: bool,
     pub decode_pressure_cache_hit: bool,
+    pub surface_fetch: HrrrFetchRuntimeInfo,
+    pub pressure_fetch: HrrrFetchRuntimeInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +183,21 @@ pub struct HrrrFetchedSubset {
     pub request: FetchRequest,
     pub fetched: CachedFetchResult,
     pub bytes: Vec<u8>,
+}
+
+impl HrrrFetchedSubset {
+    pub fn runtime_info(&self, planned_product: &str) -> HrrrFetchRuntimeInfo {
+        HrrrFetchRuntimeInfo {
+            planned_product: planned_product.to_string(),
+            fetched_product: self.request.request.product.clone(),
+            requested_source: self
+                .request
+                .source_override
+                .unwrap_or(self.fetched.result.source),
+            resolved_source: self.fetched.result.source,
+            resolved_url: self.fetched.result.url.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1036,6 +1062,8 @@ pub fn load_hrrr_timestep_from_latest(
         surface_decode.value.ny,
     )?;
     let grid = surface_decode.value.core_grid()?;
+    let surface_fetch = surface_subset.runtime_info("sfc");
+    let pressure_fetch = pressure_subset.runtime_info("prs");
 
     Ok(LoadedHrrrTimestep {
         latest,
@@ -1053,6 +1081,8 @@ pub fn load_hrrr_timestep_from_latest(
             fetch_pressure_cache_hit: false,
             decode_surface_cache_hit: false,
             decode_pressure_cache_hit: false,
+            surface_fetch,
+            pressure_fetch,
         },
     }
     .with_cache_flags())
@@ -1789,6 +1819,38 @@ mod tests {
         )
         .unwrap();
         assert!(request.variable_patterns.is_empty());
+    }
+
+    #[test]
+    fn fetched_subset_runtime_info_keeps_planned_and_actual_fetch_truth() {
+        let subset = HrrrFetchedSubset {
+            request: hrrr_fetch_request(
+                CycleSpec::new("20260414", 23).unwrap(),
+                6,
+                SourceId::Nomads,
+                "sfc",
+                Vec::new(),
+            )
+            .unwrap(),
+            fetched: CachedFetchResult {
+                result: rustwx_io::FetchResult {
+                    source: SourceId::Nomads,
+                    url: "https://example.test/hrrr.t23z.wrfsfcf06.grib2".into(),
+                    bytes: vec![1, 2, 3],
+                },
+                cache_hit: false,
+                bytes_path: PathBuf::from("fetch.grib2"),
+                metadata_path: PathBuf::from("fetch_meta.json"),
+            },
+            bytes: vec![1, 2, 3],
+        };
+
+        let runtime = subset.runtime_info("nat");
+        assert_eq!(runtime.planned_product, "nat");
+        assert_eq!(runtime.fetched_product, "sfc");
+        assert_eq!(runtime.requested_source, SourceId::Nomads);
+        assert_eq!(runtime.resolved_source, SourceId::Nomads);
+        assert!(runtime.resolved_url.contains("wrfsfc"));
     }
 
     #[test]

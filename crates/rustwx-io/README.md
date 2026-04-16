@@ -6,7 +6,7 @@
 
 - source probing
 - forecast-hour discovery
-- `.idx`-driven byte-range fetch
+- full-file and indexed fetch paths, depending on model/operator policy
 - cached fetch results
 - selector-backed GRIB extraction
 - cached extracted fields
@@ -14,7 +14,7 @@
 ## What is implemented
 
 - live source probes for supported models
-- cached byte fetches
+- cached byte fetches for both full-family files and indexed subsets
 - structured GRIB extraction for the selector subset used by current proofs and
   the current direct catalog, including:
   - 200/300/500/700/850 hPa height, temperature, RH, absolute vorticity, and winds

@@ -118,17 +118,18 @@ pub fn available_forecast_hours(
     let client = client()?;
     let candidates = candidate_hours(model, hour_utc);
     let summary = model_summary(model);
-    let source = source_override.unwrap_or(summary.sources[0].id);
 
-    let available = if should_parallelize_hour_availability_probes(source) {
+    let available = if should_parallelize_hour_availability_probes(source_override, summary) {
         candidates
             .par_iter()
             .filter_map(|&forecast_hour| {
                 let cycle = rustwx_core::CycleSpec::new(date_yyyymmdd, hour_utc).ok()?;
-                let request = ModelRunRequest::new(model, cycle, forecast_hour, product).ok()?;
-                let resolved = resolve_urls(&request).ok()?;
-                let target = resolved.into_iter().find(|url| url.source == source)?;
-                if probe_availability(&client, &target) {
+                let fetch = FetchRequest {
+                    request: ModelRunRequest::new(model, cycle, forecast_hour, product).ok()?,
+                    source_override,
+                    variable_patterns: Vec::new(),
+                };
+                if fetch_request_is_available(&client, &fetch).ok()? {
                     Some(forecast_hour)
                 } else {
                     None
@@ -140,10 +141,12 @@ pub fn available_forecast_hours(
             .iter()
             .filter_map(|&forecast_hour| {
                 let cycle = rustwx_core::CycleSpec::new(date_yyyymmdd, hour_utc).ok()?;
-                let request = ModelRunRequest::new(model, cycle, forecast_hour, product).ok()?;
-                let resolved = resolve_urls(&request).ok()?;
-                let target = resolved.into_iter().find(|url| url.source == source)?;
-                if probe_availability(&client, &target) {
+                let fetch = FetchRequest {
+                    request: ModelRunRequest::new(model, cycle, forecast_hour, product).ok()?,
+                    source_override,
+                    variable_patterns: Vec::new(),
+                };
+                if fetch_request_is_available(&client, &fetch).ok()? {
                     Some(forecast_hour)
                 } else {
                     None
@@ -308,6 +311,16 @@ fn filtered_urls(fetch: &FetchRequest) -> Result<Vec<ResolvedUrl>, IoError> {
     })
 }
 
+fn fetch_request_is_available(
+    client: &DownloadClient,
+    fetch: &FetchRequest,
+) -> Result<bool, IoError> {
+    let urls = filtered_urls(fetch)?;
+    Ok(any_source_available(&urls, |resolved| {
+        probe_availability(client, resolved)
+    }))
+}
+
 fn probe_availability(client: &DownloadClient, resolved: &ResolvedUrl) -> bool {
     if matches!(resolved.source, SourceId::Nomads) {
         client.get_range(&resolved.grib_url, 0, 0).is_ok()
@@ -316,8 +329,24 @@ fn probe_availability(client: &DownloadClient, resolved: &ResolvedUrl) -> bool {
     }
 }
 
-fn should_parallelize_hour_availability_probes(source: SourceId) -> bool {
-    !matches!(source, SourceId::Nomads)
+fn any_source_available<F>(resolved: &[ResolvedUrl], mut probe: F) -> bool
+where
+    F: FnMut(&ResolvedUrl) -> bool,
+{
+    resolved.iter().any(&mut probe)
+}
+
+fn should_parallelize_hour_availability_probes(
+    source_override: Option<SourceId>,
+    summary: &rustwx_models::ModelSummary,
+) -> bool {
+    match source_override {
+        Some(source) => !matches!(source, SourceId::Nomads),
+        None => summary
+            .sources
+            .iter()
+            .all(|source| source.id != SourceId::Nomads),
+    }
 }
 
 fn try_fetch_one(
@@ -327,12 +356,12 @@ fn try_fetch_one(
 ) -> Result<Vec<u8>, String> {
     if !variable_patterns.is_empty() {
         if let Some(idx_url) = &resolved.idx_url {
-            let idx_text = client.get_text(idx_url).map_err(|err| err.to_string())?;
-            let ranges = matching_ranges(&idx_text, variable_patterns)?;
-            if !ranges.is_empty() {
-                return client
-                    .get_ranges(&resolved.grib_url, &ranges)
-                    .map_err(|err| err.to_string());
+            if let Ok(idx_text) = client.get_text(idx_url) {
+                if let Some(ranges) = idx_subset_ranges(&idx_text, variable_patterns)? {
+                    return client
+                        .get_ranges(&resolved.grib_url, &ranges)
+                        .map_err(|err| err.to_string());
+                }
             }
         }
     }
@@ -341,10 +370,10 @@ fn try_fetch_one(
         .map_err(|err| err.to_string())
 }
 
-fn matching_ranges(idx_text: &str, patterns: &[&str]) -> Result<Vec<(u64, u64)>, String> {
+fn idx_subset_ranges(idx_text: &str, patterns: &[&str]) -> Result<Option<Vec<(u64, u64)>>, String> {
     let entries = parse_idx(idx_text);
     if entries.is_empty() {
-        return Err("idx file was empty or unparseable".to_string());
+        return Ok(None);
     }
 
     let mut selected = Vec::new();
@@ -358,9 +387,9 @@ fn matching_ranges(idx_text: &str, patterns: &[&str]) -> Result<Vec<(u64, u64)>,
     }
 
     if selected.is_empty() {
-        return Err(format!("no idx entries matched patterns {patterns:?}"));
+        return Ok(None);
     }
-    Ok(byte_ranges(&entries, &selected))
+    Ok(Some(byte_ranges(&entries, &selected)))
 }
 
 fn candidate_hours(model: ModelId, cycle_hour: u8) -> Vec<u16> {
@@ -1083,8 +1112,18 @@ mod tests {
 
     #[test]
     fn nomads_hour_probes_are_serialized() {
-        assert!(!should_parallelize_hour_availability_probes(SourceId::Nomads));
-        assert!(should_parallelize_hour_availability_probes(SourceId::Aws));
+        assert!(!should_parallelize_hour_availability_probes(
+            Some(SourceId::Nomads),
+            model_summary(ModelId::Hrrr)
+        ));
+        assert!(should_parallelize_hour_availability_probes(
+            Some(SourceId::Aws),
+            model_summary(ModelId::Hrrr)
+        ));
+        assert!(!should_parallelize_hour_availability_probes(
+            None,
+            model_summary(ModelId::Hrrr)
+        ));
     }
 
     #[test]
@@ -1094,14 +1133,41 @@ mod tests {
             grib_url: "https://nomads.ncep.noaa.gov/file.grib2".to_string(),
             idx_url: Some("https://nomads.ncep.noaa.gov/file.grib2.idx".to_string()),
         };
-        assert_eq!(resolved.availability_probe_url(), "https://nomads.ncep.noaa.gov/file.grib2.idx");
+        assert_eq!(
+            resolved.availability_probe_url(),
+            "https://nomads.ncep.noaa.gov/file.grib2.idx"
+        );
         assert_eq!(resolved.grib_url, "https://nomads.ncep.noaa.gov/file.grib2");
     }
 
     #[test]
+    fn source_probe_uses_fallback_sources_in_registry_order() {
+        let urls = vec![
+            ResolvedUrl {
+                source: SourceId::Nomads,
+                grib_url: "https://nomads.ncep.noaa.gov/primary.grib2".to_string(),
+                idx_url: None,
+            },
+            ResolvedUrl {
+                source: SourceId::Aws,
+                grib_url: "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/fallback.grib2".to_string(),
+                idx_url: None,
+            },
+        ];
+        let seen = std::sync::Mutex::new(Vec::new());
+        let available = any_source_available(&urls, |resolved| {
+            seen.lock().unwrap().push(resolved.source);
+            matches!(resolved.source, SourceId::Aws)
+        });
+        assert!(available);
+        assert_eq!(*seen.lock().unwrap(), vec![SourceId::Nomads, SourceId::Aws]);
+    }
+
+    #[test]
     fn matching_ranges_uses_idx_patterns() {
-        let ranges =
-            matching_ranges(SAMPLE_IDX, &["TMP:2 m above ground", "CAPE:surface"]).unwrap();
+        let ranges = idx_subset_ranges(SAMPLE_IDX, &["TMP:2 m above ground", "CAPE:surface"])
+            .unwrap()
+            .expect("idx subset ranges should exist");
         assert_eq!(ranges.len(), 2);
         assert_eq!(ranges[0].0, 0);
         assert_eq!(ranges[1].0, 96542);
@@ -1109,13 +1175,30 @@ mod tests {
 
     #[test]
     fn matching_ranges_dedupes_duplicate_selector_hits() {
-        let ranges = matching_ranges(
+        let ranges = idx_subset_ranges(
             SAMPLE_IDX,
             &["TMP:2 m above ground", "TMP:2 m above ground"],
         )
-        .unwrap();
+        .unwrap()
+        .expect("idx subset ranges should exist");
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0].0, 0);
+    }
+
+    #[test]
+    fn idx_subset_ranges_falls_back_when_patterns_do_not_match() {
+        assert_eq!(
+            idx_subset_ranges(SAMPLE_IDX, &["TMP:850 mb"]).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn idx_subset_ranges_falls_back_when_idx_is_unparseable() {
+        assert_eq!(
+            idx_subset_ranges("not an idx", &["TMP:2 m above ground"]).unwrap(),
+            None
+        );
     }
 
     #[test]

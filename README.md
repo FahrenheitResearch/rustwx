@@ -59,7 +59,10 @@ Each crate has its own README in `crates/<crate>/README.md`.
 - URL resolution for all four built-in models
 - latest-run probing for NOAA-style feeds
 - forecast-hour availability probes
-- `.idx`-driven byte-range fetches
+- full-family HRRR ingest on the main operator path, with structured extraction
+  from local `wrfsfc` / `wrfprs` family files
+- indexed byte-range fetch remains available for models and product paths that
+  are still configured for it
 - on-disk artifact caching for fetched bytes and selector-backed field extraction
 
 ### Diagnostics
@@ -136,6 +139,19 @@ cargo run -p rustwx-cli --release --bin hrrr_ecape8 -- `
   --date 20260414 `
   --hour 23 `
   --forecast-hour 0 `
+  --region conus
+```
+
+### Generate one HRRR non-ECAPE hour pass
+
+`hrrr_non_ecape_hour` is the main HRRR operator-facing batch entrypoint. It now
+defaults to `NOMADS` and the full-family HRRR ingest path.
+
+```powershell
+cargo run -p rustwx-cli --release --bin hrrr_non_ecape_hour -- `
+  --date 20260414 `
+  --cycle 23 `
+  --forecast-hour 1 `
   --region conus
 ```
 

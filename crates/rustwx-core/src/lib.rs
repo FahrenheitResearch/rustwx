@@ -365,6 +365,41 @@ pub enum ProductLineage {
     Bundled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductKind {
+    Direct,
+    Derived,
+    Windowed,
+    Bundled,
+}
+
+impl ProductKind {
+    pub const fn lineage(self) -> ProductLineage {
+        match self {
+            Self::Direct => ProductLineage::Direct,
+            Self::Derived => ProductLineage::Derived,
+            Self::Windowed => ProductLineage::Windowed,
+            Self::Bundled => ProductLineage::Bundled,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Derived => "derived",
+            Self::Windowed => "windowed",
+            Self::Bundled => "bundled",
+        }
+    }
+}
+
+impl std::fmt::Display for ProductKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProductMaturity {
@@ -411,6 +446,58 @@ impl ProductWindowSpec {
             process: StatisticalProcess::Accumulation,
             duration_hours,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ProductId {
+    pub kind: ProductKind,
+    pub slug: String,
+}
+
+impl ProductId {
+    pub fn new<S: Into<String>>(kind: ProductKind, slug: S) -> Self {
+        Self {
+            kind,
+            slug: slug.into(),
+        }
+    }
+
+    pub fn as_slug(&self) -> &str {
+        self.slug.as_str()
+    }
+
+    pub fn product_key(&self) -> ProductKey {
+        ProductKey::named(self.slug.clone())
+    }
+}
+
+impl std::fmt::Display for ProductId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.kind, self.slug)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanonicalProductIdentity {
+    pub canonical: ProductId,
+    pub alias_slugs: Vec<String>,
+}
+
+impl CanonicalProductIdentity {
+    pub fn new(canonical: ProductId) -> Self {
+        Self {
+            canonical,
+            alias_slugs: Vec::new(),
+        }
+    }
+
+    pub fn with_alias_slug<S: Into<String>>(mut self, alias_slug: S) -> Self {
+        let alias_slug = alias_slug.into();
+        if alias_slug != self.canonical.slug && !self.alias_slugs.contains(&alias_slug) {
+            self.alias_slugs.push(alias_slug);
+        }
+        self
     }
 }
 
@@ -508,6 +595,7 @@ pub struct ProductKeyMetadata {
     pub description: Option<String>,
     pub native_units: Option<String>,
     pub category: Option<String>,
+    pub identity: Option<CanonicalProductIdentity>,
     pub provenance: Option<ProductProvenance>,
 }
 
@@ -518,6 +606,7 @@ impl ProductKeyMetadata {
             description: None,
             native_units: None,
             category: None,
+            identity: None,
             provenance: None,
         }
     }
@@ -537,6 +626,11 @@ impl ProductKeyMetadata {
         self
     }
 
+    pub fn with_identity(mut self, identity: CanonicalProductIdentity) -> Self {
+        self.identity = Some(identity);
+        self
+    }
+
     pub fn with_provenance(mut self, provenance: ProductProvenance) -> Self {
         self.provenance = Some(provenance);
         self
@@ -544,6 +638,10 @@ impl ProductKeyMetadata {
 }
 
 impl FieldSelector {
+    pub fn product_id(self) -> ProductId {
+        ProductId::new(ProductKind::Direct, self.key())
+    }
+
     pub fn product_provenance(self) -> ProductProvenance {
         ProductProvenance::selector_backed(self)
     }
@@ -551,6 +649,7 @@ impl FieldSelector {
     pub fn product_metadata(self) -> ProductKeyMetadata {
         ProductKeyMetadata::new(self.display_name())
             .with_native_units(self.native_units())
+            .with_identity(CanonicalProductIdentity::new(self.product_id()))
             .with_provenance(self.product_provenance())
     }
 }
@@ -1322,6 +1421,14 @@ mod tests {
 
         assert_eq!(metadata.display_name, "Temperature (500hpa)");
         assert_eq!(metadata.native_units.as_deref(), Some("K"));
+        assert_eq!(
+            metadata
+                .identity
+                .as_ref()
+                .expect("selector metadata should expose canonical identity")
+                .canonical,
+            ProductId::new(ProductKind::Direct, "temperature_500hpa")
+        );
         let provenance = metadata
             .provenance
             .as_ref()
@@ -1339,6 +1446,13 @@ mod tests {
             .with_description("Trailing native hourly 2-5 km updraft-helicity maxima")
             .with_category("windowed")
             .with_native_units("m^2/s^2")
+            .with_identity(
+                CanonicalProductIdentity::new(ProductId::new(
+                    ProductKind::Windowed,
+                    "uh_2to5km_run_max",
+                ))
+                .with_alias_slug("run_max_uh_2to5km"),
+            )
             .with_provenance(
                 ProductProvenance::new(ProductLineage::Windowed, ProductMaturity::Operational)
                     .with_flag(ProductSemanticFlag::Composite)
@@ -1346,6 +1460,19 @@ mod tests {
             );
 
         assert_eq!(metadata.category.as_deref(), Some("windowed"));
+        let identity = metadata
+            .identity
+            .clone()
+            .expect("builder should keep canonical identity");
+        assert_eq!(
+            identity.canonical,
+            ProductId::new(ProductKind::Windowed, "uh_2to5km_run_max")
+        );
+        assert!(
+            identity
+                .alias_slugs
+                .contains(&"run_max_uh_2to5km".to_string())
+        );
         let provenance = metadata.provenance.expect("builder should keep provenance");
         assert_eq!(provenance.lineage, ProductLineage::Windowed);
         assert!(provenance.flags.contains(&ProductSemanticFlag::Composite));

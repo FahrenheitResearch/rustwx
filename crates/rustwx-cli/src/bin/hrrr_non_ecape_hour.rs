@@ -49,7 +49,11 @@ struct Args {
     cycle: Option<u8>,
     #[arg(long, default_value_t = 0)]
     forecast_hour: u16,
-    #[arg(long, default_value = "aws")]
+    #[arg(
+        long,
+        default_value = "nomads",
+        help = "HRRR source for the main operator path; defaults to NOMADS full-family ingest"
+    )]
     source: rustwx_core::SourceId,
     #[arg(long, value_enum, default_value_t = RegionPreset::Conus)]
     region: RegionPreset,
