@@ -295,6 +295,9 @@ pub fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn std::
         let _ = fs::remove_file(&tmp_path);
         return Err(err);
     }
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
     if let Err(err) = fs::rename(&tmp_path, path) {
         let _ = fs::remove_file(&tmp_path);
         return Err(Box::new(err));
@@ -476,6 +479,30 @@ mod tests {
         atomic_write_json(&path, &fixture).unwrap();
         let loaded: JsonFixture = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(loaded, fixture);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn atomic_write_json_replaces_existing_file_contents() {
+        let root = std::env::temp_dir().join(format!(
+            "rustwx_products_publication_replace_{}",
+            process::id()
+        ));
+        let path = root.join("fixture.json");
+        let first = JsonFixture {
+            name: "first".into(),
+            value: 1,
+        };
+        let second = JsonFixture {
+            name: "second".into(),
+            value: 2,
+        };
+
+        atomic_write_json(&path, &first).unwrap();
+        atomic_write_json(&path, &second).unwrap();
+        let loaded: JsonFixture = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(loaded, second);
 
         let _ = fs::remove_dir_all(root);
     }

@@ -1,24 +1,23 @@
 use crate::derived::{
-    HrrrDerivedBatchReport, HrrrDerivedBatchRequest, plan_derived_recipes,
-    run_hrrr_derived_batch_with_context,
+    plan_derived_recipes, run_hrrr_derived_batch_with_context, HrrrDerivedBatchReport,
+    HrrrDerivedBatchRequest,
 };
 use crate::direct::{
-    HrrrDirectBatchReport, HrrrDirectBatchRequest, required_direct_projection_sizes,
-    run_hrrr_direct_batch_with_context,
+    required_direct_projection_sizes, run_hrrr_direct_batch_with_context, HrrrDirectBatchReport,
+    HrrrDirectBatchRequest,
 };
-use crate::hrrr::{DomainSpec, prepare_hrrr_hour_context};
-use crate::orchestrator::{PreparedRunContext, PreparedRunMetadata, lane, run_fanout3};
+use crate::hrrr::{prepare_hrrr_hour_context, DomainSpec};
+use crate::orchestrator::{lane, run_fanout3, PreparedRunContext, PreparedRunMetadata};
 use crate::publication::{
+    artifact_identity_from_path, default_run_manifest_path, publish_run_manifest,
     ArtifactPublicationState, PublishedArtifactRecord, PublishedFetchIdentity,
-    RunPublicationManifest, artifact_identity_from_path, default_run_manifest_path,
-    fetch_identity_from_cached_result, publish_run_manifest,
+    RunPublicationManifest,
 };
 use crate::windowed::{
-    HrrrWindowedBatchReport, HrrrWindowedBatchRequest, HrrrWindowedProduct,
-    HrrrWindowedRenderedProduct, run_hrrr_windowed_batch_with_context,
+    run_hrrr_windowed_batch_with_context, HrrrWindowedBatchReport, HrrrWindowedBatchRequest,
+    HrrrWindowedProduct, HrrrWindowedRenderedProduct,
 };
-use rustwx_core::{CycleSpec, ModelId, ModelRunRequest, SourceId};
-use rustwx_io::{FetchRequest, load_cached_fetch};
+use rustwx_core::SourceId;
 use rustwx_models::plot_recipe;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -209,25 +208,10 @@ pub fn run_hrrr_non_ecape_hour(
     };
 
     let summary = build_summary(&direct, &derived, &windowed);
-    manifest.input_fetches = collect_input_fetches(
-        request,
-        &pinned_date,
-        metadata.cycle_utc,
-        &direct,
-        &derived,
-        &windowed,
-    )?;
+    manifest.input_fetches = collect_input_fetches(&direct, &derived, &windowed);
     apply_direct_manifest_updates(&mut manifest, &direct);
     apply_derived_manifest_updates(&mut manifest, &derived);
-    apply_windowed_manifest_updates(
-        &mut manifest,
-        &windowed,
-        &request.cache_root,
-        request.use_cache,
-        &pinned_date,
-        metadata.cycle_utc,
-        pinned_source,
-    );
+    apply_windowed_manifest_updates(&mut manifest, &windowed);
     let blocked_count = count_blocked_artifacts(&manifest);
     if blocked_count > 0 {
         manifest.mark_partial(format!("{blocked_count} artifact(s) blocked"));
@@ -524,11 +508,6 @@ fn apply_derived_manifest_updates(
 fn apply_windowed_manifest_updates(
     manifest: &mut RunPublicationManifest,
     windowed: &Option<HrrrWindowedBatchReport>,
-    cache_root: &std::path::Path,
-    use_cache: bool,
-    date_yyyymmdd: &str,
-    cycle_utc: u8,
-    source: SourceId,
 ) {
     let Some(report) = windowed else {
         return;
@@ -544,15 +523,7 @@ fn apply_windowed_manifest_updates(
             manifest
                 .update_artifact_identity(&windowed_artifact_key(product.product.slug()), identity);
         }
-        let input_fetch_keys = collect_windowed_input_fetch_keys(
-            product,
-            &report.shared_timing,
-            cache_root,
-            use_cache,
-            date_yyyymmdd,
-            cycle_utc,
-            source,
-        );
+        let input_fetch_keys = collect_windowed_input_fetch_keys(product, &report.shared_timing);
         if !input_fetch_keys.is_empty() {
             manifest.update_artifact_input_fetch_keys(
                 &windowed_artifact_key(product.product.slug()),
@@ -581,11 +552,7 @@ fn windowed_artifact_detail(
             | HrrrWindowedProduct::Qpf24h
             | HrrrWindowedProduct::QpfTotal
     );
-    let fetches = if is_qpf {
-        &shared_timing.surface_hour_fetches
-    } else {
-        &shared_timing.uh_hour_fetches
-    };
+    let fetches = windowed_runtime_fetches_for_product(product, shared_timing);
     let planned_family = fetches
         .first()
         .map(|fetch| fetch.planned_product.as_str())
@@ -622,13 +589,10 @@ fn count_blocked_artifacts(manifest: &RunPublicationManifest) -> usize {
 }
 
 fn collect_input_fetches(
-    request: &HrrrNonEcapeHourRequest,
-    date_yyyymmdd: &str,
-    cycle_utc: u8,
     direct: &Option<HrrrDirectBatchReport>,
     derived: &Option<HrrrDerivedBatchReport>,
     windowed: &Option<HrrrWindowedBatchReport>,
-) -> Result<Vec<PublishedFetchIdentity>, Box<dyn std::error::Error>> {
+) -> Vec<PublishedFetchIdentity> {
     let mut by_key = HashMap::<String, PublishedFetchIdentity>::new();
 
     if let Some(report) = direct {
@@ -648,36 +612,22 @@ fn collect_input_fetches(
     }
 
     if let Some(report) = windowed {
-        collect_windowed_fetch_identities(report, request, date_yyyymmdd, cycle_utc, &mut by_key)?;
+        collect_windowed_fetch_identities(report, &mut by_key);
     }
 
     let mut fetches = by_key.into_values().collect::<Vec<_>>();
     fetches.sort_by(|left, right| left.fetch_key.cmp(&right.fetch_key));
-    Ok(fetches)
+    fetches
 }
 
 fn collect_windowed_fetch_identities(
     report: &HrrrWindowedBatchReport,
-    request: &HrrrNonEcapeHourRequest,
-    date_yyyymmdd: &str,
-    cycle_utc: u8,
     by_key: &mut HashMap<String, PublishedFetchIdentity>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if !request.use_cache {
-        return Ok(());
-    }
-
-    let cycle = CycleSpec::new(date_yyyymmdd, cycle_utc)?;
-    if let Some(geometry_fetch) = &report.shared_timing.geometry_fetch {
-        if let Some(identity) = load_windowed_fetch_identity(
-            cycle.clone(),
-            report.forecast_hour,
-            request.source,
-            geometry_fetch,
-            &request.cache_root,
-        )? {
-            by_key.entry(identity.fetch_key.clone()).or_insert(identity);
-        }
+) {
+    if let Some(identity) = &report.shared_timing.geometry_input_fetch {
+        by_key
+            .entry(identity.fetch_key.clone())
+            .or_insert_with(|| identity.clone());
     }
 
     for fetch in report
@@ -686,35 +636,34 @@ fn collect_windowed_fetch_identities(
         .iter()
         .chain(report.shared_timing.uh_hour_fetches.iter())
     {
-        if let Some(identity) = load_windowed_hour_fetch_identity(
-            cycle.clone(),
-            request.source,
-            fetch,
-            &request.cache_root,
-        )? {
-            by_key.entry(identity.fetch_key.clone()).or_insert(identity);
+        if let Some(identity) = &fetch.input_fetch {
+            by_key
+                .entry(identity.fetch_key.clone())
+                .or_insert_with(|| identity.clone());
         }
     }
-
-    Ok(())
 }
 
 fn collect_windowed_input_fetch_keys(
     product: &HrrrWindowedRenderedProduct,
     shared_timing: &crate::windowed::HrrrWindowedSharedTiming,
-    cache_root: &std::path::Path,
-    use_cache: bool,
-    date_yyyymmdd: &str,
-    cycle_utc: u8,
-    source: SourceId,
 ) -> Vec<String> {
-    if !use_cache {
-        return Vec::new();
+    let fetches = windowed_runtime_fetches_for_product(product, shared_timing);
+    let mut keys = Vec::new();
+    for fetch in fetches {
+        if let Some(identity) = &fetch.input_fetch {
+            if !keys.contains(&identity.fetch_key) {
+                keys.push(identity.fetch_key.clone());
+            }
+        }
     }
-    let cycle = match CycleSpec::new(date_yyyymmdd, cycle_utc) {
-        Ok(cycle) => cycle,
-        Err(_) => return Vec::new(),
-    };
+    keys
+}
+
+fn windowed_runtime_fetches_for_product<'a>(
+    product: &HrrrWindowedRenderedProduct,
+    shared_timing: &'a crate::windowed::HrrrWindowedSharedTiming,
+) -> Vec<&'a crate::windowed::HrrrWindowedHourFetchInfo> {
     let is_qpf = matches!(
         product.product,
         HrrrWindowedProduct::Qpf1h
@@ -723,77 +672,16 @@ fn collect_windowed_input_fetch_keys(
             | HrrrWindowedProduct::Qpf24h
             | HrrrWindowedProduct::QpfTotal
     );
+    let contributing_hours = &product.metadata.contributing_forecast_hours;
     let fetches = if is_qpf {
         &shared_timing.surface_hour_fetches
     } else {
         &shared_timing.uh_hour_fetches
     };
-    let mut keys = Vec::new();
-    for fetch in fetches {
-        if let Ok(Some(identity)) =
-            load_windowed_hour_fetch_identity(cycle.clone(), source, fetch, cache_root)
-        {
-            if !keys.contains(&identity.fetch_key) {
-                keys.push(identity.fetch_key);
-            }
-        }
-    }
-    keys
-}
-
-fn load_windowed_fetch_identity(
-    cycle: CycleSpec,
-    forecast_hour: u16,
-    source: SourceId,
-    fetch: &crate::hrrr::HrrrFetchRuntimeInfo,
-    cache_root: &std::path::Path,
-) -> Result<Option<PublishedFetchIdentity>, Box<dyn std::error::Error>> {
-    let fetch_request = FetchRequest {
-        request: ModelRunRequest::new(
-            ModelId::Hrrr,
-            cycle,
-            forecast_hour,
-            fetch.fetched_product.as_str(),
-        )?,
-        source_override: Some(source),
-        variable_patterns: Vec::new(),
-    };
-    Ok(
-        load_cached_fetch(cache_root, &fetch_request)?.map(|cached| {
-            fetch_identity_from_cached_result(
-                fetch.planned_product.as_str(),
-                &fetch_request,
-                &cached,
-            )
-        }),
-    )
-}
-
-fn load_windowed_hour_fetch_identity(
-    cycle: CycleSpec,
-    source: SourceId,
-    fetch: &crate::windowed::HrrrWindowedHourFetchInfo,
-    cache_root: &std::path::Path,
-) -> Result<Option<PublishedFetchIdentity>, Box<dyn std::error::Error>> {
-    let fetch_request = FetchRequest {
-        request: ModelRunRequest::new(
-            ModelId::Hrrr,
-            cycle,
-            fetch.hour,
-            fetch.fetched_product.as_str(),
-        )?,
-        source_override: Some(source),
-        variable_patterns: Vec::new(),
-    };
-    Ok(
-        load_cached_fetch(cache_root, &fetch_request)?.map(|cached| {
-            fetch_identity_from_cached_result(
-                fetch.planned_product.as_str(),
-                &fetch_request,
-                &cached,
-            )
-        }),
-    )
+    fetches
+        .iter()
+        .filter(|fetch| contributing_hours.contains(&fetch.hour))
+        .collect()
 }
 
 #[cfg(test)]
@@ -803,7 +691,7 @@ mod tests {
         HrrrDerivedRecipeTiming, HrrrDerivedRenderedRecipe, HrrrDerivedSharedTiming,
     };
     use crate::direct::{HrrrDirectRecipeTiming, HrrrDirectRenderedRecipe};
-    use crate::hrrr::{HrrrFetchRuntimeInfo, HrrrSharedTiming};
+    use crate::hrrr::HrrrFetchRuntimeInfo;
     use crate::windowed::{
         HrrrWindowedBlocker, HrrrWindowedHourFetchInfo, HrrrWindowedProductMetadata,
         HrrrWindowedProductTiming, HrrrWindowedRenderedProduct, HrrrWindowedSharedTiming,
@@ -826,6 +714,34 @@ mod tests {
             direct_recipe_slugs: Vec::new(),
             derived_recipe_slugs: Vec::new(),
             windowed_products: Vec::new(),
+        }
+    }
+
+    fn windowed_fetch_identity(
+        planned_family: &str,
+        fetched_product: &str,
+        hour: u16,
+    ) -> PublishedFetchIdentity {
+        let request = rustwx_core::ModelRunRequest::new(
+            rustwx_core::ModelId::Hrrr,
+            rustwx_core::CycleSpec::new("20260415", 12).unwrap(),
+            hour,
+            fetched_product,
+        )
+        .unwrap();
+        PublishedFetchIdentity {
+            fetch_key: crate::publication::fetch_key(planned_family, &request),
+            planned_family: planned_family.to_string(),
+            request,
+            source_override: Some(SourceId::Aws),
+            resolved_source: SourceId::Aws,
+            resolved_url: format!(
+                "https://example.test/hrrr.t12z.wrf{}f{:02}.grib2",
+                fetched_product, hour
+            ),
+            resolved_family: fetched_product.to_string(),
+            bytes_len: 3,
+            bytes_sha256: "abc123".into(),
         }
     }
 
@@ -894,7 +810,7 @@ mod tests {
             domain: domain(),
             input_fetches: Vec::new(),
             shared_timing: HrrrDerivedSharedTiming {
-                fetch_decode: HrrrSharedTiming {
+                fetch_decode: crate::gridded::SharedTiming {
                     fetch_surface_ms: 0,
                     fetch_pressure_ms: 0,
                     decode_surface_ms: 0,
@@ -903,15 +819,21 @@ mod tests {
                     fetch_pressure_cache_hit: false,
                     decode_surface_cache_hit: false,
                     decode_pressure_cache_hit: false,
-                    surface_fetch: HrrrFetchRuntimeInfo {
+                    surface_fetch: crate::gridded::FetchRuntimeInfo {
+                        planned_bundle: rustwx_core::CanonicalBundleDescriptor::SurfaceAnalysis,
+                        planned_family: rustwx_core::CanonicalDataFamily::Surface,
                         planned_product: "sfc".into(),
+                        resolved_native_product: "sfc".into(),
                         fetched_product: "sfc".into(),
                         requested_source: SourceId::Aws,
                         resolved_source: SourceId::Aws,
                         resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
                     },
-                    pressure_fetch: HrrrFetchRuntimeInfo {
+                    pressure_fetch: crate::gridded::FetchRuntimeInfo {
+                        planned_bundle: rustwx_core::CanonicalBundleDescriptor::PressureAnalysis,
+                        planned_family: rustwx_core::CanonicalDataFamily::Pressure,
                         planned_product: "prs".into(),
+                        resolved_native_product: "prs".into(),
                         fetched_product: "prs".into(),
                         requested_source: SourceId::Aws,
                         resolved_source: SourceId::Aws,
@@ -959,6 +881,7 @@ mod tests {
                     resolved_source: SourceId::Aws,
                     resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
                 }),
+                geometry_input_fetch: Some(windowed_fetch_identity("sfc", "sfc", 6)),
                 surface_hour_fetches: vec![HrrrWindowedHourFetchInfo {
                     hour: 6,
                     planned_product: "sfc".into(),
@@ -967,6 +890,7 @@ mod tests {
                     resolved_source: SourceId::Aws,
                     resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
                     fetch_cache_hit: false,
+                    input_fetch: Some(windowed_fetch_identity("sfc", "sfc", 6)),
                 }],
                 uh_hour_fetches: vec![HrrrWindowedHourFetchInfo {
                     hour: 6,
@@ -976,6 +900,7 @@ mod tests {
                     resolved_source: SourceId::Aws,
                     resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
                     fetch_cache_hit: false,
+                    input_fetch: Some(windowed_fetch_identity("nat", "sfc", 6)),
                 }],
             },
             products: vec![HrrrWindowedRenderedProduct {
@@ -1070,7 +995,7 @@ mod tests {
             domain: domain(),
             input_fetches: Vec::new(),
             shared_timing: HrrrDerivedSharedTiming {
-                fetch_decode: HrrrSharedTiming {
+                fetch_decode: crate::gridded::SharedTiming {
                     fetch_surface_ms: 0,
                     fetch_pressure_ms: 0,
                     decode_surface_ms: 0,
@@ -1079,15 +1004,21 @@ mod tests {
                     fetch_pressure_cache_hit: false,
                     decode_surface_cache_hit: false,
                     decode_pressure_cache_hit: false,
-                    surface_fetch: HrrrFetchRuntimeInfo {
+                    surface_fetch: crate::gridded::FetchRuntimeInfo {
+                        planned_bundle: rustwx_core::CanonicalBundleDescriptor::SurfaceAnalysis,
+                        planned_family: rustwx_core::CanonicalDataFamily::Surface,
                         planned_product: "sfc".into(),
+                        resolved_native_product: "sfc".into(),
                         fetched_product: "sfc".into(),
                         requested_source: SourceId::Aws,
                         resolved_source: SourceId::Aws,
                         resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
                     },
-                    pressure_fetch: HrrrFetchRuntimeInfo {
+                    pressure_fetch: crate::gridded::FetchRuntimeInfo {
+                        planned_bundle: rustwx_core::CanonicalBundleDescriptor::PressureAnalysis,
+                        planned_family: rustwx_core::CanonicalDataFamily::Pressure,
                         planned_product: "prs".into(),
+                        resolved_native_product: "prs".into(),
                         fetched_product: "prs".into(),
                         requested_source: SourceId::Aws,
                         resolved_source: SourceId::Aws,
@@ -1137,6 +1068,7 @@ mod tests {
                     resolved_source: SourceId::Aws,
                     resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
                 }),
+                geometry_input_fetch: Some(windowed_fetch_identity("sfc", "sfc", 6)),
                 surface_hour_fetches: vec![HrrrWindowedHourFetchInfo {
                     hour: 6,
                     planned_product: "sfc".into(),
@@ -1145,6 +1077,7 @@ mod tests {
                     resolved_source: SourceId::Aws,
                     resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
                     fetch_cache_hit: false,
+                    input_fetch: Some(windowed_fetch_identity("sfc", "sfc", 6)),
                 }],
                 uh_hour_fetches: vec![HrrrWindowedHourFetchInfo {
                     hour: 6,
@@ -1154,6 +1087,7 @@ mod tests {
                     resolved_source: SourceId::Aws,
                     resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
                     fetch_cache_hit: false,
+                    input_fetch: Some(windowed_fetch_identity("nat", "sfc", 6)),
                 }],
             },
             products: vec![HrrrWindowedRenderedProduct {
@@ -1181,15 +1115,7 @@ mod tests {
 
         apply_direct_manifest_updates(&mut manifest, &Some(direct));
         apply_derived_manifest_updates(&mut manifest, &Some(derived));
-        apply_windowed_manifest_updates(
-            &mut manifest,
-            &Some(windowed),
-            std::path::Path::new("C:\\proof\\run\\cache"),
-            false,
-            "20260415",
-            12,
-            SourceId::Aws,
-        );
+        apply_windowed_manifest_updates(&mut manifest, &Some(windowed));
         assert_eq!(count_blocked_artifacts(&manifest), 1);
 
         let direct_record = manifest
@@ -1198,13 +1124,11 @@ mod tests {
             .find(|artifact| artifact.artifact_key == "direct:500mb_height_winds")
             .unwrap();
         assert_eq!(direct_record.state, ArtifactPublicationState::Complete);
-        assert!(
-            direct_record
-                .detail
-                .as_deref()
-                .unwrap()
-                .contains("planned_family=prs fetched_family=prs resolved_source=aws")
-        );
+        assert!(direct_record
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("planned_family=prs fetched_family=prs resolved_source=aws"));
 
         let derived_record = manifest
             .artifacts
@@ -1212,11 +1136,11 @@ mod tests {
             .find(|artifact| artifact.artifact_key == "derived:sbcape")
             .unwrap();
         assert_eq!(derived_record.state, ArtifactPublicationState::Complete);
-        assert!(
-            derived_record.detail.as_deref().unwrap().contains(
-                "shared_surface planned_family=sfc fetched_family=sfc resolved_source=aws"
-            )
-        );
+        assert!(derived_record
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("shared_surface planned_family=sfc fetched_family=sfc resolved_source=aws"));
 
         let blocked_record = manifest
             .artifacts
@@ -1225,6 +1149,125 @@ mod tests {
             .unwrap();
         assert_eq!(blocked_record.state, ArtifactPublicationState::Blocked);
         assert_eq!(blocked_record.detail.as_deref(), Some("not enough hours"));
+    }
+
+    #[test]
+    fn windowed_input_fetch_keys_follow_contributing_hours_without_cache() {
+        let product = HrrrWindowedRenderedProduct {
+            product: HrrrWindowedProduct::Qpf1h,
+            output_path: PathBuf::from("C:\\proof\\qpf_1h.png"),
+            timing: HrrrWindowedProductTiming {
+                compute_ms: 1,
+                render_ms: 1,
+                total_ms: 2,
+            },
+            metadata: HrrrWindowedProductMetadata {
+                strategy: "direct APCP 1h accumulation".into(),
+                contributing_forecast_hours: vec![6],
+                window_hours: Some(1),
+            },
+        };
+        let shared_timing = HrrrWindowedSharedTiming {
+            fetch_geometry_ms: 0,
+            decode_geometry_ms: 0,
+            project_ms: 0,
+            fetch_surface_ms: 0,
+            decode_surface_ms: 0,
+            fetch_nat_ms: 0,
+            decode_nat_ms: 0,
+            geometry_fetch_cache_hit: false,
+            geometry_decode_cache_hit: false,
+            surface_hours_loaded: vec![5, 6],
+            nat_hours_loaded: Vec::new(),
+            geometry_fetch: None,
+            geometry_input_fetch: None,
+            surface_hour_fetches: vec![
+                HrrrWindowedHourFetchInfo {
+                    hour: 5,
+                    planned_product: "sfc".into(),
+                    fetched_product: "sfc".into(),
+                    requested_source: SourceId::Aws,
+                    resolved_source: SourceId::Aws,
+                    resolved_url: "https://example.test/hrrr.t12z.wrfsfcf05.grib2".into(),
+                    fetch_cache_hit: false,
+                    input_fetch: Some(windowed_fetch_identity("sfc", "sfc", 5)),
+                },
+                HrrrWindowedHourFetchInfo {
+                    hour: 6,
+                    planned_product: "sfc".into(),
+                    fetched_product: "sfc".into(),
+                    requested_source: SourceId::Aws,
+                    resolved_source: SourceId::Aws,
+                    resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
+                    fetch_cache_hit: false,
+                    input_fetch: Some(windowed_fetch_identity("sfc", "sfc", 6)),
+                },
+            ],
+            uh_hour_fetches: Vec::new(),
+        };
+
+        let keys = collect_windowed_input_fetch_keys(&product, &shared_timing);
+        assert_eq!(
+            keys,
+            vec![windowed_fetch_identity("sfc", "sfc", 6).fetch_key]
+        );
+    }
+
+    #[test]
+    fn collect_input_fetches_keeps_windowed_lineage_when_cache_is_off() {
+        let report = HrrrWindowedBatchReport {
+            date_yyyymmdd: "20260415".into(),
+            cycle_utc: 12,
+            forecast_hour: 6,
+            source: SourceId::Aws,
+            domain: domain(),
+            shared_timing: HrrrWindowedSharedTiming {
+                fetch_geometry_ms: 0,
+                decode_geometry_ms: 0,
+                project_ms: 0,
+                fetch_surface_ms: 0,
+                decode_surface_ms: 0,
+                fetch_nat_ms: 0,
+                decode_nat_ms: 0,
+                geometry_fetch_cache_hit: false,
+                geometry_decode_cache_hit: false,
+                surface_hours_loaded: vec![6],
+                nat_hours_loaded: vec![6],
+                geometry_fetch: None,
+                geometry_input_fetch: Some(windowed_fetch_identity("sfc", "sfc", 6)),
+                surface_hour_fetches: vec![HrrrWindowedHourFetchInfo {
+                    hour: 6,
+                    planned_product: "sfc".into(),
+                    fetched_product: "sfc".into(),
+                    requested_source: SourceId::Aws,
+                    resolved_source: SourceId::Aws,
+                    resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
+                    fetch_cache_hit: false,
+                    input_fetch: Some(windowed_fetch_identity("sfc", "sfc", 6)),
+                }],
+                uh_hour_fetches: vec![HrrrWindowedHourFetchInfo {
+                    hour: 6,
+                    planned_product: "nat".into(),
+                    fetched_product: "sfc".into(),
+                    requested_source: SourceId::Aws,
+                    resolved_source: SourceId::Aws,
+                    resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
+                    fetch_cache_hit: false,
+                    input_fetch: Some(windowed_fetch_identity("nat", "sfc", 6)),
+                }],
+            },
+            products: Vec::new(),
+            blockers: Vec::new(),
+            total_ms: 1,
+        };
+
+        let fetches = collect_input_fetches(&None, &None, &Some(report));
+        let keys = fetches
+            .into_iter()
+            .map(|fetch| fetch.fetch_key)
+            .collect::<Vec<_>>();
+        assert!(keys.contains(&windowed_fetch_identity("sfc", "sfc", 6).fetch_key));
+        assert!(keys.contains(&windowed_fetch_identity("nat", "sfc", 6).fetch_key));
     }
 
     #[test]

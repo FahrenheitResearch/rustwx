@@ -300,6 +300,15 @@ pub enum ModelError {
     Core(#[from] RustwxError),
     #[error("unsupported product '{product}' for model '{model}'")]
     UnsupportedProduct { model: ModelId, product: String },
+    #[error(
+        "unsupported forecast hour '{forecast_hour}' for model '{model}' cycle '{cycle_hour:02}z': {reason}"
+    )]
+    UnsupportedForecastHour {
+        model: ModelId,
+        cycle_hour: u8,
+        forecast_hour: u16,
+        reason: String,
+    },
     #[error("unknown plot recipe '{slug}'")]
     UnknownPlotRecipe { slug: String },
     #[error("plot recipe '{recipe}' is not supported for model '{model}': {reason}")]
@@ -316,7 +325,7 @@ const HRRR_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 ];
 const GFS_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
-const ECMWF_CYCLE_HOURS: &[u8] = &[0, 12];
+const ECMWF_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
 const RRFS_A_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 ];
@@ -421,7 +430,7 @@ const MODELS: &[ModelSummary] = &[
         description: "ECMWF open data IFS 0.25 degree feed",
         default_product: "oper",
         cycle_hours_utc: ECMWF_CYCLE_HOURS,
-        max_forecast_hour: 240,
+        max_forecast_hour: 360,
         sources: ECMWF_SOURCES,
     },
     ModelSummary {
@@ -1735,6 +1744,43 @@ pub fn model_summary(model: ModelId) -> &'static ModelSummary {
         .expect("built-in model summary missing")
 }
 
+pub fn supported_forecast_hours(model: ModelId, cycle_hour_utc: u8) -> Vec<u16> {
+    match model {
+        ModelId::Hrrr => {
+            if cycle_hour_utc % 6 == 0 {
+                (0..=48).collect()
+            } else {
+                (0..=18).collect()
+            }
+        }
+        ModelId::Gfs => {
+            let mut hours = (0..=120).collect::<Vec<u16>>();
+            hours.extend((123..=384).step_by(3));
+            hours
+        }
+        // ECMWF Open Data currently publishes four daily IFS runs. The 00/12z
+        // deterministic/ensemble open-data stream carries 3-hourly steps to
+        // 144h and then 6-hourly steps to 360h; 06/18z carries 3-hourly steps
+        // to 144h only.
+        ModelId::EcmwfOpenData => match cycle_hour_utc {
+            0 | 12 => {
+                let mut hours = (0..=144).step_by(3).collect::<Vec<u16>>();
+                hours.extend((150..=360).step_by(6));
+                hours
+            }
+            6 | 18 => (0..=144).step_by(3).collect(),
+            _ => Vec::new(),
+        },
+        ModelId::RrfsA => (0..=60).collect(),
+    }
+}
+
+pub fn forecast_hour_supported(model: ModelId, cycle_hour_utc: u8, forecast_hour: u16) -> bool {
+    supported_forecast_hours(model, cycle_hour_utc)
+        .into_iter()
+        .any(|candidate| candidate == forecast_hour)
+}
+
 pub fn resolve_canonical_bundle_product(
     model: ModelId,
     bundle: CanonicalBundleDescriptor,
@@ -1985,6 +2031,23 @@ fn build_gfs_url(source: SourceId, request: &ModelRunRequest) -> String {
 fn build_ecmwf_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
     if source != SourceId::Ecmwf {
         return Ok(unsupported_source(source, request.model));
+    }
+    if !forecast_hour_supported(
+        request.model,
+        request.cycle.hour_utc,
+        request.forecast_hour,
+    ) {
+        let reason = match request.cycle.hour_utc {
+            0 | 12 => "00/12z open-data runs expose 3-hourly steps to 144h, then 6-hourly steps to 360h",
+            6 | 18 => "06/18z open-data runs expose 3-hourly steps to 144h only",
+            _ => "ECMWF open-data runs are currently expected at 00/06/12/18 UTC",
+        };
+        return Err(ModelError::UnsupportedForecastHour {
+            model: request.model,
+            cycle_hour: request.cycle.hour_utc,
+            forecast_hour: request.forecast_hour,
+            reason: reason.to_string(),
+        });
     }
     let stream = match normalize_token(&request.product).as_str() {
         "oper" | "hres" => "oper",
@@ -2846,6 +2909,45 @@ mod tests {
     }
 
     #[test]
+    fn ecmwf_summary_matches_current_open_data_cycles_and_horizon() {
+        let summary = model_summary(ModelId::EcmwfOpenData);
+        assert_eq!(summary.cycle_hours_utc, &[0, 6, 12, 18]);
+        assert_eq!(summary.max_forecast_hour, 360);
+    }
+
+    #[test]
+    fn ecmwf_supported_forecast_hours_follow_open_data_cadence() {
+        let hours_00z = supported_forecast_hours(ModelId::EcmwfOpenData, 0);
+        assert!(hours_00z.contains(&0));
+        assert!(hours_00z.contains(&144));
+        assert!(hours_00z.contains(&150));
+        assert!(hours_00z.contains(&360));
+        assert!(!hours_00z.contains(&145));
+        assert!(!hours_00z.contains(&147));
+
+        let hours_06z = supported_forecast_hours(ModelId::EcmwfOpenData, 6);
+        assert!(hours_06z.contains(&0));
+        assert!(hours_06z.contains(&144));
+        assert!(!hours_06z.contains(&145));
+        assert!(!hours_06z.contains(&150));
+        assert!(!hours_06z.contains(&360));
+    }
+
+    #[test]
+    fn latest_available_run_considers_ecmwf_six_hour_cycles() {
+        let latest =
+            latest_available_run_with_probe(ModelId::EcmwfOpenData, None, "20260414", |resolved| {
+                resolved
+                    .availability_probe_url()
+                    .contains("/20260414/18z/ifs/0p25/oper/")
+            })
+            .unwrap();
+
+        assert_eq!(latest.cycle.hour_utc, 18);
+        assert_eq!(latest.source, SourceId::Ecmwf);
+    }
+
+    #[test]
     fn nomads_uses_range_probe_policy() {
         assert!(should_use_range_probe(SourceId::Nomads));
         assert!(!should_use_range_probe(SourceId::Aws));
@@ -3225,6 +3327,43 @@ mod tests {
             urls[0].grib_url,
             "https://data.ecmwf.int/forecasts/20260414/12z/ifs/0p25/oper/20260414120000-6h-oper-fc.grib2"
         );
+    }
+
+    #[test]
+    fn ecmwf_urls_support_six_utc_cycles() {
+        let request = ModelRunRequest::new(
+            ModelId::EcmwfOpenData,
+            CycleSpec::new("20260414", 6).unwrap(),
+            144,
+            "oper",
+        )
+        .unwrap();
+        let urls = resolve_urls(&request).unwrap();
+        assert_eq!(
+            urls[0].grib_url,
+            "https://data.ecmwf.int/forecasts/20260414/06z/ifs/0p25/oper/20260414060000-144h-oper-fc.grib2"
+        );
+    }
+
+    #[test]
+    fn ecmwf_urls_reject_unsupported_cycle_hour_cadence() {
+        let request = ModelRunRequest::new(
+            ModelId::EcmwfOpenData,
+            CycleSpec::new("20260414", 6).unwrap(),
+            150,
+            "oper",
+        )
+        .unwrap();
+        let err = resolve_urls(&request).unwrap_err();
+        assert!(matches!(
+            err,
+            ModelError::UnsupportedForecastHour {
+                model: ModelId::EcmwfOpenData,
+                cycle_hour: 6,
+                forecast_hour: 150,
+                ..
+            }
+        ));
     }
 
     #[test]

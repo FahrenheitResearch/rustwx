@@ -4,6 +4,10 @@ use crate::gridded::{
     SurfaceFields as GenericSurfaceFields,
 };
 use crate::orchestrator::{PreparedRunContext, PreparedRunMetadata};
+use crate::publication::{
+    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
+    fetch_identity_from_cached_result,
+};
 use crate::severe::{
     compute_severe_panel_fields_with_prepared_volume as compute_generic_severe_panel_fields_with_prepared_volume,
     severe_panel_fields_from_supported as generic_severe_panel_fields_from_supported,
@@ -114,6 +118,10 @@ pub struct HrrrRenderedProduct {
     pub output_path: PathBuf,
     pub timing: HrrrProductTiming,
     pub metadata: HrrrProductMetadata,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_identity: Option<ArtifactContentIdentity>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_fetch_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -128,6 +136,8 @@ pub struct HrrrBatchReport {
     pub forecast_hour: u16,
     pub source: SourceId,
     pub domain: DomainSpec,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_fetches: Vec<PublishedFetchIdentity>,
     pub products: Vec<HrrrRenderedProduct>,
     pub shared_timing: HrrrSharedTiming,
     pub total_ms: u128,
@@ -638,6 +648,12 @@ impl PreparedHrrrHourContext {
     }
 }
 
+impl crate::shared_context::ProjectedMapProvider for PreparedHrrrHourContext {
+    fn projected_map(&self, width: u32, height: u32) -> Option<&ProjectedMap> {
+        self.projected_map(width, height)
+    }
+}
+
 impl LoadedHrrrTimestep {
     pub fn latest(&self) -> &LatestRun {
         &self.latest
@@ -747,6 +763,22 @@ pub(crate) fn run_hrrr_batch_with_context(
     let cycle_utc = metadata.cycle_utc;
     let forecast_hour = metadata.forecast_hour;
     let domain_slug = request.domain.slug.as_str();
+    let input_fetches = vec![
+        fetch_identity_from_cached_result(
+            timestep.shared_timing.surface_fetch.planned_product.as_str(),
+            &timestep.surface_subset.request,
+            &timestep.surface_subset.fetched,
+        ),
+        fetch_identity_from_cached_result(
+            timestep.shared_timing.pressure_fetch.planned_product.as_str(),
+            &timestep.pressure_subset.request,
+            &timestep.pressure_subset.fetched,
+        ),
+    ];
+    let input_fetch_keys = input_fetches
+        .iter()
+        .map(|fetch| fetch.fetch_key.clone())
+        .collect::<Vec<_>>();
     let needs_heavy = unique_products.iter().any(|product| {
         matches!(
             product,
@@ -773,6 +805,7 @@ pub(crate) fn run_hrrr_batch_with_context(
             let product_start = Instant::now();
             let project_ms = project_timings[idx];
             let layout = product.layout();
+            let lane_fetch_keys = input_fetch_keys.clone();
 
             let compute_start = Instant::now();
             let computed = compute_hrrr_batch_product(
@@ -812,6 +845,8 @@ pub(crate) fn run_hrrr_batch_with_context(
                     )
                     .map_err(self::thread_render_error)?;
                     let render_ms = render_start.elapsed().as_millis();
+                    let content_identity =
+                        artifact_identity_from_path(&output_path).map_err(self::thread_render_error)?;
 
                     Ok(HrrrRenderedProduct {
                         product,
@@ -823,6 +858,8 @@ pub(crate) fn run_hrrr_batch_with_context(
                             total_ms: product_start.elapsed().as_millis(),
                         },
                         metadata: computed.metadata,
+                        content_identity: Some(content_identity),
+                        input_fetch_keys: lane_fetch_keys,
                     })
                 }),
             );
@@ -846,6 +883,7 @@ pub(crate) fn run_hrrr_batch_with_context(
         forecast_hour,
         source: metadata.source,
         domain: request.domain.clone(),
+        input_fetches,
         products,
         shared_timing: timestep.shared_timing.clone(),
         total_ms: total_start.elapsed().as_millis(),

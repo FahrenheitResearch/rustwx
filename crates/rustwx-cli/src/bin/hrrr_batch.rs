@@ -102,7 +102,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             relative_output_path(&args.out_dir, &product.output_path),
         )
         .with_state(ArtifactPublicationState::Complete)
-        .with_content_identity(artifact_identity_from_path(&product.output_path)?);
+        .with_input_fetch_keys(product.input_fetch_keys.clone());
+        let content_identity = match &product.content_identity {
+            Some(identity) => identity.clone(),
+            None => artifact_identity_from_path(&product.output_path)?,
+        };
+        record = record.with_content_identity(content_identity);
         if let Some(failure_count) = product.metadata.failure_count {
             record = record.with_detail(format!("failure_count={failure_count}"));
         }
@@ -115,9 +120,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 report.date_yyyymmdd.clone(),
                 report.cycle_utc,
                 report.forecast_hour,
-                format!("{:?}", report.source),
+                report.source.as_str(),
                 report.domain.slug.clone(),
             )
+            .with_input_fetches(report.input_fetches.clone())
             .with_artifacts(artifacts);
     run_manifest.mark_complete();
     publish_run_manifest(&run_manifest_path, &run_manifest)?;

@@ -1,17 +1,18 @@
 use crate::cache::{load_bincode, store_bincode};
 use crate::gridded::{
-    FetchRuntimeInfo, decode_cache_path, fetch_family_file, load_surface_geometry_from_latest,
-    resolve_model_run,
+    decode_cache_path, fetch_family_file, load_surface_geometry_from_latest, resolve_model_run,
+    FetchRuntimeInfo,
 };
 use crate::hrrr::{HrrrFetchRuntimeInfo, PreparedHrrrHourContext};
+use crate::publication::{fetch_identity_from_cached_result, PublishedFetchIdentity};
 use crate::shared_context::{DomainSpec, ProjectedMap};
-use grib_core::grib2::{Grib2File, Grib2Message, unpack_message_normalized};
+use grib_core::grib2::{unpack_message_normalized, Grib2File, Grib2Message};
 use rustwx_calc::{max_window_fields, sum_window_fields};
 use rustwx_core::{CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId};
-use rustwx_models::{LatestRun, resolve_canonical_bundle_product};
+use rustwx_models::{resolve_canonical_bundle_product, LatestRun};
 use rustwx_render::{
-    ColorScale, ExtendMode, MapRenderRequest, Solar07Palette, Solar07Product, palette_scale,
-    save_png,
+    palette_scale, save_png, ColorScale, ExtendMode, MapRenderRequest, Solar07Palette,
+    Solar07Product,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -94,6 +95,8 @@ pub struct HrrrWindowedHourFetchInfo {
     pub resolved_source: SourceId,
     pub resolved_url: String,
     pub fetch_cache_hit: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_fetch: Option<PublishedFetchIdentity>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +113,8 @@ pub struct HrrrWindowedSharedTiming {
     pub surface_hours_loaded: Vec<u16>,
     pub nat_hours_loaded: Vec<u16>,
     pub geometry_fetch: Option<HrrrFetchRuntimeInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry_input_fetch: Option<PublishedFetchIdentity>,
     pub surface_hour_fetches: Vec<HrrrWindowedHourFetchInfo>,
     pub uh_hour_fetches: Vec<HrrrWindowedHourFetchInfo>,
 }
@@ -204,6 +209,7 @@ struct PreparedWindowedGeometryContext {
     geometry_fetch_cache_hit: bool,
     geometry_decode_cache_hit: bool,
     geometry_fetch: Option<HrrrFetchRuntimeInfo>,
+    geometry_input_fetch: Option<PublishedFetchIdentity>,
     projected: ProjectedMap,
     project_ms: u128,
     grid: rustwx_core::LatLonGrid,
@@ -233,6 +239,11 @@ fn prepare_windowed_geometry_context(
             geometry_fetch_cache_hit: ctx.timestep().shared_timing().fetch_surface_cache_hit,
             geometry_decode_cache_hit: ctx.timestep().shared_timing().decode_surface_cache_hit,
             geometry_fetch: Some(ctx.timestep().shared_timing().surface_fetch.clone()),
+            geometry_input_fetch: Some(fetch_identity_from_cached_result(
+                "sfc",
+                &ctx.timestep().surface_subset().request,
+                &ctx.timestep().surface_subset().fetched,
+            )),
             projected: ctx
                 .projected_map(OUTPUT_WIDTH, OUTPUT_HEIGHT)
                 .cloned()
@@ -268,6 +279,11 @@ fn prepare_windowed_geometry_context(
         geometry_decode_cache_hit: geometry.surface_decode.cache_hit,
         geometry_fetch: Some(hrrr_fetch_runtime_info_from_bundle(
             &geometry.surface_file.runtime_info(&geometry.surface_bundle),
+        )),
+        geometry_input_fetch: Some(fetch_identity_from_cached_result(
+            &geometry.surface_bundle.native_product,
+            &geometry.surface_file.request,
+            &geometry.surface_file.fetched,
         )),
         projected,
         project_ms,
@@ -319,6 +335,7 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
     let geometry_fetch_cache_hit = geometry_context.geometry_fetch_cache_hit;
     let geometry_decode_cache_hit = geometry_context.geometry_decode_cache_hit;
     let geometry_fetch = geometry_context.geometry_fetch;
+    let geometry_input_fetch = geometry_context.geometry_input_fetch;
     let projected = geometry_context.projected;
     let project_ms = geometry_context.project_ms;
     let grid = geometry_context.grid;
@@ -471,6 +488,7 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
             surface_hours_loaded: surface_hours.into_iter().collect(),
             nat_hours_loaded: nat_hours.into_iter().collect(),
             geometry_fetch,
+            geometry_input_fetch,
             surface_hour_fetches,
             uh_hour_fetches,
         },
@@ -755,6 +773,11 @@ fn load_apcp_hour(
                     resolved_source: subset.fetched.result.source,
                     resolved_url: subset.fetched.result.url.clone(),
                     fetch_cache_hit: subset.fetched.cache_hit,
+                    input_fetch: Some(fetch_identity_from_cached_result(
+                        "sfc",
+                        &subset.request,
+                        &subset.fetched,
+                    )),
                 }),
             }
         }
@@ -802,6 +825,11 @@ fn load_uh_hour(
                     resolved_source: subset.fetched.result.source,
                     resolved_url: subset.fetched.result.url.clone(),
                     fetch_cache_hit: subset.fetched.cache_hit,
+                    input_fetch: Some(fetch_identity_from_cached_result(
+                        "nat",
+                        &subset.request,
+                        &subset.fetched,
+                    )),
                 }),
             }
         }
@@ -1311,6 +1339,7 @@ mod tests {
             resolved_source: SourceId::Nomads,
             resolved_url: "https://example.test/hrrr.t23z.wrfsfcf01.grib2".into(),
             fetch_cache_hit: false,
+            input_fetch: None,
         };
         assert_eq!(fetch.planned_product, "nat");
         assert_eq!(fetch.fetched_product, "sfc");

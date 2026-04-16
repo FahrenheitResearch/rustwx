@@ -22,14 +22,15 @@ use std::time::Instant;
 use crate::direct::build_projected_map as build_projected_map_from_latlon;
 use crate::gridded::{
     LoadedModelTimestep, PressureFields as GenericPressureFields,
-    SurfaceFields as GenericSurfaceFields, broadcast_levels_pa, load_model_timestep_from_parts,
+    SharedTiming as GenericSharedTiming, SurfaceFields as GenericSurfaceFields,
+    broadcast_levels_pa, load_model_timestep_from_parts,
 };
 use crate::hrrr::{HrrrSharedTiming, HrrrSurfaceFields, PreparedHrrrHourContext};
 use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
     fetch_identity_from_cached_result,
 };
-use crate::shared_context::{DomainSpec, ProjectedMap};
+use crate::shared_context::{DomainSpec, ProjectedMap, ProjectedMapProvider};
 
 const OUTPUT_WIDTH: u32 = 1200;
 const OUTPUT_HEIGHT: u32 = 900;
@@ -358,26 +359,26 @@ pub struct HrrrDerivedBatchRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HrrrDerivedSharedTiming {
-    pub fetch_decode: HrrrSharedTiming,
+pub struct DerivedSharedTiming {
+    pub fetch_decode: GenericSharedTiming,
     pub compute_ms: u128,
     pub project_ms: u128,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HrrrDerivedRecipeTiming {
+pub struct DerivedRecipeTiming {
     pub render_ms: u128,
     pub total_ms: u128,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HrrrDerivedRenderedRecipe {
+pub struct DerivedRenderedRecipe {
     pub recipe_slug: String,
     pub title: String,
     pub output_path: PathBuf,
     pub content_identity: ArtifactContentIdentity,
     pub input_fetch_keys: Vec<String>,
-    pub timing: HrrrDerivedRecipeTiming,
+    pub timing: DerivedRecipeTiming,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -389,8 +390,8 @@ pub struct DerivedBatchReport {
     pub source: SourceId,
     pub domain: DomainSpec,
     pub input_fetches: Vec<PublishedFetchIdentity>,
-    pub shared_timing: HrrrDerivedSharedTiming,
-    pub recipes: Vec<HrrrDerivedRenderedRecipe>,
+    pub shared_timing: DerivedSharedTiming,
+    pub recipes: Vec<DerivedRenderedRecipe>,
     pub total_ms: u128,
 }
 
@@ -402,10 +403,14 @@ pub struct HrrrDerivedBatchReport {
     pub source: SourceId,
     pub domain: DomainSpec,
     pub input_fetches: Vec<PublishedFetchIdentity>,
-    pub shared_timing: HrrrDerivedSharedTiming,
-    pub recipes: Vec<HrrrDerivedRenderedRecipe>,
+    pub shared_timing: DerivedSharedTiming,
+    pub recipes: Vec<DerivedRenderedRecipe>,
     pub total_ms: u128,
 }
+
+pub type HrrrDerivedSharedTiming = DerivedSharedTiming;
+pub type HrrrDerivedRecipeTiming = DerivedRecipeTiming;
+pub type HrrrDerivedRenderedRecipe = DerivedRenderedRecipe;
 
 #[derive(Debug, Clone)]
 pub struct HrrrDerivedLiveArtifact {
@@ -804,7 +809,7 @@ fn run_derived_batch_from_loaded(
     let model = request.model;
     let computed = &computed;
     let rendered = thread::scope(
-        |scope| -> Result<Vec<HrrrDerivedRenderedRecipe>, io::Error> {
+        |scope| -> Result<Vec<DerivedRenderedRecipe>, io::Error> {
             let mut rendered = Vec::with_capacity(recipes.len());
             let mut pending = VecDeque::new();
 
@@ -821,7 +826,7 @@ fn run_derived_batch_from_loaded(
                 ));
                 let lane_fetch_keys = input_fetch_keys.clone();
                 pending.push_back(scope.spawn(
-                    move || -> Result<HrrrDerivedRenderedRecipe, io::Error> {
+                    move || -> Result<DerivedRenderedRecipe, io::Error> {
                         let render_start = Instant::now();
                         let render_artifact = build_render_artifact(
                             recipe,
@@ -840,13 +845,13 @@ fn run_derived_batch_from_loaded(
                         let render_ms = render_start.elapsed().as_millis();
                         let content_identity = artifact_identity_from_path(&output_path)
                             .map_err(thread_render_error)?;
-                        Ok(HrrrDerivedRenderedRecipe {
+                        Ok(DerivedRenderedRecipe {
                             recipe_slug: render_artifact.recipe_slug,
                             title: render_artifact.title,
                             output_path,
                             content_identity,
                             input_fetch_keys: lane_fetch_keys,
-                            timing: HrrrDerivedRecipeTiming {
+                            timing: DerivedRecipeTiming {
                                 render_ms,
                                 total_ms: render_ms,
                             },
@@ -876,39 +881,8 @@ fn run_derived_batch_from_loaded(
         source: timestep.latest.source,
         domain: request.domain.clone(),
         input_fetches,
-        shared_timing: HrrrDerivedSharedTiming {
-            fetch_decode: HrrrSharedTiming {
-                fetch_surface_ms: timestep.shared_timing.fetch_surface_ms,
-                fetch_pressure_ms: timestep.shared_timing.fetch_pressure_ms,
-                decode_surface_ms: timestep.shared_timing.decode_surface_ms,
-                decode_pressure_ms: timestep.shared_timing.decode_pressure_ms,
-                fetch_surface_cache_hit: timestep.shared_timing.fetch_surface_cache_hit,
-                fetch_pressure_cache_hit: timestep.shared_timing.fetch_pressure_cache_hit,
-                decode_surface_cache_hit: timestep.shared_timing.decode_surface_cache_hit,
-                decode_pressure_cache_hit: timestep.shared_timing.decode_pressure_cache_hit,
-                surface_fetch: crate::hrrr::HrrrFetchRuntimeInfo {
-                    planned_product: timestep.shared_timing.surface_fetch.planned_product.clone(),
-                    fetched_product: timestep.shared_timing.surface_fetch.fetched_product.clone(),
-                    requested_source: timestep.shared_timing.surface_fetch.requested_source,
-                    resolved_source: timestep.shared_timing.surface_fetch.resolved_source,
-                    resolved_url: timestep.shared_timing.surface_fetch.resolved_url.clone(),
-                },
-                pressure_fetch: crate::hrrr::HrrrFetchRuntimeInfo {
-                    planned_product: timestep
-                        .shared_timing
-                        .pressure_fetch
-                        .planned_product
-                        .clone(),
-                    fetched_product: timestep
-                        .shared_timing
-                        .pressure_fetch
-                        .fetched_product
-                        .clone(),
-                    requested_source: timestep.shared_timing.pressure_fetch.requested_source,
-                    resolved_source: timestep.shared_timing.pressure_fetch.resolved_source,
-                    resolved_url: timestep.shared_timing.pressure_fetch.resolved_url.clone(),
-                },
-            },
+        shared_timing: DerivedSharedTiming {
+            fetch_decode: timestep.shared_timing.clone(),
             compute_ms,
             project_ms,
         },
@@ -931,7 +905,10 @@ pub(crate) fn run_hrrr_derived_batch_with_context(
 
     let project_start = Instant::now();
     let projected = if let Some(projected) =
-        shared_context.and_then(|ctx| ctx.projected_map(OUTPUT_WIDTH, OUTPUT_HEIGHT).cloned())
+        shared_context.and_then(|ctx| {
+            let provider = ctx as &dyn ProjectedMapProvider;
+            provider.projected_map(OUTPUT_WIDTH, OUTPUT_HEIGHT).cloned()
+        })
     {
         projected
     } else {
@@ -997,7 +974,7 @@ pub(crate) fn run_hrrr_derived_batch_with_context(
     let model = ModelId::Hrrr;
     let computed = &computed;
     let rendered = thread::scope(
-        |scope| -> Result<Vec<HrrrDerivedRenderedRecipe>, io::Error> {
+        |scope| -> Result<Vec<DerivedRenderedRecipe>, io::Error> {
             let mut rendered = Vec::with_capacity(recipes.len());
             let mut pending = VecDeque::new();
 
@@ -1012,7 +989,7 @@ pub(crate) fn run_hrrr_derived_batch_with_context(
                 ));
                 let lane_fetch_keys = input_fetch_keys.clone();
                 pending.push_back(scope.spawn(
-                    move || -> Result<HrrrDerivedRenderedRecipe, io::Error> {
+                    move || -> Result<DerivedRenderedRecipe, io::Error> {
                         let render_start = Instant::now();
                         let render_artifact = build_render_artifact(
                             recipe,
@@ -1031,13 +1008,13 @@ pub(crate) fn run_hrrr_derived_batch_with_context(
                         let render_ms = render_start.elapsed().as_millis();
                         let content_identity = artifact_identity_from_path(&output_path)
                             .map_err(thread_render_error)?;
-                        Ok(HrrrDerivedRenderedRecipe {
+                        Ok(DerivedRenderedRecipe {
                             recipe_slug: render_artifact.recipe_slug,
                             title: render_artifact.title,
                             output_path,
                             content_identity,
                             input_fetch_keys: lane_fetch_keys,
-                            timing: HrrrDerivedRecipeTiming {
+                            timing: DerivedRecipeTiming {
                                 render_ms,
                                 total_ms: render_ms,
                             },
@@ -1066,8 +1043,8 @@ pub(crate) fn run_hrrr_derived_batch_with_context(
         source: timestep.latest().source,
         domain: request.domain.clone(),
         input_fetches,
-        shared_timing: HrrrDerivedSharedTiming {
-            fetch_decode: timestep.shared_timing().clone(),
+        shared_timing: DerivedSharedTiming {
+            fetch_decode: convert_hrrr_shared_timing(timestep.shared_timing()),
             compute_ms,
             project_ms,
         },
@@ -1087,6 +1064,39 @@ fn into_hrrr_report(report: DerivedBatchReport) -> HrrrDerivedBatchReport {
         shared_timing: report.shared_timing,
         recipes: report.recipes,
         total_ms: report.total_ms,
+    }
+}
+
+fn convert_hrrr_shared_timing(timing: &HrrrSharedTiming) -> GenericSharedTiming {
+    GenericSharedTiming {
+        fetch_surface_ms: timing.fetch_surface_ms,
+        fetch_pressure_ms: timing.fetch_pressure_ms,
+        decode_surface_ms: timing.decode_surface_ms,
+        decode_pressure_ms: timing.decode_pressure_ms,
+        fetch_surface_cache_hit: timing.fetch_surface_cache_hit,
+        fetch_pressure_cache_hit: timing.fetch_pressure_cache_hit,
+        decode_surface_cache_hit: timing.decode_surface_cache_hit,
+        decode_pressure_cache_hit: timing.decode_pressure_cache_hit,
+        surface_fetch: crate::gridded::FetchRuntimeInfo {
+            planned_bundle: rustwx_core::CanonicalBundleDescriptor::SurfaceAnalysis,
+            planned_family: rustwx_core::CanonicalDataFamily::Surface,
+            planned_product: timing.surface_fetch.planned_product.clone(),
+            resolved_native_product: timing.surface_fetch.planned_product.clone(),
+            fetched_product: timing.surface_fetch.fetched_product.clone(),
+            requested_source: timing.surface_fetch.requested_source,
+            resolved_source: timing.surface_fetch.resolved_source,
+            resolved_url: timing.surface_fetch.resolved_url.clone(),
+        },
+        pressure_fetch: crate::gridded::FetchRuntimeInfo {
+            planned_bundle: rustwx_core::CanonicalBundleDescriptor::PressureAnalysis,
+            planned_family: rustwx_core::CanonicalDataFamily::Pressure,
+            planned_product: timing.pressure_fetch.planned_product.clone(),
+            resolved_native_product: timing.pressure_fetch.planned_product.clone(),
+            fetched_product: timing.pressure_fetch.fetched_product.clone(),
+            requested_source: timing.pressure_fetch.requested_source,
+            resolved_source: timing.pressure_fetch.resolved_source,
+            resolved_url: timing.pressure_fetch.resolved_url.clone(),
+        },
     }
 }
 
