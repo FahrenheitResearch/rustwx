@@ -8,6 +8,8 @@ use clap::{Parser, ValueEnum};
 use region::RegionPreset;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::non_ecape::{HrrrNonEcapeHourRequest, run_hrrr_non_ecape_hour};
+use rustwx_products::publication::atomic_write_json;
+use rustwx_products::shared_context::DomainSpec;
 use rustwx_products::windowed::HrrrWindowedProduct;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -96,7 +98,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cycle_override_utc: args.cycle,
         forecast_hour: args.forecast_hour,
         source: args.source,
-        domain: rustwx_products::hrrr::DomainSpec::new(args.region.slug(), args.region.bounds()),
+        domain: DomainSpec::new(args.region.slug(), args.region.bounds()),
         out_dir: args.out_dir.clone(),
         cache_root,
         use_cache: !args.no_cache,
@@ -109,7 +111,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "rustwx_hrrr_{}_{}z_f{:03}_{}_non_ecape_hour_report.json",
         report.date_yyyymmdd, report.cycle_utc, report.forecast_hour, report.domain.slug
     ));
-    fs::write(&report_path, serde_json::to_vec_pretty(&report)?)?;
+    atomic_write_json(&report_path, &report)?;
 
     for output_path in &report.summary.output_paths {
         println!("{}", output_path.display());
@@ -122,6 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    println!("{}", report.publication_manifest_path.display());
     println!("{}", report_path.display());
     Ok(())
 }

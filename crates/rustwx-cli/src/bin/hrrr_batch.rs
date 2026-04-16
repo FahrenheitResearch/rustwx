@@ -7,7 +7,13 @@ mod region;
 use clap::{Parser, ValueEnum};
 use region::RegionPreset;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
-use rustwx_products::hrrr::{DomainSpec, HrrrBatchProduct, HrrrBatchRequest, run_hrrr_batch};
+use rustwx_products::hrrr::{HrrrBatchProduct, HrrrBatchRequest, run_hrrr_batch};
+use rustwx_products::publication::{
+    ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest,
+    artifact_identity_from_path, atomic_write_json, default_run_manifest_path,
+    publish_run_manifest,
+};
+use rustwx_products::shared_context::DomainSpec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ProductArg {
@@ -83,11 +89,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "rustwx_hrrr_{}_{}z_f{:02}_{}_batch_report.json",
         report.date_yyyymmdd, report.cycle_utc, report.forecast_hour, report.domain.slug
     ));
-    fs::write(&report_path, serde_json::to_vec_pretty(&report)?)?;
+    let run_slug = format!(
+        "rustwx_hrrr_{}_{}z_f{:02}_{}_batch",
+        report.date_yyyymmdd, report.cycle_utc, report.forecast_hour, report.domain.slug
+    );
+    let run_manifest_path = default_run_manifest_path(&args.out_dir, &run_slug);
+    atomic_write_json(&report_path, &report)?;
+    let mut artifacts = Vec::with_capacity(report.products.len());
+    for product in &report.products {
+        let mut record = PublishedArtifactRecord::planned(
+            product.product.slug(),
+            relative_output_path(&args.out_dir, &product.output_path),
+        )
+        .with_state(ArtifactPublicationState::Complete)
+        .with_content_identity(artifact_identity_from_path(&product.output_path)?);
+        if let Some(failure_count) = product.metadata.failure_count {
+            record = record.with_detail(format!("failure_count={failure_count}"));
+        }
+        artifacts.push(record);
+    }
+    let mut run_manifest =
+        RunPublicationManifest::new("hrrr_batch", run_slug, args.out_dir.clone())
+            .with_run_metadata(
+                "hrrr",
+                report.date_yyyymmdd.clone(),
+                report.cycle_utc,
+                report.forecast_hour,
+                format!("{:?}", report.source),
+                report.domain.slug.clone(),
+            )
+            .with_artifacts(artifacts);
+    run_manifest.mark_complete();
+    publish_run_manifest(&run_manifest_path, &run_manifest)?;
 
     for product in &report.products {
         println!("{}", product.output_path.display());
     }
     println!("{}", report_path.display());
+    println!("{}", run_manifest_path.display());
     Ok(())
+}
+
+fn relative_output_path(root: &std::path::Path, output_path: &std::path::Path) -> PathBuf {
+    output_path
+        .strip_prefix(root)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| output_path.to_path_buf())
 }

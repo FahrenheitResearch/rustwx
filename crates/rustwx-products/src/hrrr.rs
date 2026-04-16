@@ -1,5 +1,13 @@
 use crate::cache::{load_bincode, store_bincode};
+use crate::gridded::{
+    PreparedHeavyVolume as GenericPreparedHeavyVolume, PressureFields as GenericPressureFields,
+    SurfaceFields as GenericSurfaceFields,
+};
 use crate::orchestrator::{PreparedRunContext, PreparedRunMetadata};
+use crate::severe::{
+    compute_severe_panel_fields_with_prepared_volume as compute_generic_severe_panel_fields_with_prepared_volume,
+    severe_panel_fields_from_supported as generic_severe_panel_fields_from_supported,
+};
 pub use crate::shared_context::{
     DomainSpec, PreparedProjectedContext, ProjectedMap, Solar07PanelField, Solar07PanelHeader,
     Solar07PanelLayout, layout_key, render_two_by_four_solar07_panel,
@@ -11,7 +19,7 @@ use rustwx_calc::{
     EcapeTripletOptions, EcapeVolumeInputs, GridShape as CalcGridShape, ScpEhiInputs,
     SupportedSevereFields, SurfaceInputs, VolumeShape, WindGridInputs,
     compute_ecape_triplet_with_failure_mask_from_parts, compute_scp_ehi,
-    compute_supported_severe_fields, compute_wind_diagnostics_bundle,
+    compute_wind_diagnostics_bundle,
 };
 use rustwx_core::{
     CycleSpec, GridShape, LatLonGrid, ModelId, ModelRunRequest, RustwxError, SourceId,
@@ -1100,26 +1108,7 @@ fn dedupe_products(products: &[HrrrBatchProduct]) -> Vec<HrrrBatchProduct> {
 }
 
 pub fn severe_panel_fields_from_supported(fields: SupportedSevereFields) -> Vec<Solar07PanelField> {
-    vec![
-        Solar07PanelField::new(Solar07Product::Sbcape, "J/kg", fields.sbcape_jkg),
-        Solar07PanelField::new(Solar07Product::Mlcin, "J/kg", fields.mlcin_jkg),
-        Solar07PanelField::new(Solar07Product::Mucape, "J/kg", fields.mucape_jkg),
-        Solar07PanelField::new(Solar07Product::Srh01km, "m^2/s^2", fields.srh_01km_m2s2),
-        Solar07PanelField::new(Solar07Product::Srh03km, "m^2/s^2", fields.srh_03km_m2s2),
-        Solar07PanelField::new(Solar07Product::StpFixed, "dimensionless", fields.stp_fixed),
-        Solar07PanelField::new(
-            Solar07Product::Scp,
-            "dimensionless",
-            fields.scp_mu_03km_06km_proxy,
-        )
-        .with_title_override("SCP (MU / 0-3 KM / 0-6 KM PROXY)"),
-        Solar07PanelField::new(
-            Solar07Product::Ehi,
-            "dimensionless",
-            fields.ehi_sb_01km_proxy,
-        )
-        .with_title_override("EHI 0-1 KM"),
-    ]
+    generic_severe_panel_fields_from_supported(fields)
 }
 
 pub fn compute_severe_panel_fields(
@@ -1135,30 +1124,51 @@ fn compute_severe_panel_fields_with_prepared_volume(
     pressure: &HrrrPressureFields,
     prepared: &PreparedHrrrHeavyVolume,
 ) -> Result<Vec<Solar07PanelField>, Box<dyn std::error::Error>> {
-    let pressure_3d_pa = prepared
-        .pressure_3d_pa
-        .as_deref()
-        .ok_or("prepared severe volume was missing broadcast pressure data")?;
-    let fields = compute_supported_severe_fields(
-        prepared.grid,
-        EcapeVolumeInputs {
-            pressure_pa: pressure_3d_pa,
-            temperature_c: &pressure.temperature_c_3d,
-            qvapor_kgkg: &pressure.qvapor_kgkg_3d,
-            height_agl_m: &prepared.height_agl_3d,
-            u_ms: &pressure.u_ms_3d,
-            v_ms: &pressure.v_ms_3d,
-            nz: prepared.shape.nz,
-        },
-        SurfaceInputs {
-            psfc_pa: &surface.psfc_pa,
-            t2_k: &surface.t2_k,
-            q2_kgkg: &surface.q2_kgkg,
-            u10_ms: &surface.u10_ms,
-            v10_ms: &surface.v10_ms,
-        },
-    )?;
-    Ok(severe_panel_fields_from_supported(fields))
+    let generic_surface = generic_surface_fields(surface);
+    let generic_pressure = generic_pressure_fields(pressure);
+    let generic_prepared = generic_prepared_heavy_volume(prepared);
+    compute_generic_severe_panel_fields_with_prepared_volume(
+        &generic_surface,
+        &generic_pressure,
+        &generic_prepared,
+    )
+}
+
+fn generic_surface_fields(surface: &HrrrSurfaceFields) -> GenericSurfaceFields {
+    GenericSurfaceFields {
+        lat: surface.lat.clone(),
+        lon: surface.lon.clone(),
+        nx: surface.nx,
+        ny: surface.ny,
+        psfc_pa: surface.psfc_pa.clone(),
+        orog_m: surface.orog_m.clone(),
+        orog_is_proxy: false,
+        t2_k: surface.t2_k.clone(),
+        q2_kgkg: surface.q2_kgkg.clone(),
+        u10_ms: surface.u10_ms.clone(),
+        v10_ms: surface.v10_ms.clone(),
+    }
+}
+
+fn generic_pressure_fields(pressure: &HrrrPressureFields) -> GenericPressureFields {
+    GenericPressureFields {
+        pressure_levels_hpa: pressure.pressure_levels_hpa.clone(),
+        temperature_c_3d: pressure.temperature_c_3d.clone(),
+        qvapor_kgkg_3d: pressure.qvapor_kgkg_3d.clone(),
+        u_ms_3d: pressure.u_ms_3d.clone(),
+        v_ms_3d: pressure.v_ms_3d.clone(),
+        gh_m_3d: pressure.gh_m_3d.clone(),
+    }
+}
+
+fn generic_prepared_heavy_volume(prepared: &PreparedHrrrHeavyVolume) -> GenericPreparedHeavyVolume {
+    GenericPreparedHeavyVolume {
+        grid: prepared.grid,
+        shape: prepared.shape,
+        pressure_levels_pa: prepared.pressure_levels_pa.clone(),
+        pressure_3d_pa: prepared.pressure_3d_pa.clone(),
+        height_agl_3d: prepared.height_agl_3d.clone(),
+    }
 }
 
 pub fn compute_ecape8_panel_fields(

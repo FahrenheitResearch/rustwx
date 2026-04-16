@@ -7,7 +7,12 @@ mod region;
 use clap::{Parser, ValueEnum};
 use region::RegionPreset;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
-use rustwx_products::hrrr::DomainSpec;
+use rustwx_products::publication::{
+    ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest,
+    artifact_identity_from_path, atomic_write_json, default_run_manifest_path,
+    publish_run_manifest,
+};
+use rustwx_products::shared_context::DomainSpec;
 use rustwx_products::windowed::{
     HrrrWindowedBatchRequest, HrrrWindowedProduct, run_hrrr_windowed_batch,
 };
@@ -98,7 +103,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "rustwx_hrrr_{}_{}z_f{:03}_{}_windowed_report.json",
         report.date_yyyymmdd, report.cycle_utc, report.forecast_hour, report.domain.slug
     ));
-    fs::write(&report_path, serde_json::to_vec_pretty(&report)?)?;
+    let run_slug = format!(
+        "rustwx_hrrr_{}_{}z_f{:03}_{}_windowed",
+        report.date_yyyymmdd, report.cycle_utc, report.forecast_hour, report.domain.slug
+    );
+    let run_manifest_path = default_run_manifest_path(&args.out_dir, &run_slug);
+    atomic_write_json(&report_path, &report)?;
+    let mut artifacts = Vec::with_capacity(report.products.len() + report.blockers.len());
+    for product in &report.products {
+        artifacts.push(
+            PublishedArtifactRecord::planned(
+                product.product.slug(),
+                relative_output_path(&args.out_dir, &product.output_path),
+            )
+            .with_state(ArtifactPublicationState::Complete)
+            .with_content_identity(artifact_identity_from_path(&product.output_path)?),
+        );
+    }
+    artifacts.extend(report.blockers.iter().map(|blocker| {
+        PublishedArtifactRecord::planned(
+            blocker.product.slug(),
+            PathBuf::from(format!("{}_blocked.txt", blocker.product.slug())),
+        )
+        .with_state(ArtifactPublicationState::Blocked)
+        .with_detail(blocker.reason.clone())
+    }));
+    let mut run_manifest =
+        RunPublicationManifest::new("hrrr_windowed_batch", run_slug, args.out_dir.clone())
+            .with_run_metadata(
+                "hrrr",
+                report.date_yyyymmdd.clone(),
+                report.cycle_utc,
+                report.forecast_hour,
+                format!("{:?}", report.source),
+                report.domain.slug.clone(),
+            )
+            .with_artifacts(artifacts);
+    if report.blockers.is_empty() {
+        run_manifest.mark_complete();
+    } else {
+        run_manifest.mark_partial(format!("{} blocked artifact(s)", report.blockers.len()));
+    }
+    publish_run_manifest(&run_manifest_path, &run_manifest)?;
 
     for product in &report.products {
         println!("{}", product.output_path.display());
@@ -110,5 +156,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     println!("{}", report_path.display());
+    println!("{}", run_manifest_path.display());
     Ok(())
+}
+
+fn relative_output_path(root: &std::path::Path, output_path: &std::path::Path) -> PathBuf {
+    output_path
+        .strip_prefix(root)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| output_path.to_path_buf())
 }

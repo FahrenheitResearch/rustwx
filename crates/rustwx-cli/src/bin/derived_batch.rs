@@ -12,7 +12,11 @@ use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::derived::{
     DerivedBatchRequest, run_derived_batch, supported_derived_recipe_slugs,
 };
-use rustwx_products::hrrr::DomainSpec;
+use rustwx_products::publication::{
+    ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
+    default_run_manifest_path, publish_run_manifest,
+};
+use rustwx_products::shared_context::DomainSpec;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -105,13 +109,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let manifest_path = args.out_dir.join(format!("{stem}_manifest.json"));
     let timing_path = args.out_dir.join(format!("{stem}_timing.json"));
-    fs::write(&manifest_path, serde_json::to_vec_pretty(&report)?)?;
-    fs::write(&timing_path, serde_json::to_vec_pretty(&report)?)?;
+    let run_manifest_path = default_run_manifest_path(&args.out_dir, &stem);
+    atomic_write_json(&manifest_path, &report)?;
+    atomic_write_json(&timing_path, &report)?;
+    let mut run_manifest =
+        RunPublicationManifest::new("derived_batch", stem.clone(), args.out_dir.clone())
+            .with_run_metadata(
+                report.model.as_str(),
+                report.date_yyyymmdd.clone(),
+                report.cycle_utc,
+                report.forecast_hour,
+                format!("{:?}", report.source),
+                report.domain.slug.clone(),
+            )
+            .with_input_fetches(report.input_fetches.clone())
+            .with_artifacts(
+                report
+                    .recipes
+                    .iter()
+                    .map(|recipe| {
+                        PublishedArtifactRecord::planned(
+                            recipe.recipe_slug.clone(),
+                            relative_output_path(&args.out_dir, &recipe.output_path),
+                        )
+                        .with_state(ArtifactPublicationState::Complete)
+                        .with_content_identity(recipe.content_identity.clone())
+                        .with_input_fetch_keys(recipe.input_fetch_keys.clone())
+                    })
+                    .collect(),
+            );
+    run_manifest.mark_complete();
+    publish_run_manifest(&run_manifest_path, &run_manifest)?;
 
     for recipe in &report.recipes {
         println!("{}", recipe.output_path.display());
     }
     println!("{}", manifest_path.display());
     println!("{}", timing_path.display());
+    println!("{}", run_manifest_path.display());
     Ok(())
+}
+
+fn relative_output_path(root: &std::path::Path, output_path: &std::path::Path) -> PathBuf {
+    output_path
+        .strip_prefix(root)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| output_path.to_path_buf())
 }

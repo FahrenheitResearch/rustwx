@@ -100,6 +100,18 @@ pub struct RunPublicationManifest {
     pub run_kind: String,
     pub run_label: String,
     pub output_root: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date_yyyymmdd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle_utc: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forecast_hour: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain_slug: Option<String>,
     pub state: RunPublicationState,
     pub started_unix_ms: u128,
     pub finished_unix_ms: Option<u128>,
@@ -120,6 +132,12 @@ impl RunPublicationManifest {
             run_kind: run_kind.into(),
             run_label: run_label.into(),
             output_root: output_root.into(),
+            model: None,
+            date_yyyymmdd: None,
+            cycle_utc: None,
+            forecast_hour: None,
+            source: None,
+            domain_slug: None,
             state: RunPublicationState::Planned,
             started_unix_ms: unix_time_ms(),
             finished_unix_ms: None,
@@ -131,6 +149,24 @@ impl RunPublicationManifest {
 
     pub fn with_input_fetches(mut self, input_fetches: Vec<PublishedFetchIdentity>) -> Self {
         self.input_fetches = input_fetches;
+        self
+    }
+
+    pub fn with_run_metadata(
+        mut self,
+        model: impl Into<String>,
+        date_yyyymmdd: impl Into<String>,
+        cycle_utc: u8,
+        forecast_hour: u16,
+        source: impl Into<String>,
+        domain_slug: impl Into<String>,
+    ) -> Self {
+        self.model = Some(model.into());
+        self.date_yyyymmdd = Some(date_yyyymmdd.into());
+        self.cycle_utc = Some(cycle_utc);
+        self.forecast_hour = Some(forecast_hour);
+        self.source = Some(source.into());
+        self.domain_slug = Some(domain_slug.into());
         self
     }
 

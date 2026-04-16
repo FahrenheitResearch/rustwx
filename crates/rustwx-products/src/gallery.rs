@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::derived::HrrrDerivedBatchReport;
 use crate::hrrr::{DomainSpec, HrrrBatchProduct, HrrrBatchReport};
+use crate::publication::{ArtifactPublicationState, RunPublicationManifest, RunPublicationState};
 use crate::windowed::HrrrWindowedBatchReport;
 
 #[derive(Debug)]
@@ -60,6 +61,7 @@ pub struct ProofManifestRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "manifest_kind", rename_all = "snake_case")]
 pub enum ProofManifest {
+    Run(RunPublicationManifest),
     Direct(GalleryDirectBatchReport),
     Derived(HrrrDerivedBatchReport),
     Heavy(HrrrBatchReport),
@@ -125,6 +127,7 @@ pub struct ProofGalleryRun {
     pub title: String,
     pub manifest_path: PathBuf,
     pub manifest_href: String,
+    pub run_state: Option<String>,
     pub date_yyyymmdd: String,
     pub cycle_utc: u8,
     pub forecast_hour: u16,
@@ -142,6 +145,7 @@ pub struct ProofGalleryImage {
     pub image_path: PathBuf,
     pub image_href: String,
     pub exists: bool,
+    pub artifact_state: Option<String>,
     pub timing_ms: Option<u128>,
     pub catalog_kind: Option<String>,
     pub catalog_status: Option<String>,
@@ -157,6 +161,7 @@ pub struct GalleryCatalog {
 
 #[derive(Debug, Clone)]
 struct GalleryCatalogEntry {
+    title: String,
     kind: String,
     status: String,
     experimental: bool,
@@ -184,6 +189,7 @@ struct ParsedCatalogSummary {
 #[derive(Debug, Deserialize)]
 struct ParsedCatalogEntry {
     slug: String,
+    title: String,
     kind: String,
     status: String,
     experimental: bool,
@@ -204,6 +210,7 @@ pub fn load_gallery_catalog(path: &Path) -> Result<GalleryCatalog, GalleryError>
         entries.insert(
             entry.slug,
             GalleryCatalogEntry {
+                title: entry.title,
                 kind: entry.kind,
                 status: entry.status,
                 experimental: entry.experimental,
@@ -225,6 +232,12 @@ pub fn load_gallery_catalog(path: &Path) -> Result<GalleryCatalog, GalleryError>
 
 pub fn load_proof_manifest(path: &Path) -> Result<ProofManifestRecord, GalleryError> {
     let bytes = fs::read(path)?;
+    if let Ok(manifest) = serde_json::from_slice::<RunPublicationManifest>(&bytes) {
+        return Ok(ProofManifestRecord {
+            path: path.to_path_buf(),
+            manifest: ProofManifest::Run(manifest),
+        });
+    }
     if let Ok(report) = serde_json::from_slice::<HrrrDerivedBatchReport>(&bytes) {
         return Ok(ProofManifestRecord {
             path: path.to_path_buf(),
@@ -394,7 +407,7 @@ function applyFilters(){\
         html.push_str("<div class=\"run-header\">");
         html.push_str(&format!("<h2>{}</h2>", escape_html(&run.title)));
         html.push_str(&format!(
-            "<div class=\"run-meta\"><span>{}</span><span>{}Z</span><span>F{:03}</span><span>{}</span><span>{}</span><span>{} ms</span></div>",
+            "<div class=\"run-meta\"><span>{}</span><span>{}Z</span><span>F{:03}</span><span>{}</span><span>{}</span><span>{} ms</span>",
             escape_html(&run.date_yyyymmdd),
             run.cycle_utc,
             run.forecast_hour,
@@ -402,6 +415,10 @@ function applyFilters(){\
             escape_html(&run.domain_slug),
             run.total_ms
         ));
+        if let Some(run_state) = &run.run_state {
+            html.push_str(&format!("<span>{}</span>", escape_html(run_state)));
+        }
+        html.push_str("</div>");
         html.push_str(&format!(
             "<div class=\"links\"><a href=\"{}\">manifest</a></div>",
             escape_html(&run.manifest_href)
@@ -452,6 +469,12 @@ function applyFilters(){\
                     escape_html(status)
                 ));
             }
+            if let Some(state) = &image.artifact_state {
+                html.push_str(&format!(
+                    "<span class=\"pill\">{}</span>",
+                    escape_html(state)
+                ));
+            }
             if image.experimental {
                 html.push_str("<span class=\"pill exp\">experimental</span>");
             }
@@ -486,11 +509,66 @@ fn build_run(
     catalog: Option<&GalleryCatalog>,
 ) -> ProofGalleryRun {
     match &record.manifest {
+        ProofManifest::Run(manifest) => {
+            let parsed = parsed_run_metadata(manifest);
+            let source = manifest.source.clone().unwrap_or_else(|| {
+                infer_manifest_source(manifest).unwrap_or_else(|| "unknown".to_string())
+            });
+            let blockers = manifest
+                .artifacts
+                .iter()
+                .filter(|artifact| artifact.state == ArtifactPublicationState::Blocked)
+                .map(|artifact| match &artifact.detail {
+                    Some(detail) => format!("{}: {}", artifact.artifact_key, detail),
+                    None => artifact.artifact_key.clone(),
+                })
+                .collect::<Vec<_>>();
+            let title = format_run_title(manifest, parsed.model_slug.as_deref());
+            let images = manifest
+                .artifacts
+                .iter()
+                .map(|artifact| {
+                    let image_path = materialize_artifact_path(&manifest.output_root, artifact);
+                    gallery_image(
+                        &artifact.artifact_key,
+                        &artifact.artifact_key,
+                        &image_path,
+                        None,
+                        Some(artifact.state),
+                        artifact.detail.as_deref(),
+                        viewer_dir,
+                        catalog,
+                    )
+                })
+                .collect();
+
+            ProofGalleryRun {
+                kind: classify_manifest_kind(manifest),
+                title,
+                manifest_path: record.path.clone(),
+                manifest_href: relative_href(viewer_dir, &record.path),
+                run_state: Some(run_state_slug(manifest.state).to_string()),
+                date_yyyymmdd: parsed
+                    .date_yyyymmdd
+                    .unwrap_or_else(|| "unknown".to_string()),
+                cycle_utc: parsed.cycle_utc.unwrap_or(0),
+                forecast_hour: parsed.forecast_hour.unwrap_or(0),
+                source,
+                domain_slug: parsed.domain_slug.unwrap_or_else(|| "unknown".to_string()),
+                total_ms: manifest
+                    .finished_unix_ms
+                    .map(|finished| finished.saturating_sub(manifest.started_unix_ms))
+                    .unwrap_or_default(),
+                blockers,
+                images,
+            }
+        }
         ProofManifest::Direct(report) => ProofGalleryRun {
             kind: ProofRunKind::Direct,
             title: "HRRR Direct Batch".to_string(),
             manifest_path: record.path.clone(),
             manifest_href: relative_href(viewer_dir, &record.path),
+            run_state: None,
             date_yyyymmdd: report.date_yyyymmdd.clone(),
             cycle_utc: report.cycle_utc,
             forecast_hour: report.forecast_hour,
@@ -507,6 +585,8 @@ fn build_run(
                         &recipe.title,
                         &recipe.output_path,
                         Some(recipe.timing.total_ms),
+                        None,
+                        None,
                         viewer_dir,
                         catalog,
                     )
@@ -518,6 +598,7 @@ fn build_run(
             title: "HRRR Derived Batch".to_string(),
             manifest_path: record.path.clone(),
             manifest_href: relative_href(viewer_dir, &record.path),
+            run_state: None,
             date_yyyymmdd: report.date_yyyymmdd.clone(),
             cycle_utc: report.cycle_utc,
             forecast_hour: report.forecast_hour,
@@ -534,6 +615,8 @@ fn build_run(
                         &recipe.title,
                         &recipe.output_path,
                         Some(recipe.timing.total_ms),
+                        None,
+                        None,
                         viewer_dir,
                         catalog,
                     )
@@ -545,6 +628,7 @@ fn build_run(
             title: "HRRR Heavy Batch".to_string(),
             manifest_path: record.path.clone(),
             manifest_href: relative_href(viewer_dir, &record.path),
+            run_state: None,
             date_yyyymmdd: report.date_yyyymmdd.clone(),
             cycle_utc: report.cycle_utc,
             forecast_hour: report.forecast_hour,
@@ -567,6 +651,8 @@ fn build_run(
                         title,
                         &product.output_path,
                         Some(product.timing.total_ms),
+                        None,
+                        None,
                         viewer_dir,
                         catalog,
                     )
@@ -578,6 +664,7 @@ fn build_run(
             title: "HRRR Windowed Batch".to_string(),
             manifest_path: record.path.clone(),
             manifest_href: relative_href(viewer_dir, &record.path),
+            run_state: None,
             date_yyyymmdd: report.date_yyyymmdd.clone(),
             cycle_utc: report.cycle_utc,
             forecast_hour: report.forecast_hour,
@@ -598,6 +685,8 @@ fn build_run(
                         product.product.title(),
                         &product.output_path,
                         Some(product.timing.total_ms),
+                        None,
+                        None,
                         viewer_dir,
                         catalog,
                     )
@@ -612,25 +701,171 @@ fn gallery_image(
     title: &str,
     image_path: &Path,
     timing_ms: Option<u128>,
+    artifact_state: Option<ArtifactPublicationState>,
+    detail: Option<&str>,
     viewer_dir: &Path,
     catalog: Option<&GalleryCatalog>,
 ) -> ProofGalleryImage {
     let catalog_entry = catalog.and_then(|value| value.entries.get(slug));
+    let resolved_title = catalog_entry
+        .map(|entry| entry.title.clone())
+        .unwrap_or_else(|| title.to_string());
+    let mut notes = catalog_entry
+        .map(|entry| entry.notes.clone())
+        .unwrap_or_default();
+    if let Some(detail) = detail {
+        notes.push(detail.to_string());
+    }
     ProofGalleryImage {
         slug: slug.to_string(),
-        title: title.to_string(),
+        title: resolved_title,
         image_path: image_path.to_path_buf(),
         image_href: relative_href(viewer_dir, image_path),
         exists: image_path.exists(),
+        artifact_state: artifact_state.map(artifact_state_slug).map(str::to_string),
         timing_ms,
         catalog_kind: catalog_entry.map(|entry| entry.kind.clone()),
         catalog_status: catalog_entry.map(|entry| entry.status.clone()),
         experimental: catalog_entry
             .map(|entry| entry.experimental)
             .unwrap_or(false),
-        notes: catalog_entry
-            .map(|entry| entry.notes.clone())
-            .unwrap_or_default(),
+        notes,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ParsedRunMetadata {
+    model_slug: Option<String>,
+    date_yyyymmdd: Option<String>,
+    cycle_utc: Option<u8>,
+    forecast_hour: Option<u16>,
+    domain_slug: Option<String>,
+}
+
+fn parsed_run_metadata(manifest: &RunPublicationManifest) -> ParsedRunMetadata {
+    let mut parsed = ParsedRunMetadata {
+        model_slug: manifest.model.clone(),
+        date_yyyymmdd: manifest.date_yyyymmdd.clone(),
+        cycle_utc: manifest.cycle_utc,
+        forecast_hour: manifest.forecast_hour,
+        domain_slug: manifest.domain_slug.clone(),
+    };
+    if parsed.date_yyyymmdd.is_some()
+        && parsed.cycle_utc.is_some()
+        && parsed.forecast_hour.is_some()
+        && parsed.domain_slug.is_some()
+    {
+        return parsed;
+    }
+
+    let tokens = manifest.run_label.split('_').collect::<Vec<_>>();
+    if tokens.len() < 6 || tokens.first().copied() != Some("rustwx") {
+        return parsed;
+    }
+    let Some(date_index) = tokens
+        .iter()
+        .position(|token| token.len() == 8 && token.chars().all(|ch| ch.is_ascii_digit()))
+    else {
+        return parsed;
+    };
+    if parsed.model_slug.is_none() && date_index > 1 {
+        parsed.model_slug = Some(tokens[1..date_index].join("_"));
+    }
+    if parsed.date_yyyymmdd.is_none() {
+        parsed.date_yyyymmdd = Some(tokens[date_index].to_string());
+    }
+    if parsed.cycle_utc.is_none() {
+        parsed.cycle_utc = tokens
+            .get(date_index + 1)
+            .and_then(|token| token.strip_suffix('z'))
+            .and_then(|value| value.parse::<u8>().ok());
+    }
+    if parsed.forecast_hour.is_none() {
+        parsed.forecast_hour = tokens
+            .get(date_index + 2)
+            .and_then(|token| token.strip_prefix('f'))
+            .and_then(|value| value.parse::<u16>().ok());
+    }
+    if parsed.domain_slug.is_none() {
+        parsed.domain_slug = tokens.get(date_index + 3).map(|value| (*value).to_string());
+    }
+    parsed
+}
+
+fn format_run_title(manifest: &RunPublicationManifest, model_slug: Option<&str>) -> String {
+    let model = model_slug.unwrap_or("unknown").replace('_', " ");
+    let kind = match classify_manifest_kind(manifest) {
+        ProofRunKind::Direct => "Direct Batch",
+        ProofRunKind::Derived => "Derived Batch",
+        ProofRunKind::Heavy => "Heavy Batch",
+        ProofRunKind::Windowed => "Windowed Batch",
+    };
+    format!("{} {}", model.to_uppercase(), kind)
+}
+
+fn classify_manifest_kind(manifest: &RunPublicationManifest) -> ProofRunKind {
+    let kind = manifest.run_kind.as_str();
+    if kind.contains("windowed") {
+        ProofRunKind::Windowed
+    } else if kind.contains("derived") {
+        ProofRunKind::Derived
+    } else if kind.contains("ecape")
+        || kind.contains("batch")
+            && manifest.artifacts.iter().any(|artifact| {
+                artifact.artifact_key == "ecape8_panel"
+                    || artifact.artifact_key == "severe_proof_panel"
+            })
+    {
+        ProofRunKind::Heavy
+    } else {
+        ProofRunKind::Direct
+    }
+}
+
+fn infer_manifest_source(manifest: &RunPublicationManifest) -> Option<String> {
+    let mut unique = manifest
+        .input_fetches
+        .iter()
+        .map(|fetch| format!("{:?}", fetch.resolved_source))
+        .collect::<Vec<_>>();
+    unique.sort();
+    unique.dedup();
+    match unique.len() {
+        0 => None,
+        1 => unique.into_iter().next(),
+        _ => Some("mixed".to_string()),
+    }
+}
+
+fn materialize_artifact_path(
+    output_root: &Path,
+    artifact: &crate::publication::PublishedArtifactRecord,
+) -> PathBuf {
+    if artifact.relative_path.is_absolute() {
+        artifact.relative_path.clone()
+    } else {
+        output_root.join(&artifact.relative_path)
+    }
+}
+
+fn run_state_slug(state: RunPublicationState) -> &'static str {
+    match state {
+        RunPublicationState::Planned => "planned",
+        RunPublicationState::Running => "running",
+        RunPublicationState::Complete => "complete",
+        RunPublicationState::Partial => "partial",
+        RunPublicationState::Failed => "failed",
+    }
+}
+
+fn artifact_state_slug(state: ArtifactPublicationState) -> &'static str {
+    match state {
+        ArtifactPublicationState::Planned => "planned",
+        ArtifactPublicationState::Running => "running",
+        ArtifactPublicationState::Complete => "complete",
+        ArtifactPublicationState::Failed => "failed",
+        ArtifactPublicationState::Blocked => "blocked",
+        ArtifactPublicationState::CacheHit => "cache_hit",
     }
 }
 

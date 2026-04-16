@@ -1,11 +1,14 @@
 use crate::cache::{load_bincode, store_bincode};
-use crate::hrrr::{
-    DomainSpec, HrrrFetchRuntimeInfo, PreparedHrrrHourContext, build_projected_map,
-    decode_cache_path, fetch_hrrr_family_file, load_or_decode_surface, resolve_hrrr_run,
+use crate::gridded::{
+    FetchRuntimeInfo, decode_cache_path, fetch_family_file, load_surface_geometry_from_latest,
+    resolve_model_run,
 };
+use crate::hrrr::{HrrrFetchRuntimeInfo, PreparedHrrrHourContext};
+use crate::shared_context::{DomainSpec, ProjectedMap};
 use grib_core::grib2::{Grib2File, Grib2Message, unpack_message_normalized};
 use rustwx_calc::{max_window_fields, sum_window_fields};
-use rustwx_core::{Field2D, ProductKey, SourceId};
+use rustwx_core::{CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId};
+use rustwx_models::{LatestRun, resolve_canonical_bundle_product};
 use rustwx_render::{
     ColorScale, ExtendMode, MapRenderRequest, Solar07Palette, Solar07Product, palette_scale,
     save_png,
@@ -17,7 +20,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Instant;
-use wrf_render::render::map_frame_aspect_ratio;
 
 const OUTPUT_WIDTH: u32 = 1200;
 const OUTPUT_HEIGHT: u32 = 900;
@@ -195,6 +197,18 @@ struct LoadedUhHour {
     runtime_fetch: Option<HrrrWindowedHourFetchInfo>,
 }
 
+#[derive(Debug, Clone)]
+struct PreparedWindowedGeometryContext {
+    fetch_geometry_ms: u128,
+    decode_geometry_ms: u128,
+    geometry_fetch_cache_hit: bool,
+    geometry_decode_cache_hit: bool,
+    geometry_fetch: Option<HrrrFetchRuntimeInfo>,
+    projected: ProjectedMap,
+    project_ms: u128,
+    grid: rustwx_core::LatLonGrid,
+}
+
 #[derive(Debug)]
 enum WindowedProductOutcome {
     Rendered {
@@ -207,6 +221,70 @@ enum WindowedProductOutcome {
     },
 }
 
+fn prepare_windowed_geometry_context(
+    request: &HrrrWindowedBatchRequest,
+    latest: &LatestRun,
+    shared_context: Option<&PreparedHrrrHourContext>,
+) -> Result<PreparedWindowedGeometryContext, Box<dyn std::error::Error>> {
+    if let Some(ctx) = shared_context {
+        return Ok(PreparedWindowedGeometryContext {
+            fetch_geometry_ms: ctx.timestep().shared_timing().fetch_surface_ms,
+            decode_geometry_ms: ctx.timestep().shared_timing().decode_surface_ms,
+            geometry_fetch_cache_hit: ctx.timestep().shared_timing().fetch_surface_cache_hit,
+            geometry_decode_cache_hit: ctx.timestep().shared_timing().decode_surface_cache_hit,
+            geometry_fetch: Some(ctx.timestep().shared_timing().surface_fetch.clone()),
+            projected: ctx
+                .projected_map(OUTPUT_WIDTH, OUTPUT_HEIGHT)
+                .cloned()
+                .ok_or("missing shared projected map for windowed batch")?,
+            project_ms: 0,
+            grid: ctx.timestep().grid().clone(),
+        });
+    }
+
+    let geometry = load_surface_geometry_from_latest(
+        latest.clone(),
+        request.forecast_hour,
+        None,
+        &request.cache_root,
+        request.use_cache,
+    )?;
+    let project_start = Instant::now();
+    let projected_maps = crate::gridded::build_projected_maps_for_sizes(
+        &geometry.surface_decode.value,
+        request.domain.bounds,
+        &[(OUTPUT_WIDTH, OUTPUT_HEIGHT)],
+    )?;
+    let project_ms = project_start.elapsed().as_millis();
+    let projected = projected_maps
+        .projected_map(OUTPUT_WIDTH, OUTPUT_HEIGHT)
+        .cloned()
+        .ok_or("missing projected map for windowed batch")?;
+
+    Ok(PreparedWindowedGeometryContext {
+        fetch_geometry_ms: geometry.fetch_ms,
+        decode_geometry_ms: geometry.decode_ms,
+        geometry_fetch_cache_hit: geometry.surface_file.fetched.cache_hit,
+        geometry_decode_cache_hit: geometry.surface_decode.cache_hit,
+        geometry_fetch: Some(hrrr_fetch_runtime_info_from_bundle(
+            &geometry.surface_file.runtime_info(&geometry.surface_bundle),
+        )),
+        projected,
+        project_ms,
+        grid: geometry.grid,
+    })
+}
+
+fn hrrr_fetch_runtime_info_from_bundle(fetch: &FetchRuntimeInfo) -> HrrrFetchRuntimeInfo {
+    HrrrFetchRuntimeInfo {
+        planned_product: fetch.planned_product.clone(),
+        fetched_product: fetch.fetched_product.clone(),
+        requested_source: fetch.requested_source,
+        resolved_source: fetch.resolved_source,
+        resolved_url: fetch.resolved_url.clone(),
+    }
+}
+
 pub fn run_hrrr_windowed_batch(
     request: &HrrrWindowedBatchRequest,
 ) -> Result<HrrrWindowedBatchReport, Box<dyn std::error::Error>> {
@@ -215,7 +293,8 @@ pub fn run_hrrr_windowed_batch(
         fs::create_dir_all(&request.cache_root)?;
     }
 
-    let latest = resolve_hrrr_run(
+    let latest = resolve_model_run(
+        ModelId::Hrrr,
         &request.date_yyyymmdd,
         request.cycle_override_utc,
         request.source,
@@ -234,67 +313,15 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
     }
 
     let total_start = Instant::now();
-    let (
-        fetch_geometry_ms,
-        decode_geometry_ms,
-        geometry_fetch_cache_hit,
-        geometry_decode_cache_hit,
-        geometry_fetch,
-        projected,
-        project_ms,
-        grid,
-    ) = if let Some(ctx) = shared_context {
-        (
-            ctx.timestep().shared_timing().fetch_surface_ms,
-            ctx.timestep().shared_timing().decode_surface_ms,
-            ctx.timestep().shared_timing().fetch_surface_cache_hit,
-            ctx.timestep().shared_timing().decode_surface_cache_hit,
-            Some(ctx.timestep().shared_timing().surface_fetch.clone()),
-            ctx.projected_map(OUTPUT_WIDTH, OUTPUT_HEIGHT)
-                .cloned()
-                .ok_or("missing shared projected map for windowed batch")?,
-            0,
-            ctx.timestep().grid().clone(),
-        )
-    } else {
-        let geometry_fetch_start = Instant::now();
-        let geometry_subset = fetch_hrrr_family_file(
-            latest.cycle.clone(),
-            request.forecast_hour,
-            latest.source,
-            "sfc",
-            &request.cache_root,
-            request.use_cache,
-        )?;
-        let fetch_geometry_ms = geometry_fetch_start.elapsed().as_millis();
-
-        let geometry_decode_start = Instant::now();
-        let surface_geometry = load_or_decode_surface(
-            &decode_cache_path(&request.cache_root, &geometry_subset.request, "surface"),
-            &geometry_subset.bytes,
-            request.use_cache,
-        )?;
-        let decode_geometry_ms = geometry_decode_start.elapsed().as_millis();
-
-        let project_start = Instant::now();
-        let projected = build_projected_map(
-            &surface_geometry.value,
-            request.domain.bounds,
-            map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
-        )?;
-        let project_ms = project_start.elapsed().as_millis();
-        let grid = surface_geometry.value.core_grid()?;
-        (
-            fetch_geometry_ms,
-            decode_geometry_ms,
-            geometry_subset.fetched.cache_hit,
-            surface_geometry.cache_hit,
-            Some(geometry_subset.runtime_info("sfc")),
-            projected,
-            project_ms,
-            grid,
-        )
-    };
+    let geometry_context = prepare_windowed_geometry_context(request, latest, shared_context)?;
+    let fetch_geometry_ms = geometry_context.fetch_geometry_ms;
+    let decode_geometry_ms = geometry_context.decode_geometry_ms;
+    let geometry_fetch_cache_hit = geometry_context.geometry_fetch_cache_hit;
+    let geometry_decode_cache_hit = geometry_context.geometry_decode_cache_hit;
+    let geometry_fetch = geometry_context.geometry_fetch;
+    let projected = geometry_context.projected;
+    let project_ms = geometry_context.project_ms;
+    let grid = geometry_context.grid;
 
     let (planned_products, mut blockers, surface_hours, nat_hours) =
         plan_windowed_products(&request.products, request.forecast_hour);
@@ -310,6 +337,7 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
     let forecast_hour = request.forecast_hour;
     let domain_slug = request.domain.slug.as_str();
     let out_dir = &request.out_dir;
+    let model = latest.model;
     let source = latest.source;
     let projected = &projected;
     let grid = &grid;
@@ -369,8 +397,8 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
                     render_request.height = OUTPUT_HEIGHT;
                     render_request.title = Some(computed.title.clone());
                     render_request.subtitle_left = Some(format!(
-                        "{} {}Z F{:03}  HRRR",
-                        date_yyyymmdd, cycle_utc, forecast_hour
+                        "{} {}Z F{:03}  {}",
+                        date_yyyymmdd, cycle_utc, forecast_hour, model
                     ));
                     render_request.subtitle_right = Some(format!(
                         "source: {} | {}",
@@ -699,14 +727,7 @@ fn load_apcp_hour(
     hour: u16,
 ) -> LoadedApcpHour {
     let fetch_start = Instant::now();
-    let subset = fetch_hrrr_family_file(
-        latest.cycle.clone(),
-        hour,
-        latest.source,
-        "sfc",
-        &request.cache_root,
-        request.use_cache,
-    );
+    let subset = fetch_windowed_surface_hour_file(latest, request, hour);
     let fetch_ms = fetch_start.elapsed().as_millis();
     match subset {
         Ok(subset) => {
@@ -753,14 +774,7 @@ fn load_uh_hour(
     hour: u16,
 ) -> LoadedUhHour {
     let fetch_start = Instant::now();
-    let subset = fetch_hrrr_family_file(
-        latest.cycle.clone(),
-        hour,
-        latest.source,
-        "sfc",
-        &request.cache_root,
-        request.use_cache,
-    );
+    let subset = fetch_windowed_surface_hour_file(latest, request, hour);
     let fetch_ms = fetch_start.elapsed().as_millis();
     match subset {
         Ok(subset) => {
@@ -799,6 +813,27 @@ fn load_uh_hour(
             runtime_fetch: None,
         },
     }
+}
+
+fn fetch_windowed_surface_hour_file(
+    latest: &LatestRun,
+    request: &HrrrWindowedBatchRequest,
+    hour: u16,
+) -> Result<crate::gridded::FetchedModelFile, Box<dyn std::error::Error>> {
+    let surface_bundle = resolve_canonical_bundle_product(
+        latest.model,
+        CanonicalBundleDescriptor::SurfaceAnalysis,
+        None,
+    );
+    fetch_family_file(
+        latest.model,
+        latest.cycle.clone(),
+        hour,
+        latest.source,
+        &surface_bundle,
+        &request.cache_root,
+        request.use_cache,
+    )
 }
 
 fn load_or_decode_uh25(

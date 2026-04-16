@@ -9,6 +9,12 @@ pub mod hrrr;
 pub mod non_ecape;
 pub mod orchestrator;
 pub mod publication;
+pub mod severe;
 pub mod shared_context;
 pub mod spec;
 pub mod windowed;
+
+pub use shared_context::{
+    DomainSpec, PreparedProjectedContext, ProjectedMap, ProjectedMapProvider, Solar07PanelField,
+    Solar07PanelHeader, Solar07PanelLayout, layout_key, render_two_by_four_solar07_panel,
+};

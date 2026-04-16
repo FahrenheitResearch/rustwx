@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -71,6 +72,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn collect_manifest_paths(root: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
     let mut manifests = Vec::new();
     collect_manifest_paths_recursive(root, &mut manifests)?;
+    let preferred_run_manifests = manifests
+        .iter()
+        .filter_map(|path| {
+            let name = path.file_name()?.to_str()?;
+            name.strip_suffix("_run_manifest.json")
+                .map(|stem| stem.to_string())
+        })
+        .collect::<HashSet<_>>();
+    manifests.retain(|path| {
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            return false;
+        };
+        if name.ends_with("_run_manifest.json") {
+            return true;
+        }
+        !preferred_run_manifests.iter().any(|stem| {
+            name == format!("{stem}_manifest.json")
+                || name == format!("{stem}_report.json")
+                || name == format!("{stem}_batch_report.json")
+                || name == format!("{stem}_windowed_report.json")
+        })
+    });
     Ok(manifests)
 }
 
@@ -89,6 +112,7 @@ fn collect_manifest_paths_recursive(
             continue;
         };
         let is_manifest = name.ends_with("_manifest.json")
+            || name.ends_with("_run_manifest.json")
             || name.ends_with("_batch_report.json")
             || name.ends_with("_windowed_report.json");
         if is_manifest {

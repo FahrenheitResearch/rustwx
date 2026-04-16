@@ -9,17 +9,13 @@ use region::RegionPreset;
 use rustwx_core::{ModelId, SourceId};
 use rustwx_models::model_summary;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
-use rustwx_products::ecape::{EcapeBatchRequest, run_ecape_batch};
-use rustwx_products::publication::{
-    ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
-    default_run_manifest_path, publish_run_manifest,
-};
 use rustwx_products::shared_context::DomainSpec;
+use rustwx_products::severe::{SevereBatchRequest, run_severe_batch};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "ecape8-batch",
-    about = "Generate a model-aware ECAPE 8-panel from one shared full-file thermodynamic load"
+    name = "severe-batch",
+    about = "Generate a severe proof panel from one shared full-file thermodynamic load"
 )]
 struct Args {
     #[arg(long, default_value = "hrrr")]
@@ -60,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = args
         .source
         .unwrap_or(model_summary(args.model).sources[0].id);
-    let request = EcapeBatchRequest {
+    let request = SevereBatchRequest {
         model: args.model,
         date_yyyymmdd: args.date.clone(),
         cycle_override_utc: args.cycle,
@@ -73,11 +69,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         surface_product_override: args.surface_product.clone(),
         pressure_product_override: args.pressure_product.clone(),
     };
+    let report = run_severe_batch(&request)?;
 
-    let report = run_ecape_batch(&request)?;
     let model_slug = report.model.as_str().replace('-', "_");
     let stem = format!(
-        "rustwx_{}_{}_{}z_f{:03}_{}_ecape8",
+        "rustwx_{}_{}_{}z_f{:03}_{}_severe_proof_panel",
         model_slug,
         report.date_yyyymmdd,
         report.cycle_utc,
@@ -86,49 +82,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let manifest_path = args.out_dir.join(format!("{stem}_manifest.json"));
     let timing_path = args.out_dir.join(format!("{stem}_timing.json"));
-    let run_manifest_path = default_run_manifest_path(&args.out_dir, &stem);
-    atomic_write_json(&manifest_path, &report)?;
-    atomic_write_json(&timing_path, &report)?;
-    let mut run_manifest =
-        RunPublicationManifest::new("ecape8_batch", stem.clone(), args.out_dir.clone())
-            .with_run_metadata(
-                report.model.as_str(),
-                report.date_yyyymmdd.clone(),
-                report.cycle_utc,
-                report.forecast_hour,
-                format!("{:?}", report.source),
-                report.domain.slug.clone(),
-            )
-            .with_input_fetches(report.input_fetches.clone())
-            .with_artifacts(vec![
-                PublishedArtifactRecord::planned(
-                    "ecape8_panel",
-                    relative_output_path(&args.out_dir, &report.output_path),
-                )
-                .with_state(ArtifactPublicationState::Complete)
-                .with_detail(format!("failure_count={}", report.failure_count))
-                .with_content_identity(report.output_identity.clone())
-                .with_input_fetch_keys(
-                    report
-                        .input_fetches
-                        .iter()
-                        .map(|fetch| fetch.fetch_key.clone())
-                        .collect(),
-                ),
-            ]);
-    run_manifest.mark_complete();
-    publish_run_manifest(&run_manifest_path, &run_manifest)?;
+    fs::write(&manifest_path, serde_json::to_vec_pretty(&report)?)?;
+    fs::write(&timing_path, serde_json::to_vec_pretty(&report)?)?;
 
     println!("{}", report.output_path.display());
     println!("{}", manifest_path.display());
     println!("{}", timing_path.display());
-    println!("{}", run_manifest_path.display());
     Ok(())
-}
-
-fn relative_output_path(root: &std::path::Path, output_path: &std::path::Path) -> PathBuf {
-    output_path
-        .strip_prefix(root)
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| output_path.to_path_buf())
 }

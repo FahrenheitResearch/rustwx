@@ -1,7 +1,7 @@
 use crate::direct::build_projected_map;
 use crate::gridded::{
-    PressureFields, SharedTiming, SurfaceFields, load_model_timestep_from_parts,
-    prepare_heavy_volume,
+    PreparedHeavyVolume, PressureFields, SharedTiming, SurfaceFields,
+    load_model_timestep_from_parts, prepare_heavy_volume,
 };
 use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
@@ -12,9 +12,7 @@ use crate::shared_context::{
     render_two_by_four_solar07_panel,
 };
 use rustwx_calc::{
-    EcapeTripletOptions, EcapeVolumeInputs, ScpEhiInputs, SurfaceInputs, WindGridInputs,
-    compute_ecape_triplet_with_failure_mask_from_parts, compute_scp_ehi,
-    compute_wind_diagnostics_bundle,
+    EcapeVolumeInputs, SupportedSevereFields, SurfaceInputs, compute_supported_severe_fields,
 };
 use rustwx_core::{ModelId, SourceId};
 use rustwx_render::Solar07Product;
@@ -24,7 +22,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EcapeBatchRequest {
+pub struct SevereBatchRequest {
     pub model: ModelId,
     pub date_yyyymmdd: String,
     pub cycle_override_utc: Option<u8>,
@@ -39,7 +37,7 @@ pub struct EcapeBatchRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EcapeBatchReport {
+pub struct SevereBatchReport {
     pub model: ModelId,
     pub date_yyyymmdd: String,
     pub cycle_utc: u8,
@@ -54,12 +52,11 @@ pub struct EcapeBatchReport {
     pub compute_ms: u128,
     pub render_ms: u128,
     pub total_ms: u128,
-    pub failure_count: usize,
 }
 
-pub fn run_ecape_batch(
-    request: &EcapeBatchRequest,
-) -> Result<EcapeBatchReport, Box<dyn std::error::Error>> {
+pub fn run_severe_batch(
+    request: &SevereBatchRequest,
+) -> Result<SevereBatchReport, Box<dyn std::error::Error>> {
     fs::create_dir_all(&request.out_dir)?;
     if request.use_cache {
         fs::create_dir_all(&request.cache_root)?;
@@ -78,17 +75,21 @@ pub fn run_ecape_batch(
         request.use_cache,
     )?;
 
+    let layout = Solar07PanelLayout {
+        top_padding: 86,
+        ..Default::default()
+    };
     let project_start = Instant::now();
     let projected = build_projected_map(
         &timestep.grid.lat_deg,
         &timestep.grid.lon_deg,
         request.domain.bounds,
-        Solar07PanelLayout::default().target_aspect_ratio(),
+        layout.target_aspect_ratio(),
     )?;
     let project_ms = project_start.elapsed().as_millis();
 
     let compute_start = Instant::now();
-    let (fields, failure_count) = compute_ecape8_panel_fields(
+    let fields = compute_severe_panel_fields(
         &timestep.surface_decode.value,
         &timestep.pressure_decode.value,
     )?;
@@ -96,7 +97,7 @@ pub fn run_ecape_batch(
 
     let model_slug = request.model.as_str().replace('-', "_");
     let output_path = request.out_dir.join(format!(
-        "rustwx_{}_{}_{}z_f{:03}_{}_ecape8_panel.png",
+        "rustwx_{}_{}_{}z_f{:03}_{}_severe_proof_panel.png",
         model_slug,
         request.date_yyyymmdd,
         timestep.latest.cycle.hour_utc,
@@ -104,13 +105,20 @@ pub fn run_ecape_batch(
         request.domain.slug
     ));
     let render_start = Instant::now();
+    let header = Solar07PanelHeader::new(format!("{} Severe Proof Panel", request.model))
+        .with_subtitle_line(
+            "STP is fixed-layer only: sbCAPE + sbLCL + 0-1 km SRH + 0-6 km bulk shear.",
+        )
+        .with_subtitle_line(
+            "SCP stays a fixed-depth proxy here: muCAPE + 0-3 km SRH + 0-6 km shear. EHI 0-1 km uses sbCAPE + 0-1 km SRH. Effective-layer derivation is not wired yet.",
+        );
     render_two_by_four_solar07_panel(
         &output_path,
         &timestep.grid,
         &projected,
         &fields,
-        &Solar07PanelHeader::new(format!("{} ECAPE 8-Panel", request.model)),
-        Solar07PanelLayout::default(),
+        &header,
+        layout,
     )?;
     let render_ms = render_start.elapsed().as_millis();
     let output_identity = artifact_identity_from_path(&output_path)?;
@@ -135,7 +143,7 @@ pub fn run_ecape_batch(
         ),
     ];
 
-    Ok(EcapeBatchReport {
+    Ok(SevereBatchReport {
         model: request.model,
         date_yyyymmdd: request.date_yyyymmdd.clone(),
         cycle_utc: timestep.latest.cycle.hour_utc,
@@ -150,19 +158,53 @@ pub fn run_ecape_batch(
         compute_ms,
         render_ms,
         total_ms: total_start.elapsed().as_millis(),
-        failure_count,
     })
 }
 
-pub fn compute_ecape8_panel_fields(
+pub fn severe_panel_fields_from_supported(fields: SupportedSevereFields) -> Vec<Solar07PanelField> {
+    vec![
+        Solar07PanelField::new(Solar07Product::Sbcape, "J/kg", fields.sbcape_jkg),
+        Solar07PanelField::new(Solar07Product::Mlcin, "J/kg", fields.mlcin_jkg),
+        Solar07PanelField::new(Solar07Product::Mucape, "J/kg", fields.mucape_jkg),
+        Solar07PanelField::new(Solar07Product::Srh01km, "m^2/s^2", fields.srh_01km_m2s2),
+        Solar07PanelField::new(Solar07Product::Srh03km, "m^2/s^2", fields.srh_03km_m2s2),
+        Solar07PanelField::new(Solar07Product::StpFixed, "dimensionless", fields.stp_fixed),
+        Solar07PanelField::new(
+            Solar07Product::Scp,
+            "dimensionless",
+            fields.scp_mu_03km_06km_proxy,
+        )
+        .with_title_override("SCP (MU / 0-3 KM / 0-6 KM PROXY)"),
+        Solar07PanelField::new(
+            Solar07Product::Ehi,
+            "dimensionless",
+            fields.ehi_sb_01km_proxy,
+        )
+        .with_title_override("EHI 0-1 KM"),
+    ]
+}
+
+pub fn compute_severe_panel_fields(
     surface: &SurfaceFields,
     pressure: &PressureFields,
-) -> Result<(Vec<Solar07PanelField>, usize), Box<dyn std::error::Error>> {
-    let prepared = prepare_heavy_volume(surface, pressure, false)?;
-    let triplet = compute_ecape_triplet_with_failure_mask_from_parts(
+) -> Result<Vec<Solar07PanelField>, Box<dyn std::error::Error>> {
+    let prepared = prepare_heavy_volume(surface, pressure, true)?;
+    compute_severe_panel_fields_with_prepared_volume(surface, pressure, &prepared)
+}
+
+pub fn compute_severe_panel_fields_with_prepared_volume(
+    surface: &SurfaceFields,
+    pressure: &PressureFields,
+    prepared: &PreparedHeavyVolume,
+) -> Result<Vec<Solar07PanelField>, Box<dyn std::error::Error>> {
+    let pressure_3d_pa = prepared
+        .pressure_3d_pa
+        .as_deref()
+        .ok_or("prepared severe volume was missing broadcast pressure data")?;
+    let fields = compute_supported_severe_fields(
         prepared.grid,
         EcapeVolumeInputs {
-            pressure_pa: &prepared.pressure_levels_pa,
+            pressure_pa: pressure_3d_pa,
             temperature_c: &pressure.temperature_c_3d,
             qvapor_kgkg: &pressure.qvapor_kgkg_3d,
             height_agl_m: &prepared.height_agl_3d,
@@ -177,42 +219,6 @@ pub fn compute_ecape8_panel_fields(
             u10_ms: &surface.u10_ms,
             v10_ms: &surface.v10_ms,
         },
-        EcapeTripletOptions::new("right_moving"),
     )?;
-    let wind = WindGridInputs {
-        shape: prepared.shape,
-        u_3d_ms: &pressure.u_ms_3d,
-        v_3d_ms: &pressure.v_ms_3d,
-        height_agl_3d_m: &prepared.height_agl_3d,
-    };
-    let wind_diagnostics = compute_wind_diagnostics_bundle(wind)?;
-    let experimental = compute_scp_ehi(ScpEhiInputs {
-        grid: prepared.grid,
-        scp_cape_jkg: &triplet.mu.fields.ecape_jkg,
-        scp_srh_m2s2: &wind_diagnostics.srh_03km_m2s2,
-        scp_bulk_wind_difference_ms: &wind_diagnostics.shear_06km_ms,
-        ehi_cape_jkg: &triplet.sb.fields.ecape_jkg,
-        ehi_srh_m2s2: &wind_diagnostics.srh_01km_m2s2,
-    })?;
-    let failure_count = triplet.total_failure_count();
-
-    let fields = vec![
-        Solar07PanelField::new(Solar07Product::Sbecape, "J/kg", triplet.sb.fields.ecape_jkg),
-        Solar07PanelField::new(Solar07Product::Mlecape, "J/kg", triplet.ml.fields.ecape_jkg),
-        Solar07PanelField::new(Solar07Product::Muecape, "J/kg", triplet.mu.fields.ecape_jkg),
-        Solar07PanelField::new(Solar07Product::Sbncape, "J/kg", triplet.sb.fields.ncape_jkg),
-        Solar07PanelField::new(Solar07Product::Sbecin, "J/kg", triplet.sb.fields.cin_jkg),
-        Solar07PanelField::new(Solar07Product::Mlecin, "J/kg", triplet.ml.fields.cin_jkg),
-        Solar07PanelField::new(
-            Solar07Product::EcapeScpExperimental,
-            "dimensionless",
-            experimental.scp,
-        ),
-        Solar07PanelField::new(
-            Solar07Product::EcapeEhiExperimental,
-            "dimensionless",
-            experimental.ehi,
-        ),
-    ];
-    Ok((fields, failure_count))
+    Ok(severe_panel_fields_from_supported(fields))
 }

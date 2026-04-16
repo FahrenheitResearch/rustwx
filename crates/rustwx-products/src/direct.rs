@@ -30,11 +30,12 @@ use wrf_render::projection::LambertConformal;
 use wrf_render::render::map_frame_aspect_ratio;
 use wrf_render::text;
 
-use crate::hrrr::{DomainSpec, PreparedHrrrHourContext, ProjectedMap};
+use crate::hrrr::PreparedHrrrHourContext;
 use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
     fetch_identity_from_cached_result,
 };
+use crate::shared_context::{DomainSpec, ProjectedMap};
 use crate::spec::direct_product_specs;
 
 const OUTPUT_WIDTH: u32 = 1200;
@@ -226,7 +227,7 @@ pub fn run_hrrr_direct_batch(
 pub(crate) fn run_hrrr_direct_batch_with_context(
     request: &HrrrDirectBatchRequest,
     latest: &LatestRun,
-    shared_context: Option<&PreparedHrrrHourContext>,
+    shared_context: Option<&crate::hrrr::PreparedHrrrHourContext>,
 ) -> Result<HrrrDirectBatchReport, Box<dyn std::error::Error>> {
     let generic = DirectBatchRequest::from_hrrr(request);
     run_direct_batch_with_context(&generic, latest, shared_context)

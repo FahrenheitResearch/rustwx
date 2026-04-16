@@ -39,6 +39,10 @@ pub struct PreparedProjectedContext {
     projected_maps: HashMap<(u32, u32), ProjectedMap>,
 }
 
+pub trait ProjectedMapProvider: Sync {
+    fn projected_map(&self, width: u32, height: u32) -> Option<&ProjectedMap>;
+}
+
 impl PreparedProjectedContext {
     pub fn new() -> Self {
         Self::default()
@@ -54,6 +58,12 @@ impl PreparedProjectedContext {
 
     pub fn contains_size(&self, width: u32, height: u32) -> bool {
         self.projected_maps.contains_key(&(width, height))
+    }
+}
+
+impl ProjectedMapProvider for PreparedProjectedContext {
+    fn projected_map(&self, width: u32, height: u32) -> Option<&ProjectedMap> {
+        self.projected_map(width, height)
     }
 }
 

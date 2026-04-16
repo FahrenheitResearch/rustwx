@@ -22,16 +22,14 @@ use std::time::Instant;
 use crate::direct::build_projected_map as build_projected_map_from_latlon;
 use crate::gridded::{
     LoadedModelTimestep, PressureFields as GenericPressureFields,
-    SurfaceFields as GenericSurfaceFields, load_model_timestep_from_parts,
+    SurfaceFields as GenericSurfaceFields, broadcast_levels_pa, load_model_timestep_from_parts,
 };
-use crate::hrrr::{
-    DomainSpec, HrrrSharedTiming, HrrrSurfaceFields, PreparedHrrrHourContext, broadcast_levels_pa,
-    build_projected_map as build_hrrr_projected_map,
-};
+use crate::hrrr::{HrrrSharedTiming, HrrrSurfaceFields, PreparedHrrrHourContext};
 use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
     fetch_identity_from_cached_result,
 };
+use crate::shared_context::{DomainSpec, ProjectedMap};
 
 const OUTPUT_WIDTH: u32 = 1200;
 const OUTPUT_HEIGHT: u32 = 900;
@@ -937,8 +935,23 @@ pub(crate) fn run_hrrr_derived_batch_with_context(
     {
         projected
     } else {
-        build_hrrr_projected_map(
-            &timestep.surface_decode().value,
+        build_projected_map_from_latlon(
+            &timestep
+                .surface_decode()
+                .value
+                .lat
+                .iter()
+                .copied()
+                .map(|v| v as f32)
+                .collect::<Vec<_>>(),
+            &timestep
+                .surface_decode()
+                .value
+                .lon
+                .iter()
+                .copied()
+                .map(|v| v as f32)
+                .collect::<Vec<_>>(),
             request.domain.bounds,
             wrf_render::render::map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
         )?
@@ -1092,7 +1105,7 @@ pub fn build_hrrr_live_derived_artifact(
     surface: &HrrrSurfaceFields,
     pressure: &crate::hrrr::HrrrPressureFields,
     grid: &rustwx_core::LatLonGrid,
-    projected: &crate::hrrr::ProjectedMap,
+    projected: &ProjectedMap,
     date_yyyymmdd: &str,
     cycle_utc: u8,
     forecast_hour: u16,
@@ -1466,7 +1479,7 @@ where
 fn build_render_artifact(
     recipe: DerivedRecipe,
     grid: &rustwx_core::LatLonGrid,
-    projected: &crate::hrrr::ProjectedMap,
+    projected: &ProjectedMap,
     date_yyyymmdd: &str,
     cycle_utc: u8,
     forecast_hour: u16,

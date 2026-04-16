@@ -259,6 +259,28 @@ fn build_heavy_entries() -> Vec<ProductCatalogEntry> {
         .into_iter()
         .map(|spec| {
             let (runners, support) = match spec.slug.as_str() {
+                "severe_proof_panel" => {
+                    let mut runners = vec!["severe_batch".to_string()];
+                    let support = built_in_models()
+                        .iter()
+                        .map(|model| ProductTargetSupport {
+                            target: model.id.to_string(),
+                            model: Some(model.id),
+                            status: ProductTargetStatus::Supported,
+                            fetch_mode: None,
+                            grib_product: None,
+                            blockers: Vec::new(),
+                        })
+                        .collect::<Vec<_>>();
+                    if support
+                        .iter()
+                        .any(|target| target.model == Some(ModelId::Hrrr))
+                    {
+                        runners.push("hrrr_batch".to_string());
+                        runners.push("hrrr_severe_proof".to_string());
+                    }
+                    (runners, support)
+                }
                 "ecape8_panel" => {
                     let mut runners = vec!["ecape8_batch".to_string()];
                     let support = built_in_models()
@@ -580,6 +602,25 @@ mod tests {
         assert_eq!(ecape.support.len(), built_in_models().len());
         assert!(
             ecape
+                .support
+                .iter()
+                .all(|target| matches!(target.status, ProductTargetStatus::Supported))
+        );
+    }
+
+    #[test]
+    fn severe_catalog_entry_is_supported_for_all_built_in_models() {
+        let catalog = build_supported_products_catalog();
+        let severe = catalog
+            .heavy
+            .iter()
+            .find(|entry| entry.slug == "severe_proof_panel")
+            .expect("catalog should expose severe proof panel entry");
+        assert_eq!(severe.title, "Severe Proof Panel");
+        assert!(severe.runners.iter().any(|runner| runner == "severe_batch"));
+        assert_eq!(severe.support.len(), built_in_models().len());
+        assert!(
+            severe
                 .support
                 .iter()
                 .all(|target| matches!(target.status, ProductTargetStatus::Supported))

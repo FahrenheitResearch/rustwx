@@ -1,6 +1,6 @@
 use crate::cache::{load_bincode, store_bincode};
 use crate::direct::build_projected_map;
-use crate::hrrr::ProjectedMap;
+use crate::shared_context::PreparedProjectedContext;
 use grib_core::grib2::{
     Grib2File, Grib2Message, flip_rows, grid_latlon, unpack_message_normalized,
 };
@@ -15,7 +15,6 @@ use rustwx_models::{
     resolve_canonical_bundle_product,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use wrf_render::render::map_frame_aspect_ratio;
@@ -131,23 +130,24 @@ pub struct LoadedModelTimestep {
 }
 
 #[derive(Debug, Clone)]
-pub struct PreparedProjectedContext {
-    projected_maps: HashMap<(u32, u32), ProjectedMap>,
-}
-
-impl PreparedProjectedContext {
-    pub fn projected_map(&self, width: u32, height: u32) -> Option<&ProjectedMap> {
-        self.projected_maps.get(&(width, height))
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct PreparedHeavyVolume {
     pub grid: CalcGridShape,
     pub shape: VolumeShape,
     pub pressure_levels_pa: Vec<f64>,
     pub pressure_3d_pa: Option<Vec<f64>>,
     pub height_agl_3d: Vec<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedSurfaceGeometry {
+    pub latest: LatestRun,
+    pub model: ModelId,
+    pub surface_bundle: ResolvedCanonicalBundleProduct,
+    pub surface_file: FetchedModelFile,
+    pub surface_decode: CachedDecode<SurfaceFields>,
+    pub grid: LatLonGrid,
+    pub fetch_ms: u128,
+    pub decode_ms: u128,
 }
 
 pub fn resolve_model_run(
@@ -186,6 +186,50 @@ pub fn load_model_timestep_from_parts(
         cache_root,
         use_cache,
     )
+}
+
+pub fn load_surface_geometry_from_latest(
+    latest: LatestRun,
+    forecast_hour: u16,
+    surface_product_override: Option<&str>,
+    cache_root: &Path,
+    use_cache: bool,
+) -> Result<LoadedSurfaceGeometry, Box<dyn std::error::Error>> {
+    let surface_bundle = resolve_canonical_bundle_product(
+        latest.model,
+        CanonicalBundleDescriptor::SurfaceAnalysis,
+        surface_product_override,
+    );
+    let fetch_start = Instant::now();
+    let surface_file = fetch_family_file(
+        latest.model,
+        latest.cycle.clone(),
+        forecast_hour,
+        latest.source,
+        &surface_bundle,
+        cache_root,
+        use_cache,
+    )?;
+    let fetch_ms = fetch_start.elapsed().as_millis();
+    let decode_start = Instant::now();
+    let surface_decode = load_or_decode_surface(
+        &decode_cache_path(cache_root, &surface_file.request, "surface"),
+        surface_file.bytes.as_slice(),
+        use_cache,
+    )?;
+    let decode_ms = decode_start.elapsed().as_millis();
+    let grid = surface_decode.value.core_grid()?;
+    let model = latest.model;
+    Ok(LoadedSurfaceGeometry {
+        latest,
+        model,
+        surface_bundle,
+        surface_file,
+        surface_decode,
+        grid,
+        fetch_ms,
+        decode_ms,
+    })
 }
 
 pub fn load_model_timestep_from_latest(
@@ -292,9 +336,9 @@ pub fn build_projected_maps_for_sizes(
     bounds: (f64, f64, f64, f64),
     sizes: &[(u32, u32)],
 ) -> Result<PreparedProjectedContext, Box<dyn std::error::Error>> {
-    let mut projected_maps = HashMap::new();
+    let mut context = PreparedProjectedContext::new();
     for &(width, height) in sizes {
-        if width == 0 || height == 0 || projected_maps.contains_key(&(width, height)) {
+        if width == 0 || height == 0 || context.contains_size(width, height) {
             continue;
         }
         let projected = build_projected_map(
@@ -313,9 +357,9 @@ pub fn build_projected_maps_for_sizes(
             bounds,
             map_frame_aspect_ratio(width, height, true, true),
         )?;
-        projected_maps.insert((width, height), projected);
+        context.insert(width, height, projected);
     }
-    Ok(PreparedProjectedContext { projected_maps })
+    Ok(context)
 }
 
 pub fn prepare_heavy_volume(
@@ -425,7 +469,7 @@ fn thermo_bundles(
     )
 }
 
-fn fetch_family_file(
+pub(crate) fn fetch_family_file(
     model: ModelId,
     cycle: CycleSpec,
     forecast_hour: u16,
@@ -447,13 +491,13 @@ fn fetch_family_file(
     })
 }
 
-fn decode_cache_path(cache_root: &Path, fetch: &FetchRequest, name: &str) -> PathBuf {
+pub(crate) fn decode_cache_path(cache_root: &Path, fetch: &FetchRequest, name: &str) -> PathBuf {
     artifact_cache_dir(cache_root, fetch)
         .join("decoded")
         .join(format!("{name}.bin"))
 }
 
-fn load_or_decode_surface(
+pub(crate) fn load_or_decode_surface(
     path: &Path,
     bytes: &[u8],
     use_cache: bool,

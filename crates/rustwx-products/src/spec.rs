@@ -239,7 +239,7 @@ fn blocked_derived_product_spec(recipe: &BlockedDerivedRecipeInventoryEntry) -> 
 fn heavy_product_spec(product: HrrrBatchProduct) -> ProductSpec {
     let (title, maturity, flags, notes) = match product {
         HrrrBatchProduct::SevereProofPanel => (
-            "HRRR Severe Proof Panel",
+            "Severe Proof Panel",
             ProductMaturity::Proof,
             vec![
                 ProductSemanticFlag::ProofOriented,
@@ -247,6 +247,8 @@ fn heavy_product_spec(product: HrrrBatchProduct) -> ProductSpec {
             ],
             vec![
                 "Proof-oriented bundled panel".to_string(),
+                "Generic gridded severe proof panel path for supported built-in models"
+                    .to_string(),
                 "Keeps fixed-depth SCP proxy diagnostics until effective-layer SRH and EBWD are wired"
                     .to_string(),
             ],
