@@ -185,6 +185,21 @@ pub enum PlotRecipeFetchMode {
     WholeFileStructuredExtract,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlotRecipeFetchPolicy {
+    PreferIndexedSubset,
+    WholeFile,
+}
+
+impl PlotRecipeFetchPolicy {
+    pub fn fetch_mode(self) -> PlotRecipeFetchMode {
+        match self {
+            Self::PreferIndexedSubset => PlotRecipeFetchMode::IndexedSubset,
+            Self::WholeFile => PlotRecipeFetchMode::WholeFileStructuredExtract,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PlotRecipeBlocker {
     pub field_key: &'static str,
@@ -197,6 +212,7 @@ pub struct PlotRecipeFetchPlan {
     pub recipe_slug: &'static str,
     pub model: ModelId,
     pub product: &'static str,
+    pub fetch_policy: PlotRecipeFetchPolicy,
     pub fetch_mode: PlotRecipeFetchMode,
     pub fields: Vec<&'static GribFieldSpec>,
 }
@@ -668,6 +684,78 @@ const FIELD_300_HEIGHT: GribFieldSpec = field_spec(
     &["HGT:300 mb"],
 );
 
+const FIELD_200_TEMP: GribFieldSpec = field_spec(
+    "temperature_200mb",
+    "200mb Temperature",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(200),
+    Some(FieldSelector::isobaric(CanonicalField::Temperature, 200)),
+    &["TMP:200 mb"],
+);
+
+const FIELD_300_TEMP: GribFieldSpec = field_spec(
+    "temperature_300mb",
+    "300mb Temperature",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(300),
+    Some(FieldSelector::isobaric(CanonicalField::Temperature, 300)),
+    &["TMP:300 mb"],
+);
+
+const FIELD_200_RH: GribFieldSpec = field_spec(
+    "rh_200mb",
+    "200mb Relative Humidity",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(200),
+    Some(FieldSelector::isobaric(
+        CanonicalField::RelativeHumidity,
+        200,
+    )),
+    &["RH:200 mb"],
+);
+
+const FIELD_300_RH: GribFieldSpec = field_spec(
+    "rh_300mb",
+    "300mb Relative Humidity",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(300),
+    Some(FieldSelector::isobaric(
+        CanonicalField::RelativeHumidity,
+        300,
+    )),
+    &["RH:300 mb"],
+);
+
+const FIELD_200_ABSOLUTE_VORTICITY: GribFieldSpec = field_spec(
+    "absolute_vorticity_200mb",
+    "200mb Absolute Vorticity",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(200),
+    Some(FieldSelector::isobaric(
+        CanonicalField::AbsoluteVorticity,
+        200,
+    )),
+    &["ABSV:200 mb"],
+);
+
+const FIELD_300_ABSOLUTE_VORTICITY: GribFieldSpec = field_spec(
+    "absolute_vorticity_300mb",
+    "300mb Absolute Vorticity",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(300),
+    Some(FieldSelector::isobaric(
+        CanonicalField::AbsoluteVorticity,
+        300,
+    )),
+    &["ABSV:300 mb"],
+);
+
 const FIELD_200_U: GribFieldSpec = field_spec(
     "u_200mb",
     "200mb U Wind",
@@ -1088,6 +1176,24 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::Solar07Height,
     },
     PlotRecipe {
+        slug: "200mb_temperature_height_winds",
+        title: "200mb Temperature / Height / Winds",
+        filled: FIELD_200_TEMP,
+        contours: Some(FIELD_200_HEIGHT),
+        barbs_u: Some(FIELD_200_U),
+        barbs_v: Some(FIELD_200_V),
+        style: RenderStyle::Solar07Temperature,
+    },
+    PlotRecipe {
+        slug: "300mb_temperature_height_winds",
+        title: "300mb Temperature / Height / Winds",
+        filled: FIELD_300_TEMP,
+        contours: Some(FIELD_300_HEIGHT),
+        barbs_u: Some(FIELD_300_U),
+        barbs_v: Some(FIELD_300_V),
+        style: RenderStyle::Solar07Temperature,
+    },
+    PlotRecipe {
         slug: "500mb_temperature_height_winds",
         title: "500mb Temperature / Height / Winds",
         filled: FIELD_500_TEMP,
@@ -1367,6 +1473,24 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::Solar07Dewpoint,
     },
     PlotRecipe {
+        slug: "200mb_rh_height_winds",
+        title: "200mb RH / Height / Winds",
+        filled: FIELD_200_RH,
+        contours: Some(FIELD_200_HEIGHT),
+        barbs_u: Some(FIELD_200_U),
+        barbs_v: Some(FIELD_200_V),
+        style: RenderStyle::Solar07Rh,
+    },
+    PlotRecipe {
+        slug: "300mb_rh_height_winds",
+        title: "300mb RH / Height / Winds",
+        filled: FIELD_300_RH,
+        contours: Some(FIELD_300_HEIGHT),
+        barbs_u: Some(FIELD_300_U),
+        barbs_v: Some(FIELD_300_V),
+        style: RenderStyle::Solar07Rh,
+    },
+    PlotRecipe {
         slug: "500mb_rh_height_winds",
         title: "500mb RH / Height / Winds",
         filled: FIELD_500_RH,
@@ -1392,6 +1516,24 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         barbs_u: Some(FIELD_850_U),
         barbs_v: Some(FIELD_850_V),
         style: RenderStyle::Solar07Rh,
+    },
+    PlotRecipe {
+        slug: "200mb_absolute_vorticity_height_winds",
+        title: "200mb Absolute Vorticity / Height / Winds",
+        filled: FIELD_200_ABSOLUTE_VORTICITY,
+        contours: Some(FIELD_200_HEIGHT),
+        barbs_u: Some(FIELD_200_U),
+        barbs_v: Some(FIELD_200_V),
+        style: RenderStyle::Solar07Vorticity,
+    },
+    PlotRecipe {
+        slug: "300mb_absolute_vorticity_height_winds",
+        title: "300mb Absolute Vorticity / Height / Winds",
+        filled: FIELD_300_ABSOLUTE_VORTICITY,
+        contours: Some(FIELD_300_HEIGHT),
+        barbs_u: Some(FIELD_300_U),
+        barbs_v: Some(FIELD_300_V),
+        style: RenderStyle::Solar07Vorticity,
     },
     PlotRecipe {
         slug: "500mb_absolute_vorticity_height_winds",
@@ -1446,6 +1588,15 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         barbs_u: None,
         barbs_v: None,
         style: RenderStyle::Solar07Reflectivity,
+    },
+    PlotRecipe {
+        slug: "uh_2to5km",
+        title: "Updraft Helicity 2-5 km",
+        filled: FIELD_UH,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::Solar07Uh,
     },
 ];
 
@@ -1597,7 +1748,7 @@ pub fn latest_available_run(
 ) -> Result<LatestRun, ModelError> {
     let agent = build_agent();
     latest_available_run_with_probe(model, source, date_yyyymmdd, |resolved| {
-        head_ok(&agent, resolved.availability_probe_url())
+        availability_probe_ok(&agent, resolved)
     })
 }
 
@@ -1656,8 +1807,32 @@ fn build_agent() -> ureq::Agent {
         .new_agent()
 }
 
+fn availability_probe_ok(agent: &ureq::Agent, resolved: &ResolvedUrl) -> bool {
+    if should_use_range_probe(resolved.source) {
+        return range_probe_ok(agent, &resolved.grib_url);
+    }
+    head_ok(agent, resolved.availability_probe_url())
+}
+
+fn should_use_range_probe(source: SourceId) -> bool {
+    matches!(source, SourceId::Nomads)
+}
+
 fn head_ok(agent: &ureq::Agent, url: &str) -> bool {
-    match agent.head(url).call() {
+    let response = if url.contains("nomads.ncep.noaa.gov") {
+        agent.get(url).header("Range", "bytes=0-0").call()
+    } else {
+        agent.head(url).call()
+    };
+    match response {
+        Ok(_) => true,
+        Err(ureq::Error::StatusCode(code)) if code == 403 || code == 404 => false,
+        Err(_) => false,
+    }
+}
+
+fn range_probe_ok(agent: &ureq::Agent, url: &str) -> bool {
+    match agent.get(url).header("Range", "bytes=0-0").call() {
         Ok(_) => true,
         Err(ureq::Error::StatusCode(code)) if code == 403 || code == 404 => false,
         Err(_) => false,
@@ -1859,13 +2034,14 @@ fn plot_recipe_fetch_plan_for(
         });
     }
 
-    let (product, fetch_mode) = plot_recipe_fetch_defaults(model, &fields);
+    let (product, fetch_policy) = plot_recipe_fetch_defaults(model, &fields);
 
     Ok(PlotRecipeFetchPlan {
         recipe_slug: recipe.slug,
         model,
         product,
-        fetch_mode,
+        fetch_policy,
+        fetch_mode: fetch_policy.fetch_mode(),
         fields,
     })
 }
@@ -1951,7 +2127,7 @@ fn plot_recipe_field_blocker(
 fn plot_recipe_fetch_defaults(
     model: ModelId,
     fields: &[&'static GribFieldSpec],
-) -> (&'static str, PlotRecipeFetchMode) {
+) -> (&'static str, PlotRecipeFetchPolicy) {
     let has_native = fields
         .iter()
         .any(|field| field.family == ProductFamily::Native);
@@ -1959,12 +2135,12 @@ fn plot_recipe_fetch_defaults(
         .iter()
         .any(|field| field.family == ProductFamily::Surface);
     match (model, has_native, has_surface) {
-        (ModelId::Hrrr, true, _) => ("nat", PlotRecipeFetchMode::IndexedSubset),
-        (ModelId::Hrrr, false, true) => ("sfc", PlotRecipeFetchMode::IndexedSubset),
-        (ModelId::Hrrr, false, false) => ("prs", PlotRecipeFetchMode::IndexedSubset),
-        (ModelId::Gfs, _, _) => ("pgrb2.0p25", PlotRecipeFetchMode::IndexedSubset),
-        (ModelId::RrfsA, _, _) => ("prs-conus", PlotRecipeFetchMode::IndexedSubset),
-        (ModelId::EcmwfOpenData, _, _) => ("oper", PlotRecipeFetchMode::WholeFileStructuredExtract),
+        (ModelId::Hrrr, true, _) => ("nat", PlotRecipeFetchPolicy::WholeFile),
+        (ModelId::Hrrr, false, true) => ("sfc", PlotRecipeFetchPolicy::WholeFile),
+        (ModelId::Hrrr, false, false) => ("prs", PlotRecipeFetchPolicy::WholeFile),
+        (ModelId::Gfs, _, _) => ("pgrb2.0p25", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::RrfsA, _, _) => ("prs-conus", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::EcmwfOpenData, _, _) => ("oper", PlotRecipeFetchPolicy::WholeFile),
     }
 }
 
@@ -1996,7 +2172,11 @@ fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> O
         )),
         (
             ModelId::EcmwfOpenData,
-            "absolute_vorticity_500mb" | "absolute_vorticity_700mb" | "absolute_vorticity_850mb",
+            "absolute_vorticity_200mb"
+            | "absolute_vorticity_300mb"
+            | "absolute_vorticity_500mb"
+            | "absolute_vorticity_700mb"
+            | "absolute_vorticity_850mb",
         ) => Some(format!(
             "{} is not present in the ECMWF open-data 'oper' pressure product currently wired by rustwx-models",
             field.label
@@ -2164,6 +2344,8 @@ mod tests {
         assert!(plot_recipe("500mb_height_winds").is_some());
         assert!(plot_recipe("700mb_height_winds").is_some());
         assert!(plot_recipe("850mb_height_winds").is_some());
+        assert!(plot_recipe("200mb_temperature_height_winds").is_some());
+        assert!(plot_recipe("300mb_temperature_height_winds").is_some());
         assert!(plot_recipe("500mb_temperature_height_winds").is_some());
         assert!(plot_recipe("700mb_temperature_height_winds").is_some());
         assert!(plot_recipe("850mb_temperature_height_winds").is_some());
@@ -2180,7 +2362,11 @@ mod tests {
         assert!(plot_recipe("simulated_ir_satellite").is_some());
         assert!(plot_recipe("700mb_dewpoint_height_winds").is_some());
         assert!(plot_recipe("850mb_dewpoint_height_winds").is_some());
+        assert!(plot_recipe("200mb_rh_height_winds").is_some());
+        assert!(plot_recipe("300mb_rh_height_winds").is_some());
         assert!(plot_recipe("500mb_absolute_vorticity_height_winds").is_some());
+        assert!(plot_recipe("200mb_absolute_vorticity_height_winds").is_some());
+        assert!(plot_recipe("300mb_absolute_vorticity_height_winds").is_some());
         assert!(plot_recipe("500mb_rh_height_winds").is_some());
         assert!(plot_recipe("700mb_rh_height_winds").is_some());
         assert!(plot_recipe("700mb_absolute_vorticity_height_winds").is_some());
@@ -2309,6 +2495,10 @@ mod tests {
     fn selector_backed_temperature_recipe_produces_gfs_fetch_plan() {
         let plan = plot_recipe_fetch_plan("500mb_temperature_height_winds", ModelId::Gfs).unwrap();
         assert_eq!(plan.product, "pgrb2.0p25");
+        assert_eq!(
+            plan.fetch_policy,
+            PlotRecipeFetchPolicy::PreferIndexedSubset
+        );
         assert_eq!(plan.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
         assert_eq!(plan.fields.len(), 4);
         assert_eq!(
@@ -2327,10 +2517,30 @@ mod tests {
     }
 
     #[test]
+    fn selector_backed_200mb_temperature_recipe_produces_gfs_fetch_plan() {
+        let plan = plot_recipe_fetch_plan("200mb_temperature_height_winds", ModelId::Gfs).unwrap();
+        assert_eq!(plan.product, "pgrb2.0p25");
+        assert_eq!(
+            plan.selectors(),
+            vec![
+                FieldSelector::isobaric(CanonicalField::Temperature, 200),
+                FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 200),
+                FieldSelector::isobaric(CanonicalField::UWind, 200),
+                FieldSelector::isobaric(CanonicalField::VWind, 200),
+            ]
+        );
+        assert_eq!(
+            plan.variable_patterns(),
+            vec!["TMP:200 mb", "HGT:200 mb", "UGRD:200 mb", "VGRD:200 mb"]
+        );
+    }
+
+    #[test]
     fn selector_backed_temperature_recipe_produces_ecmwf_whole_file_fetch_plan() {
         let plan = plot_recipe_fetch_plan("500mb_temperature_height_winds", ModelId::EcmwfOpenData)
             .unwrap();
         assert_eq!(plan.product, "oper");
+        assert_eq!(plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
         assert_eq!(
             plan.fetch_mode,
             PlotRecipeFetchMode::WholeFileStructuredExtract
@@ -2364,6 +2574,24 @@ mod tests {
                 FieldSelector::isobaric(CanonicalField::UWind, 500),
                 FieldSelector::isobaric(CanonicalField::VWind, 500),
             ]
+        );
+    }
+
+    #[test]
+    fn selector_backed_300mb_rh_recipe_produces_gfs_fetch_plan() {
+        let plan = plot_recipe_fetch_plan("300mb_rh_height_winds", ModelId::Gfs).unwrap();
+        assert_eq!(
+            plan.selectors(),
+            vec![
+                FieldSelector::isobaric(CanonicalField::RelativeHumidity, 300),
+                FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 300),
+                FieldSelector::isobaric(CanonicalField::UWind, 300),
+                FieldSelector::isobaric(CanonicalField::VWind, 300),
+            ]
+        );
+        assert_eq!(
+            plan.variable_patterns(),
+            vec!["RH:300 mb", "HGT:300 mb", "UGRD:300 mb", "VGRD:300 mb"]
         );
     }
 
@@ -2515,6 +2743,20 @@ mod tests {
                 reason: "500mb Absolute Vorticity is not present in the ECMWF open-data 'oper' pressure product currently wired by rustwx-models".to_string(),
             }]
         );
+
+        let err = plot_recipe_fetch_plan(
+            "300mb_absolute_vorticity_height_winds",
+            ModelId::EcmwfOpenData,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ModelError::UnsupportedPlotRecipeModel {
+                recipe: "300mb_absolute_vorticity_height_winds",
+                model: ModelId::EcmwfOpenData,
+                reason,
+            } if reason == "300mb Absolute Vorticity: 300mb Absolute Vorticity is not present in the ECMWF open-data 'oper' pressure product currently wired by rustwx-models"
+        ));
     }
 
     #[test]
@@ -2545,10 +2787,20 @@ mod tests {
     }
 
     #[test]
+    fn nomads_uses_range_probe_policy() {
+        assert!(should_use_range_probe(SourceId::Nomads));
+        assert!(!should_use_range_probe(SourceId::Aws));
+    }
+
+    #[test]
     fn hrrr_native_reflectivity_recipe_produces_nat_fetch_plan() {
         let plan = plot_recipe_fetch_plan("composite_reflectivity", ModelId::Hrrr).unwrap();
         assert_eq!(plan.product, "nat");
-        assert_eq!(plan.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
+        assert_eq!(plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
+        assert_eq!(
+            plan.fetch_mode,
+            PlotRecipeFetchMode::WholeFileStructuredExtract
+        );
         assert_eq!(
             plan.selectors(),
             vec![FieldSelector::entire_atmosphere(
@@ -2572,6 +2824,10 @@ mod tests {
         let rrfs_plan =
             plot_recipe_fetch_plan("composite_reflectivity_uh", ModelId::RrfsA).unwrap();
         assert_eq!(rrfs_plan.product, "prs-conus");
+        assert_eq!(
+            rrfs_plan.fetch_policy,
+            PlotRecipeFetchPolicy::PreferIndexedSubset
+        );
         assert_eq!(rrfs_plan.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
         assert_eq!(
             rrfs_plan.selectors(),
@@ -2586,14 +2842,18 @@ mod tests {
     fn simulated_ir_recipe_is_supported_for_hrrr_native_fetch() {
         let plan = plot_recipe_fetch_plan("simulated_ir_satellite", ModelId::Hrrr).unwrap();
         assert_eq!(plan.product, "nat");
-        assert_eq!(plan.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
+        assert_eq!(plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
+        assert_eq!(
+            plan.fetch_mode,
+            PlotRecipeFetchMode::WholeFileStructuredExtract
+        );
         assert_eq!(
             plan.selectors(),
             vec![FieldSelector::nominal_top(
                 CanonicalField::SimulatedInfraredBrightnessTemperature
             )]
         );
-        assert_eq!(plan.variable_patterns(), vec!["SBT113:top of atmosphere"]);
+        assert!(plan.variable_patterns().is_empty());
         assert!(
             plot_recipe_fetch_blockers("simulated_ir_satellite", ModelId::Hrrr)
                 .unwrap()
@@ -2621,6 +2881,11 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        assert!(
+            plot_recipe_fetch_blockers("uh_2to5km", ModelId::Hrrr)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2643,6 +2908,16 @@ mod tests {
                 field_key: "radar_reflectivity_1km_agl",
                 field_label: "1km AGL Reflectivity",
                 reason: "1km AGL Reflectivity is not wired for model 'gfs'; rustwx-models only has native convective product fetch planning for HRRR/RRFS-A right now".to_string(),
+            }]
+        );
+
+        let uh = plot_recipe_fetch_blockers("uh_2to5km", ModelId::Gfs).unwrap();
+        assert_eq!(
+            uh,
+            vec![PlotRecipeBlocker {
+                field_key: "updraft_helicity",
+                field_label: "Updraft Helicity",
+                reason: "Updraft Helicity is not wired for model 'gfs'; rustwx-models only has native convective product fetch planning for HRRR/RRFS-A right now".to_string(),
             }]
         );
     }
@@ -2706,7 +2981,46 @@ mod tests {
 
         let plan = plot_recipe_fetch_plan("2m_temperature_10m_winds", ModelId::Hrrr).unwrap();
         assert_eq!(plan.product, "sfc");
-        assert_eq!(plan.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
+        assert_eq!(plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
+        assert_eq!(
+            plan.fetch_mode,
+            PlotRecipeFetchMode::WholeFileStructuredExtract
+        );
+        assert!(plan.variable_patterns().is_empty());
+    }
+
+    #[test]
+    fn hrrr_pressure_recipe_prefers_whole_file_fetches() {
+        let plan = plot_recipe_fetch_plan("500mb_temperature_height_winds", ModelId::Hrrr).unwrap();
+        assert_eq!(plan.product, "prs");
+        assert_eq!(plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
+        assert_eq!(
+            plan.fetch_mode,
+            PlotRecipeFetchMode::WholeFileStructuredExtract
+        );
+        assert!(plan.variable_patterns().is_empty());
+    }
+
+    #[test]
+    fn hrrr_full_file_fetch_plans_cover_pressure_surface_and_native_lanes() {
+        let pressure = plot_recipe_fetch_plan("500mb_temperature_height_winds", ModelId::Hrrr)
+            .expect("pressure recipe should plan");
+        let surface = plot_recipe_fetch_plan("2m_temperature_10m_winds", ModelId::Hrrr)
+            .expect("surface recipe should plan");
+        let native = plot_recipe_fetch_plan("composite_reflectivity_uh", ModelId::Hrrr)
+            .expect("native recipe should plan");
+
+        for plan in [pressure, surface, native] {
+            assert_eq!(plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
+            assert_eq!(
+                plan.fetch_mode,
+                PlotRecipeFetchMode::WholeFileStructuredExtract
+            );
+            assert!(
+                plan.variable_patterns().is_empty(),
+                "whole-file HRRR plans should not depend on idx variable patterns"
+            );
+        }
     }
 
     #[test]

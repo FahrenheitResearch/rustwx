@@ -1,7 +1,7 @@
 use crate::cache::{load_bincode, store_bincode};
 use crate::hrrr::{
-    DomainSpec, PreparedHrrrHourContext, SURFACE_PATTERNS, build_projected_map, decode_cache_path,
-    fetch_hrrr_subset, load_or_decode_surface, resolve_hrrr_run,
+    DomainSpec, PreparedHrrrHourContext, build_projected_map, decode_cache_path,
+    fetch_hrrr_family_file, load_or_decode_surface, resolve_hrrr_run,
 };
 use grib_core::grib2::{Grib2File, Grib2Message, unpack_message_normalized};
 use rustwx_calc::{max_window_fields, sum_window_fields};
@@ -21,8 +21,6 @@ use wrf_render::render::map_frame_aspect_ratio;
 
 const OUTPUT_WIDTH: u32 = 1200;
 const OUTPUT_HEIGHT: u32 = 900;
-const APCP_PATTERNS: &[&str] = &["APCP:surface"];
-const UH25_PATTERNS: &[&str] = &["MXUPHL:5000-2000 m above ground"];
 const MM_PER_INCH: f64 = 25.4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -242,12 +240,11 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
         )
     } else {
         let geometry_fetch_start = Instant::now();
-        let geometry_subset = fetch_hrrr_subset(
+        let geometry_subset = fetch_hrrr_family_file(
             latest.cycle.clone(),
             request.forecast_hour,
             latest.source,
             "sfc",
-            SURFACE_PATTERNS,
             &request.cache_root,
             request.use_cache,
         )?;
@@ -287,7 +284,7 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
         load_apcp_hours(latest, request, &surface_hours)?;
     let (uh_by_hour, fetch_nat_ms, decode_nat_ms) = load_uh_hours(latest, request, &nat_hours)?;
 
-    let product_parallelism = windowed_parallelism(planned_products.len());
+    let product_parallelism = windowed_parallelism(request.source, planned_products.len());
     let date_yyyymmdd = request.date_yyyymmdd.as_str();
     let cycle_utc = latest.cycle.hour_utc;
     let forecast_hour = request.forecast_hour;
@@ -552,28 +549,38 @@ fn load_apcp_hours(
     request: &HrrrWindowedBatchRequest,
     hours: &BTreeSet<u16>,
 ) -> Result<(BTreeMap<u16, Result<HrrrApcpDecode, String>>, u128, u128), io::Error> {
-    let parallelism = windowed_parallelism(hours.len());
-    let mut loaded = thread::scope(|scope| -> Result<Vec<LoadedApcpHour>, io::Error> {
-        let mut done = Vec::with_capacity(hours.len());
-        let mut pending = std::collections::VecDeque::new();
+    let mut loaded = if should_parallelize_windowed_hour_loads(latest.source) {
+        let parallelism = windowed_parallelism(request.source, hours.len());
+        thread::scope(|scope| -> Result<Vec<LoadedApcpHour>, io::Error> {
+            let mut done = Vec::with_capacity(hours.len());
+            let mut pending = std::collections::VecDeque::new();
 
-        for &hour in hours {
-            pending.push_back(scope.spawn(move || LoadedApcpHour {
+            for &hour in hours {
+                pending.push_back(scope.spawn(move || LoadedApcpHour {
+                    hour,
+                    ..load_apcp_hour(latest, request, hour)
+                }));
+
+                if pending.len() >= parallelism {
+                    done.push(join_windowed_job_value(pending.pop_front().unwrap())?);
+                }
+            }
+
+            while let Some(handle) = pending.pop_front() {
+                done.push(join_windowed_job_value(handle)?);
+            }
+
+            Ok(done)
+        })?
+    } else {
+        hours.iter()
+            .copied()
+            .map(|hour| LoadedApcpHour {
                 hour,
                 ..load_apcp_hour(latest, request, hour)
-            }));
-
-            if pending.len() >= parallelism {
-                done.push(join_windowed_job_value(pending.pop_front().unwrap())?);
-            }
-        }
-
-        while let Some(handle) = pending.pop_front() {
-            done.push(join_windowed_job_value(handle)?);
-        }
-
-        Ok(done)
-    })?;
+            })
+            .collect()
+    };
     loaded.sort_by_key(|entry| entry.hour);
 
     let mut out = BTreeMap::new();
@@ -592,28 +599,38 @@ fn load_uh_hours(
     request: &HrrrWindowedBatchRequest,
     hours: &BTreeSet<u16>,
 ) -> Result<(BTreeMap<u16, Result<HrrrUhDecode, String>>, u128, u128), io::Error> {
-    let parallelism = windowed_parallelism(hours.len());
-    let mut loaded = thread::scope(|scope| -> Result<Vec<LoadedUhHour>, io::Error> {
-        let mut done = Vec::with_capacity(hours.len());
-        let mut pending = std::collections::VecDeque::new();
+    let mut loaded = if should_parallelize_windowed_hour_loads(latest.source) {
+        let parallelism = windowed_parallelism(request.source, hours.len());
+        thread::scope(|scope| -> Result<Vec<LoadedUhHour>, io::Error> {
+            let mut done = Vec::with_capacity(hours.len());
+            let mut pending = std::collections::VecDeque::new();
 
-        for &hour in hours {
-            pending.push_back(scope.spawn(move || LoadedUhHour {
+            for &hour in hours {
+                pending.push_back(scope.spawn(move || LoadedUhHour {
+                    hour,
+                    ..load_uh_hour(latest, request, hour)
+                }));
+
+                if pending.len() >= parallelism {
+                    done.push(join_windowed_job_value(pending.pop_front().unwrap())?);
+                }
+            }
+
+            while let Some(handle) = pending.pop_front() {
+                done.push(join_windowed_job_value(handle)?);
+            }
+
+            Ok(done)
+        })?
+    } else {
+        hours.iter()
+            .copied()
+            .map(|hour| LoadedUhHour {
                 hour,
                 ..load_uh_hour(latest, request, hour)
-            }));
-
-            if pending.len() >= parallelism {
-                done.push(join_windowed_job_value(pending.pop_front().unwrap())?);
-            }
-        }
-
-        while let Some(handle) = pending.pop_front() {
-            done.push(join_windowed_job_value(handle)?);
-        }
-
-        Ok(done)
-    })?;
+            })
+            .collect()
+    };
     loaded.sort_by_key(|entry| entry.hour);
 
     let mut out = BTreeMap::new();
@@ -633,12 +650,11 @@ fn load_apcp_hour(
     hour: u16,
 ) -> LoadedApcpHour {
     let fetch_start = Instant::now();
-    let subset = fetch_hrrr_subset(
+    let subset = fetch_hrrr_family_file(
         latest.cycle.clone(),
         hour,
         latest.source,
         "sfc",
-        APCP_PATTERNS,
         &request.cache_root,
         request.use_cache,
     );
@@ -675,12 +691,11 @@ fn load_uh_hour(
     hour: u16,
 ) -> LoadedUhHour {
     let fetch_start = Instant::now();
-    let subset = fetch_hrrr_subset(
+    let subset = fetch_hrrr_family_file(
         latest.cycle.clone(),
         hour,
         latest.source,
-        "nat",
-        UH25_PATTERNS,
+        "sfc",
         &request.cache_root,
         request.use_cache,
     );
@@ -1016,11 +1031,18 @@ fn qpf_scale() -> rustwx_render::DiscreteColorScale {
     )
 }
 
-fn windowed_parallelism(job_count: usize) -> usize {
+fn windowed_parallelism(source: SourceId, job_count: usize) -> usize {
+    if matches!(source, SourceId::Nomads) {
+        return 1;
+    }
     thread::available_parallelism()
         .map(|parallelism| parallelism.get())
         .unwrap_or(1)
         .min(job_count.max(1))
+}
+
+fn should_parallelize_windowed_hour_loads(source: SourceId) -> bool {
+    !matches!(source, SourceId::Nomads)
 }
 
 fn thread_windowed_error(err: impl std::fmt::Display) -> io::Error {
@@ -1161,5 +1183,11 @@ mod tests {
             computed.metadata.strategy,
             "run max of native hourly UH maxima"
         );
+    }
+
+    #[test]
+    fn nomads_windowed_hour_loads_are_serialized() {
+        assert!(!should_parallelize_windowed_hour_loads(SourceId::Nomads));
+        assert!(should_parallelize_windowed_hour_loads(SourceId::Aws));
     }
 }

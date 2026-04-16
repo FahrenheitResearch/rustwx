@@ -1,23 +1,23 @@
 use crate::cache::{load_bincode, store_bincode};
 use grib_core::grib2::{
-    flip_rows, grid_latlon, unpack_message_normalized, Grib2File, Grib2Message,
+    Grib2File, Grib2Message, flip_rows, grid_latlon, unpack_message_normalized,
 };
 use image::DynamicImage;
 use rustwx_calc::{
+    EcapeTripletOptions, EcapeVolumeInputs, GridShape as CalcGridShape, ScpEhiInputs,
+    SupportedSevereFields, SurfaceInputs, VolumeShape, WindGridInputs,
     compute_ecape_triplet_with_failure_mask_from_parts, compute_scp_ehi,
-    compute_supported_severe_fields, compute_wind_diagnostics_bundle, EcapeTripletOptions,
-    EcapeVolumeInputs, GridShape as CalcGridShape, ScpEhiInputs, SupportedSevereFields,
-    SurfaceInputs, VolumeShape, WindGridInputs,
+    compute_supported_severe_fields, compute_wind_diagnostics_bundle,
 };
 use rustwx_core::{
     CycleSpec, Field2D, GridShape, LatLonGrid, ModelId, ModelRunRequest, ProductKey, RustwxError,
     SourceId,
 };
-use rustwx_io::{artifact_cache_dir, fetch_bytes_with_cache, CachedFetchResult, FetchRequest};
-use rustwx_models::{latest_available_run, LatestRun};
+use rustwx_io::{CachedFetchResult, FetchRequest, artifact_cache_dir, fetch_bytes_with_cache};
+use rustwx_models::{LatestRun, latest_available_run};
 use rustwx_render::{
-    render_panel_grid, Color, MapRenderRequest, PanelGridLayout, PanelPadding, ProjectedDomain,
-    ProjectedExtent, ProjectedLineOverlay, Solar07Product,
+    Color, MapRenderRequest, PanelGridLayout, PanelPadding, ProjectedDomain, ProjectedExtent,
+    ProjectedLineOverlay, Solar07Product, render_panel_grid,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -31,17 +31,6 @@ use wrf_render::features::load_styled_conus_features;
 use wrf_render::projection::LambertConformal;
 use wrf_render::render::map_frame_aspect_ratio;
 use wrf_render::text;
-
-pub const SURFACE_PATTERNS: &[&str] = &[
-    "PRES:surface",
-    "HGT:surface",
-    "TMP:2 m above ground",
-    "SPFH:2 m above ground",
-    "UGRD:10 m above ground",
-    "VGRD:10 m above ground",
-];
-
-pub const PRESSURE_PATTERNS: &[&str] = &["HGT:", "TMP:", "SPFH:", "UGRD:", "VGRD:"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DomainSpec {
@@ -325,18 +314,67 @@ pub fn fetch_hrrr_subset(
     cache_root: &Path,
     use_cache: bool,
 ) -> Result<HrrrFetchedSubset, Box<dyn std::error::Error>> {
-    let request = ModelRunRequest::new(ModelId::Hrrr, cycle, forecast_hour, product)?;
-    let fetch_request = FetchRequest {
-        request,
-        source_override: Some(source),
-        variable_patterns: patterns.iter().map(|s| s.to_string()).collect(),
-    };
+    fetch_hrrr_file(
+        cycle,
+        forecast_hour,
+        source,
+        product,
+        patterns.iter().map(|s| s.to_string()).collect(),
+        cache_root,
+        use_cache,
+    )
+}
+
+pub fn fetch_hrrr_family_file(
+    cycle: CycleSpec,
+    forecast_hour: u16,
+    source: SourceId,
+    product: &str,
+    cache_root: &Path,
+    use_cache: bool,
+) -> Result<HrrrFetchedSubset, Box<dyn std::error::Error>> {
+    fetch_hrrr_file(
+        cycle,
+        forecast_hour,
+        source,
+        product,
+        Vec::new(),
+        cache_root,
+        use_cache,
+    )
+}
+
+fn fetch_hrrr_file(
+    cycle: CycleSpec,
+    forecast_hour: u16,
+    source: SourceId,
+    product: &str,
+    variable_patterns: Vec<String>,
+    cache_root: &Path,
+    use_cache: bool,
+) -> Result<HrrrFetchedSubset, Box<dyn std::error::Error>> {
+    let fetch_request =
+        hrrr_fetch_request(cycle, forecast_hour, source, product, variable_patterns)?;
     let fetched = fetch_bytes_with_cache(&fetch_request, cache_root, use_cache)?;
     let bytes = fetched.result.bytes.clone();
     Ok(HrrrFetchedSubset {
         request: fetch_request,
         fetched,
         bytes,
+    })
+}
+
+fn hrrr_fetch_request(
+    cycle: CycleSpec,
+    forecast_hour: u16,
+    source: SourceId,
+    product: &str,
+    variable_patterns: Vec<String>,
+) -> Result<FetchRequest, RustwxError> {
+    Ok(FetchRequest {
+        request: ModelRunRequest::new(ModelId::Hrrr, cycle, forecast_hour, product)?,
+        source_override: Some(source),
+        variable_patterns,
     })
 }
 
@@ -930,12 +968,11 @@ pub fn load_hrrr_timestep_from_latest(
             let source = latest.source;
             let surface_handle = scope.spawn(move || -> Result<_, io::Error> {
                 let fetch_surface_start = Instant::now();
-                let surface_subset = fetch_hrrr_subset(
+                let surface_subset = fetch_hrrr_family_file(
                     surface_cycle,
                     forecast_hour,
                     source,
                     "sfc",
-                    SURFACE_PATTERNS,
                     cache_root,
                     use_cache,
                 )
@@ -944,12 +981,11 @@ pub fn load_hrrr_timestep_from_latest(
             });
             let pressure_handle = scope.spawn(move || -> Result<_, io::Error> {
                 let fetch_pressure_start = Instant::now();
-                let pressure_subset = fetch_hrrr_subset(
+                let pressure_subset = fetch_hrrr_family_file(
                     pressure_cycle,
                     forecast_hour,
                     source,
                     "prs",
-                    PRESSURE_PATTERNS,
                     cache_root,
                     use_cache,
                 )
@@ -1425,11 +1461,7 @@ fn normalize_pressure_level_hpa(level: f64) -> f64 {
 }
 
 fn normalize_longitude(lon: f64) -> f64 {
-    if lon > 180.0 {
-        lon - 360.0
-    } else {
-        lon
-    }
+    if lon > 180.0 { lon - 360.0 } else { lon }
 }
 
 fn crop_hrrr_heavy_domain(
@@ -1747,6 +1779,19 @@ mod tests {
     }
 
     #[test]
+    fn family_file_fetch_request_uses_empty_variable_patterns() {
+        let request = hrrr_fetch_request(
+            CycleSpec::new("20260414", 23).unwrap(),
+            0,
+            SourceId::Aws,
+            "sfc",
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(request.variable_patterns.is_empty());
+    }
+
+    #[test]
     fn broadcast_levels_builds_pa_volume() {
         assert_eq!(
             broadcast_levels_pa(&[1000.0, 850.0], 3),
@@ -1858,9 +1903,11 @@ mod tests {
             lambert_latin2: 45.0,
             lambert_lov: -97.0,
         };
-        assert!(crop_rect_for_bounds(&surface, (-101.0, -98.0, 34.5, 36.5))
-            .unwrap()
-            .is_none());
+        assert!(
+            crop_rect_for_bounds(&surface, (-101.0, -98.0, 34.5, 36.5))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

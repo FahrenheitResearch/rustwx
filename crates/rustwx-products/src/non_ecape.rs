@@ -168,38 +168,65 @@ pub fn run_hrrr_non_ecape_hour(
             products: normalized.windowed_products.clone(),
         });
 
-    let lane_result = thread::scope(|scope| {
-        let direct_handle = direct_request.as_ref().map(|lane_request| {
-            scope.spawn(move || {
-                run_hrrr_direct_batch_with_context(lane_request, latest, Some(context_ref))
-                    .map_err(thread_lane_error)
-            })
-        });
+    let lane_result = if should_run_lanes_concurrently(pinned_source) {
+        thread::scope(|scope| {
+            let direct_handle = direct_request.as_ref().map(|lane_request| {
+                scope.spawn(move || {
+                    run_hrrr_direct_batch_with_context(lane_request, latest, Some(context_ref))
+                        .map_err(thread_lane_error)
+                })
+            });
 
-        let derived_handle = derived_request.as_ref().map(|(lane_request, recipes)| {
-            scope.spawn(move || {
+            let derived_handle = derived_request.as_ref().map(|(lane_request, recipes)| {
+                scope.spawn(move || {
+                    run_hrrr_derived_batch_with_context(
+                        lane_request,
+                        recipes,
+                        timestep,
+                        Some(context_ref),
+                    )
+                    .map_err(thread_lane_error)
+                })
+            });
+
+            let windowed_handle = windowed_request.as_ref().map(|lane_request| {
+                scope.spawn(move || {
+                    run_hrrr_windowed_batch_with_context(lane_request, latest, Some(context_ref))
+                        .map_err(thread_lane_error)
+                })
+            });
+
+            let direct = direct_handle.map(join_lane_job).transpose()?;
+            let derived = derived_handle.map(join_lane_job).transpose()?;
+            let windowed = windowed_handle.map(join_lane_job).transpose()?;
+            Ok::<_, Box<dyn std::error::Error>>((direct, derived, windowed))
+        })
+    } else {
+        let direct = direct_request
+            .as_ref()
+            .map(|lane_request| {
+                run_hrrr_direct_batch_with_context(lane_request, latest, Some(context_ref))
+            })
+            .transpose()?;
+        let derived = derived_request
+            .as_ref()
+            .map(|(lane_request, recipes)| {
                 run_hrrr_derived_batch_with_context(
                     lane_request,
                     recipes,
                     timestep,
                     Some(context_ref),
                 )
-                .map_err(thread_lane_error)
             })
-        });
-
-        let windowed_handle = windowed_request.as_ref().map(|lane_request| {
-            scope.spawn(move || {
+            .transpose()?;
+        let windowed = windowed_request
+            .as_ref()
+            .map(|lane_request| {
                 run_hrrr_windowed_batch_with_context(lane_request, latest, Some(context_ref))
-                    .map_err(thread_lane_error)
             })
-        });
-
-        let direct = direct_handle.map(join_lane_job).transpose()?;
-        let derived = derived_handle.map(join_lane_job).transpose()?;
-        let windowed = windowed_handle.map(join_lane_job).transpose()?;
-        Ok::<_, Box<dyn std::error::Error>>((direct, derived, windowed))
-    });
+            .transpose()?;
+        Ok((direct, derived, windowed))
+    };
 
     let (direct, derived, windowed) = match lane_result {
         Ok(reports) => reports,
@@ -287,6 +314,10 @@ fn normalize_requested_products(
         derived_recipe_slugs: request.derived_recipe_slugs.clone(),
         windowed_products,
     }
+}
+
+fn should_run_lanes_concurrently(source: SourceId) -> bool {
+    !matches!(source, SourceId::Nomads)
 }
 
 fn join_lane_job<T>(
@@ -586,6 +617,12 @@ mod tests {
     }
 
     #[test]
+    fn nomads_runs_lanes_sequentially() {
+        assert!(!should_run_lanes_concurrently(SourceId::Nomads));
+        assert!(should_run_lanes_concurrently(SourceId::Aws));
+    }
+
+    #[test]
     fn summary_flattens_outputs_across_all_runners() {
         let direct = HrrrDirectBatchReport {
             date_yyyymmdd: "20260415".into(),
@@ -836,5 +873,43 @@ mod tests {
             .unwrap();
         assert_eq!(blocked_record.state, ArtifactPublicationState::Blocked);
         assert_eq!(blocked_record.detail.as_deref(), Some("not enough hours"));
+    }
+
+    #[test]
+    fn non_ecape_report_serialization_keeps_cache_mode_for_benchmarks() {
+        let report = HrrrNonEcapeHourReport {
+            date_yyyymmdd: "20260415".into(),
+            cycle_utc: 12,
+            forecast_hour: 6,
+            source: SourceId::Aws,
+            domain: domain(),
+            out_dir: PathBuf::from("C:\\proof\\bench"),
+            cache_root: PathBuf::from("C:\\proof\\bench\\cache"),
+            use_cache: false,
+            requested: HrrrNonEcapeHourRequestedProducts {
+                direct_recipe_slugs: vec!["500mb_height_winds".into()],
+                derived_recipe_slugs: vec!["sbcape".into()],
+                windowed_products: vec![HrrrWindowedProduct::Qpf6h],
+            },
+            summary: HrrrNonEcapeHourSummary {
+                runner_count: 1,
+                direct_rendered_count: 1,
+                derived_rendered_count: 0,
+                windowed_rendered_count: 0,
+                windowed_blocker_count: 0,
+                output_count: 1,
+                output_paths: vec![PathBuf::from("C:\\proof\\bench\\out.png")],
+            },
+            direct: None,
+            derived: None,
+            windowed: None,
+            total_ms: 1234,
+        };
+
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(
+            json.contains("\"use_cache\":false"),
+            "cold benchmark reports should serialize cache mode explicitly"
+        );
     }
 }

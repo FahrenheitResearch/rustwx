@@ -107,6 +107,9 @@ struct PlannedDirectRecipe {
 struct FetchGroup {
     product: String,
     fetch_mode: PlotRecipeFetchMode,
+    // Retained for recipe-level coverage/debugging; direct/native HRRR fetches
+    // intentionally pull full family GRIB bytes and extract grouped selectors
+    // from the parsed full file.
     variable_patterns: Vec<String>,
     selectors: Vec<FieldSelector>,
 }
@@ -227,22 +230,12 @@ fn plan_hrrr_direct_recipes(
 }
 
 fn group_direct_fetches(recipes: &[PlannedDirectRecipe]) -> Vec<FetchGroup> {
-    let mut grouped = HashMap::<(String, bool), FetchGroup>::new();
+    let mut grouped = HashMap::<String, FetchGroup>::new();
     for item in recipes {
-        let key = (
-            item.plan.product.to_string(),
-            matches!(
-                item.plan.fetch_mode,
-                PlotRecipeFetchMode::WholeFileStructuredExtract
-            ),
-        );
+        let key = item.plan.product.to_string();
         let entry = grouped.entry(key.clone()).or_insert_with(|| FetchGroup {
-            product: key.0.clone(),
-            fetch_mode: if key.1 {
-                PlotRecipeFetchMode::WholeFileStructuredExtract
-            } else {
-                PlotRecipeFetchMode::IndexedSubset
-            },
+            product: key,
+            fetch_mode: PlotRecipeFetchMode::WholeFileStructuredExtract,
             variable_patterns: Vec::new(),
             selectors: Vec::new(),
         });
@@ -262,6 +255,31 @@ fn group_direct_fetches(recipes: &[PlannedDirectRecipe]) -> Vec<FetchGroup> {
     groups
 }
 
+fn build_direct_fetch_request(
+    latest: &LatestRun,
+    forecast_hour: u16,
+    group: &FetchGroup,
+) -> Result<FetchRequest, rustwx_core::RustwxError> {
+    let actual_product = if group.product == "nat" {
+        "sfc"
+    } else {
+        group.product.as_str()
+    };
+    Ok(FetchRequest {
+        request: ModelRunRequest::new(
+            ModelId::Hrrr,
+            latest.cycle.clone(),
+            forecast_hour,
+            actual_product,
+        )?,
+        source_override: Some(latest.source),
+        // Force full-family GRIB fetches for the direct/native lane. Grouped
+        // extraction remains efficient because we still union selectors per
+        // family and extract them from one parsed full GRIB.
+        variable_patterns: Vec::new(),
+    })
+}
+
 fn load_direct_fetch_group(
     latest: &LatestRun,
     forecast_hour: u16,
@@ -270,17 +288,7 @@ fn load_direct_fetch_group(
     use_cache: bool,
 ) -> Result<(Vec<SelectedField2D>, HrrrDirectFetchTiming), Box<dyn std::error::Error>> {
     let total_start = Instant::now();
-    let request = ModelRunRequest::new(
-        ModelId::Hrrr,
-        latest.cycle.clone(),
-        forecast_hour,
-        group.product.clone(),
-    )?;
-    let fetch_request = FetchRequest {
-        request,
-        source_override: Some(latest.source),
-        variable_patterns: group.variable_patterns.clone(),
-    };
+    let fetch_request = build_direct_fetch_request(latest, forecast_hour, group)?;
 
     let fetch_start = Instant::now();
     let fetched = if use_cache {
@@ -1128,7 +1136,7 @@ mod tests {
     }
 
     #[test]
-    fn grouping_collects_shared_prs_fetch_patterns_once() {
+    fn grouping_keeps_shared_prs_selector_union_under_whole_file_fetches() {
         let planned = plan_hrrr_direct_recipes(&[
             "500mb_temperature_height_winds".to_string(),
             "700mb_temperature_height_winds".to_string(),
@@ -1137,6 +1145,10 @@ mod tests {
         let groups = group_direct_fetches(&planned);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].product, "prs");
+        assert_eq!(
+            groups[0].fetch_mode,
+            PlotRecipeFetchMode::WholeFileStructuredExtract
+        );
         assert!(
             groups[0]
                 .selectors
@@ -1147,7 +1159,74 @@ mod tests {
                 .selectors
                 .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700))
         );
-        assert!(!groups[0].variable_patterns.is_empty());
+        assert!(groups[0].variable_patterns.is_empty());
+    }
+
+    #[test]
+    fn direct_fetch_request_uses_full_family_bytes() {
+        let latest = LatestRun {
+            model: ModelId::Hrrr,
+            cycle: rustwx_core::CycleSpec::new("20260414", 23).unwrap(),
+            source: SourceId::Nomads,
+        };
+        let group = FetchGroup {
+            product: "prs".to_string(),
+            fetch_mode: PlotRecipeFetchMode::WholeFileStructuredExtract,
+            variable_patterns: vec!["TMP:500 mb".to_string()],
+            selectors: vec![FieldSelector::isobaric(CanonicalField::Temperature, 500)],
+        };
+        let fetch = build_direct_fetch_request(&latest, 6, &group).unwrap();
+        assert_eq!(fetch.request.product, "prs");
+        assert_eq!(fetch.source_override, Some(SourceId::Nomads));
+        assert!(fetch.variable_patterns.is_empty());
+    }
+
+    #[test]
+    fn native_fetches_share_surface_family_file() {
+        let latest = LatestRun {
+            model: ModelId::Hrrr,
+            cycle: rustwx_core::CycleSpec::new("20260414", 23).unwrap(),
+            source: SourceId::Aws,
+        };
+        let group = FetchGroup {
+            product: "nat".to_string(),
+            fetch_mode: PlotRecipeFetchMode::WholeFileStructuredExtract,
+            variable_patterns: Vec::new(),
+            selectors: vec![FieldSelector::entire_atmosphere(
+                CanonicalField::CompositeReflectivity,
+            )],
+        };
+        let fetch = build_direct_fetch_request(&latest, 6, &group).unwrap();
+        assert_eq!(fetch.request.product, "sfc");
+    }
+
+    #[test]
+    fn all_hrrr_direct_fetch_requests_strip_idx_patterns_before_fetch() {
+        let latest = LatestRun {
+            model: ModelId::Hrrr,
+            cycle: rustwx_core::CycleSpec::new("20260414", 23).unwrap(),
+            source: SourceId::Aws,
+        };
+        let planned = plan_hrrr_direct_recipes(&[
+            "500mb_temperature_height_winds".to_string(),
+            "2m_temperature_10m_winds".to_string(),
+            "composite_reflectivity".to_string(),
+        ])
+        .unwrap();
+        let groups = group_direct_fetches(&planned);
+        assert_eq!(groups.len(), 3);
+
+        for group in &groups {
+            let fetch = build_direct_fetch_request(&latest, 6, group).unwrap();
+            assert_eq!(
+                group.fetch_mode,
+                PlotRecipeFetchMode::WholeFileStructuredExtract
+            );
+            assert!(
+                fetch.variable_patterns.is_empty(),
+                "full-family HRRR direct fetches should not send idx subset patterns"
+            );
+        }
     }
 
     #[test]

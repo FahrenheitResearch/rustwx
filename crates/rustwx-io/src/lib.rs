@@ -97,7 +97,7 @@ pub fn probe_sources(fetch: &FetchRequest) -> Result<Vec<ProbeResult>, IoError> 
     Ok(urls
         .into_iter()
         .map(|resolved| {
-            let available = client.head_ok(resolved.availability_probe_url());
+            let available = probe_availability(&client, &resolved);
             ProbeResult {
                 source: resolved.source,
                 available,
@@ -120,20 +120,37 @@ pub fn available_forecast_hours(
     let summary = model_summary(model);
     let source = source_override.unwrap_or(summary.sources[0].id);
 
-    let available = candidates
-        .par_iter()
-        .filter_map(|&forecast_hour| {
-            let cycle = rustwx_core::CycleSpec::new(date_yyyymmdd, hour_utc).ok()?;
-            let request = ModelRunRequest::new(model, cycle, forecast_hour, product).ok()?;
-            let resolved = resolve_urls(&request).ok()?;
-            let target = resolved.into_iter().find(|url| url.source == source)?;
-            if client.head_ok(target.availability_probe_url()) {
-                Some(forecast_hour)
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
+    let available = if should_parallelize_hour_availability_probes(source) {
+        candidates
+            .par_iter()
+            .filter_map(|&forecast_hour| {
+                let cycle = rustwx_core::CycleSpec::new(date_yyyymmdd, hour_utc).ok()?;
+                let request = ModelRunRequest::new(model, cycle, forecast_hour, product).ok()?;
+                let resolved = resolve_urls(&request).ok()?;
+                let target = resolved.into_iter().find(|url| url.source == source)?;
+                if probe_availability(&client, &target) {
+                    Some(forecast_hour)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+    } else {
+        candidates
+            .iter()
+            .filter_map(|&forecast_hour| {
+                let cycle = rustwx_core::CycleSpec::new(date_yyyymmdd, hour_utc).ok()?;
+                let request = ModelRunRequest::new(model, cycle, forecast_hour, product).ok()?;
+                let resolved = resolve_urls(&request).ok()?;
+                let target = resolved.into_iter().find(|url| url.source == source)?;
+                if probe_availability(&client, &target) {
+                    Some(forecast_hour)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+    };
 
     let mut available = available;
     available.sort_unstable();
@@ -289,6 +306,18 @@ fn filtered_urls(fetch: &FetchRequest) -> Result<Vec<ResolvedUrl>, IoError> {
             .collect(),
         None => urls,
     })
+}
+
+fn probe_availability(client: &DownloadClient, resolved: &ResolvedUrl) -> bool {
+    if matches!(resolved.source, SourceId::Nomads) {
+        client.get_range(&resolved.grib_url, 0, 0).is_ok()
+    } else {
+        client.head_ok(resolved.availability_probe_url())
+    }
+}
+
+fn should_parallelize_hour_availability_probes(source: SourceId) -> bool {
+    !matches!(source, SourceId::Nomads)
 }
 
 fn try_fetch_one(
@@ -1050,6 +1079,23 @@ mod tests {
             candidate_hours(ModelId::RrfsA, 20).last().copied(),
             Some(60)
         );
+    }
+
+    #[test]
+    fn nomads_hour_probes_are_serialized() {
+        assert!(!should_parallelize_hour_availability_probes(SourceId::Nomads));
+        assert!(should_parallelize_hour_availability_probes(SourceId::Aws));
+    }
+
+    #[test]
+    fn nomads_probe_uses_grib_url_for_availability() {
+        let resolved = ResolvedUrl {
+            source: SourceId::Nomads,
+            grib_url: "https://nomads.ncep.noaa.gov/file.grib2".to_string(),
+            idx_url: Some("https://nomads.ncep.noaa.gov/file.grib2.idx".to_string()),
+        };
+        assert_eq!(resolved.availability_probe_url(), "https://nomads.ncep.noaa.gov/file.grib2.idx");
+        assert_eq!(resolved.grib_url, "https://nomads.ncep.noaa.gov/file.grib2");
     }
 
     #[test]

@@ -1,9 +1,9 @@
 use rustwx_core::GridShape;
 
-use crate::ecape::{validate_inputs, validate_len, EcapeVolumeInputs, SurfaceInputs};
+use crate::ecape::{EcapeVolumeInputs, SurfaceInputs, validate_inputs, validate_len};
 use crate::error::CalcError;
 use crate::severe::{
-    compute_cape_cin, compute_ehi, compute_shear, compute_srh, CapeCinOutputs, WindGridInputs,
+    CapeCinOutputs, WindGridInputs, compute_cape_cin, compute_ehi, compute_shear, compute_srh,
 };
 
 #[derive(Debug, Clone, Copy)]

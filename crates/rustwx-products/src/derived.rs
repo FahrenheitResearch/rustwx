@@ -1,14 +1,15 @@
 use rustwx_calc::{
     CalcError, EcapeVolumeInputs, FixedStpInputs, GridShape as CalcGridShape, SurfaceInputs,
-    TemperatureAdvectionInputs, VolumeShape, WindGridInputs, compute_ehi_01km, compute_ehi_03km,
-    compute_lapse_rate_0_3km, compute_lapse_rate_700_500, compute_lifted_index, compute_mlcape_cin,
-    compute_mucape_cin, compute_sbcape_cin, compute_shear_01km, compute_shear_06km,
-    compute_srh_01km, compute_srh_03km, compute_stp_fixed, compute_surface_thermo,
+    TemperatureAdvectionInputs, VolumeShape, WindGridInputs, compute_2m_apparent_temperature,
+    compute_ehi_01km, compute_ehi_03km, compute_lapse_rate_0_3km, compute_lapse_rate_700_500,
+    compute_lifted_index, compute_mlcape_cin, compute_mucape_cin, compute_sbcape_cin,
+    compute_shear_01km, compute_shear_06km, compute_srh_01km, compute_srh_03km, compute_stp_fixed,
+    compute_surface_thermo,
 };
 use rustwx_core::{Field2D, ProductKey, SourceId};
 use rustwx_render::{
-    Color, ExtendMode, MapRenderRequest, ProjectedDomain, ProjectedExtent, Solar07Palette,
-    Solar07Product, WindBarbLayer, save_png,
+    Color, DerivedProductStyle, ExtendMode, MapRenderRequest, ProjectedDomain, ProjectedExtent,
+    Solar07Palette, Solar07Product, WindBarbLayer, save_png,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
@@ -80,6 +81,11 @@ const SUPPORTED_DERIVED_RECIPE_INVENTORY: &[DerivedRecipeInventoryEntry] = &[
     DerivedRecipeInventoryEntry {
         slug: "theta_e_2m_10m_winds",
         title: "2 m Theta-e, 10 m Wind Barbs",
+        experimental: false,
+    },
+    DerivedRecipeInventoryEntry {
+        slug: "apparent_temperature_2m",
+        title: "2 m Apparent Temperature",
         experimental: false,
     },
     DerivedRecipeInventoryEntry {
@@ -249,6 +255,7 @@ pub(crate) enum DerivedRecipe {
     Mucape,
     Mucin,
     ThetaE2m10mWinds,
+    ApparentTemperature2m,
     HeatIndex2m,
     WindChill2m,
     LiftedIndex,
@@ -278,6 +285,9 @@ impl DerivedRecipe {
             "mucape" => Ok(Self::Mucape),
             "mucin" => Ok(Self::Mucin),
             "theta_e_2m_10m_winds" | "2m_theta_e_10m_winds" => Ok(Self::ThetaE2m10mWinds),
+            "apparent_temperature_2m" | "2m_apparent_temperature" => {
+                Ok(Self::ApparentTemperature2m)
+            }
             "heat_index_2m" | "2m_heat_index" => Ok(Self::HeatIndex2m),
             "wind_chill_2m" | "2m_wind_chill" => Ok(Self::WindChill2m),
             "lifted_index" => Ok(Self::LiftedIndex),
@@ -313,6 +323,7 @@ impl DerivedRecipe {
             Self::Mucape => "mucape",
             Self::Mucin => "mucin",
             Self::ThetaE2m10mWinds => "theta_e_2m_10m_winds",
+            Self::ApparentTemperature2m => "apparent_temperature_2m",
             Self::HeatIndex2m => "heat_index_2m",
             Self::WindChill2m => "wind_chill_2m",
             Self::LiftedIndex => "lifted_index",
@@ -341,6 +352,7 @@ impl DerivedRecipe {
             Self::Mucape => "MUCAPE",
             Self::Mucin => "MUCIN",
             Self::ThetaE2m10mWinds => "2 m Theta-e, 10 m Wind",
+            Self::ApparentTemperature2m => "2 m Apparent Temperature",
             Self::HeatIndex2m => "2 m Heat Index",
             Self::WindChill2m => "2 m Wind Chill",
             Self::LiftedIndex => "Surface-Based Lifted Index",
@@ -370,6 +382,7 @@ struct DerivedComputedFields {
     mucape_jkg: Option<Vec<f64>>,
     mucin_jkg: Option<Vec<f64>>,
     theta_e_2m_k: Option<Vec<f64>>,
+    apparent_temperature_2m_c: Option<Vec<f64>>,
     heat_index_2m_c: Option<Vec<f64>>,
     wind_chill_2m_c: Option<Vec<f64>>,
     surface_u10_ms: Option<Vec<f64>>,
@@ -429,7 +442,9 @@ impl DerivedRequirements {
                     requirements.surface_thermo = true;
                     requirements.surface_winds = true;
                 }
-                DerivedRecipe::HeatIndex2m | DerivedRecipe::WindChill2m => {
+                DerivedRecipe::ApparentTemperature2m
+                | DerivedRecipe::HeatIndex2m
+                | DerivedRecipe::WindChill2m => {
                     requirements.surface_thermo = true;
                 }
                 DerivedRecipe::LiftedIndex => {
@@ -791,6 +806,10 @@ fn compute_derived_fields(
             computed.surface_u10_ms = Some(surface.u10_ms.clone());
             computed.surface_v10_ms = Some(surface.v10_ms.clone());
         }
+        if recipes.contains(&DerivedRecipe::ApparentTemperature2m) {
+            computed.apparent_temperature_2m_c =
+                Some(compute_2m_apparent_temperature(grid, surface_inputs)?);
+        }
         if recipes.contains(&DerivedRecipe::HeatIndex2m) {
             computed.heat_index_2m_c = Some(surface_thermo.heat_index_2m_c);
         }
@@ -1062,6 +1081,18 @@ fn build_render_artifact(
             range_step(280.0, 381.0, 4.0),
             ExtendMode::Both,
             Some(8.0),
+        )?,
+        DerivedRecipe::ApparentTemperature2m => derived_style_request(
+            recipe,
+            grid,
+            "degC",
+            required_values(
+                &computed.apparent_temperature_2m_c,
+                recipe,
+                "apparent_temperature_2m_c",
+            )?
+            .clone(),
+            DerivedProductStyle::ApparentTemperature,
         )?,
         DerivedRecipe::HeatIndex2m => palette_request(
             recipe,
@@ -1390,6 +1421,18 @@ fn palette_request(
     Ok((field, request))
 }
 
+fn derived_style_request(
+    recipe: DerivedRecipe,
+    grid: &rustwx_core::LatLonGrid,
+    units: &str,
+    values: Vec<f64>,
+    style: DerivedProductStyle,
+) -> Result<(Field2D, MapRenderRequest), Box<dyn std::error::Error>> {
+    let field = core_field(recipe, units, grid, values)?;
+    let request = MapRenderRequest::for_derived_product(field.clone().into(), style);
+    Ok((field, request))
+}
+
 fn core_field(
     recipe: DerivedRecipe,
     units: &str,
@@ -1549,6 +1592,14 @@ mod tests {
             DerivedRecipe::ScpMu03km06kmProxy
         );
         assert_eq!(
+            DerivedRecipe::parse("apparent_temperature_2m").unwrap(),
+            DerivedRecipe::ApparentTemperature2m
+        );
+        assert_eq!(
+            DerivedRecipe::parse("2m_apparent_temperature").unwrap(),
+            DerivedRecipe::ApparentTemperature2m
+        );
+        assert_eq!(
             DerivedRecipe::parse("ehi_0_1km").unwrap(),
             DerivedRecipe::Ehi01km
         );
@@ -1617,6 +1668,24 @@ mod tests {
     fn derived_requirements_stay_narrow_for_surface_only_requests() {
         let requirements = DerivedRequirements::from_recipes(&[DerivedRecipe::HeatIndex2m]);
         assert!(requirements.surface_thermo);
+        assert!(!requirements.needs_volume());
+        assert!(!requirements.needs_height_agl());
+        assert!(!requirements.needs_grid_spacing());
+    }
+
+    #[test]
+    fn apparent_temperature_is_supported_surface_only_inventory_entry() {
+        let recipe = supported_derived_recipe_inventory()
+            .iter()
+            .find(|recipe| recipe.slug == "apparent_temperature_2m")
+            .expect("apparent temperature inventory entry should exist");
+        assert_eq!(recipe.title, "2 m Apparent Temperature");
+        assert!(!recipe.experimental);
+
+        let requirements =
+            DerivedRequirements::from_recipes(&[DerivedRecipe::ApparentTemperature2m]);
+        assert!(requirements.surface_thermo);
+        assert!(!requirements.surface_winds);
         assert!(!requirements.needs_volume());
         assert!(!requirements.needs_height_agl());
         assert!(!requirements.needs_grid_spacing());

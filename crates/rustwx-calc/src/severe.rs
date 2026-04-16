@@ -1,6 +1,6 @@
 use rustwx_core::GridShape;
 
-use crate::ecape::{validate_inputs, validate_len, EcapeVolumeInputs, SurfaceInputs, VolumeShape};
+use crate::ecape::{EcapeVolumeInputs, SurfaceInputs, VolumeShape, validate_inputs, validate_len};
 use crate::error::CalcError;
 
 #[derive(Debug, Clone, Copy)]

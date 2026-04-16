@@ -68,7 +68,11 @@ struct Args {
     out_dir: PathBuf,
     #[arg(long)]
     cache_dir: Option<PathBuf>,
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Disable caches for an honest cold-run ingest benchmark"
+    )]
     no_cache: bool,
 }
 
