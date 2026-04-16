@@ -2143,8 +2143,8 @@ fn plot_recipe_fetch_defaults(
         (ModelId::Hrrr, true, _) => ("nat", PlotRecipeFetchPolicy::WholeFile),
         (ModelId::Hrrr, false, true) => ("sfc", PlotRecipeFetchPolicy::WholeFile),
         (ModelId::Hrrr, false, false) => ("prs", PlotRecipeFetchPolicy::WholeFile),
-        (ModelId::Gfs, _, _) => ("pgrb2.0p25", PlotRecipeFetchPolicy::PreferIndexedSubset),
-        (ModelId::RrfsA, _, _) => ("prs-conus", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Gfs, _, _) => ("pgrb2.0p25", PlotRecipeFetchPolicy::WholeFile),
+        (ModelId::RrfsA, _, _) => ("prs-conus", PlotRecipeFetchPolicy::WholeFile),
         (ModelId::EcmwfOpenData, _, _) => ("oper", PlotRecipeFetchPolicy::WholeFile),
     }
 }
@@ -2171,6 +2171,10 @@ fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<Stri
 
 fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> Option<String> {
     match (model, field.key) {
+        (ModelId::Gfs, "dewpoint_700mb" | "dewpoint_850mb") => Some(format!(
+            "{} is not present in the GFS 0.25-degree pgrb2 file currently wired by rustwx-models; keep it blocked until a verified direct field or derived dewpoint path is implemented",
+            field.label
+        )),
         (ModelId::EcmwfOpenData, "dewpoint_700mb" | "dewpoint_850mb") => Some(format!(
             "{} is not present in the ECMWF open-data 'oper' pressure product currently wired by rustwx-models; use RH/TMP or add derived dewpoint support for this model",
             field.label
@@ -2210,20 +2214,14 @@ fn model_specific_surface_field_gap(field: &GribFieldSpec, model: ModelId) -> Op
         (_, "wind_chill_2m_agl") => Some(
             "2m Wind Chill is surface-derived rather than native; the direct/native recipe registry does not yet wire the required T2/U10/V10 dependency bundle into one renderable product".to_string(),
         ),
-        (ModelId::Hrrr, "cloud_cover_levels") => None,
-        (_, "cloud_cover_levels") => Some(
-            "Cloud Cover, Levels is currently wired only in the HRRR direct composite lane; other model runners still expose the honest native components separately as low_cloud_cover, middle_cloud_cover, and high_cloud_cover".to_string(),
-        ),
+        (_, "cloud_cover_levels") => None,
         (ModelId::Hrrr, "one_hour_qpf") => Some(
             "1h QPF is handled honestly in the HRRR windowed lane as 'qpf_1h' (legacy plot-recipe slug '1h_qpf'); do not treat it as a native/direct APCP recipe.".to_string(),
         ),
         (_, "one_hour_qpf") => Some(
             "1h QPF is not yet exposed as a generic native recipe because APCP accumulation windows vary by model and forecast hour.".to_string(),
         ),
-        (ModelId::Hrrr, "precipitation_type") => None,
-        (_, "precipitation_type") => Some(
-            "Precipitation Type is currently wired only in the HRRR direct composite lane; other model runners still expose the honest native phase flags separately as categorical_rain, categorical_freezing_rain, categorical_ice_pellets, and categorical_snow".to_string(),
-        ),
+        (_, "precipitation_type") => None,
         (_, "lightning_flash_density") => Some(
             "Verified HRRR surface files expose LTNGSD at 1 m and 2 m AGL as discipline 0/category 17/number 0 Lightning Strike Density [m^-2 s^-1], plus LTNG as discipline 0/category 17/number 192 Lightning [non-dim]; HRRR does not expose the flash-density parameters 2/3/4, so wiring this slug would mislabel strike density or a lightning flag.".to_string(),
         ),
@@ -2271,15 +2269,15 @@ fn summarize_plot_recipe_blockers(blockers: &[PlotRecipeBlocker]) -> String {
 
 fn collect_recipe_fields(
     recipe: &'static PlotRecipe,
-    model: ModelId,
+    _model: ModelId,
 ) -> Vec<&'static GribFieldSpec> {
-    let mut fields = match (model, recipe.slug) {
-        (ModelId::Hrrr, "cloud_cover_levels") => vec![
+    let mut fields = match recipe.slug {
+        "cloud_cover_levels" => vec![
             &FIELD_LOW_CLOUD_COVER,
             &FIELD_MIDDLE_CLOUD_COVER,
             &FIELD_HIGH_CLOUD_COVER,
         ],
-        (ModelId::Hrrr, "precipitation_type") => vec![
+        "precipitation_type" => vec![
             &FIELD_CATEGORICAL_RAIN,
             &FIELD_CATEGORICAL_FREEZING_RAIN,
             &FIELD_CATEGORICAL_ICE_PELLETS,
@@ -2497,11 +2495,11 @@ mod tests {
     fn selector_backed_temperature_recipe_produces_gfs_fetch_plan() {
         let plan = plot_recipe_fetch_plan("500mb_temperature_height_winds", ModelId::Gfs).unwrap();
         assert_eq!(plan.product, "pgrb2.0p25");
+        assert_eq!(plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
         assert_eq!(
-            plan.fetch_policy,
-            PlotRecipeFetchPolicy::PreferIndexedSubset
+            plan.fetch_mode,
+            PlotRecipeFetchMode::WholeFileStructuredExtract
         );
-        assert_eq!(plan.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
         assert_eq!(plan.fields.len(), 4);
         assert_eq!(
             plan.selectors(),
@@ -2512,10 +2510,7 @@ mod tests {
                 FieldSelector::isobaric(CanonicalField::VWind, 500),
             ]
         );
-        assert_eq!(
-            plan.variable_patterns(),
-            vec!["TMP:500 mb", "HGT:500 mb", "UGRD:500 mb", "VGRD:500 mb"]
-        );
+        assert!(plan.variable_patterns().is_empty());
     }
 
     #[test]
@@ -2531,10 +2526,7 @@ mod tests {
                 FieldSelector::isobaric(CanonicalField::VWind, 200),
             ]
         );
-        assert_eq!(
-            plan.variable_patterns(),
-            vec!["TMP:200 mb", "HGT:200 mb", "UGRD:200 mb", "VGRD:200 mb"]
-        );
+        assert!(plan.variable_patterns().is_empty());
     }
 
     #[test]
@@ -2591,10 +2583,7 @@ mod tests {
                 FieldSelector::isobaric(CanonicalField::VWind, 300),
             ]
         );
-        assert_eq!(
-            plan.variable_patterns(),
-            vec!["RH:300 mb", "HGT:300 mb", "UGRD:300 mb", "VGRD:300 mb"]
-        );
+        assert!(plan.variable_patterns().is_empty());
     }
 
     #[test]
@@ -2649,7 +2638,7 @@ mod tests {
 
     #[test]
     fn dewpoint_and_700mb_recipe_blockers_are_explicit() {
-        for model in [ModelId::Hrrr, ModelId::Gfs, ModelId::RrfsA] {
+        for model in [ModelId::Hrrr, ModelId::RrfsA] {
             let dewpoint_850 =
                 plot_recipe_fetch_blockers("850mb_dewpoint_height_winds", model).unwrap();
             assert!(dewpoint_850.is_empty());
@@ -2659,20 +2648,18 @@ mod tests {
             assert!(dewpoint_700.is_empty());
         }
 
-        let plan = plot_recipe_fetch_plan("700mb_dewpoint_height_winds", ModelId::Gfs).unwrap();
+        let gfs_dewpoint =
+            plot_recipe_fetch_blockers("700mb_dewpoint_height_winds", ModelId::Gfs).unwrap();
         assert_eq!(
-            plan.selectors(),
-            vec![
-                FieldSelector::isobaric(CanonicalField::Dewpoint, 700),
-                FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 700),
-                FieldSelector::isobaric(CanonicalField::UWind, 700),
-                FieldSelector::isobaric(CanonicalField::VWind, 700),
-            ]
+            gfs_dewpoint,
+            vec![PlotRecipeBlocker {
+                field_key: "dewpoint_700mb",
+                field_label: "700mb Dewpoint",
+                reason: "700mb Dewpoint is not present in the GFS 0.25-degree pgrb2 file currently wired by rustwx-models; keep it blocked until a verified direct field or derived dewpoint path is implemented".to_string(),
+            }]
         );
-        assert_eq!(
-            plan.variable_patterns(),
-            vec!["DPT:700 mb", "HGT:700 mb", "UGRD:700 mb", "VGRD:700 mb"]
-        );
+        let err = plot_recipe_fetch_plan("700mb_dewpoint_height_winds", ModelId::Gfs).unwrap_err();
+        assert!(matches!(err, ModelError::UnsupportedPlotRecipeModel { .. }));
 
         let ecmwf_dewpoint =
             plot_recipe_fetch_blockers("700mb_dewpoint_height_winds", ModelId::EcmwfOpenData)
@@ -2708,10 +2695,7 @@ mod tests {
                 FieldSelector::isobaric(CanonicalField::VWind, 700),
             ]
         );
-        assert_eq!(
-            plan.variable_patterns(),
-            vec!["ABSV:700 mb", "HGT:700 mb", "UGRD:700 mb", "VGRD:700 mb"]
-        );
+        assert!(plan.variable_patterns().is_empty());
 
         let blockers =
             plot_recipe_fetch_blockers("700mb_absolute_vorticity_height_winds", ModelId::Gfs)
@@ -2826,11 +2810,11 @@ mod tests {
         let rrfs_plan =
             plot_recipe_fetch_plan("composite_reflectivity_uh", ModelId::RrfsA).unwrap();
         assert_eq!(rrfs_plan.product, "prs-conus");
+        assert_eq!(rrfs_plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
         assert_eq!(
-            rrfs_plan.fetch_policy,
-            PlotRecipeFetchPolicy::PreferIndexedSubset
+            rrfs_plan.fetch_mode,
+            PlotRecipeFetchMode::WholeFileStructuredExtract
         );
-        assert_eq!(rrfs_plan.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
         assert_eq!(
             rrfs_plan.selectors(),
             vec![
@@ -3077,18 +3061,14 @@ mod tests {
     }
 
     #[test]
-    fn non_hrrr_models_keep_direct_composite_layouts_blocked() {
+    fn generic_direct_composite_layouts_follow_selector_support() {
         let cloud_levels = plot_recipe_fetch_blockers("cloud_cover_levels", ModelId::Gfs).unwrap();
-        assert!(cloud_levels.iter().any(|blocker| {
-            blocker.reason.contains("HRRR direct composite lane")
-                && blocker.field_label.contains("Cloud Cover Levels")
-        }));
+        assert!(cloud_levels.is_empty());
 
         let precipitation_type =
             plot_recipe_fetch_blockers("precipitation_type", ModelId::EcmwfOpenData).unwrap();
         assert!(precipitation_type.iter().any(|blocker| {
-            blocker.reason.contains("HRRR direct composite lane")
-                && blocker.field_label.contains("Precipitation Type")
+            blocker.reason.contains("selector") || blocker.reason.contains("not yet supported")
         }));
     }
 

@@ -91,5 +91,8 @@ jobs:
       - name: Build non-ECAPE hour runner
         run: cargo build --release -p rustwx-cli --bin hrrr_non_ecape_hour
 
+      - name: Build generic direct batch runner
+        run: cargo build --release -p rustwx-cli --bin direct_batch
+
       - name: Build shared heavy batch runner
         run: cargo build --release -p rustwx-cli --bin hrrr_batch

@@ -175,6 +175,12 @@ fn build_direct_entries() -> Vec<ProductCatalogEntry> {
                 .collect::<Vec<_>>();
 
             let mut runners = vec!["plot_recipe_proof".to_string()];
+            if support
+                .iter()
+                .any(|target| matches!(target.status, ProductTargetStatus::Supported))
+            {
+                runners.push("direct_batch".to_string());
+            }
             if support.iter().any(|target| {
                 target.model == Some(ModelId::Hrrr)
                     && matches!(target.status, ProductTargetStatus::Supported)

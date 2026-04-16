@@ -1,7 +1,7 @@
 use grib_core::grib2::Grib2File;
 use image::DynamicImage;
 use rustwx_core::{
-    CanonicalField, FieldSelector, ModelId, ModelRunRequest, SelectedField2D, SourceId,
+    CanonicalField, CycleSpec, FieldSelector, ModelId, ModelRunRequest, SelectedField2D, SourceId,
 };
 use rustwx_io::{
     CachedFetchResult, FetchRequest, extract_fields_from_grib2, fetch_bytes,
@@ -9,7 +9,7 @@ use rustwx_io::{
 };
 use rustwx_models::{
     LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
-    plot_recipe, plot_recipe_fetch_plan,
+    latest_available_run, plot_recipe, plot_recipe_fetch_plan,
 };
 use rustwx_render::{
     Color, ColorScale, ContourLayer, DiscreteColorScale, ExtendMode, MapRenderRequest,
@@ -30,7 +30,8 @@ use wrf_render::projection::LambertConformal;
 use wrf_render::render::map_frame_aspect_ratio;
 use wrf_render::text;
 
-use crate::hrrr::{DomainSpec, PreparedHrrrHourContext, ProjectedMap, resolve_hrrr_run};
+use crate::hrrr::{DomainSpec, PreparedHrrrHourContext, ProjectedMap};
+use crate::spec::direct_product_specs;
 
 const OUTPUT_WIDTH: u32 = 1200;
 const OUTPUT_HEIGHT: u32 = 900;
@@ -42,6 +43,21 @@ const PRECIPITATION_TYPE_COMPONENT_SLUGS: &[&str] = &[
     "categorical_ice_pellets",
     "categorical_snow",
 ];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirectBatchRequest {
+    pub model: ModelId,
+    pub date_yyyymmdd: String,
+    pub cycle_override_utc: Option<u8>,
+    pub forecast_hour: u16,
+    pub source: SourceId,
+    pub domain: DomainSpec,
+    pub out_dir: PathBuf,
+    pub cache_root: PathBuf,
+    pub use_cache: bool,
+    pub recipe_slugs: Vec<String>,
+    pub product_overrides: HashMap<String, String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HrrrDirectBatchRequest {
@@ -100,6 +116,7 @@ pub struct HrrrDirectRenderedRecipe {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HrrrDirectBatchReport {
+    pub model: ModelId,
     pub date_yyyymmdd: String,
     pub cycle_utc: u8,
     pub forecast_hour: u16,
@@ -120,9 +137,9 @@ struct PlannedDirectRecipe {
 struct FetchGroup {
     product: String,
     fetch_mode: PlotRecipeFetchMode,
-    // Retained for recipe-level coverage/debugging; direct/native HRRR fetches
-    // intentionally pull full family GRIB bytes and extract grouped selectors
-    // from the parsed full file.
+    // Retained for recipe-level coverage/debugging; the direct/native batch
+    // path intentionally pulls full family GRIB bytes and extracts grouped
+    // selectors from the parsed full file.
     variable_patterns: Vec<String>,
     selectors: Vec<FieldSelector>,
 }
@@ -146,19 +163,69 @@ struct BarbStrideCacheKey {
 
 type SharedBarbStrideCache = Arc<Mutex<HashMap<BarbStrideCacheKey, (usize, usize)>>>;
 
-pub fn run_hrrr_direct_batch(
-    request: &HrrrDirectBatchRequest,
+impl DirectBatchRequest {
+    fn from_hrrr(request: &HrrrDirectBatchRequest) -> Self {
+        Self {
+            model: ModelId::Hrrr,
+            date_yyyymmdd: request.date_yyyymmdd.clone(),
+            cycle_override_utc: request.cycle_override_utc,
+            forecast_hour: request.forecast_hour,
+            source: request.source,
+            domain: request.domain.clone(),
+            out_dir: request.out_dir.clone(),
+            cache_root: request.cache_root.clone(),
+            use_cache: request.use_cache,
+            recipe_slugs: request.recipe_slugs.clone(),
+            product_overrides: HashMap::new(),
+        }
+    }
+}
+
+fn resolve_direct_run(
+    model: ModelId,
+    date: &str,
+    cycle_override: Option<u8>,
+    source: SourceId,
+) -> Result<LatestRun, Box<dyn std::error::Error>> {
+    match cycle_override {
+        Some(hour) => Ok(LatestRun {
+            model,
+            cycle: CycleSpec::new(date, hour)?,
+            source,
+        }),
+        None => Ok(latest_available_run(model, Some(source), date)?),
+    }
+}
+
+pub fn run_direct_batch(
+    request: &DirectBatchRequest,
 ) -> Result<HrrrDirectBatchReport, Box<dyn std::error::Error>> {
-    let latest = resolve_hrrr_run(
+    let latest = resolve_direct_run(
+        request.model,
         &request.date_yyyymmdd,
         request.cycle_override_utc,
         request.source,
     )?;
-    run_hrrr_direct_batch_with_context(request, &latest, None)
+    run_direct_batch_with_context(request, &latest, None)
+}
+
+pub fn run_hrrr_direct_batch(
+    request: &HrrrDirectBatchRequest,
+) -> Result<HrrrDirectBatchReport, Box<dyn std::error::Error>> {
+    run_direct_batch(&DirectBatchRequest::from_hrrr(request))
 }
 
 pub(crate) fn run_hrrr_direct_batch_with_context(
     request: &HrrrDirectBatchRequest,
+    latest: &LatestRun,
+    shared_context: Option<&PreparedHrrrHourContext>,
+) -> Result<HrrrDirectBatchReport, Box<dyn std::error::Error>> {
+    let generic = DirectBatchRequest::from_hrrr(request);
+    run_direct_batch_with_context(&generic, latest, shared_context)
+}
+
+fn run_direct_batch_with_context(
+    request: &DirectBatchRequest,
     latest: &LatestRun,
     shared_context: Option<&PreparedHrrrHourContext>,
 ) -> Result<HrrrDirectBatchReport, Box<dyn std::error::Error>> {
@@ -168,7 +235,7 @@ pub(crate) fn run_hrrr_direct_batch_with_context(
     }
 
     let total_start = Instant::now();
-    let planned = plan_hrrr_direct_recipes(&request.recipe_slugs)?;
+    let planned = plan_direct_recipes(request.model, &request.recipe_slugs)?;
     let groups = group_direct_fetches(&planned);
     let mut extracted = HashMap::<FieldSelector, SelectedField2D>::new();
     let mut fetches = Vec::with_capacity(groups.len());
@@ -176,6 +243,7 @@ pub(crate) fn run_hrrr_direct_batch_with_context(
 
     for group in &groups {
         let (fields, timing) = load_direct_fetch_group(
+            request,
             latest,
             request.forecast_hour,
             group,
@@ -197,6 +265,7 @@ pub(crate) fn run_hrrr_direct_batch_with_context(
     )?;
 
     Ok(HrrrDirectBatchReport {
+        model: request.model,
         date_yyyymmdd: request.date_yyyymmdd.clone(),
         cycle_utc: latest.cycle.hour_utc,
         forecast_hour: request.forecast_hour,
@@ -225,7 +294,16 @@ pub(crate) fn required_direct_projection_sizes(recipe_slugs: &[String]) -> Vec<(
     sizes
 }
 
-fn plan_hrrr_direct_recipes(
+pub fn supported_direct_recipe_slugs(model: ModelId) -> Vec<String> {
+    direct_product_specs()
+        .into_iter()
+        .filter(|spec| plot_recipe_fetch_plan(&spec.slug, model).is_ok())
+        .map(|spec| spec.slug)
+        .collect()
+}
+
+fn plan_direct_recipes(
+    model: ModelId,
     recipe_slugs: &[String],
 ) -> Result<Vec<PlannedDirectRecipe>, Box<dyn std::error::Error>> {
     let mut planned = Vec::new();
@@ -235,12 +313,12 @@ fn plan_hrrr_direct_recipes(
         if !seen.insert(recipe.slug.to_string()) {
             continue;
         }
-        let plan = match plot_recipe_fetch_plan(recipe.slug, ModelId::Hrrr) {
+        let plan = match plot_recipe_fetch_plan(recipe.slug, model) {
             Ok(plan) => plan,
             Err(ModelError::UnsupportedPlotRecipeModel { reason, .. }) => {
                 return Err(format!(
-                    "plot recipe '{}' is not supported for HRRR: {}",
-                    recipe.slug, reason
+                    "plot recipe '{}' is not supported for {}: {}",
+                    recipe.slug, model, reason
                 )
                 .into());
             }
@@ -277,22 +355,30 @@ fn group_direct_fetches(recipes: &[PlannedDirectRecipe]) -> Vec<FetchGroup> {
     groups
 }
 
+fn runtime_fetch_product(request: &DirectBatchRequest, planned_product: &str) -> String {
+    if let Some(overridden) = request.product_overrides.get(planned_product) {
+        return overridden.clone();
+    }
+
+    match (request.model, planned_product) {
+        (ModelId::Hrrr, "nat") => "sfc".to_string(),
+        _ => planned_product.to_string(),
+    }
+}
+
 fn build_direct_fetch_request(
+    request: &DirectBatchRequest,
     latest: &LatestRun,
     forecast_hour: u16,
     group: &FetchGroup,
 ) -> Result<FetchRequest, rustwx_core::RustwxError> {
-    let actual_product = if group.product == "nat" {
-        "sfc"
-    } else {
-        group.product.as_str()
-    };
+    let actual_product = runtime_fetch_product(request, group.product.as_str());
     Ok(FetchRequest {
         request: ModelRunRequest::new(
-            ModelId::Hrrr,
+            request.model,
             latest.cycle.clone(),
             forecast_hour,
-            actual_product,
+            actual_product.as_str(),
         )?,
         source_override: Some(latest.source),
         // Force full-family GRIB fetches for the direct/native lane. Grouped
@@ -303,6 +389,7 @@ fn build_direct_fetch_request(
 }
 
 fn load_direct_fetch_group(
+    request: &DirectBatchRequest,
     latest: &LatestRun,
     forecast_hour: u16,
     group: &FetchGroup,
@@ -310,7 +397,7 @@ fn load_direct_fetch_group(
     use_cache: bool,
 ) -> Result<(Vec<SelectedField2D>, HrrrDirectFetchTiming), Box<dyn std::error::Error>> {
     let total_start = Instant::now();
-    let fetch_request = build_direct_fetch_request(latest, forecast_hour, group)?;
+    let fetch_request = build_direct_fetch_request(request, latest, forecast_hour, group)?;
 
     let fetch_start = Instant::now();
     let fetched = if use_cache {
@@ -388,7 +475,7 @@ fn load_direct_fetch_group(
 }
 
 fn render_direct_recipes(
-    request: &HrrrDirectBatchRequest,
+    request: &DirectBatchRequest,
     latest: &LatestRun,
     planned: &[PlannedDirectRecipe],
     extracted: &HashMap<FieldSelector, SelectedField2D>,
@@ -502,7 +589,7 @@ fn composite_panel_spec(slug: &str) -> Option<CompositePanelSpec> {
 }
 
 fn render_direct_recipe(
-    request: &HrrrDirectBatchRequest,
+    request: &DirectBatchRequest,
     latest: &LatestRun,
     item: &PlannedDirectRecipe,
     extracted: &HashMap<FieldSelector, SelectedField2D>,
@@ -512,7 +599,8 @@ fn render_direct_recipe(
 ) -> Result<HrrrDirectRenderedRecipe, Box<dyn std::error::Error>> {
     let render_start = Instant::now();
     let output_path = request.out_dir.join(format!(
-        "rustwx_hrrr_{}_{}z_f{:03}_{}_{}.png",
+        "rustwx_{}_{}_{}z_f{:03}_{}_{}.png",
+        request.model.as_str().replace('-', "_"),
         request.date_yyyymmdd,
         latest.cycle.hour_utc,
         request.forecast_hour,
@@ -572,8 +660,8 @@ fn render_direct_recipe(
             barb_stride_cache,
         )?;
         render_request.subtitle_left = Some(format!(
-            "{} {}Z F{:03}  HRRR",
-            request.date_yyyymmdd, latest.cycle.hour_utc, request.forecast_hour
+            "{} {}Z F{:03}  {}",
+            request.date_yyyymmdd, latest.cycle.hour_utc, request.forecast_hour, request.model
         ));
         render_request.subtitle_right = Some(format!("source: {}", latest.source));
         save_png(&render_request, &output_path)?;
@@ -600,7 +688,7 @@ fn render_direct_recipe(
 fn render_direct_composite_panel(
     recipe: &PlotRecipe,
     spec: CompositePanelSpec,
-    request: &HrrrDirectBatchRequest,
+    request: &DirectBatchRequest,
     latest: &LatestRun,
     extracted: &HashMap<FieldSelector, SelectedField2D>,
     output_path: &std::path::Path,
@@ -670,8 +758,12 @@ fn render_direct_composite_panel(
     text::draw_text_centered(
         &mut canvas,
         &format!(
-            "{} {}Z F{:03}  HRRR | source: {}",
-            request.date_yyyymmdd, latest.cycle.hour_utc, request.forecast_hour, latest.source
+            "{} {}Z F{:03}  {} | source: {}",
+            request.date_yyyymmdd,
+            latest.cycle.hour_utc,
+            request.forecast_hour,
+            request.model,
+            latest.source
         ),
         35,
         wrf_render::Rgba::BLACK,
@@ -1169,12 +1261,31 @@ mod tests {
         SelectedField2D::new(selector, units, sample_grid(), values).unwrap()
     }
 
+    fn sample_direct_request(model: ModelId) -> DirectBatchRequest {
+        DirectBatchRequest {
+            model,
+            date_yyyymmdd: "20260414".to_string(),
+            cycle_override_utc: Some(23),
+            forecast_hour: 6,
+            source: rustwx_models::model_summary(model).sources[0].id,
+            domain: DomainSpec::new("midwest", (-105.0, -80.0, 30.0, 50.0)),
+            out_dir: PathBuf::from("C:\\temp\\rustwx-tests"),
+            cache_root: PathBuf::from("C:\\temp\\rustwx-tests-cache"),
+            use_cache: false,
+            recipe_slugs: Vec::new(),
+            product_overrides: HashMap::new(),
+        }
+    }
+
     #[test]
     fn planning_hrrr_direct_batch_dedupes_recipe_aliases() {
-        let planned = plan_hrrr_direct_recipes(&[
-            "500mb_temperature_height_winds".to_string(),
-            "500mb temperature height winds".to_string(),
-        ])
+        let planned = plan_direct_recipes(
+            ModelId::Hrrr,
+            &[
+                "500mb_temperature_height_winds".to_string(),
+                "500mb temperature height winds".to_string(),
+            ],
+        )
         .unwrap();
         assert_eq!(planned.len(), 1);
         assert_eq!(planned[0].recipe.slug, "500mb_temperature_height_winds");
@@ -1183,10 +1294,13 @@ mod tests {
 
     #[test]
     fn grouping_keeps_shared_prs_selector_union_under_whole_file_fetches() {
-        let planned = plan_hrrr_direct_recipes(&[
-            "500mb_temperature_height_winds".to_string(),
-            "700mb_temperature_height_winds".to_string(),
-        ])
+        let planned = plan_direct_recipes(
+            ModelId::Hrrr,
+            &[
+                "500mb_temperature_height_winds".to_string(),
+                "700mb_temperature_height_winds".to_string(),
+            ],
+        )
         .unwrap();
         let groups = group_direct_fetches(&planned);
         assert_eq!(groups.len(), 1);
@@ -1210,6 +1324,7 @@ mod tests {
 
     #[test]
     fn direct_fetch_request_uses_full_family_bytes() {
+        let request = sample_direct_request(ModelId::Hrrr);
         let latest = LatestRun {
             model: ModelId::Hrrr,
             cycle: rustwx_core::CycleSpec::new("20260414", 23).unwrap(),
@@ -1221,7 +1336,7 @@ mod tests {
             variable_patterns: vec!["TMP:500 mb".to_string()],
             selectors: vec![FieldSelector::isobaric(CanonicalField::Temperature, 500)],
         };
-        let fetch = build_direct_fetch_request(&latest, 6, &group).unwrap();
+        let fetch = build_direct_fetch_request(&request, &latest, 6, &group).unwrap();
         assert_eq!(fetch.request.product, "prs");
         assert_eq!(fetch.source_override, Some(SourceId::Nomads));
         assert!(fetch.variable_patterns.is_empty());
@@ -1229,6 +1344,7 @@ mod tests {
 
     #[test]
     fn native_fetches_share_surface_family_file() {
+        let request = sample_direct_request(ModelId::Hrrr);
         let latest = LatestRun {
             model: ModelId::Hrrr,
             cycle: rustwx_core::CycleSpec::new("20260414", 23).unwrap(),
@@ -1242,12 +1358,13 @@ mod tests {
                 CanonicalField::CompositeReflectivity,
             )],
         };
-        let fetch = build_direct_fetch_request(&latest, 6, &group).unwrap();
+        let fetch = build_direct_fetch_request(&request, &latest, 6, &group).unwrap();
         assert_eq!(fetch.request.product, "sfc");
     }
 
     #[test]
     fn direct_fetch_timing_keeps_planned_vs_actual_family_truth() {
+        let request = sample_direct_request(ModelId::Hrrr);
         let latest = LatestRun {
             model: ModelId::Hrrr,
             cycle: rustwx_core::CycleSpec::new("20260414", 23).unwrap(),
@@ -1261,7 +1378,7 @@ mod tests {
                 CanonicalField::CompositeReflectivity,
             )],
         };
-        let fetch = build_direct_fetch_request(&latest, 6, &group).unwrap();
+        let fetch = build_direct_fetch_request(&request, &latest, 6, &group).unwrap();
         let runtime = HrrrDirectFetchRuntimeInfo {
             planned_product: group.product.clone(),
             fetched_product: fetch.request.product.clone(),
@@ -1277,22 +1394,26 @@ mod tests {
 
     #[test]
     fn all_hrrr_direct_fetch_requests_strip_idx_patterns_before_fetch() {
+        let request = sample_direct_request(ModelId::Hrrr);
         let latest = LatestRun {
             model: ModelId::Hrrr,
             cycle: rustwx_core::CycleSpec::new("20260414", 23).unwrap(),
             source: SourceId::Aws,
         };
-        let planned = plan_hrrr_direct_recipes(&[
-            "500mb_temperature_height_winds".to_string(),
-            "2m_temperature_10m_winds".to_string(),
-            "composite_reflectivity".to_string(),
-        ])
+        let planned = plan_direct_recipes(
+            ModelId::Hrrr,
+            &[
+                "500mb_temperature_height_winds".to_string(),
+                "2m_temperature_10m_winds".to_string(),
+                "composite_reflectivity".to_string(),
+            ],
+        )
         .unwrap();
         let groups = group_direct_fetches(&planned);
         assert_eq!(groups.len(), 3);
 
         for group in &groups {
-            let fetch = build_direct_fetch_request(&latest, 6, group).unwrap();
+            let fetch = build_direct_fetch_request(&request, &latest, 6, group).unwrap();
             assert_eq!(
                 group.fetch_mode,
                 PlotRecipeFetchMode::WholeFileStructuredExtract
@@ -1306,10 +1427,13 @@ mod tests {
 
     #[test]
     fn grouping_splits_prs_and_nat_recipes() {
-        let planned = plan_hrrr_direct_recipes(&[
-            "500mb_temperature_height_winds".to_string(),
-            "composite_reflectivity".to_string(),
-        ])
+        let planned = plan_direct_recipes(
+            ModelId::Hrrr,
+            &[
+                "500mb_temperature_height_winds".to_string(),
+                "composite_reflectivity".to_string(),
+            ],
+        )
         .unwrap();
         let groups = group_direct_fetches(&planned);
         assert_eq!(groups.len(), 2);
@@ -1319,10 +1443,13 @@ mod tests {
 
     #[test]
     fn planning_supports_hrrr_direct_composite_layout_recipes() {
-        let planned = plan_hrrr_direct_recipes(&[
-            "cloud_cover_levels".to_string(),
-            "precipitation_type".to_string(),
-        ])
+        let planned = plan_direct_recipes(
+            ModelId::Hrrr,
+            &[
+                "cloud_cover_levels".to_string(),
+                "precipitation_type".to_string(),
+            ],
+        )
         .unwrap();
         assert_eq!(planned.len(), 2);
 
@@ -1345,10 +1472,55 @@ mod tests {
 
     #[test]
     fn unsupported_recipe_error_stays_explicit() {
-        let err = plan_hrrr_direct_recipes(&["1h_qpf".to_string()])
+        let err = plan_direct_recipes(ModelId::Hrrr, &["1h_qpf".to_string()])
             .unwrap_err()
             .to_string();
         assert!(err.contains("windowed lane") || err.contains("not supported"));
+    }
+
+    #[test]
+    fn gfs_direct_fetches_are_now_whole_file() {
+        let planned = plan_direct_recipes(
+            ModelId::Gfs,
+            &["500mb_temperature_height_winds".to_string()],
+        )
+        .unwrap();
+        let groups = group_direct_fetches(&planned);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].fetch_mode,
+            PlotRecipeFetchMode::WholeFileStructuredExtract
+        );
+        let request = sample_direct_request(ModelId::Gfs);
+        let latest = LatestRun {
+            model: ModelId::Gfs,
+            cycle: rustwx_core::CycleSpec::new("20260414", 18).unwrap(),
+            source: SourceId::Nomads,
+        };
+        let fetch = build_direct_fetch_request(&request, &latest, 6, &groups[0]).unwrap();
+        assert_eq!(fetch.request.product, "pgrb2.0p25");
+        assert!(fetch.variable_patterns.is_empty());
+    }
+
+    #[test]
+    fn rrfs_direct_product_overrides_can_select_na_family() {
+        let mut request = sample_direct_request(ModelId::RrfsA);
+        request
+            .product_overrides
+            .insert("prs-conus".to_string(), "prs-na".to_string());
+        let latest = LatestRun {
+            model: ModelId::RrfsA,
+            cycle: rustwx_core::CycleSpec::new("20260414", 20).unwrap(),
+            source: SourceId::Aws,
+        };
+        let group = FetchGroup {
+            product: "prs-conus".to_string(),
+            fetch_mode: PlotRecipeFetchMode::WholeFileStructuredExtract,
+            variable_patterns: Vec::new(),
+            selectors: vec![FieldSelector::isobaric(CanonicalField::Temperature, 500)],
+        };
+        let fetch = build_direct_fetch_request(&request, &latest, 2, &group).unwrap();
+        assert_eq!(fetch.request.product, "prs-na");
     }
 
     #[test]

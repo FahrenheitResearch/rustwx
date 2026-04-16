@@ -61,6 +61,8 @@ Each crate has its own README in `crates/<crate>/README.md`.
 - forecast-hour availability probes
 - full-family HRRR ingest on the main operator path, with structured extraction
   from local `wrfsfc` / `wrfprs` family files
+- full-file direct batching for `HRRR`, `GFS`, and `RRFS-A`, with one grouped
+  structured-extraction pass feeding many direct plots per hour
 - indexed byte-range fetch remains available for models and product paths that
   are still configured for it
 - on-disk artifact caching for fetched bytes and selector-backed field extraction
@@ -140,6 +142,29 @@ cargo run -p rustwx-cli --release --bin hrrr_ecape8 -- `
   --hour 23 `
   --forecast-hour 0 `
   --region conus
+```
+
+### Generate one full-file direct batch for GFS or RRFS-A
+
+```powershell
+cargo run -p rustwx-cli --release --bin direct_batch -- `
+  --model gfs `
+  --all-supported `
+  --date 20260414 `
+  --cycle 18 `
+  --forecast-hour 12 `
+  --region midwest
+```
+
+```powershell
+cargo run -p rustwx-cli --release --bin direct_batch -- `
+  --model rrfs-a `
+  --all-supported `
+  --date 20260414 `
+  --cycle 20 `
+  --forecast-hour 2 `
+  --source aws `
+  --region midwest
 ```
 
 ### Generate one HRRR non-ECAPE hour pass

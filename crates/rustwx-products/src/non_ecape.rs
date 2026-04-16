@@ -684,6 +684,7 @@ mod tests {
     #[test]
     fn summary_flattens_outputs_across_all_runners() {
         let direct = HrrrDirectBatchReport {
+            model: rustwx_core::ModelId::Hrrr,
             date_yyyymmdd: "20260415".into(),
             cycle_utc: 12,
             forecast_hour: 6,
@@ -852,6 +853,7 @@ mod tests {
         manifest.mark_running();
 
         let direct = HrrrDirectBatchReport {
+            model: rustwx_core::ModelId::Hrrr,
             date_yyyymmdd: "20260415".into(),
             cycle_utc: 12,
             forecast_hour: 6,

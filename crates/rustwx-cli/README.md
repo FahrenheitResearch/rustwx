@@ -18,6 +18,7 @@ Current top-level commands:
 
 This crate also contains targeted proof executables such as:
 
+- `direct_batch`
 - `plot_recipe_proof`
 - `hrrr_ecape8`
 - `hrrr_severe_proof`
@@ -46,6 +47,10 @@ cargo run -p rustwx-cli -- list
 
 ```powershell
 cargo run -p rustwx-cli --bin hrrr_batch -- --product severe-proof,ecape8
+```
+
+```powershell
+cargo run -p rustwx-cli --bin direct_batch -- --model gfs --all-supported --date 20260414 --cycle 18 --forecast-hour 12 --region midwest
 ```
 
 ```powershell
