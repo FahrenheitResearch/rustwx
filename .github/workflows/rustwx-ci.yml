@@ -94,5 +94,11 @@ jobs:
       - name: Build generic direct batch runner
         run: cargo build --release -p rustwx-cli --bin direct_batch
 
+      - name: Build generic derived batch runner
+        run: cargo build --release -p rustwx-cli --bin derived_batch
+
+      - name: Build generic ECAPE batch runner
+        run: cargo build --release -p rustwx-cli --bin ecape8_batch
+
       - name: Build shared heavy batch runner
         run: cargo build --release -p rustwx-cli --bin hrrr_batch

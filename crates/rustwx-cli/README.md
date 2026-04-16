@@ -19,6 +19,8 @@ Current top-level commands:
 This crate also contains targeted proof executables such as:
 
 - `direct_batch`
+- `derived_batch`
+- `ecape8_batch`
 - `plot_recipe_proof`
 - `hrrr_ecape8`
 - `hrrr_severe_proof`
@@ -51,6 +53,14 @@ cargo run -p rustwx-cli --bin hrrr_batch -- --product severe-proof,ecape8
 
 ```powershell
 cargo run -p rustwx-cli --bin direct_batch -- --model gfs --all-supported --date 20260414 --cycle 18 --forecast-hour 12 --region midwest
+```
+
+```powershell
+cargo run -p rustwx-cli --bin derived_batch -- --model rrfs-a --all-supported --date 20260414 --cycle 20 --forecast-hour 2 --source aws --region midwest
+```
+
+```powershell
+cargo run -p rustwx-cli --bin ecape8_batch -- --model ecmwf-open-data --date 20260414 --cycle 12 --forecast-hour 6 --source ecmwf --region midwest
 ```
 
 ```powershell

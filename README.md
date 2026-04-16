@@ -23,7 +23,8 @@ Built-in model/source coverage:
 Working proof lanes:
 
 - selector-backed upper-air map plots
-- HRRR ECAPE panel rendering
+- cross-model derived batch rendering for `HRRR`, `GFS`, `ECMWF open data`, and `RRFS-A`
+- cross-model ECAPE 8-panel rendering for `HRRR`, `GFS`, `ECMWF open data`, and `RRFS-A`
 - HRRR severe proof panel rendering
 - sounding rendering through `sharprs` with external ECAPE annotations
 - native composite reflectivity + UH proofs for HRRR and RRFS-A
@@ -63,6 +64,8 @@ Each crate has its own README in `crates/<crate>/README.md`.
   from local `wrfsfc` / `wrfprs` family files
 - full-file direct batching for `HRRR`, `GFS`, and `RRFS-A`, with one grouped
   structured-extraction pass feeding many direct plots per hour
+- generic full-file derived batching for `HRRR`, `GFS`, `ECMWF open data`, and `RRFS-A`
+- generic full-file ECAPE panel batching for `HRRR`, `GFS`, `ECMWF open data`, and `RRFS-A`
 - indexed byte-range fetch remains available for models and product paths that
   are still configured for it
 - on-disk artifact caching for fetched bytes and selector-backed field extraction
@@ -142,6 +145,30 @@ cargo run -p rustwx-cli --release --bin hrrr_ecape8 -- `
   --hour 23 `
   --forecast-hour 0 `
   --region conus
+```
+
+### Generate one generic derived batch
+
+```powershell
+cargo run -p rustwx-cli --release --bin derived_batch -- `
+  --model gfs `
+  --all-supported `
+  --date 20260414 `
+  --cycle 18 `
+  --forecast-hour 12 `
+  --region midwest
+```
+
+### Generate one generic ECAPE 8-panel
+
+```powershell
+cargo run -p rustwx-cli --release --bin ecape8_batch -- `
+  --model rrfs-a `
+  --date 20260414 `
+  --cycle 20 `
+  --forecast-hour 2 `
+  --source aws `
+  --region midwest
 ```
 
 ### Generate one full-file direct batch for GFS or RRFS-A
@@ -228,7 +255,7 @@ That order matches the dependency flow.
 
 - broaden selector coverage and model adapters
 - unify proof binaries into a real product CLI
-- add generic cached product assembly for many plots per timestep
+- lift the generic direct/derived/ECAPE executor shape into windowed and severe products
 - finish severe-suite render plumbing
 - make ECMWF probing and fetch planning more robust
 - reduce remaining ECAPE wall time

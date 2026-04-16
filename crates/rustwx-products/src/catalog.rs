@@ -195,42 +195,59 @@ fn build_direct_entries() -> Vec<ProductCatalogEntry> {
 }
 
 fn build_derived_entries() -> Vec<ProductCatalogEntry> {
+    let supported_models = built_in_models()
+        .iter()
+        .map(|model| ProductTargetSupport {
+            target: model.id.to_string(),
+            model: Some(model.id),
+            status: ProductTargetStatus::Supported,
+            fetch_mode: None,
+            grib_product: None,
+            blockers: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+
     let mut entries = supported_derived_product_specs()
         .into_iter()
         .map(|spec| {
+            let mut runners = vec!["derived_batch".to_string()];
+            if supported_models
+                .iter()
+                .any(|target| target.model == Some(ModelId::Hrrr))
+            {
+                runners.push("hrrr_derived_batch".to_string());
+                runners.push("hrrr_non_ecape_hour".to_string());
+            }
             build_catalog_entry(
                 spec,
                 ProductCatalogStatus::Supported,
-                vec![
-                    "hrrr_derived_batch".to_string(),
-                    "hrrr_non_ecape_hour".to_string(),
-                ],
-                vec![ProductTargetSupport {
-                    target: ModelId::Hrrr.to_string(),
-                    model: Some(ModelId::Hrrr),
-                    status: ProductTargetStatus::Supported,
-                    fetch_mode: None,
-                    grib_product: None,
-                    blockers: Vec::new(),
-                }],
+                runners,
+                supported_models.clone(),
             )
         })
         .collect::<Vec<_>>();
 
     entries.extend(blocked_derived_product_specs().into_iter().map(|spec| {
         let blockers = spec.blocked_reasons.clone();
-        build_catalog_entry(
-            spec,
-            ProductCatalogStatus::Blocked,
-            vec!["hrrr_derived_batch".to_string()],
-            vec![ProductTargetSupport {
-                target: ModelId::Hrrr.to_string(),
-                model: Some(ModelId::Hrrr),
+        let blocked_support = built_in_models()
+            .iter()
+            .map(|model| ProductTargetSupport {
+                target: model.id.to_string(),
+                model: Some(model.id),
                 status: ProductTargetStatus::Blocked,
                 fetch_mode: None,
                 grib_product: None,
-                blockers,
-            }],
+                blockers: blockers.clone(),
+            })
+            .collect::<Vec<_>>();
+        build_catalog_entry(
+            spec,
+            ProductCatalogStatus::Blocked,
+            vec![
+                "derived_batch".to_string(),
+                "hrrr_derived_batch".to_string(),
+            ],
+            blocked_support,
         )
     }));
 
@@ -241,19 +258,42 @@ fn build_heavy_entries() -> Vec<ProductCatalogEntry> {
     heavy_product_specs()
         .into_iter()
         .map(|spec| {
-            build_catalog_entry(
-                spec,
-                ProductCatalogStatus::Supported,
-                vec!["hrrr_batch".to_string()],
-                vec![ProductTargetSupport {
-                    target: ModelId::Hrrr.to_string(),
-                    model: Some(ModelId::Hrrr),
-                    status: ProductTargetStatus::Supported,
-                    fetch_mode: None,
-                    grib_product: None,
-                    blockers: Vec::new(),
-                }],
-            )
+            let (runners, support) = match spec.slug.as_str() {
+                "ecape8_panel" => {
+                    let mut runners = vec!["ecape8_batch".to_string()];
+                    let support = built_in_models()
+                        .iter()
+                        .map(|model| ProductTargetSupport {
+                            target: model.id.to_string(),
+                            model: Some(model.id),
+                            status: ProductTargetStatus::Supported,
+                            fetch_mode: None,
+                            grib_product: None,
+                            blockers: Vec::new(),
+                        })
+                        .collect::<Vec<_>>();
+                    if support
+                        .iter()
+                        .any(|target| target.model == Some(ModelId::Hrrr))
+                    {
+                        runners.push("hrrr_batch".to_string());
+                        runners.push("hrrr_ecape8".to_string());
+                    }
+                    (runners, support)
+                }
+                _ => (
+                    vec!["hrrr_batch".to_string()],
+                    vec![ProductTargetSupport {
+                        target: ModelId::Hrrr.to_string(),
+                        model: Some(ModelId::Hrrr),
+                        status: ProductTargetStatus::Supported,
+                        fetch_mode: None,
+                        grib_product: None,
+                        blockers: Vec::new(),
+                    }],
+                ),
+            };
+            build_catalog_entry(spec, ProductCatalogStatus::Supported, runners, support)
         })
         .collect()
 }
@@ -450,11 +490,18 @@ mod tests {
                 .lineage,
             rustwx_core::ProductLineage::Derived
         );
-        assert_eq!(entry.support.len(), 1);
+        assert_eq!(entry.support.len(), built_in_models().len());
         assert!(
-            entry.support[0]
-                .blockers
+            entry
+                .support
                 .iter()
+                .all(|target| matches!(target.status, ProductTargetStatus::Blocked))
+        );
+        assert!(
+            entry
+                .support
+                .iter()
+                .flat_map(|target| target.blockers.iter())
                 .any(|reason| reason.contains("effective SRH") || reason.contains("EBWD")),
             "blocked derived entries should carry the current blocker text"
         );
@@ -517,6 +564,25 @@ mod tests {
                 .expect("heavy proof entry should expose provenance")
                 .lineage,
             rustwx_core::ProductLineage::Bundled
+        );
+    }
+
+    #[test]
+    fn ecape_catalog_entry_is_supported_for_all_built_in_models() {
+        let catalog = build_supported_products_catalog();
+        let ecape = catalog
+            .heavy
+            .iter()
+            .find(|entry| entry.slug == "ecape8_panel")
+            .expect("catalog should expose ecape8 panel entry");
+        assert_eq!(ecape.title, "ECAPE 8-Panel");
+        assert!(ecape.runners.iter().any(|runner| runner == "ecape8_batch"));
+        assert_eq!(ecape.support.len(), built_in_models().len());
+        assert!(
+            ecape
+                .support
+                .iter()
+                .all(|target| matches!(target.status, ProductTargetStatus::Supported))
         );
     }
 

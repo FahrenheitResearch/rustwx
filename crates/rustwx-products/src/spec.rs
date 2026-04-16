@@ -252,11 +252,12 @@ fn heavy_product_spec(product: HrrrBatchProduct) -> ProductSpec {
             ],
         ),
         HrrrBatchProduct::Ecape8Panel => (
-            "HRRR ECAPE 8-Panel",
+            "ECAPE 8-Panel",
             ProductMaturity::Proof,
             vec![ProductSemanticFlag::ProofOriented],
             vec![
                 "Proof-oriented bundled panel".to_string(),
+                "Generic gridded ECAPE panel path for supported built-in models".to_string(),
                 "Contains experimental ECAPE SCP/EHI fields inside the panel set".to_string(),
             ],
         ),

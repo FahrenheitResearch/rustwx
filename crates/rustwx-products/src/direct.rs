@@ -1122,7 +1122,7 @@ fn cached_barb_strides(
     *cache.entry(key).or_insert(strides)
 }
 
-fn build_projected_map(
+pub(crate) fn build_projected_map(
     lat_deg: &[f32],
     lon_deg: &[f32],
     bounds: (f64, f64, f64, f64),

@@ -6,7 +6,7 @@ use rustwx_calc::{
     compute_shear_01km, compute_shear_06km, compute_srh_01km, compute_srh_03km, compute_stp_fixed,
     compute_surface_thermo,
 };
-use rustwx_core::{Field2D, ProductKey, SourceId};
+use rustwx_core::{Field2D, ModelId, ProductKey, SourceId};
 use rustwx_render::{
     Color, DerivedProductStyle, ExtendMode, MapRenderRequest, ProjectedDomain, ProjectedExtent,
     Solar07Palette, Solar07Product, WindBarbLayer, save_png,
@@ -19,14 +19,149 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Instant;
 
+use crate::direct::build_projected_map as build_projected_map_from_latlon;
+use crate::gridded::{
+    LoadedModelTimestep, PressureFields as GenericPressureFields,
+    SurfaceFields as GenericSurfaceFields, load_model_timestep_from_parts,
+};
 use crate::hrrr::{
     DomainSpec, HrrrSharedTiming, HrrrSurfaceFields, PreparedHrrrHourContext, broadcast_levels_pa,
-    build_projected_map, load_hrrr_timestep_from_parts,
+    build_projected_map as build_hrrr_projected_map,
 };
 
 const OUTPUT_WIDTH: u32 = 1200;
 const OUTPUT_HEIGHT: u32 = 900;
 const KNOTS_PER_MS: f64 = 1.943_844_5;
+
+trait SurfaceFieldSet {
+    fn lat(&self) -> &[f64];
+    fn lon(&self) -> &[f64];
+    fn nx(&self) -> usize;
+    fn ny(&self) -> usize;
+    fn orog_m(&self) -> &[f64];
+    fn psfc_pa(&self) -> &[f64];
+    fn t2_k(&self) -> &[f64];
+    fn q2_kgkg(&self) -> &[f64];
+    fn u10_ms(&self) -> &[f64];
+    fn v10_ms(&self) -> &[f64];
+}
+
+trait PressureFieldSet {
+    fn pressure_levels_hpa(&self) -> &[f64];
+    fn temperature_c_3d(&self) -> &[f64];
+    fn qvapor_kgkg_3d(&self) -> &[f64];
+    fn u_ms_3d(&self) -> &[f64];
+    fn v_ms_3d(&self) -> &[f64];
+    fn gh_m_3d(&self) -> &[f64];
+}
+
+impl SurfaceFieldSet for HrrrSurfaceFields {
+    fn lat(&self) -> &[f64] {
+        &self.lat
+    }
+    fn lon(&self) -> &[f64] {
+        &self.lon
+    }
+    fn nx(&self) -> usize {
+        self.nx
+    }
+    fn ny(&self) -> usize {
+        self.ny
+    }
+    fn orog_m(&self) -> &[f64] {
+        &self.orog_m
+    }
+    fn psfc_pa(&self) -> &[f64] {
+        &self.psfc_pa
+    }
+    fn t2_k(&self) -> &[f64] {
+        &self.t2_k
+    }
+    fn q2_kgkg(&self) -> &[f64] {
+        &self.q2_kgkg
+    }
+    fn u10_ms(&self) -> &[f64] {
+        &self.u10_ms
+    }
+    fn v10_ms(&self) -> &[f64] {
+        &self.v10_ms
+    }
+}
+
+impl PressureFieldSet for crate::hrrr::HrrrPressureFields {
+    fn pressure_levels_hpa(&self) -> &[f64] {
+        &self.pressure_levels_hpa
+    }
+    fn temperature_c_3d(&self) -> &[f64] {
+        &self.temperature_c_3d
+    }
+    fn qvapor_kgkg_3d(&self) -> &[f64] {
+        &self.qvapor_kgkg_3d
+    }
+    fn u_ms_3d(&self) -> &[f64] {
+        &self.u_ms_3d
+    }
+    fn v_ms_3d(&self) -> &[f64] {
+        &self.v_ms_3d
+    }
+    fn gh_m_3d(&self) -> &[f64] {
+        &self.gh_m_3d
+    }
+}
+
+impl SurfaceFieldSet for GenericSurfaceFields {
+    fn lat(&self) -> &[f64] {
+        &self.lat
+    }
+    fn lon(&self) -> &[f64] {
+        &self.lon
+    }
+    fn nx(&self) -> usize {
+        self.nx
+    }
+    fn ny(&self) -> usize {
+        self.ny
+    }
+    fn orog_m(&self) -> &[f64] {
+        &self.orog_m
+    }
+    fn psfc_pa(&self) -> &[f64] {
+        &self.psfc_pa
+    }
+    fn t2_k(&self) -> &[f64] {
+        &self.t2_k
+    }
+    fn q2_kgkg(&self) -> &[f64] {
+        &self.q2_kgkg
+    }
+    fn u10_ms(&self) -> &[f64] {
+        &self.u10_ms
+    }
+    fn v10_ms(&self) -> &[f64] {
+        &self.v10_ms
+    }
+}
+
+impl PressureFieldSet for GenericPressureFields {
+    fn pressure_levels_hpa(&self) -> &[f64] {
+        &self.pressure_levels_hpa
+    }
+    fn temperature_c_3d(&self) -> &[f64] {
+        &self.temperature_c_3d
+    }
+    fn qvapor_kgkg_3d(&self) -> &[f64] {
+        &self.qvapor_kgkg_3d
+    }
+    fn u_ms_3d(&self) -> &[f64] {
+        &self.u_ms_3d
+    }
+    fn v_ms_3d(&self) -> &[f64] {
+        &self.v_ms_3d
+    }
+    fn gh_m_3d(&self) -> &[f64] {
+        &self.gh_m_3d
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DerivedRecipeInventoryEntry {
@@ -192,6 +327,22 @@ pub fn blocked_derived_recipe_inventory() -> &'static [BlockedDerivedRecipeInven
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DerivedBatchRequest {
+    pub model: ModelId,
+    pub date_yyyymmdd: String,
+    pub cycle_override_utc: Option<u8>,
+    pub forecast_hour: u16,
+    pub source: SourceId,
+    pub domain: DomainSpec,
+    pub out_dir: PathBuf,
+    pub cache_root: PathBuf,
+    pub use_cache: bool,
+    pub recipe_slugs: Vec<String>,
+    pub surface_product_override: Option<String>,
+    pub pressure_product_override: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HrrrDerivedBatchRequest {
     pub date_yyyymmdd: String,
     pub cycle_override_utc: Option<u8>,
@@ -223,6 +374,19 @@ pub struct HrrrDerivedRenderedRecipe {
     pub title: String,
     pub output_path: PathBuf,
     pub timing: HrrrDerivedRecipeTiming,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DerivedBatchReport {
+    pub model: ModelId,
+    pub date_yyyymmdd: String,
+    pub cycle_utc: u8,
+    pub forecast_hour: u16,
+    pub source: SourceId,
+    pub domain: DomainSpec,
+    pub shared_timing: HrrrDerivedSharedTiming,
+    pub recipes: Vec<HrrrDerivedRenderedRecipe>,
+    pub total_ms: u128,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -519,19 +683,205 @@ impl DerivedRequirements {
     }
 }
 
-pub fn run_hrrr_derived_batch(
-    request: &HrrrDerivedBatchRequest,
-) -> Result<HrrrDerivedBatchReport, Box<dyn std::error::Error>> {
+impl DerivedBatchRequest {
+    fn from_hrrr(request: &HrrrDerivedBatchRequest) -> Self {
+        Self {
+            model: ModelId::Hrrr,
+            date_yyyymmdd: request.date_yyyymmdd.clone(),
+            cycle_override_utc: request.cycle_override_utc,
+            forecast_hour: request.forecast_hour,
+            source: request.source,
+            domain: request.domain.clone(),
+            out_dir: request.out_dir.clone(),
+            cache_root: request.cache_root.clone(),
+            use_cache: request.use_cache,
+            recipe_slugs: request.recipe_slugs.clone(),
+            surface_product_override: None,
+            pressure_product_override: None,
+        }
+    }
+}
+
+pub fn supported_derived_recipe_slugs(model: ModelId) -> Vec<String> {
+    match model {
+        ModelId::Hrrr | ModelId::Gfs | ModelId::EcmwfOpenData | ModelId::RrfsA => {
+            supported_derived_recipe_inventory()
+                .iter()
+                .map(|recipe| recipe.slug.to_string())
+                .collect()
+        }
+    }
+}
+
+pub fn run_derived_batch(
+    request: &DerivedBatchRequest,
+) -> Result<DerivedBatchReport, Box<dyn std::error::Error>> {
     let recipes = plan_derived_recipes(&request.recipe_slugs)?;
-    let timestep = load_hrrr_timestep_from_parts(
+    let timestep = load_model_timestep_from_parts(
+        request.model,
         &request.date_yyyymmdd,
         request.cycle_override_utc,
         request.forecast_hour,
         request.source,
+        request.surface_product_override.as_deref(),
+        request.pressure_product_override.as_deref(),
         &request.cache_root,
         request.use_cache,
     )?;
-    run_hrrr_derived_batch_with_context(request, &recipes, &timestep, None)
+    run_derived_batch_from_loaded(request, &recipes, &timestep)
+}
+
+pub fn run_hrrr_derived_batch(
+    request: &HrrrDerivedBatchRequest,
+) -> Result<HrrrDerivedBatchReport, Box<dyn std::error::Error>> {
+    Ok(into_hrrr_report(run_derived_batch(
+        &DerivedBatchRequest::from_hrrr(request),
+    )?))
+}
+
+fn run_derived_batch_from_loaded(
+    request: &DerivedBatchRequest,
+    recipes: &[DerivedRecipe],
+    timestep: &LoadedModelTimestep,
+) -> Result<DerivedBatchReport, Box<dyn std::error::Error>> {
+    fs::create_dir_all(&request.out_dir)?;
+    if request.use_cache {
+        fs::create_dir_all(&request.cache_root)?;
+    }
+    let total_start = Instant::now();
+
+    let project_start = Instant::now();
+    let projected = build_projected_map_from_latlon(
+        &timestep.grid.lat_deg,
+        &timestep.grid.lon_deg,
+        request.domain.bounds,
+        wrf_render::render::map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
+    )?;
+    let project_ms = project_start.elapsed().as_millis();
+
+    let compute_start = Instant::now();
+    let computed = compute_derived_fields_generic(
+        &timestep.surface_decode.value,
+        &timestep.pressure_decode.value,
+        recipes,
+    )?;
+    let compute_ms = compute_start.elapsed().as_millis();
+
+    let render_parallelism = png_render_parallelism(recipes.len());
+    let grid = timestep.grid();
+    let projected = &projected;
+    let date_yyyymmdd = request.date_yyyymmdd.as_str();
+    let cycle_utc = timestep.latest.cycle.hour_utc;
+    let forecast_hour = request.forecast_hour;
+    let source = timestep.latest.source;
+    let model = request.model;
+    let computed = &computed;
+    let rendered = thread::scope(
+        |scope| -> Result<Vec<HrrrDerivedRenderedRecipe>, io::Error> {
+            let mut rendered = Vec::with_capacity(recipes.len());
+            let mut pending = VecDeque::new();
+
+            for &recipe in recipes {
+                let model_slug = request.model.as_str().replace('-', "_");
+                let output_path = request.out_dir.join(format!(
+                    "rustwx_{}_{}_{}z_f{:03}_{}_{}.png",
+                    model_slug,
+                    request.date_yyyymmdd,
+                    timestep.latest.cycle.hour_utc,
+                    request.forecast_hour,
+                    request.domain.slug,
+                    recipe.slug()
+                ));
+                pending.push_back(scope.spawn(
+                    move || -> Result<HrrrDerivedRenderedRecipe, io::Error> {
+                        let render_start = Instant::now();
+                        let render_artifact = build_render_artifact(
+                            recipe,
+                            grid,
+                            projected,
+                            date_yyyymmdd,
+                            cycle_utc,
+                            forecast_hour,
+                            source,
+                            model,
+                            computed,
+                        )
+                        .map_err(thread_render_error)?;
+                        save_png(&render_artifact.request, &output_path)
+                            .map_err(thread_render_error)?;
+                        let render_ms = render_start.elapsed().as_millis();
+                        Ok(HrrrDerivedRenderedRecipe {
+                            recipe_slug: render_artifact.recipe_slug,
+                            title: render_artifact.title,
+                            output_path,
+                            timing: HrrrDerivedRecipeTiming {
+                                render_ms,
+                                total_ms: render_ms,
+                            },
+                        })
+                    },
+                ));
+
+                if pending.len() >= render_parallelism {
+                    rendered.push(join_render_job(pending.pop_front().unwrap())?);
+                }
+            }
+
+            while let Some(handle) = pending.pop_front() {
+                rendered.push(join_render_job(handle)?);
+            }
+
+            Ok(rendered)
+        },
+    )
+    .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+
+    Ok(DerivedBatchReport {
+        model: request.model,
+        date_yyyymmdd: request.date_yyyymmdd.clone(),
+        cycle_utc: timestep.latest.cycle.hour_utc,
+        forecast_hour: request.forecast_hour,
+        source: timestep.latest.source,
+        domain: request.domain.clone(),
+        shared_timing: HrrrDerivedSharedTiming {
+            fetch_decode: HrrrSharedTiming {
+                fetch_surface_ms: timestep.shared_timing.fetch_surface_ms,
+                fetch_pressure_ms: timestep.shared_timing.fetch_pressure_ms,
+                decode_surface_ms: timestep.shared_timing.decode_surface_ms,
+                decode_pressure_ms: timestep.shared_timing.decode_pressure_ms,
+                fetch_surface_cache_hit: timestep.shared_timing.fetch_surface_cache_hit,
+                fetch_pressure_cache_hit: timestep.shared_timing.fetch_pressure_cache_hit,
+                decode_surface_cache_hit: timestep.shared_timing.decode_surface_cache_hit,
+                decode_pressure_cache_hit: timestep.shared_timing.decode_pressure_cache_hit,
+                surface_fetch: crate::hrrr::HrrrFetchRuntimeInfo {
+                    planned_product: timestep.shared_timing.surface_fetch.planned_product.clone(),
+                    fetched_product: timestep.shared_timing.surface_fetch.fetched_product.clone(),
+                    requested_source: timestep.shared_timing.surface_fetch.requested_source,
+                    resolved_source: timestep.shared_timing.surface_fetch.resolved_source,
+                    resolved_url: timestep.shared_timing.surface_fetch.resolved_url.clone(),
+                },
+                pressure_fetch: crate::hrrr::HrrrFetchRuntimeInfo {
+                    planned_product: timestep
+                        .shared_timing
+                        .pressure_fetch
+                        .planned_product
+                        .clone(),
+                    fetched_product: timestep
+                        .shared_timing
+                        .pressure_fetch
+                        .fetched_product
+                        .clone(),
+                    requested_source: timestep.shared_timing.pressure_fetch.requested_source,
+                    resolved_source: timestep.shared_timing.pressure_fetch.resolved_source,
+                    resolved_url: timestep.shared_timing.pressure_fetch.resolved_url.clone(),
+                },
+            },
+            compute_ms,
+            project_ms,
+        },
+        recipes: rendered,
+        total_ms: total_start.elapsed().as_millis(),
+    })
 }
 
 pub(crate) fn run_hrrr_derived_batch_with_context(
@@ -552,7 +902,7 @@ pub(crate) fn run_hrrr_derived_batch_with_context(
     {
         projected
     } else {
-        build_projected_map(
+        build_hrrr_projected_map(
             &timestep.surface_decode().value,
             request.domain.bounds,
             wrf_render::render::map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
@@ -561,7 +911,7 @@ pub(crate) fn run_hrrr_derived_batch_with_context(
     let project_ms = project_start.elapsed().as_millis();
 
     let compute_start = Instant::now();
-    let computed = compute_derived_fields(
+    let computed = compute_derived_fields_generic(
         &timestep.surface_decode().value,
         &timestep.pressure_decode().value,
         recipes,
@@ -575,6 +925,7 @@ pub(crate) fn run_hrrr_derived_batch_with_context(
     let cycle_utc = timestep.latest().cycle.hour_utc;
     let forecast_hour = request.forecast_hour;
     let source = timestep.latest().source;
+    let model = ModelId::Hrrr;
     let computed = &computed;
     let rendered = thread::scope(
         |scope| -> Result<Vec<HrrrDerivedRenderedRecipe>, io::Error> {
@@ -601,6 +952,7 @@ pub(crate) fn run_hrrr_derived_batch_with_context(
                             cycle_utc,
                             forecast_hour,
                             source,
+                            model,
                             computed,
                         )
                         .map_err(thread_render_error)?;
@@ -649,6 +1001,19 @@ pub(crate) fn run_hrrr_derived_batch_with_context(
     })
 }
 
+fn into_hrrr_report(report: DerivedBatchReport) -> HrrrDerivedBatchReport {
+    HrrrDerivedBatchReport {
+        date_yyyymmdd: report.date_yyyymmdd,
+        cycle_utc: report.cycle_utc,
+        forecast_hour: report.forecast_hour,
+        source: report.source,
+        domain: report.domain,
+        shared_timing: report.shared_timing,
+        recipes: report.recipes,
+        total_ms: report.total_ms,
+    }
+}
+
 pub fn build_hrrr_live_derived_artifact(
     recipe_slug: &str,
     surface: &HrrrSurfaceFields,
@@ -662,7 +1027,7 @@ pub fn build_hrrr_live_derived_artifact(
 ) -> Result<HrrrDerivedLiveArtifact, Box<dyn std::error::Error>> {
     let recipe =
         DerivedRecipe::parse(recipe_slug).map_err(|err| format!("{recipe_slug}: {err}"))?;
-    let computed = compute_derived_fields(surface, pressure, &[recipe])?;
+    let computed = compute_derived_fields_generic(surface, pressure, &[recipe])?;
     build_render_artifact(
         recipe,
         grid,
@@ -671,6 +1036,7 @@ pub fn build_hrrr_live_derived_artifact(
         cycle_utc,
         forecast_hour,
         source,
+        ModelId::Hrrr,
         &computed,
     )
 }
@@ -689,11 +1055,15 @@ pub(crate) fn plan_derived_recipes(
     Ok(planned)
 }
 
-fn compute_derived_fields(
-    surface: &HrrrSurfaceFields,
-    pressure: &crate::hrrr::HrrrPressureFields,
+fn compute_derived_fields_generic<S, P>(
+    surface: &S,
+    pressure: &P,
     recipes: &[DerivedRecipe],
-) -> Result<DerivedComputedFields, Box<dyn std::error::Error>> {
+) -> Result<DerivedComputedFields, Box<dyn std::error::Error>>
+where
+    S: SurfaceFieldSet,
+    P: PressureFieldSet,
+{
     fn missing_dependency(name: &str) -> std::io::Error {
         std::io::Error::other(format!(
             "derived compute missing required dependency: {name}"
@@ -720,32 +1090,35 @@ fn compute_derived_fields(
     }
 
     let requirements = DerivedRequirements::from_recipes(recipes);
-    let grid = CalcGridShape::new(surface.nx, surface.ny)?;
+    let grid = CalcGridShape::new(surface.nx(), surface.ny())?;
     let mut computed = DerivedComputedFields::default();
 
     let surface_inputs = SurfaceInputs {
-        psfc_pa: &surface.psfc_pa,
-        t2_k: &surface.t2_k,
-        q2_kgkg: &surface.q2_kgkg,
-        u10_ms: &surface.u10_ms,
-        v10_ms: &surface.v10_ms,
+        psfc_pa: surface.psfc_pa(),
+        t2_k: surface.t2_k(),
+        q2_kgkg: surface.q2_kgkg(),
+        u10_ms: surface.u10_ms(),
+        v10_ms: surface.v10_ms(),
     };
 
     let shape = if requirements.needs_height_agl() {
-        Some(VolumeShape::new(grid, pressure.pressure_levels_hpa.len())?)
+        Some(VolumeShape::new(
+            grid,
+            pressure.pressure_levels_hpa().len(),
+        )?)
     } else {
         None
     };
     let pressure_3d_pa = if requirements.needs_volume() {
         Some(broadcast_levels_pa(
-            &pressure.pressure_levels_hpa,
+            pressure.pressure_levels_hpa(),
             grid.len(),
         ))
     } else {
         None
     };
     let height_agl_3d = if requirements.needs_height_agl() {
-        Some(crate::hrrr::compute_height_agl_3d(
+        Some(compute_height_agl_3d_generic(
             surface,
             pressure,
             grid,
@@ -761,22 +1134,22 @@ fn compute_derived_fields(
                 &pressure_3d_pa,
                 "pressure volume for derived thermodynamics",
             )?,
-            temperature_c: &pressure.temperature_c_3d,
-            qvapor_kgkg: &pressure.qvapor_kgkg_3d,
+            temperature_c: pressure.temperature_c_3d(),
+            qvapor_kgkg: pressure.qvapor_kgkg_3d(),
             height_agl_m: require_option_ref(
                 &height_agl_3d,
                 "height_agl for derived thermodynamics",
             )?,
-            u_ms: &pressure.u_ms_3d,
-            v_ms: &pressure.v_ms_3d,
+            u_ms: pressure.u_ms_3d(),
+            v_ms: pressure.v_ms_3d(),
             nz: require_option_copy(shape, "volume shape for derived thermodynamics")?.nz,
         })
     };
     let make_wind = || -> Result<WindGridInputs<'_>, Box<dyn std::error::Error>> {
         Ok(WindGridInputs {
             shape: require_option_copy(shape, "volume shape for wind diagnostics")?,
-            u_3d_ms: &pressure.u_ms_3d,
-            v_3d_ms: &pressure.v_ms_3d,
+            u_3d_ms: pressure.u_ms_3d(),
+            v_3d_ms: pressure.v_ms_3d(),
             height_agl_3d_m: require_option_ref(&height_agl_3d, "height_agl for wind diagnostics")?,
         })
     };
@@ -830,8 +1203,8 @@ fn compute_derived_fields(
         let surface_thermo = compute_surface_thermo(grid, surface_inputs)?;
         if recipes.contains(&DerivedRecipe::ThetaE2m10mWinds) {
             computed.theta_e_2m_k = Some(surface_thermo.theta_e_2m_k);
-            computed.surface_u10_ms = Some(surface.u10_ms.clone());
-            computed.surface_v10_ms = Some(surface.v10_ms.clone());
+            computed.surface_u10_ms = Some(surface.u10_ms().to_vec());
+            computed.surface_v10_ms = Some(surface.v10_ms().to_vec());
         }
         if recipes.contains(&DerivedRecipe::ApparentTemperature2m) {
             computed.apparent_temperature_2m_c =
@@ -942,22 +1315,22 @@ fn compute_derived_fields(
         let (dx_m, dy_m) = estimate_grid_spacing_m(surface)?;
         if requirements.temperature_advection_700mb {
             let t700 = level_slice(
-                &pressure.temperature_c_3d,
-                &pressure.pressure_levels_hpa,
+                pressure.temperature_c_3d(),
+                pressure.pressure_levels_hpa(),
                 700.0,
                 grid.len(),
             )
             .ok_or("missing 700 mb temperature slice in HRRR pressure bundle")?;
             let u700 = level_slice(
-                &pressure.u_ms_3d,
-                &pressure.pressure_levels_hpa,
+                pressure.u_ms_3d(),
+                pressure.pressure_levels_hpa(),
                 700.0,
                 grid.len(),
             )
             .ok_or("missing 700 mb u-wind slice in HRRR pressure bundle")?;
             let v700 = level_slice(
-                &pressure.v_ms_3d,
-                &pressure.pressure_levels_hpa,
+                pressure.v_ms_3d(),
+                pressure.pressure_levels_hpa(),
                 700.0,
                 grid.len(),
             )
@@ -978,22 +1351,22 @@ fn compute_derived_fields(
         }
         if requirements.temperature_advection_850mb {
             let t850 = level_slice(
-                &pressure.temperature_c_3d,
-                &pressure.pressure_levels_hpa,
+                pressure.temperature_c_3d(),
+                pressure.pressure_levels_hpa(),
                 850.0,
                 grid.len(),
             )
             .ok_or("missing 850 mb temperature slice in HRRR pressure bundle")?;
             let u850 = level_slice(
-                &pressure.u_ms_3d,
-                &pressure.pressure_levels_hpa,
+                pressure.u_ms_3d(),
+                pressure.pressure_levels_hpa(),
                 850.0,
                 grid.len(),
             )
             .ok_or("missing 850 mb u-wind slice in HRRR pressure bundle")?;
             let v850 = level_slice(
-                &pressure.v_ms_3d,
-                &pressure.pressure_levels_hpa,
+                pressure.v_ms_3d(),
+                pressure.pressure_levels_hpa(),
                 850.0,
                 grid.len(),
             )
@@ -1025,6 +1398,7 @@ fn build_render_artifact(
     cycle_utc: u8,
     forecast_hour: u16,
     source: SourceId,
+    model: ModelId,
     computed: &DerivedComputedFields,
 ) -> Result<HrrrDerivedLiveArtifact, Box<dyn std::error::Error>> {
     let (field, mut request) = match recipe {
@@ -1252,8 +1626,8 @@ fn build_render_artifact(
     request.height = OUTPUT_HEIGHT;
     request.title = Some(recipe.title().to_string());
     request.subtitle_left = Some(format!(
-        "{} {}Z F{:03}  HRRR",
-        date_yyyymmdd, cycle_utc, forecast_hour
+        "{} {}Z F{:03}  {}",
+        date_yyyymmdd, cycle_utc, forecast_hour, model
     ));
     request.subtitle_right = Some(format!("source: {}", source));
     request.projected_domain = Some(ProjectedDomain {
@@ -1466,27 +1840,64 @@ fn level_slice<'a>(
     values_3d.get(start..end)
 }
 
-fn estimate_grid_spacing_m(surface: &HrrrSurfaceFields) -> Result<(f64, f64), CalcError> {
-    if surface.nx < 2 || surface.ny < 2 {
+fn compute_height_agl_3d_generic<S, P>(
+    surface: &S,
+    pressure: &P,
+    grid: CalcGridShape,
+    shape: VolumeShape,
+) -> Vec<f64>
+where
+    S: SurfaceFieldSet,
+    P: PressureFieldSet,
+{
+    let mut height_agl_3d = pressure
+        .gh_m_3d()
+        .iter()
+        .enumerate()
+        .map(|(idx, &value)| {
+            let ij = idx % grid.len();
+            (value - surface.orog_m()[ij]).max(0.0)
+        })
+        .collect::<Vec<_>>();
+
+    for k in 1..shape.nz {
+        let level_offset = k * grid.len();
+        let prev_offset = (k - 1) * grid.len();
+        for ij in 0..grid.len() {
+            let min_height = height_agl_3d[prev_offset + ij] + 1.0;
+            if height_agl_3d[level_offset + ij] < min_height {
+                height_agl_3d[level_offset + ij] = min_height;
+            }
+        }
+    }
+
+    height_agl_3d
+}
+
+fn estimate_grid_spacing_m<S>(surface: &S) -> Result<(f64, f64), CalcError>
+where
+    S: SurfaceFieldSet,
+{
+    if surface.nx() < 2 || surface.ny() < 2 {
         return Err(CalcError::LengthMismatch {
             field: "grid_spacing",
             expected: 4,
-            actual: surface.nx * surface.ny,
+            actual: surface.nx() * surface.ny(),
         });
     }
 
     let mut dx_sum = 0.0;
     let mut dx_count = 0usize;
-    for y in 0..surface.ny {
-        let row_offset = y * surface.nx;
-        for x in 0..(surface.nx - 1) {
+    for y in 0..surface.ny() {
+        let row_offset = y * surface.nx();
+        for x in 0..(surface.nx() - 1) {
             let left = row_offset + x;
             let right = left + 1;
             let distance = haversine_m(
-                surface.lat[left],
-                surface.lon[left],
-                surface.lat[right],
-                surface.lon[right],
+                surface.lat()[left],
+                surface.lon()[left],
+                surface.lat()[right],
+                surface.lon()[right],
             );
             if distance.is_finite() && distance > 0.0 {
                 dx_sum += distance;
@@ -1497,17 +1908,17 @@ fn estimate_grid_spacing_m(surface: &HrrrSurfaceFields) -> Result<(f64, f64), Ca
 
     let mut dy_sum = 0.0;
     let mut dy_count = 0usize;
-    for y in 0..(surface.ny - 1) {
-        let row_offset = y * surface.nx;
-        let next_row_offset = (y + 1) * surface.nx;
-        for x in 0..surface.nx {
+    for y in 0..(surface.ny() - 1) {
+        let row_offset = y * surface.nx();
+        let next_row_offset = (y + 1) * surface.nx();
+        for x in 0..surface.nx() {
             let top = row_offset + x;
             let bottom = next_row_offset + x;
             let distance = haversine_m(
-                surface.lat[top],
-                surface.lon[top],
-                surface.lat[bottom],
-                surface.lon[bottom],
+                surface.lat()[top],
+                surface.lon()[top],
+                surface.lat()[bottom],
+                surface.lon()[bottom],
             );
             if distance.is_finite() && distance > 0.0 {
                 dy_sum += distance;
