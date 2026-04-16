@@ -1,8 +1,12 @@
 use crate::cache::{load_bincode, store_bincode};
+use crate::orchestrator::{PreparedRunContext, PreparedRunMetadata};
+pub use crate::shared_context::{
+    DomainSpec, PreparedProjectedContext, ProjectedMap, Solar07PanelField, Solar07PanelHeader,
+    Solar07PanelLayout, layout_key, render_two_by_four_solar07_panel,
+};
 use grib_core::grib2::{
     Grib2File, Grib2Message, flip_rows, grid_latlon, unpack_message_normalized,
 };
-use image::DynamicImage;
 use rustwx_calc::{
     EcapeTripletOptions, EcapeVolumeInputs, GridShape as CalcGridShape, ScpEhiInputs,
     SupportedSevereFields, SurfaceInputs, VolumeShape, WindGridInputs,
@@ -10,15 +14,11 @@ use rustwx_calc::{
     compute_supported_severe_fields, compute_wind_diagnostics_bundle,
 };
 use rustwx_core::{
-    CycleSpec, Field2D, GridShape, LatLonGrid, ModelId, ModelRunRequest, ProductKey, RustwxError,
-    SourceId,
+    CycleSpec, GridShape, LatLonGrid, ModelId, ModelRunRequest, RustwxError, SourceId,
 };
 use rustwx_io::{CachedFetchResult, FetchRequest, artifact_cache_dir, fetch_bytes_with_cache};
 use rustwx_models::{LatestRun, latest_available_run};
-use rustwx_render::{
-    Color, MapRenderRequest, PanelGridLayout, PanelPadding, ProjectedDomain, ProjectedExtent,
-    ProjectedLineOverlay, Solar07Product, render_panel_grid,
-};
+use rustwx_render::{Color, ProjectedExtent, ProjectedLineOverlay, Solar07Product};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -30,22 +30,6 @@ use std::time::Instant;
 use wrf_render::features::load_styled_conus_features;
 use wrf_render::projection::LambertConformal;
 use wrf_render::render::map_frame_aspect_ratio;
-use wrf_render::text;
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct DomainSpec {
-    pub slug: String,
-    pub bounds: (f64, f64, f64, f64),
-}
-
-impl DomainSpec {
-    pub fn new<S: Into<String>>(slug: S, bounds: (f64, f64, f64, f64)) -> Self {
-        Self {
-            slug: slug.into(),
-            bounds,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum HrrrBatchProduct {
@@ -208,14 +192,6 @@ pub struct CachedDecode<T> {
 }
 
 #[derive(Debug, Clone)]
-pub struct ProjectedMap {
-    pub projected_x: Vec<f64>,
-    pub projected_y: Vec<f64>,
-    pub extent: ProjectedExtent,
-    pub lines: Vec<ProjectedLineOverlay>,
-}
-
-#[derive(Debug, Clone)]
 struct PreparedHrrrHeavyVolume {
     grid: CalcGridShape,
     shape: VolumeShape,
@@ -247,73 +223,6 @@ struct CroppedHrrrHeavyDomain {
     surface: HrrrSurfaceFields,
     pressure: HrrrPressureFields,
     grid: LatLonGrid,
-}
-
-#[derive(Debug, Clone)]
-pub struct Solar07PanelField {
-    pub product: Solar07Product,
-    pub title_override: Option<String>,
-    pub units: String,
-    pub values: Vec<f64>,
-}
-
-impl Solar07PanelField {
-    pub fn new<S: Into<String>>(product: Solar07Product, units: S, values: Vec<f64>) -> Self {
-        Self {
-            product,
-            title_override: None,
-            units: units.into(),
-            values,
-        }
-    }
-
-    pub fn with_title_override<S: Into<String>>(mut self, title: S) -> Self {
-        self.title_override = Some(title.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct Solar07PanelHeader {
-    pub title: String,
-    pub subtitle_lines: Vec<String>,
-}
-
-impl Solar07PanelHeader {
-    pub fn new<S: Into<String>>(title: S) -> Self {
-        Self {
-            title: title.into(),
-            subtitle_lines: Vec::new(),
-        }
-    }
-
-    pub fn with_subtitle_line<S: Into<String>>(mut self, line: S) -> Self {
-        self.subtitle_lines.push(line.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Solar07PanelLayout {
-    pub panel_width: u32,
-    pub panel_height: u32,
-    pub top_padding: u32,
-}
-
-impl Default for Solar07PanelLayout {
-    fn default() -> Self {
-        Self {
-            panel_width: 700,
-            panel_height: 520,
-            top_padding: 70,
-        }
-    }
-}
-
-impl Solar07PanelLayout {
-    pub fn target_aspect_ratio(self) -> f64 {
-        map_frame_aspect_ratio(self.panel_width, self.panel_height, true, true)
-    }
 }
 
 pub fn resolve_hrrr_run(
@@ -694,62 +603,6 @@ pub fn build_projected_map(
     })
 }
 
-pub fn render_two_by_four_solar07_panel(
-    output_path: &Path,
-    grid: &LatLonGrid,
-    projected: &ProjectedMap,
-    fields: &[Solar07PanelField],
-    header: &Solar07PanelHeader,
-    layout: Solar07PanelLayout,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let grid_layout = PanelGridLayout::two_by_four(layout.panel_width, layout.panel_height)?
-        .with_padding(PanelPadding {
-            top: layout.top_padding,
-            ..Default::default()
-        });
-    let mut requests = Vec::with_capacity(fields.len());
-
-    for field_spec in fields {
-        let field = Field2D::new(
-            ProductKey::named(field_spec.product.slug()),
-            field_spec.units.clone(),
-            grid.clone(),
-            field_spec.values.iter().map(|&v| v as f32).collect(),
-        )?;
-        let mut request = MapRenderRequest::for_core_solar07_product(field, field_spec.product);
-        request.width = layout.panel_width;
-        request.height = layout.panel_height;
-        if let Some(title) = &field_spec.title_override {
-            request.title = Some(title.clone());
-        }
-        request.projected_domain = Some(ProjectedDomain {
-            x: projected.projected_x.clone(),
-            y: projected.projected_y.clone(),
-            extent: projected.extent.clone(),
-        });
-        request.projected_lines = projected.lines.clone();
-        requests.push(request);
-    }
-
-    let mut canvas = render_panel_grid(&grid_layout, &requests)?;
-    text::draw_text_centered(&mut canvas, &header.title, 10, wrf_render::Rgba::BLACK, 2);
-    for (idx, line) in header.subtitle_lines.iter().enumerate() {
-        text::draw_text_centered(
-            &mut canvas,
-            line,
-            35 + (idx as i32 * 20),
-            wrf_render::Rgba::BLACK,
-            1,
-        );
-    }
-
-    if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    DynamicImage::ImageRgba8(canvas).save(output_path)?;
-    Ok(())
-}
-
 #[derive(Debug)]
 pub struct LoadedHrrrTimestep {
     pub(crate) latest: LatestRun,
@@ -764,12 +617,12 @@ pub struct LoadedHrrrTimestep {
 #[derive(Debug)]
 pub(crate) struct PreparedHrrrHourContext {
     pub(crate) timestep: LoadedHrrrTimestep,
-    projected_maps: HashMap<(u32, u32), ProjectedMap>,
+    projected: PreparedProjectedContext,
 }
 
 impl PreparedHrrrHourContext {
     pub(crate) fn projected_map(&self, width: u32, height: u32) -> Option<&ProjectedMap> {
-        self.projected_maps.get(&(width, height))
+        self.projected.projected_map(width, height)
     }
 
     pub fn timestep(&self) -> &LoadedHrrrTimestep {
@@ -815,8 +668,32 @@ pub fn run_hrrr_batch(
         fs::create_dir_all(&request.cache_root)?;
     }
 
+    let projection_sizes = required_batch_projection_sizes(&request.products);
+    let context = prepare_hrrr_hour_context(
+        &request.date_yyyymmdd,
+        request.cycle_override_utc,
+        request.forecast_hour,
+        request.source,
+        request.domain.bounds,
+        &projection_sizes,
+        &request.cache_root,
+        request.use_cache,
+    )?;
+    let prepared = PreparedRunContext::new(
+        PreparedRunMetadata::from_latest(context.timestep().latest(), request.forecast_hour),
+        context,
+    );
+    run_hrrr_batch_with_context(request, &prepared)
+}
+
+pub(crate) fn run_hrrr_batch_with_context(
+    request: &HrrrBatchRequest,
+    prepared: &PreparedRunContext<PreparedHrrrHourContext>,
+) -> Result<HrrrBatchReport, Box<dyn std::error::Error>> {
     let total_start = Instant::now();
-    let timestep = load_hrrr_timestep(request)?;
+    let context = prepared.context();
+    let metadata = prepared.metadata();
+    let timestep = context.timestep();
     let cropped_heavy_domain = crop_hrrr_heavy_domain(
         &timestep.surface_decode.value,
         &timestep.pressure_decode.value,
@@ -834,22 +711,33 @@ pub fn run_hrrr_batch(
     let render_parallelism = self::png_render_parallelism(unique_products.len());
     let mut projected_maps = HashMap::<(u32, u32, u32), ProjectedMap>::new();
     let mut project_timings = Vec::with_capacity(unique_products.len());
+    let can_reuse_shared_projection = cropped_heavy_domain.is_none();
 
     for product in &unique_products {
         let layout = product.layout();
         let key = self::layout_key(layout);
         let project_start = Instant::now();
         if !projected_maps.contains_key(&key) {
-            let built =
-                build_projected_map(surface, request.domain.bounds, layout.target_aspect_ratio())?;
+            let built = if can_reuse_shared_projection {
+                context
+                    .projected_map(layout.panel_width, layout.panel_height)
+                    .cloned()
+                    .unwrap_or(build_projected_map(
+                        surface,
+                        request.domain.bounds,
+                        layout.target_aspect_ratio(),
+                    )?)
+            } else {
+                build_projected_map(surface, request.domain.bounds, layout.target_aspect_ratio())?
+            };
             projected_maps.insert(key, built);
         }
         project_timings.push(project_start.elapsed().as_millis());
     }
 
-    let date_yyyymmdd = request.date_yyyymmdd.as_str();
-    let cycle_utc = timestep.latest.cycle.hour_utc;
-    let forecast_hour = request.forecast_hour;
+    let date_yyyymmdd = metadata.date_yyyymmdd.as_str();
+    let cycle_utc = metadata.cycle_utc;
+    let forecast_hour = metadata.forecast_hour;
     let domain_slug = request.domain.slug.as_str();
     let needs_heavy = unique_products.iter().any(|product| {
         matches!(
@@ -945,28 +833,25 @@ pub fn run_hrrr_batch(
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
     Ok(HrrrBatchReport {
-        date_yyyymmdd: request.date_yyyymmdd.clone(),
-        cycle_utc: timestep.latest.cycle.hour_utc,
-        forecast_hour: request.forecast_hour,
-        source: request.source,
+        date_yyyymmdd: metadata.date_yyyymmdd.clone(),
+        cycle_utc,
+        forecast_hour,
+        source: metadata.source,
         domain: request.domain.clone(),
         products,
-        shared_timing: timestep.shared_timing,
+        shared_timing: timestep.shared_timing.clone(),
         total_ms: total_start.elapsed().as_millis(),
     })
 }
 
-fn load_hrrr_timestep(
-    request: &HrrrBatchRequest,
-) -> Result<LoadedHrrrTimestep, Box<dyn std::error::Error>> {
-    load_hrrr_timestep_from_parts(
-        &request.date_yyyymmdd,
-        request.cycle_override_utc,
-        request.forecast_hour,
-        request.source,
-        &request.cache_root,
-        request.use_cache,
-    )
+fn required_batch_projection_sizes(products: &[HrrrBatchProduct]) -> Vec<(u32, u32)> {
+    dedupe_products(products)
+        .into_iter()
+        .map(|product| {
+            let layout = product.layout();
+            (layout.panel_width, layout.panel_height)
+        })
+        .collect()
 }
 
 pub fn load_hrrr_timestep_from_parts(
@@ -1092,10 +977,10 @@ pub(crate) fn build_projected_maps_for_sizes(
     surface: &HrrrSurfaceFields,
     bounds: (f64, f64, f64, f64),
     sizes: &[(u32, u32)],
-) -> Result<HashMap<(u32, u32), ProjectedMap>, Box<dyn std::error::Error>> {
-    let mut maps = HashMap::new();
+) -> Result<PreparedProjectedContext, Box<dyn std::error::Error>> {
+    let mut maps = PreparedProjectedContext::new();
     for &(width, height) in sizes {
-        if width == 0 || height == 0 || maps.contains_key(&(width, height)) {
+        if width == 0 || height == 0 || maps.contains_size(width, height) {
             continue;
         }
         let projected = build_projected_map(
@@ -1103,7 +988,7 @@ pub(crate) fn build_projected_maps_for_sizes(
             bounds,
             map_frame_aspect_ratio(width, height, true, true),
         )?;
-        maps.insert((width, height), projected);
+        maps.insert(width, height, projected);
     }
     Ok(maps)
 }
@@ -1120,11 +1005,11 @@ pub(crate) fn prepare_hrrr_hour_context(
 ) -> Result<PreparedHrrrHourContext, Box<dyn std::error::Error>> {
     let latest = resolve_hrrr_run(date_yyyymmdd, cycle_override_utc, source)?;
     let timestep = load_hrrr_timestep_from_latest(latest, forecast_hour, cache_root, use_cache)?;
-    let projected_maps =
+    let projected =
         build_projected_maps_for_sizes(&timestep.surface_decode.value, bounds, projection_sizes)?;
     Ok(PreparedHrrrHourContext {
         timestep,
-        projected_maps,
+        projected,
     })
 }
 
@@ -1749,10 +1634,6 @@ fn validate_cached_pressure_volume_len(
         .into());
     }
     Ok(())
-}
-
-fn layout_key(layout: Solar07PanelLayout) -> (u32, u32, u32) {
-    (layout.panel_width, layout.panel_height, layout.top_padding)
 }
 
 fn png_render_parallelism(job_count: usize) -> usize {

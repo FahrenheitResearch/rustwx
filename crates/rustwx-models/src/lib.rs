@@ -1,7 +1,8 @@
 use rustwx_core::{
-    CanonicalField, CycleSpec, FieldSelector, ModelId, ModelRunRequest, ProductKeyMetadata,
-    ProductLineage, ProductMaturity, ProductProvenance, ProductSemanticFlag, ProductWindowSpec,
-    ResolvedUrl, RustwxError, SourceId, StatisticalProcess, VerticalSelector,
+    CanonicalBundleDescriptor, CanonicalDataFamily, CanonicalField, CycleSpec, FieldSelector,
+    ModelId, ModelRunRequest, ProductKeyMetadata, ProductLineage, ProductMaturity,
+    ProductProvenance, ProductSemanticFlag, ProductWindowSpec, ResolvedUrl, RustwxError, SourceId,
+    StatisticalProcess, VerticalSelector,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -274,6 +275,23 @@ pub struct LatestRun {
     pub model: ModelId,
     pub cycle: CycleSpec,
     pub source: SourceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedCanonicalBundleProduct {
+    pub bundle: CanonicalBundleDescriptor,
+    pub family: CanonicalDataFamily,
+    pub native_product: String,
+}
+
+impl ResolvedCanonicalBundleProduct {
+    pub fn new<S: Into<String>>(bundle: CanonicalBundleDescriptor, native_product: S) -> Self {
+        Self {
+            bundle,
+            family: bundle.family(),
+            native_product: native_product.into(),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1717,6 +1735,30 @@ pub fn model_summary(model: ModelId) -> &'static ModelSummary {
         .expect("built-in model summary missing")
 }
 
+pub fn resolve_canonical_bundle_product(
+    model: ModelId,
+    bundle: CanonicalBundleDescriptor,
+    native_override: Option<&str>,
+) -> ResolvedCanonicalBundleProduct {
+    let native_product = native_override
+        .unwrap_or_else(|| default_canonical_bundle_product(model, bundle))
+        .to_string();
+    ResolvedCanonicalBundleProduct::new(bundle, native_product)
+}
+
+fn default_canonical_bundle_product(
+    model: ModelId,
+    bundle: CanonicalBundleDescriptor,
+) -> &'static str {
+    match (model, bundle) {
+        (ModelId::Hrrr, CanonicalBundleDescriptor::SurfaceAnalysis) => "sfc",
+        (ModelId::Hrrr, CanonicalBundleDescriptor::PressureAnalysis) => "prs",
+        (ModelId::Gfs, _) => "pgrb2.0p25",
+        (ModelId::EcmwfOpenData, _) => "oper",
+        (ModelId::RrfsA, _) => "prs-conus",
+    }
+}
+
 pub fn resolve_urls(request: &ModelRunRequest) -> Result<Vec<ResolvedUrl>, ModelError> {
     let mut urls = model_summary(request.model)
         .sources
@@ -2338,6 +2380,37 @@ mod tests {
     fn built_in_models_are_real() {
         assert_eq!(built_in_models().len(), 4);
         assert_eq!(model_summary(ModelId::RrfsA).default_product, "prs-conus");
+    }
+
+    #[test]
+    fn canonical_bundle_products_resolve_through_model_adapter() {
+        let hrrr_surface = resolve_canonical_bundle_product(
+            ModelId::Hrrr,
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+            None,
+        );
+        assert_eq!(hrrr_surface.family, CanonicalDataFamily::Surface);
+        assert_eq!(hrrr_surface.native_product, "sfc");
+
+        let hrrr_pressure = resolve_canonical_bundle_product(
+            ModelId::Hrrr,
+            CanonicalBundleDescriptor::PressureAnalysis,
+            None,
+        );
+        assert_eq!(hrrr_pressure.family, CanonicalDataFamily::Pressure);
+        assert_eq!(hrrr_pressure.native_product, "prs");
+
+        let rrfs_pressure = resolve_canonical_bundle_product(
+            ModelId::RrfsA,
+            CanonicalBundleDescriptor::PressureAnalysis,
+            Some("prs-na"),
+        );
+        assert_eq!(
+            rrfs_pressure.bundle,
+            CanonicalBundleDescriptor::PressureAnalysis
+        );
+        assert_eq!(rrfs_pressure.family, CanonicalDataFamily::Pressure);
+        assert_eq!(rrfs_pressure.native_product, "prs-na");
     }
 
     #[test]

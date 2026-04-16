@@ -28,6 +28,10 @@ use crate::hrrr::{
     DomainSpec, HrrrSharedTiming, HrrrSurfaceFields, PreparedHrrrHourContext, broadcast_levels_pa,
     build_projected_map as build_hrrr_projected_map,
 };
+use crate::publication::{
+    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
+    fetch_identity_from_cached_result,
+};
 
 const OUTPUT_WIDTH: u32 = 1200;
 const OUTPUT_HEIGHT: u32 = 900;
@@ -373,6 +377,8 @@ pub struct HrrrDerivedRenderedRecipe {
     pub recipe_slug: String,
     pub title: String,
     pub output_path: PathBuf,
+    pub content_identity: ArtifactContentIdentity,
+    pub input_fetch_keys: Vec<String>,
     pub timing: HrrrDerivedRecipeTiming,
 }
 
@@ -384,6 +390,7 @@ pub struct DerivedBatchReport {
     pub forecast_hour: u16,
     pub source: SourceId,
     pub domain: DomainSpec,
+    pub input_fetches: Vec<PublishedFetchIdentity>,
     pub shared_timing: HrrrDerivedSharedTiming,
     pub recipes: Vec<HrrrDerivedRenderedRecipe>,
     pub total_ms: u128,
@@ -396,6 +403,7 @@ pub struct HrrrDerivedBatchReport {
     pub forecast_hour: u16,
     pub source: SourceId,
     pub domain: DomainSpec,
+    pub input_fetches: Vec<PublishedFetchIdentity>,
     pub shared_timing: HrrrDerivedSharedTiming,
     pub recipes: Vec<HrrrDerivedRenderedRecipe>,
     pub total_ms: u128,
@@ -766,6 +774,27 @@ fn run_derived_batch_from_loaded(
         recipes,
     )?;
     let compute_ms = compute_start.elapsed().as_millis();
+    let input_fetches = vec![
+        fetch_identity_from_cached_result(
+            timestep
+                .shared_timing
+                .surface_fetch
+                .planned_product
+                .as_str(),
+            &timestep.surface_file.request,
+            &timestep.surface_file.fetched,
+        ),
+        fetch_identity_from_cached_result(
+            timestep
+                .shared_timing
+                .pressure_fetch
+                .planned_product
+                .as_str(),
+            &timestep.pressure_file.request,
+            &timestep.pressure_file.fetched,
+        ),
+    ];
+    let input_fetch_keys = unique_input_fetch_keys(&input_fetches);
 
     let render_parallelism = png_render_parallelism(recipes.len());
     let grid = timestep.grid();
@@ -792,6 +821,7 @@ fn run_derived_batch_from_loaded(
                     request.domain.slug,
                     recipe.slug()
                 ));
+                let lane_fetch_keys = input_fetch_keys.clone();
                 pending.push_back(scope.spawn(
                     move || -> Result<HrrrDerivedRenderedRecipe, io::Error> {
                         let render_start = Instant::now();
@@ -810,10 +840,14 @@ fn run_derived_batch_from_loaded(
                         save_png(&render_artifact.request, &output_path)
                             .map_err(thread_render_error)?;
                         let render_ms = render_start.elapsed().as_millis();
+                        let content_identity = artifact_identity_from_path(&output_path)
+                            .map_err(thread_render_error)?;
                         Ok(HrrrDerivedRenderedRecipe {
                             recipe_slug: render_artifact.recipe_slug,
                             title: render_artifact.title,
                             output_path,
+                            content_identity,
+                            input_fetch_keys: lane_fetch_keys,
                             timing: HrrrDerivedRecipeTiming {
                                 render_ms,
                                 total_ms: render_ms,
@@ -843,6 +877,7 @@ fn run_derived_batch_from_loaded(
         forecast_hour: request.forecast_hour,
         source: timestep.latest.source,
         domain: request.domain.clone(),
+        input_fetches,
         shared_timing: HrrrDerivedSharedTiming {
             fetch_decode: HrrrSharedTiming {
                 fetch_surface_ms: timestep.shared_timing.fetch_surface_ms,
@@ -917,6 +952,27 @@ pub(crate) fn run_hrrr_derived_batch_with_context(
         recipes,
     )?;
     let compute_ms = compute_start.elapsed().as_millis();
+    let input_fetches = vec![
+        fetch_identity_from_cached_result(
+            timestep
+                .shared_timing()
+                .surface_fetch
+                .planned_product
+                .as_str(),
+            &timestep.surface_subset().request,
+            &timestep.surface_subset().fetched,
+        ),
+        fetch_identity_from_cached_result(
+            timestep
+                .shared_timing()
+                .pressure_fetch
+                .planned_product
+                .as_str(),
+            &timestep.pressure_subset().request,
+            &timestep.pressure_subset().fetched,
+        ),
+    ];
+    let input_fetch_keys = unique_input_fetch_keys(&input_fetches);
 
     let render_parallelism = png_render_parallelism(recipes.len());
     let grid = timestep.grid();
@@ -941,6 +997,7 @@ pub(crate) fn run_hrrr_derived_batch_with_context(
                     request.domain.slug,
                     recipe.slug()
                 ));
+                let lane_fetch_keys = input_fetch_keys.clone();
                 pending.push_back(scope.spawn(
                     move || -> Result<HrrrDerivedRenderedRecipe, io::Error> {
                         let render_start = Instant::now();
@@ -959,10 +1016,14 @@ pub(crate) fn run_hrrr_derived_batch_with_context(
                         save_png(&render_artifact.request, &output_path)
                             .map_err(thread_render_error)?;
                         let render_ms = render_start.elapsed().as_millis();
+                        let content_identity = artifact_identity_from_path(&output_path)
+                            .map_err(thread_render_error)?;
                         Ok(HrrrDerivedRenderedRecipe {
                             recipe_slug: render_artifact.recipe_slug,
                             title: render_artifact.title,
                             output_path,
+                            content_identity,
+                            input_fetch_keys: lane_fetch_keys,
                             timing: HrrrDerivedRecipeTiming {
                                 render_ms,
                                 total_ms: render_ms,
@@ -991,6 +1052,7 @@ pub(crate) fn run_hrrr_derived_batch_with_context(
         forecast_hour: request.forecast_hour,
         source: timestep.latest().source,
         domain: request.domain.clone(),
+        input_fetches,
         shared_timing: HrrrDerivedSharedTiming {
             fetch_decode: timestep.shared_timing().clone(),
             compute_ms,
@@ -1008,10 +1070,21 @@ fn into_hrrr_report(report: DerivedBatchReport) -> HrrrDerivedBatchReport {
         forecast_hour: report.forecast_hour,
         source: report.source,
         domain: report.domain,
+        input_fetches: report.input_fetches,
         shared_timing: report.shared_timing,
         recipes: report.recipes,
         total_ms: report.total_ms,
     }
+}
+
+fn unique_input_fetch_keys(fetches: &[PublishedFetchIdentity]) -> Vec<String> {
+    let mut keys = Vec::with_capacity(fetches.len());
+    for fetch in fetches {
+        if !keys.contains(&fetch.fetch_key) {
+            keys.push(fetch.fetch_key.clone());
+        }
+    }
+    keys
 }
 
 pub fn build_hrrr_live_derived_artifact(

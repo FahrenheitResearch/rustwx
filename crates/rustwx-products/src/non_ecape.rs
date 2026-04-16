@@ -7,22 +7,23 @@ use crate::direct::{
     run_hrrr_direct_batch_with_context,
 };
 use crate::hrrr::{DomainSpec, prepare_hrrr_hour_context};
+use crate::orchestrator::{PreparedRunContext, PreparedRunMetadata, lane, run_fanout3};
 use crate::publication::{
-    ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest,
-    default_run_manifest_path, publish_run_manifest,
+    ArtifactPublicationState, PublishedArtifactRecord, PublishedFetchIdentity,
+    RunPublicationManifest, artifact_identity_from_path, default_run_manifest_path,
+    fetch_identity_from_cached_result, publish_run_manifest,
 };
 use crate::windowed::{
     HrrrWindowedBatchReport, HrrrWindowedBatchRequest, HrrrWindowedProduct,
     HrrrWindowedRenderedProduct, run_hrrr_windowed_batch_with_context,
 };
-use rustwx_core::SourceId;
+use rustwx_core::{CycleSpec, ModelId, ModelRunRequest, SourceId};
+use rustwx_io::{FetchRequest, load_cached_fetch};
 use rustwx_models::plot_recipe;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io;
 use std::path::PathBuf;
-use std::thread;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +69,7 @@ pub struct HrrrNonEcapeHourReport {
     pub out_dir: PathBuf,
     pub cache_root: PathBuf,
     pub use_cache: bool,
+    pub publication_manifest_path: PathBuf,
     pub requested: HrrrNonEcapeHourRequestedProducts,
     pub summary: HrrrNonEcapeHourSummary,
     pub direct: Option<HrrrDirectBatchReport>,
@@ -99,15 +101,20 @@ pub fn run_hrrr_non_ecape_hour(
         &request.cache_root,
         request.use_cache,
     )?;
-    let latest = context.timestep().latest();
-    let timestep = context.timestep();
-    let context_ref = &context;
-    let pinned_date = latest.cycle.date_yyyymmdd.clone();
-    let pinned_cycle = Some(latest.cycle.hour_utc);
-    let pinned_source = latest.source;
+    let prepared = PreparedRunContext::new(
+        PreparedRunMetadata::from_latest(context.timestep().latest(), request.forecast_hour),
+        context,
+    );
+    let metadata = prepared.metadata().clone();
+    let latest = prepared.context().timestep().latest();
+    let timestep = prepared.context().timestep();
+    let context_ref = prepared.context();
+    let pinned_date = metadata.date_yyyymmdd.clone();
+    let pinned_cycle = Some(metadata.cycle_utc);
+    let pinned_source = metadata.source;
     let run_slug = format!(
         "rustwx_hrrr_{}_{}z_f{:03}_{}_non_ecape_hour",
-        pinned_date, latest.cycle.hour_utc, request.forecast_hour, request.domain.slug
+        pinned_date, metadata.cycle_utc, metadata.forecast_hour, request.domain.slug
     );
     let manifest_path = default_run_manifest_path(&request.out_dir, &run_slug);
     let mut manifest = build_run_manifest(
@@ -115,8 +122,8 @@ pub fn run_hrrr_non_ecape_hour(
         &request.out_dir,
         &run_slug,
         &pinned_date,
-        latest.cycle.hour_utc,
-        request.forecast_hour,
+        metadata.cycle_utc,
+        metadata.forecast_hour,
         &request.domain.slug,
     );
     manifest.mark_running();
@@ -168,49 +175,15 @@ pub fn run_hrrr_non_ecape_hour(
             products: normalized.windowed_products.clone(),
         });
 
-    let lane_result = if should_run_lanes_concurrently(pinned_source) {
-        thread::scope(|scope| {
-            let direct_handle = direct_request.as_ref().map(|lane_request| {
-                scope.spawn(move || {
-                    run_hrrr_direct_batch_with_context(lane_request, latest, Some(context_ref))
-                        .map_err(thread_lane_error)
-                })
-            });
-
-            let derived_handle = derived_request.as_ref().map(|(lane_request, recipes)| {
-                scope.spawn(move || {
-                    run_hrrr_derived_batch_with_context(
-                        lane_request,
-                        recipes,
-                        timestep,
-                        Some(context_ref),
-                    )
-                    .map_err(thread_lane_error)
-                })
-            });
-
-            let windowed_handle = windowed_request.as_ref().map(|lane_request| {
-                scope.spawn(move || {
-                    run_hrrr_windowed_batch_with_context(lane_request, latest, Some(context_ref))
-                        .map_err(thread_lane_error)
-                })
-            });
-
-            let direct = direct_handle.map(join_lane_job).transpose()?;
-            let derived = derived_handle.map(join_lane_job).transpose()?;
-            let windowed = windowed_handle.map(join_lane_job).transpose()?;
-            Ok::<_, Box<dyn std::error::Error>>((direct, derived, windowed))
-        })
-    } else {
-        let direct = direct_request
-            .as_ref()
-            .map(|lane_request| {
+    let lane_result = run_fanout3(
+        should_run_lanes_concurrently(pinned_source),
+        direct_request.as_ref().map(|lane_request| {
+            lane("direct", move || {
                 run_hrrr_direct_batch_with_context(lane_request, latest, Some(context_ref))
             })
-            .transpose()?;
-        let derived = derived_request
-            .as_ref()
-            .map(|(lane_request, recipes)| {
+        }),
+        derived_request.as_ref().map(|(lane_request, recipes)| {
+            lane("derived", move || {
                 run_hrrr_derived_batch_with_context(
                     lane_request,
                     recipes,
@@ -218,15 +191,13 @@ pub fn run_hrrr_non_ecape_hour(
                     Some(context_ref),
                 )
             })
-            .transpose()?;
-        let windowed = windowed_request
-            .as_ref()
-            .map(|lane_request| {
+        }),
+        windowed_request.as_ref().map(|lane_request| {
+            lane("windowed", move || {
                 run_hrrr_windowed_batch_with_context(lane_request, latest, Some(context_ref))
             })
-            .transpose()?;
-        Ok((direct, derived, windowed))
-    };
+        }),
+    );
 
     let (direct, derived, windowed) = match lane_result {
         Ok(reports) => reports,
@@ -238,9 +209,25 @@ pub fn run_hrrr_non_ecape_hour(
     };
 
     let summary = build_summary(&direct, &derived, &windowed);
+    manifest.input_fetches = collect_input_fetches(
+        request,
+        &pinned_date,
+        metadata.cycle_utc,
+        &direct,
+        &derived,
+        &windowed,
+    )?;
     apply_direct_manifest_updates(&mut manifest, &direct);
     apply_derived_manifest_updates(&mut manifest, &derived);
-    apply_windowed_manifest_updates(&mut manifest, &windowed);
+    apply_windowed_manifest_updates(
+        &mut manifest,
+        &windowed,
+        &request.cache_root,
+        request.use_cache,
+        &pinned_date,
+        metadata.cycle_utc,
+        pinned_source,
+    );
     let blocked_count = count_blocked_artifacts(&manifest);
     if blocked_count > 0 {
         manifest.mark_partial(format!("{blocked_count} artifact(s) blocked"));
@@ -257,6 +244,7 @@ pub fn run_hrrr_non_ecape_hour(
         out_dir: request.out_dir.clone(),
         cache_root: request.cache_root.clone(),
         use_cache: request.use_cache,
+        publication_manifest_path: manifest_path,
         requested: normalized,
         summary,
         direct,
@@ -318,32 +306,6 @@ fn normalize_requested_products(
 
 fn should_run_lanes_concurrently(source: SourceId) -> bool {
     !matches!(source, SourceId::Nomads)
-}
-
-fn join_lane_job<T>(
-    handle: thread::ScopedJoinHandle<'_, io::Result<T>>,
-) -> Result<T, Box<dyn std::error::Error>> {
-    match handle.join() {
-        Ok(result) => result.map_err(Box::<dyn std::error::Error>::from),
-        Err(panic) => Err(Box::new(io::Error::other(format!(
-            "non-ECAPE lane worker panicked: {}",
-            panic_message(panic)
-        )))),
-    }
-}
-
-fn thread_lane_error(err: Box<dyn std::error::Error>) -> io::Error {
-    io::Error::other(err.to_string())
-}
-
-fn panic_message(panic: Box<dyn std::any::Any + Send + 'static>) -> String {
-    if let Some(message) = panic.downcast_ref::<&'static str>() {
-        (*message).to_string()
-    } else if let Some(message) = panic.downcast_ref::<String>() {
-        message.clone()
-    } else {
-        "unknown panic".to_string()
-    }
 }
 
 fn build_summary(
@@ -516,6 +478,14 @@ fn apply_direct_manifest_updates(
                 recipe.resolved_url
             )),
         );
+        manifest.update_artifact_identity(
+            &direct_artifact_key(&recipe.recipe_slug),
+            recipe.content_identity.clone(),
+        );
+        manifest.update_artifact_input_fetch_keys(
+            &direct_artifact_key(&recipe.recipe_slug),
+            recipe.input_fetch_keys.clone(),
+        );
     }
 }
 
@@ -540,12 +510,25 @@ fn apply_derived_manifest_updates(
                 report.shared_timing.fetch_decode.pressure_fetch.resolved_source
             )),
         );
+        manifest.update_artifact_identity(
+            &derived_artifact_key(&recipe.recipe_slug),
+            recipe.content_identity.clone(),
+        );
+        manifest.update_artifact_input_fetch_keys(
+            &derived_artifact_key(&recipe.recipe_slug),
+            recipe.input_fetch_keys.clone(),
+        );
     }
 }
 
 fn apply_windowed_manifest_updates(
     manifest: &mut RunPublicationManifest,
     windowed: &Option<HrrrWindowedBatchReport>,
+    cache_root: &std::path::Path,
+    use_cache: bool,
+    date_yyyymmdd: &str,
+    cycle_utc: u8,
+    source: SourceId,
 ) {
     let Some(report) = windowed else {
         return;
@@ -557,6 +540,25 @@ fn apply_windowed_manifest_updates(
             ArtifactPublicationState::Complete,
             Some(detail),
         );
+        if let Ok(identity) = artifact_identity_from_path(&product.output_path) {
+            manifest
+                .update_artifact_identity(&windowed_artifact_key(product.product.slug()), identity);
+        }
+        let input_fetch_keys = collect_windowed_input_fetch_keys(
+            product,
+            &report.shared_timing,
+            cache_root,
+            use_cache,
+            date_yyyymmdd,
+            cycle_utc,
+            source,
+        );
+        if !input_fetch_keys.is_empty() {
+            manifest.update_artifact_input_fetch_keys(
+                &windowed_artifact_key(product.product.slug()),
+                input_fetch_keys,
+            );
+        }
     }
     for blocker in &report.blockers {
         manifest.update_artifact_state(
@@ -617,6 +619,181 @@ fn count_blocked_artifacts(manifest: &RunPublicationManifest) -> usize {
         .iter()
         .filter(|artifact| artifact.state == ArtifactPublicationState::Blocked)
         .count()
+}
+
+fn collect_input_fetches(
+    request: &HrrrNonEcapeHourRequest,
+    date_yyyymmdd: &str,
+    cycle_utc: u8,
+    direct: &Option<HrrrDirectBatchReport>,
+    derived: &Option<HrrrDerivedBatchReport>,
+    windowed: &Option<HrrrWindowedBatchReport>,
+) -> Result<Vec<PublishedFetchIdentity>, Box<dyn std::error::Error>> {
+    let mut by_key = HashMap::<String, PublishedFetchIdentity>::new();
+
+    if let Some(report) = direct {
+        for fetch in &report.fetches {
+            by_key
+                .entry(fetch.input_fetch.fetch_key.clone())
+                .or_insert_with(|| fetch.input_fetch.clone());
+        }
+    }
+
+    if let Some(report) = derived {
+        for fetch in &report.input_fetches {
+            by_key
+                .entry(fetch.fetch_key.clone())
+                .or_insert_with(|| fetch.clone());
+        }
+    }
+
+    if let Some(report) = windowed {
+        collect_windowed_fetch_identities(report, request, date_yyyymmdd, cycle_utc, &mut by_key)?;
+    }
+
+    let mut fetches = by_key.into_values().collect::<Vec<_>>();
+    fetches.sort_by(|left, right| left.fetch_key.cmp(&right.fetch_key));
+    Ok(fetches)
+}
+
+fn collect_windowed_fetch_identities(
+    report: &HrrrWindowedBatchReport,
+    request: &HrrrNonEcapeHourRequest,
+    date_yyyymmdd: &str,
+    cycle_utc: u8,
+    by_key: &mut HashMap<String, PublishedFetchIdentity>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !request.use_cache {
+        return Ok(());
+    }
+
+    let cycle = CycleSpec::new(date_yyyymmdd, cycle_utc)?;
+    if let Some(geometry_fetch) = &report.shared_timing.geometry_fetch {
+        if let Some(identity) = load_windowed_fetch_identity(
+            cycle.clone(),
+            report.forecast_hour,
+            request.source,
+            geometry_fetch,
+            &request.cache_root,
+        )? {
+            by_key.entry(identity.fetch_key.clone()).or_insert(identity);
+        }
+    }
+
+    for fetch in report
+        .shared_timing
+        .surface_hour_fetches
+        .iter()
+        .chain(report.shared_timing.uh_hour_fetches.iter())
+    {
+        if let Some(identity) = load_windowed_hour_fetch_identity(
+            cycle.clone(),
+            request.source,
+            fetch,
+            &request.cache_root,
+        )? {
+            by_key.entry(identity.fetch_key.clone()).or_insert(identity);
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_windowed_input_fetch_keys(
+    product: &HrrrWindowedRenderedProduct,
+    shared_timing: &crate::windowed::HrrrWindowedSharedTiming,
+    cache_root: &std::path::Path,
+    use_cache: bool,
+    date_yyyymmdd: &str,
+    cycle_utc: u8,
+    source: SourceId,
+) -> Vec<String> {
+    if !use_cache {
+        return Vec::new();
+    }
+    let cycle = match CycleSpec::new(date_yyyymmdd, cycle_utc) {
+        Ok(cycle) => cycle,
+        Err(_) => return Vec::new(),
+    };
+    let is_qpf = matches!(
+        product.product,
+        HrrrWindowedProduct::Qpf1h
+            | HrrrWindowedProduct::Qpf6h
+            | HrrrWindowedProduct::Qpf12h
+            | HrrrWindowedProduct::Qpf24h
+            | HrrrWindowedProduct::QpfTotal
+    );
+    let fetches = if is_qpf {
+        &shared_timing.surface_hour_fetches
+    } else {
+        &shared_timing.uh_hour_fetches
+    };
+    let mut keys = Vec::new();
+    for fetch in fetches {
+        if let Ok(Some(identity)) =
+            load_windowed_hour_fetch_identity(cycle.clone(), source, fetch, cache_root)
+        {
+            if !keys.contains(&identity.fetch_key) {
+                keys.push(identity.fetch_key);
+            }
+        }
+    }
+    keys
+}
+
+fn load_windowed_fetch_identity(
+    cycle: CycleSpec,
+    forecast_hour: u16,
+    source: SourceId,
+    fetch: &crate::hrrr::HrrrFetchRuntimeInfo,
+    cache_root: &std::path::Path,
+) -> Result<Option<PublishedFetchIdentity>, Box<dyn std::error::Error>> {
+    let fetch_request = FetchRequest {
+        request: ModelRunRequest::new(
+            ModelId::Hrrr,
+            cycle,
+            forecast_hour,
+            fetch.fetched_product.as_str(),
+        )?,
+        source_override: Some(source),
+        variable_patterns: Vec::new(),
+    };
+    Ok(
+        load_cached_fetch(cache_root, &fetch_request)?.map(|cached| {
+            fetch_identity_from_cached_result(
+                fetch.planned_product.as_str(),
+                &fetch_request,
+                &cached,
+            )
+        }),
+    )
+}
+
+fn load_windowed_hour_fetch_identity(
+    cycle: CycleSpec,
+    source: SourceId,
+    fetch: &crate::windowed::HrrrWindowedHourFetchInfo,
+    cache_root: &std::path::Path,
+) -> Result<Option<PublishedFetchIdentity>, Box<dyn std::error::Error>> {
+    let fetch_request = FetchRequest {
+        request: ModelRunRequest::new(
+            ModelId::Hrrr,
+            cycle,
+            fetch.hour,
+            fetch.fetched_product.as_str(),
+        )?,
+        source_override: Some(source),
+        variable_patterns: Vec::new(),
+    };
+    Ok(
+        load_cached_fetch(cache_root, &fetch_request)?.map(|cached| {
+            fetch_identity_from_cached_result(
+                fetch.planned_product.as_str(),
+                &fetch_request,
+                &cached,
+            )
+        }),
+    )
 }
 
 #[cfg(test)]
@@ -699,6 +876,8 @@ mod tests {
                 resolved_source: SourceId::Aws,
                 resolved_url: "https://example.test/hrrr.t12z.wrfsfcf06.grib2".into(),
                 output_path: PathBuf::from("C:\\proof\\direct.png"),
+                content_identity: crate::publication::artifact_identity_from_bytes(b"direct"),
+                input_fetch_keys: vec!["direct:nat->sfc".into()],
                 timing: HrrrDirectRecipeTiming {
                     project_ms: 1,
                     render_ms: 2,
@@ -713,6 +892,7 @@ mod tests {
             forecast_hour: 6,
             source: SourceId::Aws,
             domain: domain(),
+            input_fetches: Vec::new(),
             shared_timing: HrrrDerivedSharedTiming {
                 fetch_decode: HrrrSharedTiming {
                     fetch_surface_ms: 0,
@@ -745,6 +925,8 @@ mod tests {
                 recipe_slug: "sbcape".into(),
                 title: "SBCAPE".into(),
                 output_path: PathBuf::from("C:\\proof\\derived.png"),
+                content_identity: crate::publication::artifact_identity_from_bytes(b"derived"),
+                input_fetch_keys: vec!["derived:sfc".into(), "derived:prs".into()],
                 timing: HrrrDerivedRecipeTiming {
                     render_ms: 6,
                     total_ms: 6,
@@ -870,6 +1052,8 @@ mod tests {
                 output_path: PathBuf::from(
                     "C:\\proof\\run\\rustwx_hrrr_20260415_12z_f006_conus_500mb_height_winds.png",
                 ),
+                content_identity: crate::publication::artifact_identity_from_bytes(b"direct-run"),
+                input_fetch_keys: vec!["direct:prs".into()],
                 timing: HrrrDirectRecipeTiming {
                     project_ms: 1,
                     render_ms: 2,
@@ -884,6 +1068,7 @@ mod tests {
             forecast_hour: 6,
             source: SourceId::Aws,
             domain: domain(),
+            input_fetches: Vec::new(),
             shared_timing: HrrrDerivedSharedTiming {
                 fetch_decode: HrrrSharedTiming {
                     fetch_surface_ms: 0,
@@ -918,6 +1103,8 @@ mod tests {
                 output_path: PathBuf::from(
                     "C:\\proof\\run\\rustwx_hrrr_20260415_12z_f006_conus_sbcape.png",
                 ),
+                content_identity: crate::publication::artifact_identity_from_bytes(b"derived-run"),
+                input_fetch_keys: vec!["derived:sfc".into(), "derived:prs".into()],
                 timing: HrrrDerivedRecipeTiming {
                     render_ms: 1,
                     total_ms: 1,
@@ -994,7 +1181,15 @@ mod tests {
 
         apply_direct_manifest_updates(&mut manifest, &Some(direct));
         apply_derived_manifest_updates(&mut manifest, &Some(derived));
-        apply_windowed_manifest_updates(&mut manifest, &Some(windowed));
+        apply_windowed_manifest_updates(
+            &mut manifest,
+            &Some(windowed),
+            std::path::Path::new("C:\\proof\\run\\cache"),
+            false,
+            "20260415",
+            12,
+            SourceId::Aws,
+        );
         assert_eq!(count_blocked_artifacts(&manifest), 1);
 
         let direct_record = manifest
@@ -1043,6 +1238,7 @@ mod tests {
             out_dir: PathBuf::from("C:\\proof\\bench"),
             cache_root: PathBuf::from("C:\\proof\\bench\\cache"),
             use_cache: false,
+            publication_manifest_path: PathBuf::from("C:\\proof\\bench\\run_manifest.json"),
             requested: HrrrNonEcapeHourRequestedProducts {
                 direct_recipe_slugs: vec!["500mb_height_winds".into()],
                 derived_recipe_slugs: vec!["sbcape".into()],

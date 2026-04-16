@@ -7,6 +7,10 @@ use crate::hrrr::{
     DomainSpec, Solar07PanelField, Solar07PanelHeader, Solar07PanelLayout,
     render_two_by_four_solar07_panel,
 };
+use crate::publication::{
+    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
+    fetch_identity_from_cached_result,
+};
 use rustwx_calc::{
     EcapeTripletOptions, EcapeVolumeInputs, ScpEhiInputs, SurfaceInputs, WindGridInputs,
     compute_ecape_triplet_with_failure_mask_from_parts, compute_scp_ehi,
@@ -43,6 +47,8 @@ pub struct EcapeBatchReport {
     pub source: SourceId,
     pub domain: DomainSpec,
     pub output_path: PathBuf,
+    pub output_identity: ArtifactContentIdentity,
+    pub input_fetches: Vec<PublishedFetchIdentity>,
     pub shared_timing: SharedTiming,
     pub project_ms: u128,
     pub compute_ms: u128,
@@ -107,6 +113,27 @@ pub fn run_ecape_batch(
         Solar07PanelLayout::default(),
     )?;
     let render_ms = render_start.elapsed().as_millis();
+    let output_identity = artifact_identity_from_path(&output_path)?;
+    let input_fetches = vec![
+        fetch_identity_from_cached_result(
+            timestep
+                .shared_timing
+                .surface_fetch
+                .planned_product
+                .as_str(),
+            &timestep.surface_file.request,
+            &timestep.surface_file.fetched,
+        ),
+        fetch_identity_from_cached_result(
+            timestep
+                .shared_timing
+                .pressure_fetch
+                .planned_product
+                .as_str(),
+            &timestep.pressure_file.request,
+            &timestep.pressure_file.fetched,
+        ),
+    ];
 
     Ok(EcapeBatchReport {
         model: request.model,
@@ -116,6 +143,8 @@ pub fn run_ecape_batch(
         source: timestep.latest.source,
         domain: request.domain.clone(),
         output_path,
+        output_identity,
+        input_fetches,
         shared_timing: timestep.shared_timing,
         project_ms,
         compute_ms,

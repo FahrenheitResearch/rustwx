@@ -7,6 +7,8 @@ pub mod gallery;
 pub mod gridded;
 pub mod hrrr;
 pub mod non_ecape;
+pub mod orchestrator;
 pub mod publication;
+pub mod shared_context;
 pub mod spec;
 pub mod windowed;

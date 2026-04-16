@@ -1,4 +1,5 @@
 use rustwx_core::{ModelRunRequest, SourceId};
+use rustwx_io::{CachedFetchResult, FetchRequest};
 use serde::Serialize;
 use std::fs;
 use std::io::Write;
@@ -6,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const RUN_PUBLICATION_SCHEMA_VERSION: u32 = 2;
+pub const RUN_PUBLICATION_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct ArtifactContentIdentity {
@@ -17,6 +18,7 @@ pub struct ArtifactContentIdentity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct PublishedFetchIdentity {
     pub fetch_key: String,
+    pub planned_family: String,
     pub request: ModelRunRequest,
     pub source_override: Option<SourceId>,
     pub resolved_source: SourceId,
@@ -202,6 +204,22 @@ impl RunPublicationManifest {
         }
         false
     }
+
+    pub fn update_artifact_input_fetch_keys(
+        &mut self,
+        artifact_key: &str,
+        input_fetch_keys: Vec<String>,
+    ) -> bool {
+        if let Some(artifact) = self
+            .artifacts
+            .iter_mut()
+            .find(|artifact| artifact.artifact_key == artifact_key)
+        {
+            artifact.input_fetch_keys = input_fetch_keys;
+            return true;
+        }
+        false
+    }
 }
 
 pub fn default_run_manifest_path(output_root: &Path, run_slug: &str) -> PathBuf {
@@ -259,6 +277,36 @@ pub fn artifact_identity_from_path(
     path: &Path,
 ) -> Result<ArtifactContentIdentity, Box<dyn std::error::Error>> {
     Ok(artifact_identity_from_bytes(&fs::read(path)?))
+}
+
+pub fn fetch_key(planned_family: &str, request: &ModelRunRequest) -> String {
+    format!(
+        "{}:{}:{:02}z:f{:03}:{}->{}",
+        request.model.as_str(),
+        request.cycle.date_yyyymmdd,
+        request.cycle.hour_utc,
+        request.forecast_hour,
+        planned_family,
+        request.product
+    )
+}
+
+pub fn fetch_identity_from_cached_result(
+    planned_family: &str,
+    fetch: &FetchRequest,
+    fetched: &CachedFetchResult,
+) -> PublishedFetchIdentity {
+    PublishedFetchIdentity {
+        fetch_key: fetch_key(planned_family, &fetch.request),
+        planned_family: planned_family.to_string(),
+        request: fetch.request.clone(),
+        source_override: fetch.source_override,
+        resolved_source: fetched.result.source,
+        resolved_url: fetched.result.url.clone(),
+        resolved_family: fetch.request.product.clone(),
+        bytes_len: fetched.result.bytes.len(),
+        bytes_sha256: sha256_hex(&fetched.result.bytes),
+    }
 }
 
 fn temp_path_for(path: &Path) -> PathBuf {
@@ -405,6 +453,7 @@ mod tests {
         )
         .with_input_fetches(vec![PublishedFetchIdentity {
             fetch_key: "prs".into(),
+            planned_family: "prs".into(),
             request: ModelRunRequest::new(
                 rustwx_core::ModelId::Hrrr,
                 rustwx_core::CycleSpec::new("20260414", 23).unwrap(),

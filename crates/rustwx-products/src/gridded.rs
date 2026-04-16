@@ -6,10 +6,14 @@ use grib_core::grib2::{
 };
 use rustwx_calc::{GridShape as CalcGridShape, VolumeShape};
 use rustwx_core::{
-    CycleSpec, GridShape, LatLonGrid, ModelId, ModelRunRequest, RustwxError, SourceId,
+    CanonicalBundleDescriptor, CanonicalDataFamily, CycleSpec, GridShape, LatLonGrid, ModelId,
+    ModelRunRequest, RustwxError, SourceId,
 };
 use rustwx_io::{CachedFetchResult, FetchRequest, artifact_cache_dir, fetch_bytes_with_cache};
-use rustwx_models::{LatestRun, latest_available_run};
+use rustwx_models::{
+    LatestRun, ResolvedCanonicalBundleProduct, latest_available_run,
+    resolve_canonical_bundle_product,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -55,7 +59,10 @@ pub struct PressureFields {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchRuntimeInfo {
+    pub planned_bundle: CanonicalBundleDescriptor,
+    pub planned_family: CanonicalDataFamily,
     pub planned_product: String,
+    pub resolved_native_product: String,
     pub fetched_product: String,
     pub requested_source: SourceId,
     pub resolved_source: SourceId,
@@ -91,9 +98,15 @@ pub struct FetchedModelFile {
 }
 
 impl FetchedModelFile {
-    pub fn runtime_info(&self, planned_product: &str) -> FetchRuntimeInfo {
+    pub fn runtime_info(
+        &self,
+        planned_bundle: &ResolvedCanonicalBundleProduct,
+    ) -> FetchRuntimeInfo {
         FetchRuntimeInfo {
-            planned_product: planned_product.to_string(),
+            planned_bundle: planned_bundle.bundle,
+            planned_family: planned_bundle.family,
+            planned_product: planned_bundle.native_product.clone(),
+            resolved_native_product: planned_bundle.native_product.clone(),
             fetched_product: self.request.request.product.clone(),
             requested_source: self
                 .request
@@ -184,18 +197,18 @@ pub fn load_model_timestep_from_latest(
     use_cache: bool,
 ) -> Result<LoadedModelTimestep, Box<dyn std::error::Error>> {
     let model = latest.model;
-    let (surface_product, pressure_product) =
-        thermo_products(model, surface_product_override, pressure_product_override);
+    let (surface_bundle, pressure_bundle) =
+        thermo_bundles(model, surface_product_override, pressure_product_override);
 
     let ((surface_file, fetch_surface_ms), (pressure_file, fetch_pressure_ms)) =
-        if surface_product == pressure_product {
+        if surface_bundle.native_product == pressure_bundle.native_product {
             let fetch_start = Instant::now();
             let fetched = fetch_family_file(
                 model,
                 latest.cycle.clone(),
                 forecast_hour,
                 latest.source,
-                &surface_product,
+                &surface_bundle,
                 cache_root,
                 use_cache,
             )?;
@@ -208,7 +221,7 @@ pub fn load_model_timestep_from_latest(
                 latest.cycle.clone(),
                 forecast_hour,
                 latest.source,
-                &surface_product,
+                &surface_bundle,
                 cache_root,
                 use_cache,
             )?;
@@ -218,7 +231,7 @@ pub fn load_model_timestep_from_latest(
                 latest.cycle.clone(),
                 forecast_hour,
                 latest.source,
-                &pressure_product,
+                &pressure_bundle,
                 cache_root,
                 use_cache,
             )?;
@@ -247,8 +260,8 @@ pub fn load_model_timestep_from_latest(
         surface_decode.value.ny,
     )?;
     let grid = surface_decode.value.core_grid()?;
-    let surface_fetch = surface_file.runtime_info(&surface_product);
-    let pressure_fetch = pressure_file.runtime_info(&pressure_product);
+    let surface_fetch = surface_file.runtime_info(&surface_bundle);
+    let pressure_fetch = pressure_file.runtime_info(&pressure_bundle);
 
     Ok(LoadedModelTimestep {
         latest,
@@ -390,24 +403,25 @@ pub fn broadcast_levels_pa(levels_hpa: &[f64], n2d: usize) -> Vec<f64> {
     out
 }
 
-fn thermo_products(
+fn thermo_bundles(
     model: ModelId,
     surface_product_override: Option<&str>,
     pressure_product_override: Option<&str>,
-) -> (String, String) {
-    let (default_surface, default_pressure) = match model {
-        ModelId::Hrrr => ("sfc", "prs"),
-        ModelId::Gfs => ("pgrb2.0p25", "pgrb2.0p25"),
-        ModelId::EcmwfOpenData => ("oper", "oper"),
-        ModelId::RrfsA => ("prs-conus", "prs-conus"),
-    };
+) -> (
+    ResolvedCanonicalBundleProduct,
+    ResolvedCanonicalBundleProduct,
+) {
     (
-        surface_product_override
-            .unwrap_or(default_surface)
-            .to_string(),
-        pressure_product_override
-            .unwrap_or(default_pressure)
-            .to_string(),
+        resolve_canonical_bundle_product(
+            model,
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+            surface_product_override,
+        ),
+        resolve_canonical_bundle_product(
+            model,
+            CanonicalBundleDescriptor::PressureAnalysis,
+            pressure_product_override,
+        ),
     )
 }
 
@@ -416,12 +430,12 @@ fn fetch_family_file(
     cycle: CycleSpec,
     forecast_hour: u16,
     source: SourceId,
-    product: &str,
+    bundle: &ResolvedCanonicalBundleProduct,
     cache_root: &Path,
     use_cache: bool,
 ) -> Result<FetchedModelFile, Box<dyn std::error::Error>> {
     let request = FetchRequest {
-        request: ModelRunRequest::new(model, cycle, forecast_hour, product)?,
+        request: ModelRunRequest::new(model, cycle, forecast_hour, &bundle.native_product)?,
         source_override: Some(source),
         variable_patterns: Vec::new(),
     };
@@ -929,34 +943,35 @@ mod tests {
 
     #[test]
     fn hrrr_defaults_to_split_surface_and_pressure_products() {
-        assert_eq!(
-            thermo_products(ModelId::Hrrr, None, None),
-            ("sfc".to_string(), "prs".to_string())
-        );
+        let (surface, pressure) = thermo_bundles(ModelId::Hrrr, None, None);
+        assert_eq!(surface.bundle, CanonicalBundleDescriptor::SurfaceAnalysis);
+        assert_eq!(surface.family, CanonicalDataFamily::Surface);
+        assert_eq!(surface.native_product, "sfc");
+        assert_eq!(pressure.bundle, CanonicalBundleDescriptor::PressureAnalysis);
+        assert_eq!(pressure.family, CanonicalDataFamily::Pressure);
+        assert_eq!(pressure.native_product, "prs");
     }
 
     #[test]
     fn global_models_default_to_single_full_family_product() {
-        assert_eq!(
-            thermo_products(ModelId::Gfs, None, None),
-            ("pgrb2.0p25".to_string(), "pgrb2.0p25".to_string())
-        );
-        assert_eq!(
-            thermo_products(ModelId::EcmwfOpenData, None, None),
-            ("oper".to_string(), "oper".to_string())
-        );
-        assert_eq!(
-            thermo_products(ModelId::RrfsA, None, None),
-            ("prs-conus".to_string(), "prs-conus".to_string())
-        );
+        let (gfs_surface, gfs_pressure) = thermo_bundles(ModelId::Gfs, None, None);
+        assert_eq!(gfs_surface.native_product, "pgrb2.0p25");
+        assert_eq!(gfs_pressure.native_product, "pgrb2.0p25");
+
+        let (ecmwf_surface, ecmwf_pressure) = thermo_bundles(ModelId::EcmwfOpenData, None, None);
+        assert_eq!(ecmwf_surface.native_product, "oper");
+        assert_eq!(ecmwf_pressure.native_product, "oper");
+
+        let (rrfs_surface, rrfs_pressure) = thermo_bundles(ModelId::RrfsA, None, None);
+        assert_eq!(rrfs_surface.native_product, "prs-conus");
+        assert_eq!(rrfs_pressure.native_product, "prs-conus");
     }
 
     #[test]
     fn product_overrides_replace_defaults() {
-        assert_eq!(
-            thermo_products(ModelId::RrfsA, Some("prs-na"), Some("prs-na")),
-            ("prs-na".to_string(), "prs-na".to_string())
-        );
+        let (surface, pressure) = thermo_bundles(ModelId::RrfsA, Some("prs-na"), Some("prs-na"));
+        assert_eq!(surface.native_product, "prs-na");
+        assert_eq!(pressure.native_product, "prs-na");
     }
 
     #[test]

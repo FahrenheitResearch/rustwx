@@ -936,6 +936,57 @@ impl std::str::FromStr for ModelId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CanonicalDataFamily {
+    Surface,
+    Pressure,
+}
+
+impl CanonicalDataFamily {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Surface => "surface",
+            Self::Pressure => "pressure",
+        }
+    }
+}
+
+impl std::fmt::Display for CanonicalDataFamily {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CanonicalBundleDescriptor {
+    SurfaceAnalysis,
+    PressureAnalysis,
+}
+
+impl CanonicalBundleDescriptor {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SurfaceAnalysis => "surface_analysis",
+            Self::PressureAnalysis => "pressure_analysis",
+        }
+    }
+
+    pub const fn family(self) -> CanonicalDataFamily {
+        match self {
+            Self::SurfaceAnalysis => CanonicalDataFamily::Surface,
+            Self::PressureAnalysis => CanonicalDataFamily::Pressure,
+        }
+    }
+}
+
+impl std::fmt::Display for CanonicalBundleDescriptor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SourceId {
     Aws,
     Nomads,
@@ -1334,6 +1385,26 @@ mod tests {
             "2026-04-15T00:00:00Z"
         );
         assert_eq!(timestep.source, Some(SourceId::Aws));
+    }
+
+    #[test]
+    fn canonical_bundle_descriptors_are_typed() {
+        assert_eq!(
+            CanonicalBundleDescriptor::SurfaceAnalysis.as_str(),
+            "surface_analysis"
+        );
+        assert_eq!(
+            CanonicalBundleDescriptor::SurfaceAnalysis.family(),
+            CanonicalDataFamily::Surface
+        );
+        assert_eq!(
+            CanonicalBundleDescriptor::PressureAnalysis.as_str(),
+            "pressure_analysis"
+        );
+        assert_eq!(
+            CanonicalBundleDescriptor::PressureAnalysis.family(),
+            CanonicalDataFamily::Pressure
+        );
     }
 
     #[test]

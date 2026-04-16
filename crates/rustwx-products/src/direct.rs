@@ -31,6 +31,10 @@ use wrf_render::render::map_frame_aspect_ratio;
 use wrf_render::text;
 
 use crate::hrrr::{DomainSpec, PreparedHrrrHourContext, ProjectedMap};
+use crate::publication::{
+    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
+    fetch_identity_from_cached_result,
+};
 use crate::spec::direct_product_specs;
 
 const OUTPUT_WIDTH: u32 = 1200;
@@ -74,6 +78,7 @@ pub struct HrrrDirectBatchRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HrrrDirectFetchRuntimeInfo {
+    pub fetch_key: String,
     pub planned_product: String,
     pub fetched_product: String,
     pub requested_source: SourceId,
@@ -100,6 +105,7 @@ pub struct HrrrDirectFetchTiming {
     pub extract_cache_hits: usize,
     pub extract_cache_misses: usize,
     pub runtime_fetch: HrrrDirectFetchRuntimeInfo,
+    pub input_fetch: PublishedFetchIdentity,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +117,8 @@ pub struct HrrrDirectRenderedRecipe {
     pub resolved_source: SourceId,
     pub resolved_url: String,
     pub output_path: PathBuf,
+    pub content_identity: ArtifactContentIdentity,
+    pub input_fetch_keys: Vec<String>,
     pub timing: HrrrDirectRecipeTiming,
 }
 
@@ -462,6 +470,10 @@ fn load_direct_fetch_group(
             extract_cache_hits,
             extract_cache_misses: missing.len(),
             runtime_fetch: HrrrDirectFetchRuntimeInfo {
+                fetch_key: crate::publication::fetch_key(
+                    group.product.as_str(),
+                    &fetch_request.request,
+                ),
                 planned_product: group.product.clone(),
                 fetched_product: fetch_request.request.product.clone(),
                 requested_source: fetch_request
@@ -470,6 +482,11 @@ fn load_direct_fetch_group(
                 resolved_source: fetched.result.source,
                 resolved_url: fetched.result.url.clone(),
             },
+            input_fetch: fetch_identity_from_cached_result(
+                group.product.as_str(),
+                &fetch_request,
+                &fetched,
+            ),
         },
     ))
 }
@@ -667,6 +684,7 @@ fn render_direct_recipe(
         save_png(&render_request, &output_path)?;
         project_ms
     };
+    let content_identity = artifact_identity_from_path(&output_path)?;
     let total_ms = render_start.elapsed().as_millis();
 
     Ok(HrrrDirectRenderedRecipe {
@@ -677,6 +695,8 @@ fn render_direct_recipe(
         resolved_source: runtime_fetch.resolved_source,
         resolved_url: runtime_fetch.resolved_url.clone(),
         output_path,
+        content_identity,
+        input_fetch_keys: vec![runtime_fetch.fetch_key.clone()],
         timing: HrrrDirectRecipeTiming {
             project_ms,
             render_ms: total_ms.saturating_sub(project_ms),
@@ -1380,6 +1400,7 @@ mod tests {
         };
         let fetch = build_direct_fetch_request(&request, &latest, 6, &group).unwrap();
         let runtime = HrrrDirectFetchRuntimeInfo {
+            fetch_key: crate::publication::fetch_key(&group.product, &fetch.request),
             planned_product: group.product.clone(),
             fetched_product: fetch.request.product.clone(),
             requested_source: fetch.source_override.unwrap(),
