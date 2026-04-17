@@ -300,6 +300,14 @@ pub struct ProjectedLineOverlay {
     pub width: u32,
 }
 
+/// A filled polygon in projected map coordinates. First ring is the outer
+/// boundary; additional rings punch holes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectedPolygonFill {
+    pub rings: Vec<Vec<(f64, f64)>>,
+    pub color: Color,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContourLayer {
     pub data: Vec<f32>,
@@ -402,6 +410,10 @@ pub struct MapRenderRequest {
     pub subtitle_right: Option<String>,
     pub cbar_tick_step: Option<f64>,
     pub projected_domain: Option<ProjectedDomain>,
+    /// Filled polygon basemap layers (ocean/land/lakes). Drawn BEFORE the
+    /// data raster; ordering within the list is bottom-to-top.
+    #[serde(default)]
+    pub projected_polygons: Vec<ProjectedPolygonFill>,
     pub projected_lines: Vec<ProjectedLineOverlay>,
     pub contours: Vec<ContourLayer>,
     pub wind_barbs: Vec<WindBarbLayer>,
@@ -423,6 +435,7 @@ impl MapRenderRequest {
             subtitle_right: None,
             cbar_tick_step: None,
             projected_domain: None,
+            projected_polygons: Vec::new(),
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),

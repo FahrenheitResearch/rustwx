@@ -9,8 +9,8 @@ pub use panel::{PanelGridLayout, PanelPadding, compose_panel_images, render_pane
 pub use request::{
     Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, ExtendMode, Field2D,
     GridShape, LatLonGrid, MapRenderRequest, ProductKey, ProductMaturity, ProductSemanticFlag,
-    ProductSemantics, ProjectedDomain, ProjectedExtent, ProjectedLineOverlay, WindBarbLayer,
-    WindBarbStyle,
+    ProductSemantics, ProjectedDomain, ProjectedExtent, ProjectedLineOverlay,
+    ProjectedPolygonFill, WindBarbLayer, WindBarbStyle,
 };
 pub use rustwx_core::{
     Field2D as CoreField2D, GridShape as CoreGridShape, LatLonGrid as CoreLatLonGrid,
@@ -26,7 +26,8 @@ use std::path::Path;
 use std::sync::OnceLock;
 use wrf_render::{
     BarbOverlay, ContourOverlay, Extend, LeveledColormap, MapExtent, ProjectedGrid,
-    ProjectedPolyline, RenderOpts, Rgba, render_to_image as wrf_render_to_image, render_to_png,
+    ProjectedPolygon, ProjectedPolyline, RenderOpts, Rgba, render_to_image as wrf_render_to_image,
+    render_to_png,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -101,6 +102,12 @@ impl RenderScratch {
 
         for line in opts.projected_lines.drain(..) {
             self.reclaim_point_buffer(line.points);
+        }
+
+        for poly in opts.projected_polygons.drain(..) {
+            for ring in poly.rings {
+                self.reclaim_point_buffer(ring);
+            }
         }
 
         for contour in opts.contours.drain(..) {
@@ -202,6 +209,19 @@ fn with_render_state<T>(
             });
         }
 
+        let mut projected_polygons = Vec::with_capacity(request.projected_polygons.len());
+        for poly in &request.projected_polygons {
+            let rings = poly
+                .rings
+                .iter()
+                .map(|ring| scratch.fill_point_buffer(ring))
+                .collect();
+            projected_polygons.push(ProjectedPolygon {
+                rings,
+                color: poly.color.into(),
+            });
+        }
+
         let mut contours = Vec::with_capacity(request.contours.len());
         for layer in &request.contours {
             contours.push(ContourOverlay {
@@ -248,6 +268,7 @@ fn with_render_state<T>(
                 y_max: domain.extent.y_max,
             }),
             projected_grid,
+            projected_polygons,
             projected_lines,
             contours,
             barbs,
@@ -426,6 +447,7 @@ mod tests {
             subtitle_right: Some("rustwx-render".into()),
             cbar_tick_step: Some(500.0),
             projected_domain: None,
+            projected_polygons: Vec::new(),
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),
@@ -477,6 +499,7 @@ mod tests {
             subtitle_right: None,
             cbar_tick_step: Some(500.0),
             projected_domain: None,
+            projected_polygons: Vec::new(),
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),
