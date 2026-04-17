@@ -3,12 +3,12 @@ use crate::gridded::{
     PreparedHeavyVolume, PressureFields, SharedTiming, SurfaceFields, prepare_heavy_volume,
     resolve_model_run,
 };
-use crate::planner::{ExecutionPlan, ExecutionPlanBuilder, PlannedBundle};
+use crate::planner::{BundleFetchKey, ExecutionPlan, ExecutionPlanBuilder, PlannedBundle};
 use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
     fetch_identity_from_cached_result_with_aliases,
 };
-use crate::runtime::{BundleLoaderConfig, LoadedBundleSet, load_execution_plan};
+use crate::runtime::{BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan};
 use crate::shared_context::{
     DomainSpec, Solar07PanelField, Solar07PanelHeader, Solar07PanelLayout,
     render_two_by_four_solar07_panel,
@@ -17,7 +17,7 @@ use rustwx_calc::{
     EcapeVolumeInputs, SupportedSevereFields, SurfaceInputs, compute_supported_severe_fields,
 };
 use rustwx_core::{
-    BundleRequirement, CanonicalBundleDescriptor, CanonicalBundleId, ModelId, SourceId,
+    BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId,
 };
 use rustwx_models::LatestRun;
 use rustwx_render::Solar07Product;
@@ -252,26 +252,52 @@ pub(crate) fn build_shared_timing_for_pair(
 /// Build a deduplicated `PublishedFetchIdentity` list from the planner's
 /// loaded bundles, preserving any logical family aliases the planner
 /// recorded (e.g., HRRR `nat` planned-family that merged onto `sfc`).
+///
+/// Dedupe is keyed by `BundleFetchKey`, not `CanonicalBundleId`: on
+/// global models (GFS / ECMWF / RRFS-A) a single physical GRIB file
+/// serves both the surface and pressure canonical bundles, so grouping
+/// by canonical id would publish one file twice. Aliases from every
+/// canonical bundle sharing the fetch key are unioned onto the single
+/// identity that represents the physical file.
 pub(crate) fn build_planned_input_fetches(loaded: &LoadedBundleSet) -> Vec<PublishedFetchIdentity> {
-    let mut by_id: std::collections::BTreeMap<CanonicalBundleId, PublishedFetchIdentity> =
+    struct FetchGroup<'a> {
+        bundle: &'a PlannedBundle,
+        fetched: &'a FetchedBundleBytes,
+        aliases: std::collections::BTreeSet<String>,
+    }
+
+    let mut by_fetch: std::collections::BTreeMap<BundleFetchKey, FetchGroup<'_>> =
         std::collections::BTreeMap::new();
     for bundle in &loaded.plan.bundles {
         let Some(fetched) = loaded.fetched_for(bundle) else {
             continue;
         };
-        let mut planned_aliases = bundle.planned_family_slugs();
-        // Drop the canonical planned product from the aliases set so it
-        // doesn't appear duplicated in the manifest.
-        planned_aliases.retain(|slug| slug != bundle.resolved.native_product.as_str());
-        let identity = fetch_identity_from_cached_result_with_aliases(
-            bundle.resolved.native_product.as_str(),
-            planned_aliases,
-            &fetched.file.request,
-            &fetched.file.fetched,
-        );
-        by_id.insert(bundle.id.clone(), identity);
+        let key = bundle.fetch_key();
+        let canonical = bundle.resolved.native_product.as_str();
+        let entry = by_fetch.entry(key).or_insert_with(|| FetchGroup {
+            bundle,
+            fetched,
+            aliases: std::collections::BTreeSet::new(),
+        });
+        for slug in bundle.planned_family_slugs() {
+            // Drop the canonical planned product so it doesn't appear
+            // duplicated in the manifest alongside the `planned_family`.
+            if slug != canonical {
+                entry.aliases.insert(slug);
+            }
+        }
     }
-    by_id.into_values().collect()
+    by_fetch
+        .into_values()
+        .map(|group| {
+            fetch_identity_from_cached_result_with_aliases(
+                group.bundle.resolved.native_product.as_str(),
+                group.aliases.into_iter().collect(),
+                &group.fetched.file.request,
+                &group.fetched.file.fetched,
+            )
+        })
+        .collect()
 }
 
 pub fn severe_panel_fields_from_supported(fields: SupportedSevereFields) -> Vec<Solar07PanelField> {
@@ -303,6 +329,123 @@ pub fn compute_severe_panel_fields(
 ) -> Result<Vec<Solar07PanelField>, Box<dyn std::error::Error>> {
     let prepared = prepare_heavy_volume(surface, pressure, true)?;
     compute_severe_panel_fields_with_prepared_volume(surface, pressure, &prepared)
+}
+
+#[cfg(test)]
+mod planned_input_fetches_tests {
+    use super::*;
+    use crate::gridded::FetchedModelFile;
+    use crate::planner::ExecutionPlanBuilder;
+    use crate::runtime::{LoadedBundleSet, LoadedBundleTiming};
+    use rustwx_core::{CycleSpec, ModelRunRequest};
+    use rustwx_io::{CachedFetchResult, FetchRequest, FetchResult};
+    use rustwx_models::LatestRun;
+    use std::path::PathBuf;
+
+    fn synthetic_fetched(key: &BundleFetchKey) -> FetchedBundleBytes {
+        let request = FetchRequest {
+            request: ModelRunRequest::new(
+                key.model,
+                key.cycle.clone(),
+                key.forecast_hour,
+                key.native_product.as_str(),
+            )
+            .unwrap(),
+            source_override: Some(key.source),
+            variable_patterns: Vec::new(),
+        };
+        let bytes = b"synthetic-grib".to_vec();
+        let fetched = CachedFetchResult {
+            result: FetchResult {
+                source: key.source,
+                url: format!("https://example.test/{}", key.native_product),
+                bytes: bytes.clone(),
+            },
+            cache_hit: true,
+            bytes_path: PathBuf::from("synthetic"),
+            metadata_path: PathBuf::from("synthetic.json"),
+        };
+        FetchedBundleBytes {
+            key: key.clone(),
+            file: FetchedModelFile {
+                request,
+                fetched,
+                bytes,
+            },
+            fetch_ms: 0,
+        }
+    }
+
+    fn build_loaded(latest: LatestRun, forecast_hour: u16) -> LoadedBundleSet {
+        let mut builder = ExecutionPlanBuilder::new(&latest, forecast_hour);
+        builder.require(&BundleRequirement::new(
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+            forecast_hour,
+        ));
+        builder.require(&BundleRequirement::new(
+            CanonicalBundleDescriptor::PressureAnalysis,
+            forecast_hour,
+        ));
+        let plan = builder.build();
+        let mut fetched = std::collections::BTreeMap::new();
+        for key in plan.fetch_keys() {
+            fetched.insert(key.clone(), synthetic_fetched(&key));
+        }
+        LoadedBundleSet {
+            plan,
+            latest,
+            forecast_hour,
+            fetched,
+            surface_decodes: std::collections::BTreeMap::new(),
+            pressure_decodes: std::collections::BTreeMap::new(),
+            timing: LoadedBundleTiming::default(),
+        }
+    }
+
+    #[test]
+    fn gfs_shared_fetch_publishes_one_identity_per_physical_file() {
+        // Regression: prior code keyed dedupe by CanonicalBundleId, so GFS
+        // surface + pressure (two canonicals, one pgrb2.0p25 fetch) would
+        // publish the same physical file twice in manifests.
+        let loaded = build_loaded(
+            LatestRun {
+                model: ModelId::Gfs,
+                cycle: CycleSpec::new("20260415", 18).unwrap(),
+                source: SourceId::Nomads,
+            },
+            12,
+        );
+        assert_eq!(loaded.plan.bundles.len(), 2);
+        assert_eq!(loaded.plan.fetch_keys().len(), 1);
+
+        let identities = build_planned_input_fetches(&loaded);
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].planned_family, "pgrb2.0p25");
+    }
+
+    #[test]
+    fn hrrr_distinct_fetches_publish_one_identity_each() {
+        // HRRR genuinely has two physical files (sfc + prs); we must
+        // still emit one identity per fetch.
+        let loaded = build_loaded(
+            LatestRun {
+                model: ModelId::Hrrr,
+                cycle: CycleSpec::new("20260415", 18).unwrap(),
+                source: SourceId::Aws,
+            },
+            6,
+        );
+        assert_eq!(loaded.plan.fetch_keys().len(), 2);
+
+        let identities = build_planned_input_fetches(&loaded);
+        assert_eq!(identities.len(), 2);
+        let families: std::collections::BTreeSet<_> = identities
+            .iter()
+            .map(|id| id.planned_family.clone())
+            .collect();
+        assert!(families.contains("sfc"));
+        assert!(families.contains("prs"));
+    }
 }
 
 pub fn compute_severe_panel_fields_with_prepared_volume(

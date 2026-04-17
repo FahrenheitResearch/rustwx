@@ -41,8 +41,18 @@ pub struct LoadedBundleSet {
 }
 
 /// Aggregated timing surfaced into per-lane reports.
+///
+/// Note on `fetch_ms_total`: this is the **sum of per-worker elapsed
+/// time across fetches**, not the wall-clock cost of the fetch phase.
+/// When fetches run in parallel (non-NOMADS), wall-clock is roughly
+/// `max(per_fetch_ms)` while this field is the sum across workers and
+/// will be larger. Callers that want wall-clock fetch cost should
+/// measure around `load_execution_plan` directly.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LoadedBundleTiming {
+    /// Summed worker-elapsed fetch time across all distinct fetch keys.
+    /// See the struct-level note: this is not wall-clock time when the
+    /// loader fetches in parallel.
     pub fetch_ms_total: u128,
     pub decode_surface_ms_total: u128,
     pub decode_pressure_ms_total: u128,

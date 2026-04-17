@@ -268,10 +268,13 @@ pub fn run_hrrr_non_ecape_hour(
             })
         }),
         windowed_request.as_ref().map(|lane_request| {
-            // Windowed retains its own per-hour fetch path because its
-            // bundle requirements are multi-hour ranges. The planner
-            // can't dedupe today; documented as the last remaining
-            // lane-specific surface.
+            // Windowed builds its own planner execution plan across
+            // contributing hours and loads it through load_execution_plan,
+            // so the lane itself is planner-driven. What's missing here
+            // is cross-lane dedupe: windowed's plan is separate from the
+            // direct+derived plan we just built, so a same-hour wrfsfc
+            // fetch that both sides need is fetched twice. Unifying the
+            // two plans is the next step for true cross-lane dedupe.
             let windowed_latest = latest.clone();
             lane("windowed", move || {
                 run_hrrr_windowed_batch_with_context(lane_request, &windowed_latest)

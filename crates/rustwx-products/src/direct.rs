@@ -1101,7 +1101,16 @@ fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> Colo
             levels: range_step(0.0, 20.5, 0.5),
             colors: solar07_palette(Solar07Palette::Uh),
             extend: ExtendMode::Max,
-            // Reveal basemap where there are no flashes.
+            // Pragmatic near-zero cutoff (units: flashes km^-2 day^-1) so
+            // cells with no meaningful flash activity reveal basemap. Not
+            // an NWS operational threshold — unlike reflectivity's 5 dBZ
+            // minimum detectable or QPF's 0.01 in trace, there's no
+            // standard display cutoff for lightning flash density. Also
+            // note: lightning_flash_density is currently blocked as a
+            // native recipe (HRRR exposes LTNGSD/LTNG, not the flash-
+            // density parameters), so this scale isn't hit in practice
+            // today; the value matches the scale's level step for
+            // consistency with how the first bin is drawn.
             mask_below: Some(0.5),
         },
         _ => DiscreteColorScale {
