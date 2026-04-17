@@ -394,7 +394,14 @@ const GFS_SOURCES: &[SourceDescriptor] = &[
 
 const ECMWF_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
     id: SourceId::Ecmwf,
-    idx_available: true,
+    // ECMWF open-data doesn't publish `.grib2.idx` companion files, so
+    // HEAD-probing the `.idx` URL returns 404 and `latest_available_run`
+    // falsely concludes the run is unavailable. Flagging this source
+    // `idx_available=false` makes `availability_probe_url` fall back to
+    // the grib URL itself, which HEAD 200s correctly. The tradeoff: no
+    // idx-based range extraction, but ECMWF's open-data is served as
+    // single grib2 files that the fetcher already pulls whole.
+    idx_available: false,
     priority: 1,
     max_age_hours: None,
     notes: "ECMWF open data",
