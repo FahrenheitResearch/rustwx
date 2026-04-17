@@ -14,7 +14,7 @@ use rustwx_models::{
 use rustwx_render::{
     Color, ColorScale, ContourLayer, DiscreteColorScale, ExtendMode, MapRenderRequest,
     PanelGridLayout, PanelPadding, ProjectedDomain, ProjectedExtent, ProjectedLineOverlay,
-    WindBarbLayer, render_panel_grid, save_png,
+    ProjectedPolygonFill, WindBarbLayer, render_panel_grid, save_png,
     solar07::{Solar07Palette, solar07_palette},
 };
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
-use wrf_render::features::load_styled_conus_features;
+use wrf_render::features::{load_styled_conus_features, load_styled_conus_polygons};
 use wrf_render::overlay::MapExtent;
 use wrf_render::projection::LambertConformal;
 use wrf_render::render::map_frame_aspect_ratio;
@@ -939,6 +939,7 @@ fn build_render_request(
         extent: projected.extent,
     });
     request.projected_lines = projected.lines;
+    request.projected_polygons = projected.polygons;
     if overlay_only {
         request
             .contours
@@ -1021,7 +1022,9 @@ fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> Colo
                 levels: range_step(5.0, 80.0, 5.0),
                 colors: solar07_palette(Solar07Palette::Reflectivity),
                 extend: ExtendMode::Both,
-                mask_below: None,
+                // Mask clear-air cells (<5 dBZ) so the basemap shows through —
+                // matches how NWS/NOAA radar products render.
+                mask_below: Some(5.0),
             }
         }
         RenderStyle::Solar07Rh => DiscreteColorScale {
@@ -1070,7 +1073,8 @@ fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> Colo
             levels: range_step(0.0, 100.0, 5.0),
             colors: solar07_palette(Solar07Palette::Precip),
             extend: ExtendMode::Max,
-            mask_below: None,
+            // Reveal basemap where no precipitation has accumulated.
+            mask_below: Some(0.25),
         },
         RenderStyle::Solar07Categorical => DiscreteColorScale {
             levels: vec![0.0, 0.5, 1.0],
@@ -1097,7 +1101,8 @@ fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> Colo
             levels: range_step(0.0, 20.5, 0.5),
             colors: solar07_palette(Solar07Palette::Uh),
             extend: ExtendMode::Max,
-            mask_below: None,
+            // Reveal basemap where there are no flashes.
+            mask_below: Some(0.5),
         },
         _ => DiscreteColorScale {
             levels: range_step(-50.0, 5.0, 1.0),
@@ -1318,6 +1323,38 @@ pub fn build_projected_map(
         }
     }
 
+    // Project the filled basemap polygons (ocean → land → lakes) once per
+    // map, filtered by bbox-overlap so global rings that can't possibly be
+    // visible (e.g. Southern Ocean rings when the frame is CONUS) are dropped
+    // before they reach the scanline fill. The render-side clip keeps any
+    // survivors inside the map panel.
+    let pad_x = 0.50 * (extent.x_max - extent.x_min);
+    let pad_y = 0.50 * (extent.y_max - extent.y_min);
+    let accept_bbox = (
+        extent.x_min - pad_x,
+        extent.x_max + pad_x,
+        extent.y_min - pad_y,
+        extent.y_max + pad_y,
+    );
+    let mut polygons: Vec<ProjectedPolygonFill> = Vec::new();
+    for layer in load_styled_conus_polygons() {
+        let color = Color::rgba(layer.color.r, layer.color.g, layer.color.b, layer.color.a);
+        for polygon in layer.polygons {
+            let rings: Vec<Vec<(f64, f64)>> = polygon
+                .into_iter()
+                .map(|ring| {
+                    ring.into_iter()
+                        .map(|(lon, lat)| proj.project(lat, lon))
+                        .collect::<Vec<(f64, f64)>>()
+                })
+                .filter(|ring| ring_overlaps_bbox(ring, accept_bbox))
+                .collect();
+            if !rings.is_empty() {
+                polygons.push(ProjectedPolygonFill { rings, color });
+            }
+        }
+    }
+
     Ok(ProjectedMap {
         projected_x,
         projected_y,
@@ -1328,7 +1365,28 @@ pub fn build_projected_map(
             y_max: extent.y_max,
         },
         lines,
+        polygons,
     })
+}
+
+fn ring_overlaps_bbox(ring: &[(f64, f64)], bbox: (f64, f64, f64, f64)) -> bool {
+    let (mut rx_min, mut rx_max) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut ry_min, mut ry_max) = (f64::INFINITY, f64::NEG_INFINITY);
+    for &(x, y) in ring {
+        if x < rx_min {
+            rx_min = x;
+        }
+        if x > rx_max {
+            rx_max = x;
+        }
+        if y < ry_min {
+            ry_min = y;
+        }
+        if y > ry_max {
+            ry_max = y;
+        }
+    }
+    !(rx_max < bbox.0 || rx_min > bbox.1 || ry_max < bbox.2 || ry_min > bbox.3)
 }
 
 fn range_step(start: f64, stop: f64, step: f64) -> Vec<f64> {

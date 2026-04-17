@@ -18,11 +18,11 @@ use rustwx_models::{ModelError, PlotRecipe, plot_recipe, plot_recipe_fetch_plan}
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_render::{
     Color, ColorScale, ContourLayer, DiscreteColorScale, ExtendMode, MapRenderRequest,
-    ProjectedDomain, ProjectedExtent, ProjectedLineOverlay, WindBarbLayer, save_png,
-    solar07::Solar07Palette, solar07::solar07_palette,
+    ProjectedDomain, ProjectedExtent, ProjectedLineOverlay, ProjectedPolygonFill, WindBarbLayer,
+    save_png, solar07::Solar07Palette, solar07::solar07_palette,
 };
 use serde_json::json;
-use wrf_render::features::load_styled_conus_features;
+use wrf_render::features::{load_styled_conus_features, load_styled_conus_polygons};
 use wrf_render::overlay::MapExtent;
 use wrf_render::projection::LambertConformal;
 use wrf_render::render::map_frame_aspect_ratio;
@@ -78,6 +78,7 @@ struct ProjectedMap {
     y: Vec<f64>,
     extent: ProjectedExtent,
     lines: Vec<ProjectedLineOverlay>,
+    polygons: Vec<ProjectedPolygonFill>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -274,6 +275,7 @@ fn build_render_request(
         extent: projected.extent,
     });
     request.projected_lines = projected.lines;
+    request.projected_polygons = projected.polygons;
     request.contours = build_contour_layers(recipe, extracted);
     request.wind_barbs = build_barb_layers(recipe, extracted, region);
     request
@@ -331,7 +333,7 @@ fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> Colo
             levels: range_step(5.0, 80.0, 5.0),
             colors: solar07_palette(Solar07Palette::Reflectivity),
             extend: ExtendMode::Both,
-            mask_below: None,
+            mask_below: Some(5.0),
         },
         rustwx_models::RenderStyle::Solar07Rh => DiscreteColorScale {
             levels: range_step(0.0, 105.0, 5.0),
@@ -508,6 +510,33 @@ fn build_projected_map(
         }
     }
 
+    let pad_x = 0.50 * (extent.x_max - extent.x_min);
+    let pad_y = 0.50 * (extent.y_max - extent.y_min);
+    let accept_bbox = (
+        extent.x_min - pad_x,
+        extent.x_max + pad_x,
+        extent.y_min - pad_y,
+        extent.y_max + pad_y,
+    );
+    let mut polygons: Vec<ProjectedPolygonFill> = Vec::new();
+    for layer in load_styled_conus_polygons() {
+        let color = Color::rgba(layer.color.r, layer.color.g, layer.color.b, layer.color.a);
+        for polygon in layer.polygons {
+            let rings: Vec<Vec<(f64, f64)>> = polygon
+                .into_iter()
+                .map(|ring| {
+                    ring.into_iter()
+                        .map(|(lon, lat)| proj.project(lat, lon))
+                        .collect::<Vec<(f64, f64)>>()
+                })
+                .filter(|ring| ring_overlaps_bbox(ring, accept_bbox))
+                .collect();
+            if !rings.is_empty() {
+                polygons.push(ProjectedPolygonFill { rings, color });
+            }
+        }
+    }
+
     Ok(ProjectedMap {
         x: projected_x,
         y: projected_y,
@@ -518,7 +547,28 @@ fn build_projected_map(
             y_max: extent.y_max,
         },
         lines,
+        polygons,
     })
+}
+
+fn ring_overlaps_bbox(ring: &[(f64, f64)], bbox: (f64, f64, f64, f64)) -> bool {
+    let (mut rx_min, mut rx_max) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut ry_min, mut ry_max) = (f64::INFINITY, f64::NEG_INFINITY);
+    for &(x, y) in ring {
+        if x < rx_min {
+            rx_min = x;
+        }
+        if x > rx_max {
+            rx_max = x;
+        }
+        if y < ry_min {
+            ry_min = y;
+        }
+        if y > ry_max {
+            ry_max = y;
+        }
+    }
+    !(rx_max < bbox.0 || rx_min > bbox.1 || ry_max < bbox.2 || ry_min > bbox.3)
 }
 
 fn range_step(start: f64, stop: f64, step: f64) -> Vec<f64> {

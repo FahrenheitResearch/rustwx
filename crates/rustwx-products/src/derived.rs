@@ -1497,6 +1497,7 @@ fn build_render_artifact(
         extent: projected.extent.clone(),
     });
     request.projected_lines = projected.lines.clone();
+    request.projected_polygons = projected.polygons.clone();
     if matches!(recipe, DerivedRecipe::ThetaE2m10mWinds) {
         let u_kt = computed_surface_u10(computed, recipe)?;
         let v_kt = computed_surface_v10(computed, recipe)?;

@@ -1,6 +1,6 @@
 {
   "cache": {
-    "extract_hits": 4,
+    "extract_hits": 3,
     "extract_misses": 0,
     "fetch_hit": true,
     "root": "C:/Users/drew/rustwx/proof\\cache"
@@ -12,16 +12,16 @@
   "forecast_hour": 0,
   "grib_url": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gfs.20260414/18/atmos/gfs.t18z.pgrb2.0p25.f000",
   "model": "gfs",
-  "panel_path": "C:/Users/drew/rustwx/proof\\rustwx_gfs_20260414_18z_f000_conus_500mb_temperature_height_winds.png",
-  "recipe": "500mb_temperature_height_winds",
+  "panel_path": "C:/Users/drew/rustwx/proof\\rustwx_gfs_20260414_18z_f000_conus_mslp_10m_winds.png",
+  "recipe": "mslp_10m_winds",
   "region": "conus",
   "source": "nomads",
   "timing_ms": {
-    "extract": 39,
-    "fetch": 1385,
+    "extract": 28,
+    "fetch": 1405,
     "parse": 0,
-    "project": 151,
-    "render": 377,
-    "total": 2019
+    "project": 140,
+    "render": 216,
+    "total": 1873
   }
 }

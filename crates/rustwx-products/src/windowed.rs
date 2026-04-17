@@ -463,6 +463,7 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
                         extent: projected.extent.clone(),
                     });
                     render_request.projected_lines = projected.lines.clone();
+                    render_request.projected_polygons = projected.polygons.clone();
                     save_png(&render_request, &output_path).map_err(thread_windowed_error)?;
                     let render_ms = render_start.elapsed().as_millis();
 

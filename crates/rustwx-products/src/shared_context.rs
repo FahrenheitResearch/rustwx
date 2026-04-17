@@ -2,7 +2,7 @@ use image::DynamicImage;
 use rustwx_core::{Field2D, LatLonGrid, ProductKey};
 use rustwx_render::{
     MapRenderRequest, PanelGridLayout, PanelPadding, ProjectedDomain, ProjectedExtent,
-    ProjectedLineOverlay, Solar07Product, render_panel_grid,
+    ProjectedLineOverlay, ProjectedPolygonFill, Solar07Product, render_panel_grid,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -32,6 +32,9 @@ pub struct ProjectedMap {
     pub projected_y: Vec<f64>,
     pub extent: ProjectedExtent,
     pub lines: Vec<ProjectedLineOverlay>,
+    /// Filled basemap polygons (ocean → land → lakes). Drawn under the data
+    /// raster so every product render gets a proper land/ocean substrate.
+    pub polygons: Vec<ProjectedPolygonFill>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -172,6 +175,7 @@ pub fn render_two_by_four_solar07_panel(
             extent: projected.extent.clone(),
         });
         request.projected_lines = projected.lines.clone();
+        request.projected_polygons = projected.polygons.clone();
         requests.push(request);
     }
 
@@ -216,6 +220,7 @@ mod tests {
                     y_max: 1.0,
                 },
                 lines: Vec::new(),
+                polygons: Vec::new(),
             },
         );
         assert!(context.contains_size(700, 520));
