@@ -17,10 +17,7 @@ pub use crate::shared_context::{
     Solar07PanelLayout, layout_key, render_two_by_four_solar07_panel,
 };
 use rustwx_calc::SupportedSevereFields;
-use rustwx_core::{
-    CycleSpec, GridShape, LatLonGrid, ModelId, RustwxError, SourceId,
-};
-use rustwx_io::{CachedFetchResult, FetchRequest};
+use rustwx_core::{CycleSpec, ModelId, SourceId};
 use rustwx_models::{LatestRun, latest_available_run};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -128,65 +125,6 @@ pub struct HrrrBatchReport {
     pub products: Vec<HrrrRenderedProduct>,
     pub shared_timing: HrrrSharedTiming,
     pub total_ms: u128,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HrrrSurfaceFields {
-    pub lat: Vec<f64>,
-    pub lon: Vec<f64>,
-    pub nx: usize,
-    pub ny: usize,
-    pub psfc_pa: Vec<f64>,
-    pub orog_m: Vec<f64>,
-    pub t2_k: Vec<f64>,
-    pub q2_kgkg: Vec<f64>,
-    pub u10_ms: Vec<f64>,
-    pub v10_ms: Vec<f64>,
-    pub lambert_latin1: f64,
-    pub lambert_latin2: f64,
-    pub lambert_lov: f64,
-}
-
-impl HrrrSurfaceFields {
-    pub fn core_grid(&self) -> Result<LatLonGrid, RustwxError> {
-        LatLonGrid::new(
-            GridShape::new(self.nx, self.ny)?,
-            self.lat.iter().map(|&v| v as f32).collect(),
-            self.lon.iter().map(|&v| v as f32).collect(),
-        )
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HrrrPressureFields {
-    pub pressure_levels_hpa: Vec<f64>,
-    pub temperature_c_3d: Vec<f64>,
-    pub qvapor_kgkg_3d: Vec<f64>,
-    pub u_ms_3d: Vec<f64>,
-    pub v_ms_3d: Vec<f64>,
-    pub gh_m_3d: Vec<f64>,
-}
-
-#[derive(Debug, Clone)]
-pub struct HrrrFetchedSubset {
-    pub request: FetchRequest,
-    pub fetched: CachedFetchResult,
-    pub bytes: Vec<u8>,
-}
-
-impl HrrrFetchedSubset {
-    pub fn runtime_info(&self, planned_product: &str) -> HrrrFetchRuntimeInfo {
-        HrrrFetchRuntimeInfo {
-            planned_product: planned_product.to_string(),
-            fetched_product: self.request.request.product.clone(),
-            requested_source: self
-                .request
-                .source_override
-                .unwrap_or(self.fetched.result.source),
-            resolved_source: self.fetched.result.source,
-            resolved_url: self.fetched.result.url.clone(),
-        }
-    }
 }
 
 pub fn resolve_hrrr_run(
@@ -595,7 +533,6 @@ fn panic_message(panic: Box<dyn std::any::Any + Send + 'static>) -> String {
 mod tests {
     use super::*;
     use rustwx_calc::SupportedSevereFields;
-    use rustwx_core::ModelRunRequest;
     use rustwx_render::Solar07Product;
 
     #[test]
@@ -608,39 +545,24 @@ mod tests {
     }
 
     #[test]
-    fn fetched_subset_runtime_info_keeps_planned_and_actual_fetch_truth() {
-        // The HRRR-pinned `HrrrFetchedSubset` -> `HrrrFetchRuntimeInfo`
-        // bridge stays public for legacy windowed-batch reports; assert
-        // it preserves the "planned vs actual" truth that direct's
-        // nat→sfc routing depends on for manifest aliasing.
-        let subset = HrrrFetchedSubset {
-            request: FetchRequest {
-                request: ModelRunRequest::new(
-                    ModelId::Hrrr,
-                    CycleSpec::new("20260414", 23).unwrap(),
-                    6,
-                    "sfc",
-                )
-                .unwrap(),
-                source_override: Some(SourceId::Nomads),
-                variable_patterns: Vec::new(),
-            },
-            fetched: CachedFetchResult {
-                result: rustwx_io::FetchResult {
-                    source: SourceId::Nomads,
-                    url: "https://example.test/hrrr.t23z.wrfsfcf06.grib2".into(),
-                    bytes: vec![1, 2, 3],
-                },
-                cache_hit: false,
-                bytes_path: PathBuf::from("fetch.grib2"),
-                metadata_path: PathBuf::from("fetch_meta.json"),
-            },
-            bytes: vec![1, 2, 3],
+    fn fetch_runtime_info_keeps_planned_and_actual_fetch_truth() {
+        // `HrrrFetchRuntimeInfo` is still serialized into
+        // `HrrrSharedTiming` and therefore part of the downstream
+        // report wire format. Assert that the struct preserves the
+        // "planned vs actual" truth (including nat->sfc aliasing and
+        // requested-vs-resolved source) that manifest aliasing relies
+        // on.
+        let runtime = HrrrFetchRuntimeInfo {
+            planned_product: "nat".to_string(),
+            fetched_product: "sfc".to_string(),
+            requested_source: SourceId::Nomads,
+            resolved_source: SourceId::Nomads,
+            resolved_url: "https://example.test/hrrr.t23z.wrfsfcf06.grib2".to_string(),
         };
 
-        let runtime = subset.runtime_info("nat");
         assert_eq!(runtime.planned_product, "nat");
         assert_eq!(runtime.fetched_product, "sfc");
+        assert_ne!(runtime.planned_product, runtime.fetched_product);
         assert_eq!(runtime.requested_source, SourceId::Nomads);
         assert_eq!(runtime.resolved_source, SourceId::Nomads);
         assert!(runtime.resolved_url.contains("wrfsfc"));
@@ -651,31 +573,6 @@ mod tests {
         let field = Solar07PanelField::new(Solar07Product::StpFixed, "dimensionless", vec![1.0])
             .with_title_override("STP (FIXED)");
         assert_eq!(field.title_override.as_deref(), Some("STP (FIXED)"));
-    }
-
-    #[test]
-    fn surface_core_grid_preserves_shape() {
-        // HrrrSurfaceFields stays as a public, serializable type for
-        // non-planner callers. Its `core_grid` accessor must still
-        // produce the right LatLonGrid shape.
-        let surface = HrrrSurfaceFields {
-            lat: vec![35.0, 35.0, 36.0, 36.0],
-            lon: vec![-100.0, -99.0, -100.0, -99.0],
-            nx: 2,
-            ny: 2,
-            psfc_pa: vec![100000.0; 4],
-            orog_m: vec![0.0; 4],
-            t2_k: vec![290.0; 4],
-            q2_kgkg: vec![0.01; 4],
-            u10_ms: vec![5.0; 4],
-            v10_ms: vec![2.0; 4],
-            lambert_latin1: 33.0,
-            lambert_latin2: 45.0,
-            lambert_lov: -97.0,
-        };
-        let grid = surface.core_grid().unwrap();
-        assert_eq!(grid.shape.nx, 2);
-        assert_eq!(grid.shape.ny, 2);
     }
 
     #[test]

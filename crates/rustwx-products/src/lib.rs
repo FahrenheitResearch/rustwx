@@ -16,6 +16,7 @@ pub mod severe;
 pub mod shared_context;
 pub mod spec;
 pub mod windowed;
+pub mod windowed_decoder;
 
 pub use shared_context::{
     DomainSpec, PreparedProjectedContext, ProjectedMap, ProjectedMapProvider, Solar07PanelField,
