@@ -208,11 +208,10 @@ fn annotate_region(outcomes: &mut Vec<LaneOutcome>, mut outcome: LaneOutcome, re
     outcomes.push(outcome);
 }
 
-/// Pull every 'supported' direct + derived slug straight from the
-/// product catalog. Used by --all-supported for benchmark runs
-/// ("every product of every model"). Partial-support slugs (e.g.
-/// composite_reflectivity, which HRRR has but GFS doesn't) are
-/// included — the soft-fail paths handle them per-recipe per-model.
+/// Global union of every 'supported' or 'partial' direct + derived
+/// slug in the catalog. Used by --all-supported when we want one list
+/// for summary display; per-model filtering happens in
+/// `model_supported_recipe_lists`.
 fn all_supported_recipe_lists() -> (Vec<String>, Vec<String>) {
     use rustwx_products::catalog::{ProductCatalogStatus, build_supported_products_catalog};
     let catalog = build_supported_products_catalog();
@@ -232,6 +231,39 @@ fn all_supported_recipe_lists() -> (Vec<String>, Vec<String>) {
         .derived
         .iter()
         .filter(|e| include(e.status))
+        .map(|e| e.slug.clone())
+        .collect();
+    (direct, derived)
+}
+
+/// Per-model supported recipe lists. The product catalog records a
+/// `ProductTargetSupport` per (recipe, model), so we can ask "which
+/// slugs does HRRR actually render today?" and hand derived_batch a
+/// list it won't reject. Without this filter, --all-supported would
+/// include slugs that are supported by *some* model (via the rollup
+/// status) but not the specific model we're invoking — derived_batch
+/// currently errors on the first unsupported slug, so per-model
+/// filtering keeps the benchmark honest.
+fn model_supported_recipe_lists(model: ModelId) -> (Vec<String>, Vec<String>) {
+    use rustwx_products::catalog::{
+        ProductTargetStatus, build_supported_products_catalog,
+    };
+    let catalog = build_supported_products_catalog();
+    let supported_for_model = |support: &[rustwx_products::catalog::ProductTargetSupport]| {
+        support.iter().any(|s| {
+            s.model == Some(model) && matches!(s.status, ProductTargetStatus::Supported)
+        })
+    };
+    let direct: Vec<String> = catalog
+        .direct
+        .iter()
+        .filter(|e| supported_for_model(&e.support))
+        .map(|e| e.slug.clone())
+        .collect();
+    let derived: Vec<String> = catalog
+        .derived
+        .iter()
+        .filter(|e| supported_for_model(&e.support))
         .map(|e| e.slug.clone())
         .collect();
     (direct, derived)
@@ -310,6 +342,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .source
                 .unwrap_or(model_summary(model).sources[0].id);
 
+            // Per-model recipe selection for --all-supported so derived
+            // doesn't abort on a slug that's Supported in the catalog's
+            // rollup but Blocked for this specific model.
+            let (direct_for_model, derived_for_model) = if args.all_supported {
+                model_supported_recipe_lists(model)
+            } else {
+                (direct_recipes.clone(), derived_recipes.clone())
+            };
+
             for &fh in &hours {
                 if !args.skip_severe {
                     let outcome = run_severe_lane(
@@ -332,7 +373,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         source,
                         &domain,
                         &args,
-                        &direct_recipes,
+                        &direct_for_model,
                         counts,
                     );
                     annotate_region(&mut outcomes, outcome, region);
@@ -346,7 +387,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         source,
                         &domain,
                         &args,
-                        &derived_recipes,
+                        &derived_for_model,
                         counts,
                     );
                     annotate_region(&mut outcomes, outcome, region);
