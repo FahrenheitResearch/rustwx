@@ -32,6 +32,8 @@ use rustwx_products::cache::ensure_dir;
 use rustwx_products::derived::{DerivedBatchRequest, run_derived_batch};
 use rustwx_products::direct::{DirectBatchRequest, run_direct_batch};
 use rustwx_products::ecape::{EcapeBatchRequest, run_ecape_batch};
+use rustwx_products::hrrr::{HrrrBatchProduct, HrrrBatchRequest, run_hrrr_batch};
+use rustwx_products::non_ecape::{HrrrNonEcapeHourRequest, run_hrrr_non_ecape_hour};
 use rustwx_products::severe::{SevereBatchRequest, run_severe_batch};
 use rustwx_products::shared_context::DomainSpec;
 use serde::Serialize;
@@ -372,6 +374,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
 
             for &fh in &hours {
+                // HRRR has optimized unified runners that share the
+                // planner-loaded surface+pressure bundle and the
+                // prepare_heavy_volume pass across severe+ECAPE, and
+                // share a single bundle load across direct+derived.
+                // Falling back to the generic per-lane runners for HRRR
+                // forces 4 separate bundle loads and 3 redundant
+                // prepare_heavy_volume passes, which is the original
+                // "full CONUS HRRR used to run in ~60s, now takes
+                // minutes" regression. For HRRR we call the unified
+                // runners; for GFS/ECMWF/RRFS-A we still use the
+                // generic per-lane runners (no unified runner exists
+                // for those yet).
+                if matches!(model, ModelId::Hrrr) {
+                    let hrrr_outcomes = run_hrrr_unified(
+                        &date,
+                        pinned_cycle,
+                        fh,
+                        source,
+                        &domain,
+                        &args,
+                        &direct_for_model,
+                        &derived_for_model,
+                        counts,
+                    );
+                    for outcome in hrrr_outcomes {
+                        annotate_region(&mut outcomes, outcome, region);
+                    }
+                    continue;
+                }
+
                 if !args.skip_severe {
                     let outcome = run_severe_lane(
                         model, &date, pinned_cycle, fh, source, &domain, &args, counts,
@@ -793,4 +825,180 @@ fn run_derived_lane(
             }
         }
     }
+}
+
+/// HRRR-specific unified runner that reuses the existing optimized
+/// wrappers:
+///   * `run_hrrr_batch` shares one surface+pressure bundle load + one
+///     `prepare_heavy_volume` pass across the severe panel and the
+///     ECAPE8 panel.
+///   * `run_hrrr_non_ecape_hour` shares one bundle load across direct,
+///     derived, and windowed (windowed is skipped at f000 because the
+///     accumulation windows aren't populated yet).
+///
+/// Falling back to the generic per-lane runners for HRRR forces four
+/// separate `load_execution_plan` calls and three redundant
+/// `prepare_heavy_volume` passes, which is why forecast_now was ~10×
+/// slower than the checked-in HRRR baselines. GFS/ECMWF/RRFS-A still
+/// route through the per-lane runners (no unified variant exists for
+/// them yet).
+fn run_hrrr_unified(
+    date: &str,
+    cycle: Option<u8>,
+    fh: u16,
+    source: SourceId,
+    domain: &DomainSpec,
+    args: &Args,
+    direct_recipes: &[String],
+    derived_recipes: &[String],
+    counts: &mut ModelCounts,
+) -> Vec<LaneOutcome> {
+    let mut outcomes = Vec::new();
+
+    // severe + ECAPE via run_hrrr_batch (shared bundle + shared heavy volume)
+    let mut products = Vec::<HrrrBatchProduct>::new();
+    if !args.skip_severe {
+        products.push(HrrrBatchProduct::SevereProofPanel);
+    }
+    if !args.skip_ecape {
+        products.push(HrrrBatchProduct::Ecape8Panel);
+    }
+    if !products.is_empty() {
+        let start = Instant::now();
+        let request = HrrrBatchRequest {
+            date_yyyymmdd: date.to_string(),
+            cycle_override_utc: cycle,
+            forecast_hour: fh,
+            source,
+            domain: domain.clone(),
+            out_dir: args.out_dir.clone(),
+            cache_root: args.cache_dir.clone(),
+            use_cache: !args.no_cache,
+            products,
+        };
+        let slug = if !args.skip_severe && !args.skip_ecape {
+            "hrrr_batch_severe_ecape"
+        } else if !args.skip_severe {
+            "hrrr_batch_severe"
+        } else {
+            "hrrr_batch_ecape"
+        };
+        match run_hrrr_batch(&request) {
+            Ok(report) => {
+                let outputs: Vec<String> = report
+                    .products
+                    .iter()
+                    .map(|p| p.output_path.to_string_lossy().to_string())
+                    .collect();
+                let dur = start.elapsed().as_millis();
+                println!(
+                    "[ok  ] hrrr f{fh:03} {slug}: {} png in {:.2}s",
+                    outputs.len(),
+                    dur as f64 / 1000.0
+                );
+                counts.succeeded += 1;
+                counts.outputs += outputs.len();
+                outcomes.push(LaneOutcome {
+                    region: String::new(),
+                    model: ModelId::Hrrr,
+                    forecast_hour: fh,
+                    lane: slug.to_string(),
+                    ok: true,
+                    duration_ms: dur,
+                    error: None,
+                    outputs,
+                    blockers: Vec::new(),
+                });
+            }
+            Err(err) => {
+                eprintln!("[fail] hrrr f{fh:03} {slug}: {err}");
+                counts.failed += 1;
+                outcomes.push(LaneOutcome {
+                    region: String::new(),
+                    model: ModelId::Hrrr,
+                    forecast_hour: fh,
+                    lane: slug.to_string(),
+                    ok: false,
+                    duration_ms: start.elapsed().as_millis(),
+                    error: Some(err.to_string()),
+                    outputs: Vec::new(),
+                    blockers: Vec::new(),
+                });
+            }
+        }
+    }
+
+    // direct + derived via run_hrrr_non_ecape_hour (shared bundle load)
+    let want_direct = !args.skip_direct && !direct_recipes.is_empty();
+    let want_derived = !args.skip_derived && !derived_recipes.is_empty();
+    if want_direct || want_derived {
+        let start = Instant::now();
+        let request = HrrrNonEcapeHourRequest {
+            date_yyyymmdd: date.to_string(),
+            cycle_override_utc: cycle,
+            forecast_hour: fh,
+            source,
+            domain: domain.clone(),
+            out_dir: args.out_dir.clone(),
+            cache_root: args.cache_dir.clone(),
+            use_cache: !args.no_cache,
+            direct_recipe_slugs: if want_direct {
+                direct_recipes.to_vec()
+            } else {
+                Vec::new()
+            },
+            derived_recipe_slugs: if want_derived {
+                derived_recipes.to_vec()
+            } else {
+                Vec::new()
+            },
+            windowed_products: Vec::new(),
+        };
+        match run_hrrr_non_ecape_hour(&request) {
+            Ok(report) => {
+                let outputs: Vec<String> = report
+                    .summary
+                    .output_paths
+                    .iter()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect();
+                let dur = start.elapsed().as_millis();
+                println!(
+                    "[ok  ] hrrr f{fh:03} hrrr_non_ecape_hour: {} png in {:.2}s",
+                    outputs.len(),
+                    dur as f64 / 1000.0
+                );
+                counts.succeeded += 1;
+                counts.outputs += outputs.len();
+                outcomes.push(LaneOutcome {
+                    region: String::new(),
+                    model: ModelId::Hrrr,
+                    forecast_hour: fh,
+                    lane: "hrrr_non_ecape_hour".to_string(),
+                    ok: true,
+                    duration_ms: dur,
+                    error: None,
+                    outputs,
+                    blockers: Vec::new(),
+                });
+            }
+            Err(err) => {
+                eprintln!("[fail] hrrr f{fh:03} hrrr_non_ecape_hour: {err}");
+                counts.failed += 1;
+                outcomes.push(LaneOutcome {
+                    region: String::new(),
+                    model: ModelId::Hrrr,
+                    forecast_hour: fh,
+                    lane: "hrrr_non_ecape_hour".to_string(),
+                    ok: false,
+                    duration_ms: start.elapsed().as_millis(),
+                    error: Some(err.to_string()),
+                    outputs: Vec::new(),
+                    blockers: Vec::new(),
+                });
+            }
+        }
+    }
+
+    outcomes
 }
