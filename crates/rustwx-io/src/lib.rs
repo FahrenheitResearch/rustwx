@@ -284,6 +284,71 @@ pub fn extract_fields_from_grib2(
     Ok(out)
 }
 
+/// Partial-success variant of `extract_fields_from_grib2`: selectors
+/// whose GRIB message is absent from the file are returned in the
+/// `missing` vector instead of erroring out. Callers that want per-
+/// selector soft-fail (e.g. direct_batch, which renders many recipes
+/// from one fetch and shouldn't abort the whole batch when one
+/// selector is missing) opt into this variant; everyone else keeps
+/// getting strict all-or-nothing semantics from the original function.
+///
+/// The only `Err` path here is a genuinely malformed selector or a
+/// decode error on a matched message — neither of which is the "this
+/// model doesn't expose that field at init time" case that the strict
+/// variant treats identically.
+pub fn extract_fields_from_grib2_partial(
+    grib: &Grib2File,
+    selectors: &[FieldSelector],
+) -> Result<PartialExtraction, IoError> {
+    let mut extracted = Vec::new();
+    let mut missing = Vec::new();
+
+    if selectors.is_empty() {
+        return Ok(PartialExtraction { extracted, missing });
+    }
+
+    let prepared = selectors
+        .iter()
+        .copied()
+        .map(PreparedSelector::new)
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut matched = vec![None; prepared.len()];
+    let mut remaining = prepared.len();
+
+    for message in &grib.messages {
+        for (index, prepared_selector) in prepared.iter().enumerate() {
+            if matched[index].is_none() && prepared_selector.message.matches(message) {
+                matched[index] = Some(message);
+                remaining -= 1;
+            }
+        }
+        if remaining == 0 {
+            break;
+        }
+    }
+
+    for (prepared_selector, message) in prepared.iter().zip(matched.into_iter()) {
+        match message {
+            Some(message) => extracted.push(build_selected_field(
+                message,
+                prepared_selector.selector,
+                prepared_selector.message.units,
+            )?),
+            None => missing.push(prepared_selector.selector),
+        }
+    }
+
+    Ok(PartialExtraction { extracted, missing })
+}
+
+/// Result of a partial extraction: every selector the GRIB file served
+/// in `extracted`, every selector whose message was absent in `missing`.
+#[derive(Debug, Clone)]
+pub struct PartialExtraction {
+    pub extracted: Vec<SelectedField2D>,
+    pub missing: Vec<FieldSelector>,
+}
+
 pub fn extract_pressure_field_from_bytes(
     bytes: &[u8],
     field: CanonicalField,

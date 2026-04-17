@@ -5,7 +5,7 @@ use rustwx_core::{
     ModelId, SelectedField2D, SourceId,
 };
 use rustwx_io::{
-    extract_fields_from_grib2, load_cached_selected_field, store_cached_selected_field,
+    extract_fields_from_grib2_partial, load_cached_selected_field, store_cached_selected_field,
 };
 use rustwx_models::{
     LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
@@ -138,6 +138,16 @@ pub struct DirectRenderedRecipe {
     pub timing: DirectRecipeTiming,
 }
 
+/// Per-recipe failure that doesn't abort the whole batch. Emitted when
+/// a recipe's required GRIB message isn't present in the file (e.g.,
+/// GFS f000 doesn't publish accumulated APCP, ECMWF doesn't expose 2 m
+/// RH) or when a render-time error hits just that recipe.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirectRecipeBlocker {
+    pub recipe_slug: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectBatchReport {
     pub model: ModelId,
@@ -148,6 +158,12 @@ pub struct DirectBatchReport {
     pub domain: DomainSpec,
     pub fetches: Vec<DirectFetchTiming>,
     pub recipes: Vec<DirectRenderedRecipe>,
+    /// Recipes that couldn't render — missing GRIB messages or render
+    /// errors. Populated instead of short-circuiting the batch, so
+    /// orchestration callers get per-recipe signal rather than a single
+    /// hard error on the first problem.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blockers: Vec<DirectRecipeBlocker>,
     pub total_ms: u128,
 }
 
@@ -155,6 +171,7 @@ pub type HrrrDirectFetchRuntimeInfo = DirectFetchRuntimeInfo;
 pub type HrrrDirectRecipeTiming = DirectRecipeTiming;
 pub type HrrrDirectFetchTiming = DirectFetchTiming;
 pub type HrrrDirectRenderedRecipe = DirectRenderedRecipe;
+pub type HrrrDirectRecipeBlocker = DirectRecipeBlocker;
 pub type HrrrDirectBatchReport = DirectBatchReport;
 
 #[derive(Debug, Clone)]
@@ -296,21 +313,48 @@ pub(crate) fn run_direct_batch_from_loaded(
     let mut extracted = HashMap::<FieldSelector, SelectedField2D>::new();
     let mut fetches = Vec::with_capacity(groups.len());
     let mut fetch_truth_by_actual_product = HashMap::<String, DirectFetchRuntimeInfo>::new();
+    let mut missing_selectors = HashSet::<FieldSelector>::new();
+    let mut blockers = Vec::<DirectRecipeBlocker>::new();
 
     for group in &groups {
-        let fetched = find_loaded_bytes_for_group(loaded, group)?;
-        let (fields, timing) = extract_direct_fetch_group_from_loaded(
+        let fetched = match find_loaded_bytes_for_group(loaded, group) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                // The whole fetch for this group is gone (upstream
+                // planner fetch failure). Every recipe pointing at this
+                // group becomes a blocker instead of crashing the batch.
+                let reason = err.to_string();
+                for selector in &group.selectors {
+                    missing_selectors.insert(*selector);
+                }
+                for recipe_slug in recipe_slugs_depending_on_group(&planned, group) {
+                    blockers.push(DirectRecipeBlocker {
+                        recipe_slug,
+                        reason: reason.clone(),
+                    });
+                }
+                continue;
+            }
+        };
+        let (fields, unmatched, timing) = extract_direct_fetch_group_from_loaded(
             request, group, fetched, use_cache,
         )?;
         extracted.extend(fields.into_iter().map(|field| (field.selector, field)));
+        for selector in unmatched {
+            missing_selectors.insert(selector);
+        }
         fetch_truth_by_actual_product.insert(group.product.clone(), timing.runtime_fetch.clone());
         fetches.push(timing);
     }
 
+    let (renderable, selector_blockers) =
+        partition_recipes_by_selector_availability(&planned, &missing_selectors);
+    blockers.extend(selector_blockers);
+
     let rendered = render_direct_recipes(
         request,
         &loaded.latest,
-        &planned,
+        &renderable,
         &extracted,
         &fetch_truth_by_actual_product,
         shared_context,
@@ -325,6 +369,7 @@ pub(crate) fn run_direct_batch_from_loaded(
         domain: request.domain.clone(),
         fetches,
         recipes: rendered,
+        blockers,
         total_ms: total_start.elapsed().as_millis(),
     })
 }
@@ -360,21 +405,45 @@ fn run_direct_batch_with_context(
     let mut extracted = HashMap::<FieldSelector, SelectedField2D>::new();
     let mut fetches = Vec::with_capacity(groups.len());
     let mut fetch_truth_by_actual_product = HashMap::<String, DirectFetchRuntimeInfo>::new();
+    let mut missing_selectors = HashSet::<FieldSelector>::new();
+    let mut blockers = Vec::<DirectRecipeBlocker>::new();
 
     for group in &groups {
-        let fetched = find_loaded_bytes_for_group(&loaded, group)?;
-        let (fields, timing) = extract_direct_fetch_group_from_loaded(
+        let fetched = match find_loaded_bytes_for_group(&loaded, group) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                let reason = err.to_string();
+                for selector in &group.selectors {
+                    missing_selectors.insert(*selector);
+                }
+                for recipe_slug in recipe_slugs_depending_on_group(&planned, group) {
+                    blockers.push(DirectRecipeBlocker {
+                        recipe_slug,
+                        reason: reason.clone(),
+                    });
+                }
+                continue;
+            }
+        };
+        let (fields, unmatched, timing) = extract_direct_fetch_group_from_loaded(
             request, group, fetched, request.use_cache,
         )?;
         extracted.extend(fields.into_iter().map(|field| (field.selector, field)));
+        for selector in unmatched {
+            missing_selectors.insert(selector);
+        }
         fetch_truth_by_actual_product.insert(group.product.clone(), timing.runtime_fetch.clone());
         fetches.push(timing);
     }
 
+    let (renderable, selector_blockers) =
+        partition_recipes_by_selector_availability(&planned, &missing_selectors);
+    blockers.extend(selector_blockers);
+
     let rendered = render_direct_recipes(
         request,
         latest,
-        &planned,
+        &renderable,
         &extracted,
         &fetch_truth_by_actual_product,
         shared_context,
@@ -389,6 +458,7 @@ fn run_direct_batch_with_context(
         domain: request.domain.clone(),
         fetches,
         recipes: rendered,
+        blockers,
         total_ms: total_start.elapsed().as_millis(),
     })
 }
@@ -426,6 +496,82 @@ fn plan_direct_recipes(
         planned.push(PlannedDirectRecipe { recipe, plan });
     }
     Ok(planned)
+}
+
+/// Which planned recipe slugs route their fetches through this group?
+/// Used when the group's underlying fetch failed upstream so every
+/// dependent recipe becomes a blocker with the fetch's error reason.
+fn recipe_slugs_depending_on_group(
+    planned: &[PlannedDirectRecipe],
+    group: &FetchGroup,
+) -> Vec<String> {
+    planned
+        .iter()
+        .filter(|item| {
+            // A recipe routes through this group iff the group's
+            // selectors contain any of the recipe's plan selectors.
+            item.plan
+                .selectors()
+                .into_iter()
+                .any(|sel| group.selectors.contains(&sel))
+        })
+        .map(|item| item.recipe.slug.to_string())
+        .collect()
+}
+
+/// Split the planned list into (renderable, blockers) based on which
+/// selectors the extraction pass could actually produce. A recipe is
+/// blocked when its filled selector (or, for composite panels, any
+/// component recipe's filled selector) is missing from the GRIB file.
+/// Everything else passes through to the render pipeline unchanged.
+fn partition_recipes_by_selector_availability(
+    planned: &[PlannedDirectRecipe],
+    missing: &HashSet<FieldSelector>,
+) -> (Vec<PlannedDirectRecipe>, Vec<DirectRecipeBlocker>) {
+    let mut renderable = Vec::with_capacity(planned.len());
+    let mut blockers = Vec::new();
+    for item in planned {
+        let reason = recipe_block_reason(item.recipe, missing);
+        match reason {
+            Some(reason) => blockers.push(DirectRecipeBlocker {
+                recipe_slug: item.recipe.slug.to_string(),
+                reason,
+            }),
+            None => renderable.push(item.clone()),
+        }
+    }
+    (renderable, blockers)
+}
+
+/// If any selector required to render `recipe` is missing, return a
+/// human-readable blocker reason. Otherwise `None`.
+fn recipe_block_reason(recipe: &PlotRecipe, missing: &HashSet<FieldSelector>) -> Option<String> {
+    if let Some(spec) = composite_panel_spec(recipe.slug) {
+        for component_slug in spec.component_slugs {
+            let Some(component) = plot_recipe(component_slug) else {
+                continue;
+            };
+            if let Some(selector) = component.filled.selector {
+                if missing.contains(&selector) {
+                    return Some(format!(
+                        "composite component '{}' missing selector {}",
+                        component_slug,
+                        selector.key()
+                    ));
+                }
+            }
+        }
+        return None;
+    }
+    if let Some(selector) = recipe.filled.selector {
+        if missing.contains(&selector) {
+            return Some(format!(
+                "missing GRIB message for filled selector {}",
+                selector.key()
+            ));
+        }
+    }
+    None
 }
 
 fn group_direct_fetches(request: &DirectBatchRequest, recipes: &[PlannedDirectRecipe]) -> Vec<FetchGroup> {
@@ -514,7 +660,14 @@ fn extract_direct_fetch_group_from_loaded(
     group: &FetchGroup,
     fetched: &FetchedBundleBytes,
     use_cache: bool,
-) -> Result<(Vec<SelectedField2D>, DirectFetchTiming), Box<dyn std::error::Error>> {
+) -> Result<
+    (
+        Vec<SelectedField2D>,
+        Vec<FieldSelector>,
+        DirectFetchTiming,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let total_start = Instant::now();
     let fetch_request = &fetched.file.request;
     let cached_result = &fetched.file.fetched;
@@ -547,19 +700,32 @@ fn extract_direct_fetch_group_from_loaded(
     };
     let parse_ms = parse_start.elapsed().as_millis();
 
+    // Selectors whose GRIB message wasn't present in the file go here;
+    // the caller uses them to mark dependent recipes as blockers
+    // instead of the whole batch tripping on the first missing message.
+    let mut unmatched = Vec::<FieldSelector>::new();
     if let Some(grib) = grib.as_ref() {
-        let decoded = extract_fields_from_grib2(grib, &missing)?;
+        let partial = extract_fields_from_grib2_partial(grib, &missing)?;
         if use_cache {
-            for field in &decoded {
+            for field in &partial.extracted {
                 store_cached_selected_field(&request.cache_root, fetch_request, field)?;
             }
         }
-        extracted.extend(decoded);
+        let fetched_count = partial.extracted.len();
+        extracted.extend(partial.extracted);
+        unmatched = partial.missing;
+        // extract_cache_misses was previously "count of selectors we
+        // had to decode from GRIB"; keep that meaning by subtracting
+        // truly-unmatched selectors from the count we actually pulled.
+        let _ = fetched_count;
     }
     let extract_ms = extract_start.elapsed().as_millis();
 
+    let extract_cache_misses = missing.len().saturating_sub(unmatched.len());
+
     Ok((
         extracted,
+        unmatched,
         DirectFetchTiming {
             product: group.product.clone(),
             fetch_mode: group.fetch_mode,
@@ -569,7 +735,7 @@ fn extract_direct_fetch_group_from_loaded(
             total_ms: total_start.elapsed().as_millis(),
             fetch_cache_hit: cached_result.cache_hit,
             extract_cache_hits,
-            extract_cache_misses: missing.len(),
+            extract_cache_misses,
             runtime_fetch: DirectFetchRuntimeInfo {
                 fetch_key: crate::publication::fetch_key(
                     group.product.as_str(),
@@ -1458,6 +1624,49 @@ mod tests {
         values: Vec<f32>,
     ) -> SelectedField2D {
         SelectedField2D::new(selector, units, sample_grid(), values).unwrap()
+    }
+
+    #[test]
+    fn partition_blocks_recipe_whose_filled_selector_is_missing() {
+        // Partial-success regression: direct_batch used to crash the
+        // whole batch on the first missing GRIB message (GFS f000
+        // missing APCP@Surface, ECMWF f000 missing RH@2m_agl). Now a
+        // missing selector produces a per-recipe blocker and the rest
+        // of the recipes still render.
+        let rh_recipe = plot_recipe("2m_relative_humidity")
+            .expect("2m RH recipe should exist");
+        let tmp_recipe = plot_recipe("2m_temperature")
+            .expect("2m temperature recipe should exist");
+
+        let planned = vec![
+            PlannedDirectRecipe {
+                recipe: rh_recipe,
+                plan: plot_recipe_fetch_plan(rh_recipe.slug, ModelId::Hrrr).unwrap(),
+            },
+            PlannedDirectRecipe {
+                recipe: tmp_recipe,
+                plan: plot_recipe_fetch_plan(tmp_recipe.slug, ModelId::Hrrr).unwrap(),
+            },
+        ];
+        let mut missing = HashSet::new();
+        missing.insert(
+            rh_recipe
+                .filled
+                .selector
+                .expect("2m RH recipe has a filled selector"),
+        );
+
+        let (renderable, blockers) =
+            partition_recipes_by_selector_availability(&planned, &missing);
+        assert_eq!(renderable.len(), 1);
+        assert_eq!(renderable[0].recipe.slug, tmp_recipe.slug);
+        assert_eq!(blockers.len(), 1);
+        assert_eq!(blockers[0].recipe_slug, rh_recipe.slug);
+        assert!(
+            blockers[0].reason.contains("filled selector"),
+            "blocker reason should mention the missing filled selector; got: {}",
+            blockers[0].reason
+        );
     }
 
     fn sample_direct_request(model: ModelId) -> DirectBatchRequest {

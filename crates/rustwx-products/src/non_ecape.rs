@@ -844,6 +844,7 @@ mod tests {
                     total_ms: 3,
                 },
             }],
+            blockers: Vec::new(),
             total_ms: 10,
         };
         let derived = HrrrDerivedBatchReport {
@@ -1029,6 +1030,7 @@ mod tests {
                     total_ms: 3,
                 },
             }],
+            blockers: Vec::new(),
             total_ms: 10,
         };
         let derived = HrrrDerivedBatchReport {
