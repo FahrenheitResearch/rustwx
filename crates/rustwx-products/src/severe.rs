@@ -396,8 +396,10 @@ mod planned_input_fetches_tests {
             latest,
             forecast_hour,
             fetched,
+            fetch_failures: std::collections::BTreeMap::new(),
             surface_decodes: std::collections::BTreeMap::new(),
             pressure_decodes: std::collections::BTreeMap::new(),
+            bundle_failures: std::collections::BTreeMap::new(),
             timing: LoadedBundleTiming::default(),
         }
     }

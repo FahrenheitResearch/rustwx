@@ -410,6 +410,50 @@ mod tests {
     }
 
     #[test]
+    fn compute_qpf_window_blocks_when_a_contributing_hour_is_missing() {
+        // Partial-success regression: if the planner couldn't fetch one
+        // hour inside a windowed QPF product's window, the compute
+        // kernel must emit a blocker for *that* product — not abort the
+        // whole windowed lane. The windowed lane's loader inserts
+        // Err(reason) for missing hours; compute_qpf_product surfaces
+        // the reason through the normal per-product blocker path.
+        let mut apcp = BTreeMap::new();
+        // Hour 1 and 3 loaded fine; hour 2 failed upstream.
+        for hour in [1u16, 3u16] {
+            apcp.insert(
+                hour,
+                Ok(HrrrApcpDecode {
+                    windows: vec![WindowedFieldRecord {
+                        hours: 1,
+                        values: vec![25.4, 12.7],
+                    }],
+                }),
+            );
+        }
+        apcp.insert(
+            2,
+            Err("hour 2 fetch failed: 404 Not Found".to_string()),
+        );
+
+        // Qpf24h hitting forecast_hour 3 would want hours 1..=3 — the
+        // missing hour 2 has to blocker this product. Use QpfTotal
+        // (covers 1..=forecast_hour) which is more representative.
+        let err = compute_qpf_product(HrrrWindowedProduct::QpfTotal, 3, &tiny_grid(), &apcp)
+            .expect_err("compute must surface the missing-hour failure as a blocker");
+        assert!(
+            err.contains("hour 2") || err.contains("404"),
+            "blocker should reference the missing hour or its upstream reason; got: {err}"
+        );
+
+        // Meanwhile a 1-hour QPF at forecast_hour 3 needs only hour 3 —
+        // the missing hour 2 doesn't block it, and the product still
+        // renders.
+        let ok = compute_qpf_product(HrrrWindowedProduct::Qpf1h, 3, &tiny_grid(), &apcp)
+            .expect("Qpf1h at f003 should render despite an unrelated missing hour");
+        assert_eq!(ok.metadata.contributing_forecast_hours, vec![3]);
+    }
+
+    #[test]
     fn compute_qpf_total_falls_back_to_hourly_sum() {
         let mut apcp = BTreeMap::new();
         for hour in 1..=3 {

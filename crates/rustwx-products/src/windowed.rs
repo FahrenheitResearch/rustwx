@@ -636,6 +636,13 @@ fn blocker(product: HrrrWindowedProduct, reason: impl Into<String>) -> HrrrWindo
 /// Planner-loaded APCP hour decode. The bytes were already fetched by
 /// the runtime's `load_execution_plan`; this just wraps the decode +
 /// hour-info bookkeeping.
+///
+/// Partial-success: an hour whose fetch failed upstream is recorded as
+/// `Err(reason)` in the returned map rather than short-circuiting. The
+/// windowed compute kernels (`compute_qpf_product` / `compute_uh_product`)
+/// propagate per-hour `Err` into a per-product blocker, so a single 404
+/// on one contributing hour collapses just the products whose window
+/// included that hour — the rest still render.
 fn load_apcp_hours_from_plan(
     loaded: Option<&LoadedBundleSet>,
     request: &HrrrWindowedBatchRequest,
@@ -655,10 +662,14 @@ fn load_apcp_hours_from_plan(
     let mut total_decode_ms = 0u128;
 
     for &hour in hours {
-        let Some(loaded) = loaded else {
-            return Err(format!("planner produced no bundles for APCP hour {hour}").into());
+        let fetched = match loaded.and_then(|set| lookup_planner_bundle_for_hour(set, hour)) {
+            Some(bytes) => bytes,
+            None => {
+                let reason = planner_hour_failure_reason(loaded, hour);
+                out.insert(hour, Err(reason));
+                continue;
+            }
         };
-        let fetched = find_planner_bundle_for_hour(loaded, hour)?;
         total_fetch_ms += fetched.fetch_ms;
         let decode_path = decode_cache_path(
             &request.cache_root,
@@ -700,6 +711,9 @@ fn load_apcp_hours_from_plan(
 /// wrfsfc file the QPF lane already pulled, so the planner's dedupe
 /// means we only fetch each hour once even when both QPF and UH ask for
 /// it.
+///
+/// Same partial-success contract as `load_apcp_hours_from_plan`: a
+/// missing hour is an `Err` entry, not an aborted lane.
 fn load_uh_hours_from_plan(
     loaded: Option<&LoadedBundleSet>,
     request: &HrrrWindowedBatchRequest,
@@ -719,10 +733,14 @@ fn load_uh_hours_from_plan(
     let mut total_decode_ms = 0u128;
 
     for &hour in hours {
-        let Some(loaded) = loaded else {
-            return Err(format!("planner produced no bundles for UH hour {hour}").into());
+        let fetched = match loaded.and_then(|set| lookup_planner_bundle_for_hour(set, hour)) {
+            Some(bytes) => bytes,
+            None => {
+                let reason = planner_hour_failure_reason(loaded, hour);
+                out.insert(hour, Err(reason));
+                continue;
+            }
         };
-        let fetched = find_planner_bundle_for_hour(loaded, hour)?;
         total_fetch_ms += fetched.fetch_ms;
         let decode_path = decode_cache_path(
             &request.cache_root,
@@ -760,15 +778,29 @@ fn load_uh_hours_from_plan(
     Ok((out, fetches, total_fetch_ms, total_decode_ms))
 }
 
-fn find_planner_bundle_for_hour<'a>(
+fn lookup_planner_bundle_for_hour<'a>(
     loaded: &'a LoadedBundleSet,
     hour: u16,
-) -> Result<&'a FetchedBundleBytes, Box<dyn std::error::Error>> {
+) -> Option<&'a FetchedBundleBytes> {
     loaded
         .fetched
         .values()
         .find(|bundle| bundle.key.forecast_hour == hour && bundle.key.native_product == "sfc")
-        .ok_or_else(|| format!("planner missed windowed hour {hour}").into())
+}
+
+/// Resolve the best available failure reason for a missing windowed
+/// hour: the upstream planner fetch error if one was captured, else a
+/// generic "planner produced no bundles" fallback.
+fn planner_hour_failure_reason(loaded: Option<&LoadedBundleSet>, hour: u16) -> String {
+    let Some(loaded) = loaded else {
+        return format!("planner produced no bundles for hour {hour}");
+    };
+    loaded
+        .fetch_failures
+        .iter()
+        .find(|(key, _)| key.forecast_hour == hour && key.native_product == "sfc")
+        .map(|(_, reason)| format!("hour {hour} fetch failed: {reason}"))
+        .unwrap_or_else(|| format!("planner missed windowed hour {hour}"))
 }
 
 fn windowed_parallelism(source: SourceId, job_count: usize) -> usize {

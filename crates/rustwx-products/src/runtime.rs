@@ -29,14 +29,32 @@ use crate::gridded::{
 use crate::planner::{BundleFetchKey, ExecutionPlan, PlannedBundle};
 
 /// Outcome of running a fetch+decode pass over an `ExecutionPlan`.
+///
+/// Partial-success: a fetch or decode failure on one `BundleFetchKey` /
+/// `CanonicalBundleId` does not abort the whole plan. Successful fetches
+/// are kept in `fetched`; failures are recorded in `fetch_failures`
+/// (keyed by physical file) and `bundle_failures` (keyed by decoded
+/// bundle, including bundles that couldn't decode because their fetch
+/// failed). Lanes consult the `bundle_available` / `bundle_failure`
+/// accessors before assuming a bundle is ready; lanes that need a
+/// composite (e.g. surface+pressure) and lose one half emit a per-lane
+/// blocker without taking down sibling lanes.
 #[derive(Debug)]
 pub struct LoadedBundleSet {
     pub plan: ExecutionPlan,
     pub latest: LatestRun,
     pub forecast_hour: u16,
     pub fetched: BTreeMap<BundleFetchKey, FetchedBundleBytes>,
+    /// Physical-file failures: a `BundleFetchKey` that could not be
+    /// fetched (404, network error, cache corruption).
+    pub fetch_failures: BTreeMap<BundleFetchKey, String>,
     pub surface_decodes: BTreeMap<CanonicalBundleId, CachedDecode<SurfaceFields>>,
     pub pressure_decodes: BTreeMap<CanonicalBundleId, CachedDecode<PressureFields>>,
+    /// Bundle-level failures: a `CanonicalBundleId` that could not be
+    /// made ready, whether because its physical fetch failed or its
+    /// decode raised an error. The string is a human-readable reason
+    /// suitable for surfacing through per-lane blockers.
+    pub bundle_failures: BTreeMap<CanonicalBundleId, String>,
     pub timing: LoadedBundleTiming,
 }
 
@@ -87,6 +105,24 @@ impl BundleLoaderConfig {
 impl LoadedBundleSet {
     pub fn fetched_for(&self, bundle: &PlannedBundle) -> Option<&FetchedBundleBytes> {
         self.fetched.get(&bundle.fetch_key())
+    }
+
+    /// Human-readable failure reason for a physical fetch key, if the
+    /// loader captured one. `None` means the fetch succeeded.
+    pub fn fetch_failure(&self, key: &BundleFetchKey) -> Option<&str> {
+        self.fetch_failures.get(key).map(String::as_str)
+    }
+
+    /// Human-readable failure reason for a canonical bundle. This
+    /// covers both underlying fetch failures and decode errors. `None`
+    /// means the bundle is ready (or was never attempted).
+    pub fn bundle_failure(&self, id: &CanonicalBundleId) -> Option<&str> {
+        self.bundle_failures.get(id).map(String::as_str)
+    }
+
+    /// `true` when every fetch the plan requested succeeded.
+    pub fn all_fetches_succeeded(&self) -> bool {
+        self.fetch_failures.is_empty()
     }
 
     /// Convenience for kernels that want a (surface, pressure) pair at
@@ -145,6 +181,18 @@ impl LoadedBundleSet {
 /// for NOMADS-sourced runs (which serialize to avoid the well-known
 /// rate-limiting that the windowed lane has historically guarded
 /// against).
+///
+/// Failure model: this loader is partial-success. A failed fetch or
+/// decode on one `BundleFetchKey` / `CanonicalBundleId` is recorded in
+/// `LoadedBundleSet::fetch_failures` / `bundle_failures` and the rest
+/// of the plan still runs. Lane code inspects the returned set and
+/// decides per product whether a missing bundle is fatal — critical on
+/// the windowed lane, where a single 404 on one contributing hour
+/// shouldn't nuke a 24-hour QPF sum when the other 23 hours are fine.
+/// This function only returns `Err` for genuinely unrecoverable
+/// conditions (currently there are none in steady state; the signature
+/// is kept for forward flexibility and to avoid a breaking API change
+/// for every caller).
 pub fn load_execution_plan(
     plan: ExecutionPlan,
     config: &BundleLoaderConfig,
@@ -159,7 +207,7 @@ pub fn load_execution_plan(
     let fetch_keys = plan.fetch_keys();
     let cache_root = config.cache_root.clone();
     let use_cache = config.use_cache;
-    let fetch_results: Vec<Result<FetchedBundleBytes, Box<dyn std::error::Error + Send + Sync>>> =
+    let fetch_results: Vec<(BundleFetchKey, Result<FetchedBundleBytes, Box<dyn std::error::Error + Send + Sync>>)> =
         if parallel_fetches && fetch_keys.len() > 1 {
             std::thread::scope(|scope| -> Vec<_> {
                 let handles: Vec<_> = fetch_keys
@@ -168,17 +216,22 @@ pub fn load_execution_plan(
                     .map(|key| {
                         let cache_root = cache_root.clone();
                         let use_cache = use_cache;
-                        scope.spawn(move || fetch_one(key, &cache_root, use_cache))
+                        let key_for_worker = key.clone();
+                        let handle = scope.spawn(move || {
+                            fetch_one(key_for_worker, &cache_root, use_cache)
+                        });
+                        (key, handle)
                     })
                     .collect();
                 handles
                     .into_iter()
-                    .map(|handle| {
-                        handle.join().unwrap_or_else(|_| {
+                    .map(|(key, handle)| {
+                        let result = handle.join().unwrap_or_else(|_| {
                             Err(Box::<dyn std::error::Error + Send + Sync>::from(
                                 "planner fetch worker panicked",
                             ))
-                        })
+                        });
+                        (key, result)
                     })
                     .collect()
             })
@@ -186,33 +239,52 @@ pub fn load_execution_plan(
             fetch_keys
                 .iter()
                 .cloned()
-                .map(|key| fetch_one(key, &cache_root, use_cache))
+                .map(|key| {
+                    let result = fetch_one(key.clone(), &cache_root, use_cache);
+                    (key, result)
+                })
                 .collect()
         };
 
     let mut fetched: BTreeMap<BundleFetchKey, FetchedBundleBytes> = BTreeMap::new();
+    let mut fetch_failures: BTreeMap<BundleFetchKey, String> = BTreeMap::new();
     let mut total_fetch_ms = 0u128;
-    for entry in fetch_results {
-        let bundle = entry.map_err(|err| -> Box<dyn std::error::Error> {
-            // Re-box from Send + Sync into the lane's looser Box<dyn Error>.
-            Box::<dyn std::error::Error>::from(err.to_string())
-        })?;
-        total_fetch_ms += bundle.fetch_ms;
-        fetched.insert(bundle.key.clone(), bundle);
+    for (key, entry) in fetch_results {
+        match entry {
+            Ok(bundle) => {
+                total_fetch_ms += bundle.fetch_ms;
+                fetched.insert(bundle.key.clone(), bundle);
+            }
+            Err(err) => {
+                fetch_failures.insert(key, err.to_string());
+            }
+        }
     }
 
-    // Phase 2: decode surface + pressure bundles.
+    // Phase 2: decode surface + pressure bundles. Bundles whose
+    // underlying fetch failed are recorded in `bundle_failures` so
+    // lanes can report "missing bundle" with the actual upstream error;
+    // decode errors are caught and captured the same way.
     let mut surface_decodes: BTreeMap<CanonicalBundleId, CachedDecode<SurfaceFields>> =
         BTreeMap::new();
     let mut pressure_decodes: BTreeMap<CanonicalBundleId, CachedDecode<PressureFields>> =
         BTreeMap::new();
+    let mut bundle_failures: BTreeMap<CanonicalBundleId, String> = BTreeMap::new();
     let mut decode_surface_ms_total = 0u128;
     let mut decode_pressure_ms_total = 0u128;
 
     for bundle in &plan.bundles {
-        let fetched_bytes = fetched
-            .get(&bundle.fetch_key())
-            .ok_or_else(|| format!("planner missed fetch for bundle {}", bundle.id))?;
+        let fetched_bytes = match fetched.get(&bundle.fetch_key()) {
+            Some(bytes) => bytes,
+            None => {
+                let reason = fetch_failures
+                    .get(&bundle.fetch_key())
+                    .cloned()
+                    .unwrap_or_else(|| format!("planner missed fetch for bundle {}", bundle.id));
+                bundle_failures.insert(bundle.id.clone(), reason);
+                continue;
+            }
+        };
         match bundle.id.bundle {
             CanonicalBundleDescriptor::SurfaceAnalysis => {
                 let cache_path = decode_cache_path(
@@ -221,13 +293,20 @@ pub fn load_execution_plan(
                     "surface",
                 );
                 let start = Instant::now();
-                let decoded = load_or_decode_surface(
+                match load_or_decode_surface(
                     &cache_path,
                     fetched_bytes.file.bytes.as_slice(),
                     config.use_cache,
-                )?;
-                decode_surface_ms_total += start.elapsed().as_millis();
-                surface_decodes.insert(bundle.id.clone(), decoded);
+                ) {
+                    Ok(decoded) => {
+                        decode_surface_ms_total += start.elapsed().as_millis();
+                        surface_decodes.insert(bundle.id.clone(), decoded);
+                    }
+                    Err(err) => {
+                        decode_surface_ms_total += start.elapsed().as_millis();
+                        bundle_failures.insert(bundle.id.clone(), err.to_string());
+                    }
+                }
             }
             CanonicalBundleDescriptor::PressureAnalysis => {
                 let cache_path = decode_cache_path(
@@ -236,26 +315,36 @@ pub fn load_execution_plan(
                     "pressure",
                 );
                 let start = Instant::now();
-                let (decoded, shape) = load_or_decode_pressure_with_shape(
+                let decode_outcome = load_or_decode_pressure_with_shape(
                     &cache_path,
                     fetched_bytes.file.bytes.as_slice(),
                     config.use_cache,
-                )?;
+                );
                 decode_pressure_ms_total += start.elapsed().as_millis();
-                if let Some(matching_surface) = plan.bundle_for(
-                    CanonicalBundleDescriptor::SurfaceAnalysis,
-                    bundle.id.forecast_hour,
-                ) {
-                    if let Some(matching) = surface_decodes.get(&matching_surface.id) {
-                        validate_pressure_decode_against_surface(
-                            &decoded,
-                            shape,
-                            matching.value.nx,
-                            matching.value.ny,
-                        )?;
+                match decode_outcome {
+                    Ok((decoded, shape)) => {
+                        if let Some(matching_surface) = plan.bundle_for(
+                            CanonicalBundleDescriptor::SurfaceAnalysis,
+                            bundle.id.forecast_hour,
+                        ) {
+                            if let Some(matching) = surface_decodes.get(&matching_surface.id) {
+                                if let Err(err) = validate_pressure_decode_against_surface(
+                                    &decoded,
+                                    shape,
+                                    matching.value.nx,
+                                    matching.value.ny,
+                                ) {
+                                    bundle_failures.insert(bundle.id.clone(), err.to_string());
+                                    continue;
+                                }
+                            }
+                        }
+                        pressure_decodes.insert(bundle.id.clone(), decoded);
+                    }
+                    Err(err) => {
+                        bundle_failures.insert(bundle.id.clone(), err.to_string());
                     }
                 }
-                pressure_decodes.insert(bundle.id.clone(), decoded);
             }
             CanonicalBundleDescriptor::NativeAnalysis => {
                 // Native bundles surface as raw bytes only; kernels
@@ -270,8 +359,10 @@ pub fn load_execution_plan(
         latest,
         forecast_hour,
         fetched,
+        fetch_failures,
         surface_decodes,
         pressure_decodes,
+        bundle_failures,
         timing: LoadedBundleTiming {
             fetch_ms_total: total_fetch_ms,
             decode_surface_ms_total,
@@ -392,6 +483,63 @@ mod tests {
         assert_eq!(plan.bundles.len(), 2);
         assert_eq!(plan.fetch_keys().len(), 1);
         assert_eq!(plan.fetch_keys()[0].native_product, "pgrb2.0p25");
+    }
+
+    #[test]
+    fn loaded_bundle_set_exposes_failure_accessors() {
+        use rustwx_core::{CanonicalBundleId, ModelId};
+        let plan = build_single_pair_plan(
+            &LatestRun {
+                model: ModelId::Hrrr,
+                cycle: CycleSpec::new("20260415", 18).unwrap(),
+                source: SourceId::Aws,
+            },
+            6,
+            None,
+            None,
+        );
+        let sfc_key = plan
+            .fetch_keys()
+            .into_iter()
+            .find(|key| key.native_product == "sfc")
+            .expect("hrrr plan has a sfc fetch key");
+        let prs_key = plan
+            .fetch_keys()
+            .into_iter()
+            .find(|key| key.native_product == "prs")
+            .expect("hrrr plan has a prs fetch key");
+        let surface_bundle_id = plan
+            .bundles
+            .iter()
+            .find(|b| b.id.bundle == CanonicalBundleDescriptor::SurfaceAnalysis)
+            .map(|b| b.id.clone())
+            .expect("plan contains surface bundle");
+
+        let mut fetch_failures: BTreeMap<BundleFetchKey, String> = BTreeMap::new();
+        fetch_failures.insert(sfc_key.clone(), "simulated 404".to_string());
+
+        let mut bundle_failures: BTreeMap<CanonicalBundleId, String> = BTreeMap::new();
+        bundle_failures.insert(surface_bundle_id.clone(), "simulated 404".to_string());
+
+        let loaded = LoadedBundleSet {
+            latest: plan.latest(),
+            forecast_hour: plan.forecast_hour,
+            plan,
+            fetched: BTreeMap::new(),
+            fetch_failures,
+            surface_decodes: BTreeMap::new(),
+            pressure_decodes: BTreeMap::new(),
+            bundle_failures,
+            timing: LoadedBundleTiming::default(),
+        };
+
+        assert!(!loaded.all_fetches_succeeded());
+        assert_eq!(loaded.fetch_failure(&sfc_key), Some("simulated 404"));
+        assert_eq!(loaded.fetch_failure(&prs_key), None);
+        assert_eq!(
+            loaded.bundle_failure(&surface_bundle_id),
+            Some("simulated 404")
+        );
     }
 
     #[test]
