@@ -1200,8 +1200,8 @@ mod tests {
         assert_eq!(ecmwf_pressure.native_product, "oper");
 
         let (rrfs_surface, rrfs_pressure) = thermo_bundles(ModelId::RrfsA, None, None);
-        assert_eq!(rrfs_surface.native_product, "prs-conus");
-        assert_eq!(rrfs_pressure.native_product, "prs-conus");
+        assert_eq!(rrfs_surface.native_product, "nat-na");
+        assert_eq!(rrfs_pressure.native_product, "prs-na");
     }
 
     #[test]

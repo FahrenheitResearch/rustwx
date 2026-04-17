@@ -6,8 +6,8 @@
 //!
 //! The loader honors the planner's two-level identity:
 //! - Each `BundleFetchKey` is fetched once even when several
-//!   `CanonicalBundleId`s decode out of the same physical file (GFS /
-//!   ECMWF / RRFS-A serve both surface + pressure from one file).
+//!   `CanonicalBundleId`s decode out of the same physical file (for
+//!   example, GFS / ECMWF surface + pressure).
 //! - Each surface or pressure `CanonicalBundleId` records a typed
 //!   decode that the kernels can borrow without re-parsing GRIB bytes.
 
@@ -460,7 +460,9 @@ fn default_planned_family_slug(
         (ModelId::Hrrr, CanonicalBundleDescriptor::NativeAnalysis) => "nat",
         (ModelId::Gfs, _) => "pgrb2.0p25",
         (ModelId::EcmwfOpenData, _) => "oper",
-        (ModelId::RrfsA, _) => "prs-conus",
+        (ModelId::RrfsA, CanonicalBundleDescriptor::SurfaceAnalysis) => "nat-na",
+        (ModelId::RrfsA, CanonicalBundleDescriptor::PressureAnalysis) => "prs-na",
+        (ModelId::RrfsA, CanonicalBundleDescriptor::NativeAnalysis) => "nat-na",
     }
 }
 
@@ -559,6 +561,29 @@ mod tests {
         let products: Vec<_> = plan.fetch_keys().iter().map(|k| k.native_product.clone()).collect();
         assert!(products.contains(&"sfc".to_string()));
         assert!(products.contains(&"prs".to_string()));
+    }
+
+    #[test]
+    fn build_single_pair_plan_emits_two_fetch_keys_for_rrfs() {
+        let plan = build_single_pair_plan(
+            &LatestRun {
+                model: rustwx_core::ModelId::RrfsA,
+                cycle: CycleSpec::new("20260415", 18).unwrap(),
+                source: SourceId::Aws,
+            },
+            6,
+            None,
+            None,
+        );
+        assert_eq!(plan.bundles.len(), 2);
+        assert_eq!(plan.fetch_keys().len(), 2);
+        let products: Vec<_> = plan
+            .fetch_keys()
+            .iter()
+            .map(|k| k.native_product.clone())
+            .collect();
+        assert!(products.contains(&"nat-na".to_string()));
+        assert!(products.contains(&"prs-na".to_string()));
     }
 }
 

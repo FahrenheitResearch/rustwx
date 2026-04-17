@@ -224,7 +224,9 @@ fn default_logical_family(
         (ModelId::Hrrr, CanonicalBundleDescriptor::NativeAnalysis) => "nat",
         (ModelId::Gfs, _) => "pgrb2.0p25",
         (ModelId::EcmwfOpenData, _) => "oper",
-        (ModelId::RrfsA, _) => "prs-conus",
+        (ModelId::RrfsA, CanonicalBundleDescriptor::SurfaceAnalysis) => "nat-na",
+        (ModelId::RrfsA, CanonicalBundleDescriptor::PressureAnalysis) => "prs-na",
+        (ModelId::RrfsA, CanonicalBundleDescriptor::NativeAnalysis) => "nat-na",
     }
 }
 
@@ -273,10 +275,10 @@ pub(crate) fn build_shared_timing_for_pair(
 /// loaded bundles, preserving any logical family aliases the planner
 /// recorded (e.g., HRRR `nat` planned-family that merged onto `sfc`).
 ///
-/// Dedupe is keyed by `BundleFetchKey`, not `CanonicalBundleId`: on
-/// global models (GFS / ECMWF / RRFS-A) a single physical GRIB file
-/// serves both the surface and pressure canonical bundles, so grouping
-/// by canonical id would publish one file twice. Aliases from every
+/// Dedupe is keyed by `BundleFetchKey`, not `CanonicalBundleId`: some
+/// models collapse several canonical bundles onto one physical GRIB file
+/// (for example, GFS / ECMWF surface + pressure), so grouping by
+/// canonical id would publish one file twice. Aliases from every
 /// canonical bundle sharing the fetch key are unioned onto the single
 /// identity that represents the physical file.
 pub(crate) fn build_planned_input_fetches(loaded: &LoadedBundleSet) -> Vec<PublishedFetchIdentity> {

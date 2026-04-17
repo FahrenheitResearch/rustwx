@@ -1813,7 +1813,12 @@ fn default_canonical_bundle_product(
         (ModelId::Hrrr, CanonicalBundleDescriptor::NativeAnalysis) => "nat",
         (ModelId::Gfs, _) => "pgrb2.0p25",
         (ModelId::EcmwfOpenData, _) => "oper",
-        (ModelId::RrfsA, _) => "prs-conus",
+        // RRFS-A keeps the faster CONUS direct lane on `prs-conus`, but the
+        // shared thermo/severe kernels need the NA-domain pair that actually
+        // carries both the surface bundle and matching pressure grid.
+        (ModelId::RrfsA, CanonicalBundleDescriptor::SurfaceAnalysis) => "nat-na",
+        (ModelId::RrfsA, CanonicalBundleDescriptor::PressureAnalysis) => "prs-na",
+        (ModelId::RrfsA, CanonicalBundleDescriptor::NativeAnalysis) => "nat-na",
     }
 }
 
