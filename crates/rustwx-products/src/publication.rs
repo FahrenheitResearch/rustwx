@@ -122,9 +122,10 @@ pub struct RunPublicationManifest {
     #[serde(default)]
     pub attempt_started_unix_ms: u128,
     /// Build/dependency provenance captured at publish time: rustwx git
-    /// SHA/dirty, sibling repo SHAs (metrust-py, wrf-rust-plots, cfrust,
-    /// sharprs), Cargo.lock hash, toolchain/profile/target. `None` for
-    /// legacy manifests that predate the provenance block.
+    /// SHA/dirty, vendored dependency snapshots (stored in the
+    /// historical `siblings` field for schema compatibility),
+    /// Cargo.lock hash, toolchain/profile/target. `None` for legacy
+    /// manifests that predate the provenance block.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_provenance: Option<BuildProvenance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

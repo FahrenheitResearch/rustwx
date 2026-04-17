@@ -10,11 +10,11 @@ rust-version.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-grib-core = { path = "../../../cfrust/crates/grib-core" }
+grib-core = { path = "../../vendor/grib-core" }
 rustwx-calc = { path = "../rustwx-calc" }
 rustwx-core = { path = "../rustwx-core" }
 rustwx-io = { path = "../rustwx-io" }
 rustwx-models = { path = "../rustwx-models" }
 rustwx-products = { path = "../rustwx-products" }
 rustwx-render = { path = "../rustwx-render" }
-wrf-render = { path = "../../../wrf-rust-plots/crates/wrf-render" }
+wrf-render = { path = "../../vendor/wrf-render" }

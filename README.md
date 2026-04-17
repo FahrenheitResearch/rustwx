@@ -97,17 +97,13 @@ Each crate has its own README in `crates/<crate>/README.md`.
 - GIF/animation orchestration in Rust
 - typed Python API for render/fetch/calc workflows
 
-## Local dependencies
+## Vendored dependencies
 
-This workspace intentionally depends on sibling local repos while the stack is being assembled:
+This workspace no longer requires sibling local repos to build. The former
+external crates are vendored under `vendor/`, and the checked-in basemap assets
+needed by the render stack now live under `assets/basemap/`.
 
-- `../metrust-py/crates/metrust`
-- `../wrf-rust-plots/crates/wrf-render`
-- `../sharprs`
-- `../cfrust/crates/grib-core`
-- `../metrust-py/crates/wx-core`
-
-That keeps iteration fast, but it also means this repo is not yet a standalone publishable crates.io workspace.
+Imported upstream provenance is recorded in `vendor/VENDORED.md`.
 
 ## Quick start
 

@@ -11,4 +11,4 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 serde.workspace = true
 thiserror.workspace = true
 rustwx-core = { path = "../rustwx-core" }
-wrf-render = { path = "../../../wrf-rust-plots/crates/wrf-render" }
+wrf-render = { path = "../../vendor/wrf-render" }

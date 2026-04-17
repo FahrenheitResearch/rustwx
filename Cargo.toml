@@ -11,6 +11,17 @@ members = [
     "crates/rustwx-render",
     "crates/rustwx-sounding",
 ]
+exclude = [
+    "vendor/ecape-rs",
+    "vendor/grib-core",
+    "vendor/metrust",
+    "vendor/sharprs",
+    "vendor/wrf-render",
+    "vendor/wx-core",
+    "vendor/wx-field",
+    "vendor/wx-math",
+    "vendor/wx-radar",
+]
 resolver = "2"
 
 [workspace.package]

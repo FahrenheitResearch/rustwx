@@ -1,0 +1,505 @@
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+use shapefile::{Shape, ShapeReader};
+
+use crate::color::Rgba;
+
+pub type LonLatLine = Vec<(f64, f64)>;
+
+/// Basemap presentation preset.
+///
+/// - `Filled`: cool-beige land + pale-blue ocean (weathermodels.com look).
+/// - `White`: NWS-style white land + white ocean with US county lines drawn on
+///   top; heavier state borders make the political grid read well.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum BasemapStyle {
+    Filled,
+    White,
+}
+
+#[derive(Clone, Debug)]
+pub struct StyledLonLatLayer {
+    pub lines: Vec<LonLatLine>,
+    pub color: Rgba,
+    pub width: u32,
+}
+
+/// A single closed polygon in lon/lat with optional holes. Outer ring first,
+/// subsequent rings punch holes.
+pub type LonLatPolygon = Vec<Vec<(f64, f64)>>;
+
+#[derive(Clone, Debug)]
+pub struct StyledLonLatPolygonLayer {
+    pub polygons: Vec<LonLatPolygon>,
+    pub color: Rgba,
+}
+
+pub fn cartopy_natural_earth_root() -> Option<PathBuf> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)?;
+    let root = home
+        .join(".local")
+        .join("share")
+        .join("cartopy")
+        .join("shapefiles")
+        .join("natural_earth");
+    root.exists().then_some(root)
+}
+
+pub fn checked_in_natural_earth_110m_root() -> Option<PathBuf> {
+    workspace_basemap_subdir("natural_earth_110m")
+}
+
+/// Checked-in 10m (high-res) Natural Earth assets inside the repo. Preferred
+/// over the 110m set for CONUS-scale maps because coastlines stay crisp when
+/// the frame covers only the Lower 48.
+pub fn checked_in_natural_earth_10m_root() -> Option<PathBuf> {
+    workspace_basemap_subdir("natural_earth_10m")
+}
+
+/// Checked-in US Census Cartographic Boundary counties at 1:5,000,000 — the
+/// detail level NWS-style CONUS maps draw county borders at. Public-domain
+/// TIGER/Line data (`cb_2023_us_county_5m.*`).
+pub fn checked_in_us_counties_5m_root() -> Option<PathBuf> {
+    workspace_basemap_subdir("us_counties_5m")
+}
+
+fn workspace_basemap_subdir(name: &str) -> Option<PathBuf> {
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())?
+        .to_path_buf();
+    let candidates = [
+        workspace_root.join("assets").join("basemap").join(name),
+        workspace_root
+            .join("rustbox-fresh")
+            .join("assets")
+            .join("basemap")
+            .join(name),
+    ];
+    candidates.into_iter().find(|path| path.exists())
+}
+
+/// Load US county boundary line segments (from the 5m TIGER cartographic
+/// boundary shapefile). Used only when the white basemap style is active.
+pub fn load_us_county_lines() -> Vec<LonLatLine> {
+    static CACHE: OnceLock<Vec<LonLatLine>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let Some(root) = checked_in_us_counties_5m_root() else {
+                return Vec::new();
+            };
+            let path = root.join("cb_2023_us_county_5m.shp");
+            // The TIGER shapefile is a polygon layer; load_lines_from_shapefile
+            // returns ring-edges, which is exactly what we want for borders.
+            load_lines_from_shapefile(&path).unwrap_or_default()
+        })
+        .clone()
+}
+
+pub fn default_conus_feature_paths() -> Vec<PathBuf> {
+    let Some(root) = cartopy_natural_earth_root() else {
+        return vec![];
+    };
+    vec![
+        root.join("physical").join("ne_10m_coastline.shp"),
+        root.join("cultural")
+            .join("ne_10m_admin_0_boundary_lines_land.shp"),
+        root.join("cultural")
+            .join("ne_50m_admin_1_states_provinces_lines.shp"),
+    ]
+}
+
+/// Load multi-ring polygons from a shapefile. Each returned polygon is a list
+/// of rings — the first ring is the outer boundary, subsequent rings are
+/// holes. Ring winding direction from the shapefile is preserved; the fill
+/// routine uses an even-odd rule so orientation doesn't matter.
+pub fn load_polygons_from_shapefile(path: &Path) -> Result<Vec<LonLatPolygon>, shapefile::Error> {
+    let mut reader = ShapeReader::from_path(path)?;
+    let mut polygons = Vec::new();
+
+    for shape in reader.iter_shapes() {
+        match shape? {
+            Shape::Polygon(polygon) => {
+                let mut rings_for_this_poly: Vec<Vec<(f64, f64)>> = Vec::new();
+                for ring in polygon.rings() {
+                    let pts: Vec<(f64, f64)> =
+                        ring.points().iter().map(|p| (p.x, p.y)).collect();
+                    if pts.len() >= 3 {
+                        rings_for_this_poly.push(pts);
+                    }
+                }
+                if !rings_for_this_poly.is_empty() {
+                    polygons.push(rings_for_this_poly);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(polygons)
+}
+
+pub fn load_lines_from_shapefile(path: &Path) -> Result<Vec<LonLatLine>, shapefile::Error> {
+    let mut reader = ShapeReader::from_path(path)?;
+    let mut lines = Vec::new();
+
+    for shape in reader.iter_shapes() {
+        match shape? {
+            Shape::Polyline(polyline) => {
+                for part in polyline.parts() {
+                    let points: LonLatLine = part.iter().map(|p| (p.x, p.y)).collect();
+                    if points.len() >= 2 {
+                        lines.push(points);
+                    }
+                }
+            }
+            Shape::Polygon(polygon) => {
+                for ring in polygon.rings() {
+                    let points: LonLatLine = ring.points().iter().map(|p| (p.x, p.y)).collect();
+                    if points.len() >= 2 {
+                        lines.push(points);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(lines)
+}
+
+pub fn load_default_conus_features() -> Vec<LonLatLine> {
+    static CACHE: OnceLock<Vec<LonLatLine>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let mut all = Vec::new();
+            for path in default_conus_feature_paths() {
+                if let Ok(lines) = load_lines_from_shapefile(&path) {
+                    all.extend(lines);
+                }
+            }
+            all
+        })
+        .clone()
+}
+
+/// Load filled basemap polygons (ocean → land → lakes, bottom to top) from
+/// the checked-in Natural Earth assets, colored for the requested style.
+/// Prefers the repo's 10m set, falls back to 110m, then cartopy cache.
+///
+/// - `Filled`: beige land + pale-blue ocean (weathermodels.com look).
+/// - `White`: white land + white ocean (NWS look — political lines carry the
+///   composition instead of fill color).
+/// Back-compat no-arg entry point. Defaults to `BasemapStyle::Filled`, which
+/// is what existing product/CLI callers expect.
+pub fn load_styled_conus_polygons() -> Vec<StyledLonLatPolygonLayer> {
+    load_styled_conus_polygons_for(BasemapStyle::Filled)
+}
+
+pub fn load_styled_conus_polygons_for(style: BasemapStyle) -> Vec<StyledLonLatPolygonLayer> {
+    static FILLED: OnceLock<Vec<StyledLonLatPolygonLayer>> = OnceLock::new();
+    static WHITE: OnceLock<Vec<StyledLonLatPolygonLayer>> = OnceLock::new();
+    let cache = match style {
+        BasemapStyle::Filled => &FILLED,
+        BasemapStyle::White => &WHITE,
+    };
+    cache.get_or_init(|| build_conus_polygons(style)).clone()
+}
+
+fn build_conus_polygons(style: BasemapStyle) -> Vec<StyledLonLatPolygonLayer> {
+    // Each candidate is (root, resolution_tag). We try 10m first — crisper
+    // lines at CONUS zoom — then 110m, then cartopy's cache as a last resort.
+    let candidates: Vec<(PathBuf, &'static str)> = [
+        checked_in_natural_earth_10m_root().map(|r| (r, "10m")),
+        checked_in_natural_earth_110m_root().map(|r| (r, "110m")),
+        cartopy_natural_earth_root().map(|r| (r.join("physical"), "110m")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    let (land_fill, ocean_fill, lakes_fill) = match style {
+        BasemapStyle::Filled => (BASEMAP_LAND_FILL, BASEMAP_OCEAN_FILL, BASEMAP_OCEAN_FILL),
+        BasemapStyle::White => (WHITE_LAND_FILL, WHITE_OCEAN_FILL, WHITE_LAKES_FILL),
+    };
+
+    for (root, tag) in candidates {
+        let ocean_path = root.join(format!("ne_{tag}_ocean.shp"));
+        let land_path = root.join(format!("ne_{tag}_land.shp"));
+        let lakes_path = root.join(format!("ne_{tag}_lakes.shp"));
+
+        let ocean = load_polygons_from_shapefile(&ocean_path).unwrap_or_default();
+        let land = load_polygons_from_shapefile(&land_path).unwrap_or_default();
+        let lakes = load_polygons_from_shapefile(&lakes_path).unwrap_or_default();
+        if land.is_empty() && ocean.is_empty() {
+            continue;
+        }
+
+        let mut out = Vec::with_capacity(3);
+        if !ocean.is_empty() {
+            out.push(StyledLonLatPolygonLayer {
+                polygons: ocean,
+                color: ocean_fill,
+            });
+        }
+        if !land.is_empty() {
+            out.push(StyledLonLatPolygonLayer {
+                polygons: land,
+                color: land_fill,
+            });
+        }
+        if !lakes.is_empty() {
+            out.push(StyledLonLatPolygonLayer {
+                polygons: lakes,
+                color: lakes_fill,
+            });
+        }
+        return out;
+    }
+
+    Vec::new()
+}
+
+/// Back-compat no-arg entry point. Defaults to `BasemapStyle::Filled`, which
+/// is what existing product/CLI callers expect.
+pub fn load_styled_conus_features() -> Vec<StyledLonLatLayer> {
+    load_styled_conus_features_for(BasemapStyle::Filled)
+}
+
+pub fn load_styled_conus_features_for(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
+    static FILLED: OnceLock<Vec<StyledLonLatLayer>> = OnceLock::new();
+    static WHITE: OnceLock<Vec<StyledLonLatLayer>> = OnceLock::new();
+    let cache = match style {
+        BasemapStyle::Filled => &FILLED,
+        BasemapStyle::White => &WHITE,
+    };
+    cache.get_or_init(|| build_conus_features(style)).clone()
+}
+
+fn build_conus_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
+    // Design goal: basemap must stay readable on top of saturated colormap fills
+    // without being so heavy that an empty CONUS looks cluttered. Political
+    // linework is drawn in hierarchy order (weakest → strongest): counties →
+    // state → national → coast.
+    //
+    // Same precedence as polygon loading: 10m (checked-in) > 110m (checked-in)
+    // > cartopy cache.
+    let (root, tag): (PathBuf, &'static str) = if let Some(r) = checked_in_natural_earth_10m_root()
+    {
+        (r, "10m")
+    } else if let Some(r) = checked_in_natural_earth_110m_root() {
+        (r, "110m")
+    } else if let Some(cartopy) = cartopy_natural_earth_root() {
+        let _ = cartopy;
+        return vec![StyledLonLatLayer {
+            lines: load_default_conus_features(),
+            color: feature_colors(style).coast,
+            width: BASEMAP_COAST_WIDTH,
+        }];
+    } else {
+        return vec![StyledLonLatLayer {
+            lines: load_default_conus_features(),
+            color: feature_colors(style).coast,
+            width: BASEMAP_COAST_WIDTH,
+        }];
+    };
+
+    let coast_path = root.join(format!("ne_{tag}_coastline.shp"));
+    let nat_path = root.join(format!("ne_{tag}_admin_0_boundary_lines_land.shp"));
+    let state_path = root.join(format!("ne_{tag}_admin_1_states_provinces_lines.shp"));
+
+    let coast = load_lines_from_shapefile(&coast_path).unwrap_or_default();
+    let nat = load_lines_from_shapefile(&nat_path).unwrap_or_default();
+    let state = load_lines_from_shapefile(&state_path).unwrap_or_default();
+
+    let colors = feature_colors(style);
+    let widths = feature_widths(style);
+    let mut layers = Vec::with_capacity(6);
+
+    // Counties come first (weakest) so everything else paints on top. Only
+    // drawn for the White (NWS) style — the filled beige basemap would look
+    // cluttered with full county linework.
+    if style == BasemapStyle::White {
+        let counties = load_us_county_lines();
+        if !counties.is_empty() {
+            layers.push(StyledLonLatLayer {
+                lines: counties,
+                color: colors.county,
+                width: widths.county,
+            });
+        }
+    }
+
+    if !state.is_empty() {
+        layers.push(StyledLonLatLayer {
+            lines: state,
+            color: colors.state,
+            width: widths.state,
+        });
+    }
+    if !nat.is_empty() {
+        layers.push(StyledLonLatLayer {
+            lines: nat,
+            color: colors.nat,
+            width: widths.nat,
+        });
+    }
+    if !coast.is_empty() {
+        layers.push(StyledLonLatLayer {
+            lines: coast,
+            color: colors.coast,
+            width: widths.coast,
+        });
+    }
+
+    if layers.is_empty() {
+        return vec![StyledLonLatLayer {
+            lines: load_default_conus_features(),
+            color: colors.coast,
+            width: widths.coast,
+        }];
+    }
+
+    layers
+}
+
+struct FeatureColors {
+    coast: Rgba,
+    nat: Rgba,
+    state: Rgba,
+    county: Rgba,
+}
+
+struct FeatureWidths {
+    coast: u32,
+    nat: u32,
+    state: u32,
+    county: u32,
+}
+
+fn feature_colors(style: BasemapStyle) -> FeatureColors {
+    match style {
+        BasemapStyle::Filled => FeatureColors {
+            coast: BASEMAP_COAST_CORE,
+            nat: BASEMAP_NAT_CORE,
+            state: BASEMAP_STATE_CORE,
+            county: BASEMAP_STATE_CORE, // unused in Filled
+        },
+        BasemapStyle::White => FeatureColors {
+            coast: WHITE_COAST_CORE,
+            nat: WHITE_NAT_CORE,
+            state: WHITE_STATE_CORE,
+            county: WHITE_COUNTY_CORE,
+        },
+    }
+}
+
+fn feature_widths(style: BasemapStyle) -> FeatureWidths {
+    match style {
+        BasemapStyle::Filled => FeatureWidths {
+            coast: BASEMAP_COAST_WIDTH,
+            nat: BASEMAP_NAT_WIDTH,
+            state: BASEMAP_STATE_WIDTH,
+            county: 1,
+        },
+        BasemapStyle::White => FeatureWidths {
+            coast: 2,
+            nat: 2,
+            state: 2,
+            county: 1,
+        },
+    }
+}
+
+// Basemap palette. Kept as module constants so a styling pass has one obvious dial.
+//
+// Design target: weathermodels.com ECMWF / NOAA Blend reference look — cool-beige
+// land, pale cool-blue ocean, thin crisp dark linework.
+pub const BASEMAP_LAND_FILL: Rgba = Rgba {
+    r: 226,
+    g: 224,
+    b: 214,
+    a: 255,
+};
+pub const BASEMAP_OCEAN_FILL: Rgba = Rgba {
+    r: 204,
+    g: 218,
+    b: 232,
+    a: 255,
+};
+const BASEMAP_COAST_CORE: Rgba = Rgba {
+    r: 22,
+    g: 28,
+    b: 36,
+    a: 255,
+};
+const BASEMAP_NAT_CORE: Rgba = Rgba {
+    r: 58,
+    g: 64,
+    b: 76,
+    a: 255,
+};
+// State borders: a touch darker than the land fill but still calm — decorative
+// context, not structural features.
+const BASEMAP_STATE_CORE: Rgba = Rgba {
+    r: 118,
+    g: 118,
+    b: 118,
+    a: 220,
+};
+const BASEMAP_COAST_WIDTH: u32 = 2;
+const BASEMAP_NAT_WIDTH: u32 = 1;
+const BASEMAP_STATE_WIDTH: u32 = 1;
+
+// ---- White / NWS-style palette ---------------------------------------------
+//
+// Target: the white-background SPC/NWS composition where political boundaries
+// (counties, states, national) carry the composition and data overlays in
+// saturated colors on top. Fills are pure white; linework is dark enough to
+// read over white without being heavy.
+pub const WHITE_LAND_FILL: Rgba = Rgba {
+    r: 255,
+    g: 255,
+    b: 255,
+    a: 255,
+};
+pub const WHITE_OCEAN_FILL: Rgba = Rgba {
+    r: 255,
+    g: 255,
+    b: 255,
+    a: 255,
+};
+const WHITE_LAKES_FILL: Rgba = Rgba {
+    r: 240,
+    g: 244,
+    b: 248,
+    a: 255,
+};
+const WHITE_COAST_CORE: Rgba = Rgba {
+    r: 24,
+    g: 30,
+    b: 40,
+    a: 255,
+};
+const WHITE_NAT_CORE: Rgba = Rgba {
+    r: 44,
+    g: 50,
+    b: 62,
+    a: 255,
+};
+const WHITE_STATE_CORE: Rgba = Rgba {
+    r: 70,
+    g: 78,
+    b: 92,
+    a: 255,
+};
+// County lines are the most common element in NWS-style CONUS maps: thin,
+// medium-light gray so the density reads as texture rather than emphasis.
+const WHITE_COUNTY_CORE: Rgba = Rgba {
+    r: 164,
+    g: 172,
+    b: 184,
+    a: 220,
+};

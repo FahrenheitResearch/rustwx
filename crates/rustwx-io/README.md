@@ -35,7 +35,9 @@
   pinned down cleanly enough to keep selector semantics exact
 - relative vorticity, lightning, smoke, and derived surface fields still need
   their own explicit selector/provenance work
-- this crate still relies on sibling local GRIB/download crates
+- the fetch/index helpers are vendored in-repo for self-contained
+  builds while the longer-term internal GRIB contract continues to
+  evolve
 
 ## Minimal example
 

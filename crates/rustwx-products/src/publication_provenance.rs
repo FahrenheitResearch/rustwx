@@ -1,12 +1,12 @@
 //! Build and dependency provenance for run manifests.
 //!
 //! A run manifest should be auditable: "which rustwx tree built this,
-//! which sibling dependency trees contributed, and under which toolchain
-//! were we running?" This module captures that data at manifest publish
-//! time. Everything here is best-effort — if the git metadata or
-//! `Cargo.lock` is unavailable, the affected field is `None` rather than
-//! a hard error, so operational runs don't fail just because the local
-//! tree isn't a git checkout.
+//! which in-repo vendored dependency trees contributed, and under which
+//! toolchain were we running?" This module captures that data at
+//! manifest publish time. Everything here is best-effort — if the git
+//! metadata or `Cargo.lock` is unavailable, the affected field is `None`
+//! rather than a hard error, so operational runs don't fail just
+//! because the local tree isn't a git checkout.
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -20,6 +20,10 @@ use crate::publication::sha256_hex;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildProvenance {
     pub rustwx: GitRepoProvenance,
+    /// Historical field name kept for manifest-schema compatibility.
+    /// In the self-contained tree this records vendored dependency
+    /// directories inside `rustwx/vendor/` rather than external sibling
+    /// repositories.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub siblings: Vec<GitRepoProvenance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,16 +62,19 @@ pub struct ToolchainProvenance {
     pub rustc_version: Option<String>,
 }
 
-/// Names + paths (relative to the workspace root's parent) of sibling
-/// rust repos that rustwx consumes as path dependencies. Baking this
+/// Names + paths (relative to the workspace root) of vendored crates
+/// that replace the former sibling path dependencies. Baking this
 /// curated list keeps provenance deterministic and avoids having to
-/// parse `Cargo.lock` at runtime. When the user adds new sibling path
-/// deps, adding a line here records their identity too.
-const SIBLING_REPO_DIRS: &[(&str, &str)] = &[
-    ("cfrust", "cfrust"),
-    ("metrust-py", "metrust-py"),
-    ("wrf-rust-plots", "wrf-rust-plots"),
-    ("sharprs", "sharprs"),
+/// parse `Cargo.lock` at runtime.
+const VENDORED_DEPENDENCY_DIRS: &[(&str, &str)] = &[
+    ("metrust", "vendor/metrust"),
+    ("wx-core", "vendor/wx-core"),
+    ("wx-field", "vendor/wx-field"),
+    ("wx-math", "vendor/wx-math"),
+    ("wx-radar", "vendor/wx-radar"),
+    ("grib-core", "vendor/grib-core"),
+    ("wrf-render", "vendor/wrf-render"),
+    ("sharprs", "vendor/sharprs"),
 ];
 
 /// Capture build provenance rooted at `workspace_root`. The workspace
@@ -77,11 +84,10 @@ const SIBLING_REPO_DIRS: &[(&str, &str)] = &[
 /// [`workspace_root_from_manifest_dir`].
 pub fn capture_build_provenance(workspace_root: &Path) -> BuildProvenance {
     let rustwx = capture_git_repo_provenance("rustwx", workspace_root);
-    let siblings_parent = workspace_root.parent().unwrap_or(workspace_root);
-    let siblings = SIBLING_REPO_DIRS
+    let siblings = VENDORED_DEPENDENCY_DIRS
         .iter()
         .map(|(name, dir)| {
-            let repo_root = siblings_parent.join(dir);
+            let repo_root = workspace_root.join(dir);
             capture_git_repo_provenance(name, &repo_root)
         })
         .filter(|repo| repo.path.exists())
