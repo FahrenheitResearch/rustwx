@@ -21,16 +21,17 @@ use std::time::Instant;
 
 use crate::direct::build_projected_map as build_projected_map_from_latlon;
 use crate::gridded::{
-    LoadedModelTimestep, PressureFields as GenericPressureFields,
-    SharedTiming as GenericSharedTiming, SurfaceFields as GenericSurfaceFields,
-    broadcast_levels_pa, load_model_timestep_from_parts,
+    PressureFields as GenericPressureFields, SharedTiming as GenericSharedTiming,
+    SurfaceFields as GenericSurfaceFields, broadcast_levels_pa, resolve_model_run,
 };
-use crate::hrrr::{HrrrSharedTiming, HrrrSurfaceFields, PreparedHrrrHourContext};
 use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
-    fetch_identity_from_cached_result,
 };
-use crate::shared_context::{DomainSpec, ProjectedMap, ProjectedMapProvider};
+use crate::runtime::{BundleLoaderConfig, LoadedBundleSet, load_execution_plan};
+use crate::severe::{
+    build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
+};
+use crate::shared_context::{DomainSpec, ProjectedMap};
 
 const OUTPUT_WIDTH: u32 = 1200;
 const OUTPUT_HEIGHT: u32 = 900;
@@ -56,60 +57,6 @@ trait PressureFieldSet {
     fn u_ms_3d(&self) -> &[f64];
     fn v_ms_3d(&self) -> &[f64];
     fn gh_m_3d(&self) -> &[f64];
-}
-
-impl SurfaceFieldSet for HrrrSurfaceFields {
-    fn lat(&self) -> &[f64] {
-        &self.lat
-    }
-    fn lon(&self) -> &[f64] {
-        &self.lon
-    }
-    fn nx(&self) -> usize {
-        self.nx
-    }
-    fn ny(&self) -> usize {
-        self.ny
-    }
-    fn orog_m(&self) -> &[f64] {
-        &self.orog_m
-    }
-    fn psfc_pa(&self) -> &[f64] {
-        &self.psfc_pa
-    }
-    fn t2_k(&self) -> &[f64] {
-        &self.t2_k
-    }
-    fn q2_kgkg(&self) -> &[f64] {
-        &self.q2_kgkg
-    }
-    fn u10_ms(&self) -> &[f64] {
-        &self.u10_ms
-    }
-    fn v10_ms(&self) -> &[f64] {
-        &self.v10_ms
-    }
-}
-
-impl PressureFieldSet for crate::hrrr::HrrrPressureFields {
-    fn pressure_levels_hpa(&self) -> &[f64] {
-        &self.pressure_levels_hpa
-    }
-    fn temperature_c_3d(&self) -> &[f64] {
-        &self.temperature_c_3d
-    }
-    fn qvapor_kgkg_3d(&self) -> &[f64] {
-        &self.qvapor_kgkg_3d
-    }
-    fn u_ms_3d(&self) -> &[f64] {
-        &self.u_ms_3d
-    }
-    fn v_ms_3d(&self) -> &[f64] {
-        &self.v_ms_3d
-    }
-    fn gh_m_3d(&self) -> &[f64] {
-        &self.gh_m_3d
-    }
 }
 
 impl SurfaceFieldSet for GenericSurfaceFields {
@@ -728,18 +675,29 @@ pub fn run_derived_batch(
     request: &DerivedBatchRequest,
 ) -> Result<DerivedBatchReport, Box<dyn std::error::Error>> {
     let recipes = plan_derived_recipes(&request.recipe_slugs)?;
-    let timestep = load_model_timestep_from_parts(
+    let latest = resolve_model_run(
         request.model,
         &request.date_yyyymmdd,
         request.cycle_override_utc,
-        request.forecast_hour,
         request.source,
+    )?;
+    // Derived consumes the same surface+pressure pair as severe/ECAPE,
+    // so it shares the same execution-plan builder. The planner dedupes
+    // when those products co-run in the unified hour runner.
+    let plan = build_severe_execution_plan(
+        &latest,
+        request.forecast_hour,
         request.surface_product_override.as_deref(),
         request.pressure_product_override.as_deref(),
-        &request.cache_root,
-        request.use_cache,
+    );
+    let loaded = load_execution_plan(
+        plan,
+        &BundleLoaderConfig {
+            cache_root: request.cache_root.clone(),
+            use_cache: request.use_cache,
+        },
     )?;
-    run_derived_batch_from_loaded(request, &recipes, &timestep)
+    run_derived_batch_from_loaded_bundles(request, &recipes, &loaded)
 }
 
 pub fn run_hrrr_derived_batch(
@@ -750,10 +708,10 @@ pub fn run_hrrr_derived_batch(
     )?))
 }
 
-fn run_derived_batch_from_loaded(
+fn run_derived_batch_from_loaded_bundles(
     request: &DerivedBatchRequest,
     recipes: &[DerivedRecipe],
-    timestep: &LoadedModelTimestep,
+    loaded: &LoadedBundleSet,
 ) -> Result<DerivedBatchReport, Box<dyn std::error::Error>> {
     fs::create_dir_all(&request.out_dir)?;
     if request.use_cache {
@@ -761,51 +719,35 @@ fn run_derived_batch_from_loaded(
     }
     let total_start = Instant::now();
 
+    let (surface_planned, surface_decode, pressure_planned, pressure_decode) = loaded
+        .surface_pressure_pair()
+        .ok_or("derived planner missed surface or pressure bundle")?;
+    let grid = loaded.surface_grid()?;
+
     let project_start = Instant::now();
     let projected = build_projected_map_from_latlon(
-        &timestep.grid.lat_deg,
-        &timestep.grid.lon_deg,
+        &grid.lat_deg,
+        &grid.lon_deg,
         request.domain.bounds,
         wrf_render::render::map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
     )?;
     let project_ms = project_start.elapsed().as_millis();
 
     let compute_start = Instant::now();
-    let computed = compute_derived_fields_generic(
-        &timestep.surface_decode.value,
-        &timestep.pressure_decode.value,
-        recipes,
-    )?;
+    let computed =
+        compute_derived_fields_generic(&surface_decode.value, &pressure_decode.value, recipes)?;
     let compute_ms = compute_start.elapsed().as_millis();
-    let input_fetches = vec![
-        fetch_identity_from_cached_result(
-            timestep
-                .shared_timing
-                .surface_fetch
-                .planned_product
-                .as_str(),
-            &timestep.surface_file.request,
-            &timestep.surface_file.fetched,
-        ),
-        fetch_identity_from_cached_result(
-            timestep
-                .shared_timing
-                .pressure_fetch
-                .planned_product
-                .as_str(),
-            &timestep.pressure_file.request,
-            &timestep.pressure_file.fetched,
-        ),
-    ];
+    let input_fetches = build_planned_input_fetches(loaded);
     let input_fetch_keys = unique_input_fetch_keys(&input_fetches);
+    let shared_timing_pair = build_shared_timing_for_pair(loaded, surface_planned, pressure_planned)?;
 
     let render_parallelism = png_render_parallelism(recipes.len());
-    let grid = timestep.grid();
+    let grid_ref = &grid;
     let projected = &projected;
     let date_yyyymmdd = request.date_yyyymmdd.as_str();
-    let cycle_utc = timestep.latest.cycle.hour_utc;
+    let cycle_utc = loaded.latest.cycle.hour_utc;
     let forecast_hour = request.forecast_hour;
-    let source = timestep.latest.source;
+    let source = loaded.latest.source;
     let model = request.model;
     let computed = &computed;
     let rendered = thread::scope(
@@ -819,7 +761,7 @@ fn run_derived_batch_from_loaded(
                     "rustwx_{}_{}_{}z_f{:03}_{}_{}.png",
                     model_slug,
                     request.date_yyyymmdd,
-                    timestep.latest.cycle.hour_utc,
+                    cycle_utc,
                     request.forecast_hour,
                     request.domain.slug,
                     recipe.slug()
@@ -830,7 +772,7 @@ fn run_derived_batch_from_loaded(
                         let render_start = Instant::now();
                         let render_artifact = build_render_artifact(
                             recipe,
-                            grid,
+                            grid_ref,
                             projected,
                             date_yyyymmdd,
                             cycle_utc,
@@ -876,13 +818,13 @@ fn run_derived_batch_from_loaded(
     Ok(DerivedBatchReport {
         model: request.model,
         date_yyyymmdd: request.date_yyyymmdd.clone(),
-        cycle_utc: timestep.latest.cycle.hour_utc,
+        cycle_utc,
         forecast_hour: request.forecast_hour,
-        source: timestep.latest.source,
+        source: loaded.latest.source,
         domain: request.domain.clone(),
         input_fetches,
         shared_timing: DerivedSharedTiming {
-            fetch_decode: timestep.shared_timing.clone(),
+            fetch_decode: shared_timing_pair,
             compute_ms,
             project_ms,
         },
@@ -891,166 +833,17 @@ fn run_derived_batch_from_loaded(
     })
 }
 
-pub(crate) fn run_hrrr_derived_batch_with_context(
+/// Run the HRRR derived lane consuming a planner-loaded bundle set.
+/// Used by the unified `hrrr_non_ecape_hour` runner so direct + derived
+/// + windowed all share one fetch+decode pass.
+pub(crate) fn run_hrrr_derived_batch_from_loaded(
     request: &HrrrDerivedBatchRequest,
     recipes: &[DerivedRecipe],
-    timestep: &crate::hrrr::LoadedHrrrTimestep,
-    shared_context: Option<&PreparedHrrrHourContext>,
+    loaded: &LoadedBundleSet,
 ) -> Result<HrrrDerivedBatchReport, Box<dyn std::error::Error>> {
-    fs::create_dir_all(&request.out_dir)?;
-    if request.use_cache {
-        fs::create_dir_all(&request.cache_root)?;
-    }
-    let total_start = Instant::now();
-
-    let project_start = Instant::now();
-    let projected = if let Some(projected) =
-        shared_context.and_then(|ctx| {
-            let provider = ctx as &dyn ProjectedMapProvider;
-            provider.projected_map(OUTPUT_WIDTH, OUTPUT_HEIGHT).cloned()
-        })
-    {
-        projected
-    } else {
-        build_projected_map_from_latlon(
-            &timestep
-                .surface_decode()
-                .value
-                .lat
-                .iter()
-                .copied()
-                .map(|v| v as f32)
-                .collect::<Vec<_>>(),
-            &timestep
-                .surface_decode()
-                .value
-                .lon
-                .iter()
-                .copied()
-                .map(|v| v as f32)
-                .collect::<Vec<_>>(),
-            request.domain.bounds,
-            wrf_render::render::map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
-        )?
-    };
-    let project_ms = project_start.elapsed().as_millis();
-
-    let compute_start = Instant::now();
-    let computed = compute_derived_fields_generic(
-        &timestep.surface_decode().value,
-        &timestep.pressure_decode().value,
-        recipes,
-    )?;
-    let compute_ms = compute_start.elapsed().as_millis();
-    let input_fetches = vec![
-        fetch_identity_from_cached_result(
-            timestep
-                .shared_timing()
-                .surface_fetch
-                .planned_product
-                .as_str(),
-            &timestep.surface_subset().request,
-            &timestep.surface_subset().fetched,
-        ),
-        fetch_identity_from_cached_result(
-            timestep
-                .shared_timing()
-                .pressure_fetch
-                .planned_product
-                .as_str(),
-            &timestep.pressure_subset().request,
-            &timestep.pressure_subset().fetched,
-        ),
-    ];
-    let input_fetch_keys = unique_input_fetch_keys(&input_fetches);
-
-    let render_parallelism = png_render_parallelism(recipes.len());
-    let grid = timestep.grid();
-    let projected = &projected;
-    let date_yyyymmdd = request.date_yyyymmdd.as_str();
-    let cycle_utc = timestep.latest().cycle.hour_utc;
-    let forecast_hour = request.forecast_hour;
-    let source = timestep.latest().source;
-    let model = ModelId::Hrrr;
-    let computed = &computed;
-    let rendered = thread::scope(
-        |scope| -> Result<Vec<DerivedRenderedRecipe>, io::Error> {
-            let mut rendered = Vec::with_capacity(recipes.len());
-            let mut pending = VecDeque::new();
-
-            for &recipe in recipes {
-                let output_path = request.out_dir.join(format!(
-                    "rustwx_hrrr_{}_{}z_f{:03}_{}_{}.png",
-                    request.date_yyyymmdd,
-                    timestep.latest().cycle.hour_utc,
-                    request.forecast_hour,
-                    request.domain.slug,
-                    recipe.slug()
-                ));
-                let lane_fetch_keys = input_fetch_keys.clone();
-                pending.push_back(scope.spawn(
-                    move || -> Result<DerivedRenderedRecipe, io::Error> {
-                        let render_start = Instant::now();
-                        let render_artifact = build_render_artifact(
-                            recipe,
-                            grid,
-                            projected,
-                            date_yyyymmdd,
-                            cycle_utc,
-                            forecast_hour,
-                            source,
-                            model,
-                            computed,
-                        )
-                        .map_err(thread_render_error)?;
-                        save_png(&render_artifact.request, &output_path)
-                            .map_err(thread_render_error)?;
-                        let render_ms = render_start.elapsed().as_millis();
-                        let content_identity = artifact_identity_from_path(&output_path)
-                            .map_err(thread_render_error)?;
-                        Ok(DerivedRenderedRecipe {
-                            recipe_slug: render_artifact.recipe_slug,
-                            title: render_artifact.title,
-                            output_path,
-                            content_identity,
-                            input_fetch_keys: lane_fetch_keys,
-                            timing: DerivedRecipeTiming {
-                                render_ms,
-                                total_ms: render_ms,
-                            },
-                        })
-                    },
-                ));
-
-                if pending.len() >= render_parallelism {
-                    rendered.push(join_render_job(pending.pop_front().unwrap())?);
-                }
-            }
-
-            while let Some(handle) = pending.pop_front() {
-                rendered.push(join_render_job(handle)?);
-            }
-
-            Ok(rendered)
-        },
-    )
-    .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
-
-    Ok(HrrrDerivedBatchReport {
-        date_yyyymmdd: request.date_yyyymmdd.clone(),
-        cycle_utc: timestep.latest().cycle.hour_utc,
-        forecast_hour: request.forecast_hour,
-        source: timestep.latest().source,
-        domain: request.domain.clone(),
-        input_fetches,
-        shared_timing: DerivedSharedTiming {
-            fetch_decode: convert_hrrr_shared_timing(timestep.shared_timing()),
-            compute_ms,
-            project_ms,
-        },
-        recipes: rendered,
-        total_ms: total_start.elapsed().as_millis(),
-    })
+    let generic_request = DerivedBatchRequest::from_hrrr(request);
+    let report = run_derived_batch_from_loaded_bundles(&generic_request, recipes, loaded)?;
+    Ok(into_hrrr_report(report))
 }
 
 fn into_hrrr_report(report: DerivedBatchReport) -> HrrrDerivedBatchReport {
@@ -1067,39 +860,6 @@ fn into_hrrr_report(report: DerivedBatchReport) -> HrrrDerivedBatchReport {
     }
 }
 
-fn convert_hrrr_shared_timing(timing: &HrrrSharedTiming) -> GenericSharedTiming {
-    GenericSharedTiming {
-        fetch_surface_ms: timing.fetch_surface_ms,
-        fetch_pressure_ms: timing.fetch_pressure_ms,
-        decode_surface_ms: timing.decode_surface_ms,
-        decode_pressure_ms: timing.decode_pressure_ms,
-        fetch_surface_cache_hit: timing.fetch_surface_cache_hit,
-        fetch_pressure_cache_hit: timing.fetch_pressure_cache_hit,
-        decode_surface_cache_hit: timing.decode_surface_cache_hit,
-        decode_pressure_cache_hit: timing.decode_pressure_cache_hit,
-        surface_fetch: crate::gridded::FetchRuntimeInfo {
-            planned_bundle: rustwx_core::CanonicalBundleDescriptor::SurfaceAnalysis,
-            planned_family: rustwx_core::CanonicalDataFamily::Surface,
-            planned_product: timing.surface_fetch.planned_product.clone(),
-            resolved_native_product: timing.surface_fetch.planned_product.clone(),
-            fetched_product: timing.surface_fetch.fetched_product.clone(),
-            requested_source: timing.surface_fetch.requested_source,
-            resolved_source: timing.surface_fetch.resolved_source,
-            resolved_url: timing.surface_fetch.resolved_url.clone(),
-        },
-        pressure_fetch: crate::gridded::FetchRuntimeInfo {
-            planned_bundle: rustwx_core::CanonicalBundleDescriptor::PressureAnalysis,
-            planned_family: rustwx_core::CanonicalDataFamily::Pressure,
-            planned_product: timing.pressure_fetch.planned_product.clone(),
-            resolved_native_product: timing.pressure_fetch.planned_product.clone(),
-            fetched_product: timing.pressure_fetch.fetched_product.clone(),
-            requested_source: timing.pressure_fetch.requested_source,
-            resolved_source: timing.pressure_fetch.resolved_source,
-            resolved_url: timing.pressure_fetch.resolved_url.clone(),
-        },
-    }
-}
-
 fn unique_input_fetch_keys(fetches: &[PublishedFetchIdentity]) -> Vec<String> {
     let mut keys = Vec::with_capacity(fetches.len());
     for fetch in fetches {
@@ -1110,10 +870,15 @@ fn unique_input_fetch_keys(fetches: &[PublishedFetchIdentity]) -> Vec<String> {
     keys
 }
 
+/// Build a single derived render artifact for an HRRR live-preview
+/// surface. Takes the planner-decoded generic surface/pressure types so
+/// callers can reuse a `LoadedBundleSet` rather than re-decoding HRRR
+/// natively. Reroutes through the same generic compute kernel as the
+/// batched derived lane.
 pub fn build_hrrr_live_derived_artifact(
     recipe_slug: &str,
-    surface: &HrrrSurfaceFields,
-    pressure: &crate::hrrr::HrrrPressureFields,
+    surface: &GenericSurfaceFields,
+    pressure: &GenericPressureFields,
     grid: &rustwx_core::LatLonGrid,
     projected: &ProjectedMap,
     date_yyyymmdd: &str,

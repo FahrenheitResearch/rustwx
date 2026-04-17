@@ -1,15 +1,18 @@
 use crate::cache::{load_bincode, store_bincode};
 use crate::gridded::{
-    decode_cache_path, fetch_family_file, load_surface_geometry_from_latest, resolve_model_run,
-    FetchRuntimeInfo,
+    decode_cache_path, load_surface_geometry_from_latest, resolve_model_run, FetchRuntimeInfo,
 };
-use crate::hrrr::{HrrrFetchRuntimeInfo, PreparedHrrrHourContext};
+use crate::hrrr::HrrrFetchRuntimeInfo;
+use crate::planner::ExecutionPlanBuilder;
 use crate::publication::{fetch_identity_from_cached_result, PublishedFetchIdentity};
+use crate::runtime::{BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan};
 use crate::shared_context::{DomainSpec, ProjectedMap};
 use grib_core::grib2::{unpack_message_normalized, Grib2File, Grib2Message};
 use rustwx_calc::{max_window_fields, sum_window_fields};
-use rustwx_core::{CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId};
-use rustwx_models::{resolve_canonical_bundle_product, LatestRun};
+use rustwx_core::{
+    BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId,
+};
+use rustwx_models::LatestRun;
 use rustwx_render::{
     palette_scale, save_png, ColorScale, ExtendMode, MapRenderRequest, Solar07Palette,
     Solar07Product,
@@ -184,24 +187,6 @@ struct ComputedWindowedField {
     scale: ColorScale,
 }
 
-#[derive(Debug)]
-struct LoadedApcpHour {
-    hour: u16,
-    result: Result<HrrrApcpDecode, String>,
-    fetch_ms: u128,
-    decode_ms: u128,
-    runtime_fetch: Option<HrrrWindowedHourFetchInfo>,
-}
-
-#[derive(Debug)]
-struct LoadedUhHour {
-    hour: u16,
-    result: Result<HrrrUhDecode, String>,
-    fetch_ms: u128,
-    decode_ms: u128,
-    runtime_fetch: Option<HrrrWindowedHourFetchInfo>,
-}
-
 #[derive(Debug, Clone)]
 struct PreparedWindowedGeometryContext {
     fetch_geometry_ms: u128,
@@ -230,29 +215,7 @@ enum WindowedProductOutcome {
 fn prepare_windowed_geometry_context(
     request: &HrrrWindowedBatchRequest,
     latest: &LatestRun,
-    shared_context: Option<&PreparedHrrrHourContext>,
 ) -> Result<PreparedWindowedGeometryContext, Box<dyn std::error::Error>> {
-    if let Some(ctx) = shared_context {
-        return Ok(PreparedWindowedGeometryContext {
-            fetch_geometry_ms: ctx.timestep().shared_timing().fetch_surface_ms,
-            decode_geometry_ms: ctx.timestep().shared_timing().decode_surface_ms,
-            geometry_fetch_cache_hit: ctx.timestep().shared_timing().fetch_surface_cache_hit,
-            geometry_decode_cache_hit: ctx.timestep().shared_timing().decode_surface_cache_hit,
-            geometry_fetch: Some(ctx.timestep().shared_timing().surface_fetch.clone()),
-            geometry_input_fetch: Some(fetch_identity_from_cached_result(
-                "sfc",
-                &ctx.timestep().surface_subset().request,
-                &ctx.timestep().surface_subset().fetched,
-            )),
-            projected: ctx
-                .projected_map(OUTPUT_WIDTH, OUTPUT_HEIGHT)
-                .cloned()
-                .ok_or("missing shared projected map for windowed batch")?,
-            project_ms: 0,
-            grid: ctx.timestep().grid().clone(),
-        });
-    }
-
     let geometry = load_surface_geometry_from_latest(
         latest.clone(),
         request.forecast_hour,
@@ -379,13 +342,12 @@ pub fn run_hrrr_windowed_batch(
         request.cycle_override_utc,
         request.source,
     )?;
-    run_hrrr_windowed_batch_with_context(request, &latest, None)
+    run_hrrr_windowed_batch_with_context(request, &latest)
 }
 
 pub(crate) fn run_hrrr_windowed_batch_with_context(
     request: &HrrrWindowedBatchRequest,
     latest: &rustwx_models::LatestRun,
-    shared_context: Option<&PreparedHrrrHourContext>,
 ) -> Result<HrrrWindowedBatchReport, Box<dyn std::error::Error>> {
     fs::create_dir_all(&request.out_dir)?;
     if request.use_cache {
@@ -393,7 +355,7 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
     }
 
     let total_start = Instant::now();
-    let geometry_context = prepare_windowed_geometry_context(request, latest, shared_context)?;
+    let geometry_context = prepare_windowed_geometry_context(request, latest)?;
     let fetch_geometry_ms = geometry_context.fetch_geometry_ms;
     let decode_geometry_ms = geometry_context.decode_geometry_ms;
     let geometry_fetch_cache_hit = geometry_context.geometry_fetch_cache_hit;
@@ -407,10 +369,47 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
     let (planned_products, mut blockers, surface_hours, nat_hours) =
         plan_windowed_products(&request.products, request.forecast_hour);
 
+    // Build a planner execution plan for every contributing forecast
+    // hour the windowed lane needs. APCP and native UH both live in the
+    // wrfsfc file, so the planner dedupes when QPF and UH products at
+    // the same hour share a fetch — and the loader's parallel-fetch
+    // path (off for NOMADS) keeps multi-hour runs reasonable.
+    let mut all_hours: BTreeSet<u16> = surface_hours.iter().copied().collect();
+    all_hours.extend(nat_hours.iter().copied());
+
+    let mut plan_builder = ExecutionPlanBuilder::new(latest, request.forecast_hour);
+    for &hour in &all_hours {
+        let requirement = BundleRequirement::new(
+            CanonicalBundleDescriptor::NativeAnalysis,
+            hour,
+        )
+        .with_native_override("sfc");
+        // Preserve the logical alias names manifests have always
+        // surfaced for windowed: QPF hours show up as "sfc"; UH hours
+        // show up as "nat" because the windowed lane historically
+        // logged them as native-family fetches even though both decode
+        // out of wrfsfc.
+        if surface_hours.contains(&hour) {
+            plan_builder.require_with_logical_family(&requirement, Some("sfc"));
+        }
+        if nat_hours.contains(&hour) {
+            plan_builder.require_with_logical_family(&requirement, Some("nat"));
+        }
+    }
+    let plan = plan_builder.build();
+    let loaded = if plan.bundles.is_empty() {
+        None
+    } else {
+        Some(load_execution_plan(
+            plan,
+            &BundleLoaderConfig::new(request.cache_root.clone(), request.use_cache),
+        )?)
+    };
+
     let (apcp_by_hour, surface_hour_fetches, fetch_surface_ms, decode_surface_ms) =
-        load_apcp_hours(latest, request, &surface_hours)?;
+        load_apcp_hours_from_plan(loaded.as_ref(), request, &surface_hours)?;
     let (uh_by_hour, uh_hour_fetches, fetch_nat_ms, decode_nat_ms) =
-        load_uh_hours(latest, request, &nat_hours)?;
+        load_uh_hours_from_plan(loaded.as_ref(), request, &nat_hours)?;
 
     let product_parallelism = windowed_parallelism(request.source, planned_products.len());
     let date_yyyymmdd = request.date_yyyymmdd.as_str();
@@ -677,8 +676,11 @@ fn load_or_decode_apcp(
     Ok(decoded)
 }
 
-fn load_apcp_hours(
-    latest: &rustwx_models::LatestRun,
+/// Planner-loaded APCP hour decode. The bytes were already fetched by
+/// the runtime's `load_execution_plan`; this just wraps the decode +
+/// hour-info bookkeeping.
+fn load_apcp_hours_from_plan(
+    loaded: Option<&LoadedBundleSet>,
     request: &HrrrWindowedBatchRequest,
     hours: &BTreeSet<u16>,
 ) -> Result<
@@ -688,60 +690,61 @@ fn load_apcp_hours(
         u128,
         u128,
     ),
-    io::Error,
+    Box<dyn std::error::Error>,
 > {
-    let mut loaded = if should_parallelize_windowed_hour_loads(latest.source) {
-        let parallelism = windowed_parallelism(request.source, hours.len());
-        thread::scope(|scope| -> Result<Vec<LoadedApcpHour>, io::Error> {
-            let mut done = Vec::with_capacity(hours.len());
-            let mut pending = std::collections::VecDeque::new();
-
-            for &hour in hours {
-                pending.push_back(scope.spawn(move || LoadedApcpHour {
-                    hour,
-                    ..load_apcp_hour(latest, request, hour)
-                }));
-
-                if pending.len() >= parallelism {
-                    done.push(join_windowed_job_value(pending.pop_front().unwrap())?);
-                }
-            }
-
-            while let Some(handle) = pending.pop_front() {
-                done.push(join_windowed_job_value(handle)?);
-            }
-
-            Ok(done)
-        })?
-    } else {
-        hours
-            .iter()
-            .copied()
-            .map(|hour| LoadedApcpHour {
-                hour,
-                ..load_apcp_hour(latest, request, hour)
-            })
-            .collect()
-    };
-    loaded.sort_by_key(|entry| entry.hour);
-
     let mut out = BTreeMap::new();
     let mut fetches = Vec::new();
-    let mut fetch_ms = 0u128;
-    let mut decode_ms = 0u128;
-    for entry in loaded {
-        fetch_ms += entry.fetch_ms;
-        decode_ms += entry.decode_ms;
-        if let Some(runtime_fetch) = entry.runtime_fetch {
-            fetches.push(runtime_fetch);
-        }
-        out.insert(entry.hour, entry.result);
+    let mut total_fetch_ms = 0u128;
+    let mut total_decode_ms = 0u128;
+
+    for &hour in hours {
+        let Some(loaded) = loaded else {
+            return Err(format!("planner produced no bundles for APCP hour {hour}").into());
+        };
+        let fetched = find_planner_bundle_for_hour(loaded, hour)?;
+        total_fetch_ms += fetched.fetch_ms;
+        let decode_path = decode_cache_path(
+            &request.cache_root,
+            &fetched.file.request,
+            "windowed_apcp",
+        );
+        let decode_start = Instant::now();
+        let decode_result = load_or_decode_apcp(
+            &decode_path,
+            &fetched.file.bytes,
+            request.use_cache,
+        )
+        .map_err(|err| err.to_string());
+        total_decode_ms += decode_start.elapsed().as_millis();
+        fetches.push(HrrrWindowedHourFetchInfo {
+            hour,
+            planned_product: "sfc".into(),
+            fetched_product: fetched.file.request.request.product.clone(),
+            requested_source: fetched
+                .file
+                .request
+                .source_override
+                .unwrap_or(fetched.file.fetched.result.source),
+            resolved_source: fetched.file.fetched.result.source,
+            resolved_url: fetched.file.fetched.result.url.clone(),
+            fetch_cache_hit: fetched.file.fetched.cache_hit,
+            input_fetch: Some(fetch_identity_from_cached_result(
+                "sfc",
+                &fetched.file.request,
+                &fetched.file.fetched,
+            )),
+        });
+        out.insert(hour, decode_result);
     }
-    Ok((out, fetches, fetch_ms, decode_ms))
+    Ok((out, fetches, total_fetch_ms, total_decode_ms))
 }
 
-fn load_uh_hours(
-    latest: &rustwx_models::LatestRun,
+/// Planner-loaded native UH hour decode. UH messages live in the same
+/// wrfsfc file the QPF lane already pulled, so the planner's dedupe
+/// means we only fetch each hour once even when both QPF and UH ask for
+/// it.
+fn load_uh_hours_from_plan(
+    loaded: Option<&LoadedBundleSet>,
     request: &HrrrWindowedBatchRequest,
     hours: &BTreeSet<u16>,
 ) -> Result<
@@ -751,181 +754,64 @@ fn load_uh_hours(
         u128,
         u128,
     ),
-    io::Error,
+    Box<dyn std::error::Error>,
 > {
-    let mut loaded = if should_parallelize_windowed_hour_loads(latest.source) {
-        let parallelism = windowed_parallelism(request.source, hours.len());
-        thread::scope(|scope| -> Result<Vec<LoadedUhHour>, io::Error> {
-            let mut done = Vec::with_capacity(hours.len());
-            let mut pending = std::collections::VecDeque::new();
-
-            for &hour in hours {
-                pending.push_back(scope.spawn(move || LoadedUhHour {
-                    hour,
-                    ..load_uh_hour(latest, request, hour)
-                }));
-
-                if pending.len() >= parallelism {
-                    done.push(join_windowed_job_value(pending.pop_front().unwrap())?);
-                }
-            }
-
-            while let Some(handle) = pending.pop_front() {
-                done.push(join_windowed_job_value(handle)?);
-            }
-
-            Ok(done)
-        })?
-    } else {
-        hours
-            .iter()
-            .copied()
-            .map(|hour| LoadedUhHour {
-                hour,
-                ..load_uh_hour(latest, request, hour)
-            })
-            .collect()
-    };
-    loaded.sort_by_key(|entry| entry.hour);
-
     let mut out = BTreeMap::new();
     let mut fetches = Vec::new();
-    let mut fetch_ms = 0u128;
-    let mut decode_ms = 0u128;
-    for entry in loaded {
-        fetch_ms += entry.fetch_ms;
-        decode_ms += entry.decode_ms;
-        if let Some(runtime_fetch) = entry.runtime_fetch {
-            fetches.push(runtime_fetch);
-        }
-        out.insert(entry.hour, entry.result);
-    }
-    Ok((out, fetches, fetch_ms, decode_ms))
-}
+    let mut total_fetch_ms = 0u128;
+    let mut total_decode_ms = 0u128;
 
-fn load_apcp_hour(
-    latest: &rustwx_models::LatestRun,
-    request: &HrrrWindowedBatchRequest,
-    hour: u16,
-) -> LoadedApcpHour {
-    let fetch_start = Instant::now();
-    let subset = fetch_windowed_surface_hour_file(latest, request, hour);
-    let fetch_ms = fetch_start.elapsed().as_millis();
-    match subset {
-        Ok(subset) => {
-            let decode_start = Instant::now();
-            let result = load_or_decode_apcp(
-                &decode_cache_path(&request.cache_root, &subset.request, "windowed_apcp"),
-                &subset.bytes,
-                request.use_cache,
-            )
-            .map_err(|err| err.to_string());
-            let decode_ms = decode_start.elapsed().as_millis();
-            LoadedApcpHour {
-                hour,
-                result,
-                fetch_ms,
-                decode_ms,
-                runtime_fetch: Some(HrrrWindowedHourFetchInfo {
-                    hour,
-                    planned_product: "sfc".into(),
-                    fetched_product: subset.request.request.product.clone(),
-                    requested_source: subset
-                        .request
-                        .source_override
-                        .unwrap_or(subset.fetched.result.source),
-                    resolved_source: subset.fetched.result.source,
-                    resolved_url: subset.fetched.result.url.clone(),
-                    fetch_cache_hit: subset.fetched.cache_hit,
-                    input_fetch: Some(fetch_identity_from_cached_result(
-                        "sfc",
-                        &subset.request,
-                        &subset.fetched,
-                    )),
-                }),
-            }
-        }
-        Err(err) => LoadedApcpHour {
+    for &hour in hours {
+        let Some(loaded) = loaded else {
+            return Err(format!("planner produced no bundles for UH hour {hour}").into());
+        };
+        let fetched = find_planner_bundle_for_hour(loaded, hour)?;
+        total_fetch_ms += fetched.fetch_ms;
+        let decode_path = decode_cache_path(
+            &request.cache_root,
+            &fetched.file.request,
+            "windowed_uh25",
+        );
+        let decode_start = Instant::now();
+        let decode_result = load_or_decode_uh25(
+            &decode_path,
+            &fetched.file.bytes,
+            request.use_cache,
+        )
+        .map_err(|err| err.to_string());
+        total_decode_ms += decode_start.elapsed().as_millis();
+        fetches.push(HrrrWindowedHourFetchInfo {
             hour,
-            result: Err(err.to_string()),
-            fetch_ms,
-            decode_ms: 0,
-            runtime_fetch: None,
-        },
+            planned_product: "nat".into(),
+            fetched_product: fetched.file.request.request.product.clone(),
+            requested_source: fetched
+                .file
+                .request
+                .source_override
+                .unwrap_or(fetched.file.fetched.result.source),
+            resolved_source: fetched.file.fetched.result.source,
+            resolved_url: fetched.file.fetched.result.url.clone(),
+            fetch_cache_hit: fetched.file.fetched.cache_hit,
+            input_fetch: Some(fetch_identity_from_cached_result(
+                "nat",
+                &fetched.file.request,
+                &fetched.file.fetched,
+            )),
+        });
+        out.insert(hour, decode_result);
     }
+    Ok((out, fetches, total_fetch_ms, total_decode_ms))
 }
 
-fn load_uh_hour(
-    latest: &rustwx_models::LatestRun,
-    request: &HrrrWindowedBatchRequest,
+fn find_planner_bundle_for_hour<'a>(
+    loaded: &'a LoadedBundleSet,
     hour: u16,
-) -> LoadedUhHour {
-    let fetch_start = Instant::now();
-    let subset = fetch_windowed_surface_hour_file(latest, request, hour);
-    let fetch_ms = fetch_start.elapsed().as_millis();
-    match subset {
-        Ok(subset) => {
-            let decode_start = Instant::now();
-            let result = load_or_decode_uh25(
-                &decode_cache_path(&request.cache_root, &subset.request, "windowed_uh25"),
-                &subset.bytes,
-                request.use_cache,
-            )
-            .map_err(|err| err.to_string());
-            let decode_ms = decode_start.elapsed().as_millis();
-            LoadedUhHour {
-                hour,
-                result,
-                fetch_ms,
-                decode_ms,
-                runtime_fetch: Some(HrrrWindowedHourFetchInfo {
-                    hour,
-                    planned_product: "nat".into(),
-                    fetched_product: subset.request.request.product.clone(),
-                    requested_source: subset
-                        .request
-                        .source_override
-                        .unwrap_or(subset.fetched.result.source),
-                    resolved_source: subset.fetched.result.source,
-                    resolved_url: subset.fetched.result.url.clone(),
-                    fetch_cache_hit: subset.fetched.cache_hit,
-                    input_fetch: Some(fetch_identity_from_cached_result(
-                        "nat",
-                        &subset.request,
-                        &subset.fetched,
-                    )),
-                }),
-            }
-        }
-        Err(err) => LoadedUhHour {
-            hour,
-            result: Err(err.to_string()),
-            fetch_ms,
-            decode_ms: 0,
-            runtime_fetch: None,
-        },
-    }
-}
-
-fn fetch_windowed_surface_hour_file(
-    latest: &LatestRun,
-    request: &HrrrWindowedBatchRequest,
-    hour: u16,
-) -> Result<crate::gridded::FetchedModelFile, Box<dyn std::error::Error>> {
-    let surface_bundle = resolve_canonical_bundle_product(
-        latest.model,
-        CanonicalBundleDescriptor::SurfaceAnalysis,
-        None,
-    );
-    fetch_family_file(
-        latest.model,
-        latest.cycle.clone(),
-        hour,
-        latest.source,
-        &surface_bundle,
-        &request.cache_root,
-        request.use_cache,
-    )
+) -> Result<&'a FetchedBundleBytes, Box<dyn std::error::Error>> {
+    loaded
+        .fetched
+        .values()
+        .find(|bundle| bundle.key.forecast_hour == hour && bundle.key.native_product == "sfc")
+        .ok_or_else(|| format!("planner missed windowed hour {hour}").into())
 }
 
 fn load_or_decode_uh25(
@@ -1243,10 +1129,6 @@ fn windowed_parallelism(source: SourceId, job_count: usize) -> usize {
         .min(job_count.max(1))
 }
 
-fn should_parallelize_windowed_hour_loads(source: SourceId) -> bool {
-    !matches!(source, SourceId::Nomads)
-}
-
 fn thread_windowed_error(err: impl std::fmt::Display) -> io::Error {
     io::Error::other(err.to_string())
 }
@@ -1256,16 +1138,6 @@ fn join_windowed_job<T>(
 ) -> Result<T, io::Error> {
     match handle.join() {
         Ok(result) => result,
-        Err(panic) => Err(io::Error::other(format!(
-            "windowed worker panicked: {}",
-            panic_message(panic)
-        ))),
-    }
-}
-
-fn join_windowed_job_value<T>(handle: thread::ScopedJoinHandle<'_, T>) -> Result<T, io::Error> {
-    match handle.join() {
-        Ok(result) => Ok(result),
         Err(panic) => Err(io::Error::other(format!(
             "windowed worker panicked: {}",
             panic_message(panic)
@@ -1385,12 +1257,6 @@ mod tests {
             computed.metadata.strategy,
             "run max of native hourly UH maxima"
         );
-    }
-
-    #[test]
-    fn nomads_windowed_hour_loads_are_serialized() {
-        assert!(!should_parallelize_windowed_hour_loads(SourceId::Nomads));
-        assert!(should_parallelize_windowed_hour_loads(SourceId::Aws));
     }
 
     #[test]

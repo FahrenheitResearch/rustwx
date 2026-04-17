@@ -896,7 +896,7 @@ impl From<PressureLevelVolume> for Field3D {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum ModelId {
     Hrrr,
     Gfs,
@@ -940,6 +940,7 @@ impl std::str::FromStr for ModelId {
 pub enum CanonicalDataFamily {
     Surface,
     Pressure,
+    Native,
 }
 
 impl CanonicalDataFamily {
@@ -947,6 +948,7 @@ impl CanonicalDataFamily {
         match self {
             Self::Surface => "surface",
             Self::Pressure => "pressure",
+            Self::Native => "native",
         }
     }
 }
@@ -957,11 +959,12 @@ impl std::fmt::Display for CanonicalDataFamily {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum CanonicalBundleDescriptor {
     SurfaceAnalysis,
     PressureAnalysis,
+    NativeAnalysis,
 }
 
 impl CanonicalBundleDescriptor {
@@ -969,6 +972,7 @@ impl CanonicalBundleDescriptor {
         match self {
             Self::SurfaceAnalysis => "surface_analysis",
             Self::PressureAnalysis => "pressure_analysis",
+            Self::NativeAnalysis => "native_analysis",
         }
     }
 
@@ -976,6 +980,7 @@ impl CanonicalBundleDescriptor {
         match self {
             Self::SurfaceAnalysis => CanonicalDataFamily::Surface,
             Self::PressureAnalysis => CanonicalDataFamily::Pressure,
+            Self::NativeAnalysis => CanonicalDataFamily::Native,
         }
     }
 }
@@ -986,7 +991,85 @@ impl std::fmt::Display for CanonicalBundleDescriptor {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Typed identity for an executable input bundle: the unique key by which
+/// the planner dedupes fetch+decode work across products. A
+/// `CanonicalBundleId` resolves to exactly one fetched GRIB file (one
+/// `(model, cycle, forecast_hour, source, native_product)` tuple); two
+/// `BundleRequirement`s with the same id share the same load.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
+pub struct CanonicalBundleId {
+    pub model: ModelId,
+    pub cycle: CycleSpec,
+    pub forecast_hour: u16,
+    pub source: SourceId,
+    pub bundle: CanonicalBundleDescriptor,
+    pub native_product: String,
+}
+
+impl CanonicalBundleId {
+    pub fn new<S: Into<String>>(
+        model: ModelId,
+        cycle: CycleSpec,
+        forecast_hour: u16,
+        source: SourceId,
+        bundle: CanonicalBundleDescriptor,
+        native_product: S,
+    ) -> Self {
+        Self {
+            model,
+            cycle,
+            forecast_hour,
+            source,
+            bundle,
+            native_product: native_product.into(),
+        }
+    }
+
+    pub fn family(&self) -> CanonicalDataFamily {
+        self.bundle.family()
+    }
+}
+
+impl std::fmt::Display for CanonicalBundleId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}@{}:{}{:02}z+f{:03}:{}",
+            self.bundle,
+            self.model,
+            self.cycle.date_yyyymmdd,
+            self.cycle.hour_utc,
+            self.forecast_hour,
+            self.native_product
+        )
+    }
+}
+
+/// What a product needs from the fetch layer. The planner translates each
+/// requirement into a `CanonicalBundleId` for dedupe.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
+pub struct BundleRequirement {
+    pub bundle: CanonicalBundleDescriptor,
+    pub forecast_hour: u16,
+    pub native_override: Option<String>,
+}
+
+impl BundleRequirement {
+    pub fn new(bundle: CanonicalBundleDescriptor, forecast_hour: u16) -> Self {
+        Self {
+            bundle,
+            forecast_hour,
+            native_override: None,
+        }
+    }
+
+    pub fn with_native_override<S: Into<String>>(mut self, native_product: S) -> Self {
+        self.native_override = Some(native_product.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum SourceId {
     Aws,
     Nomads,
@@ -1031,7 +1114,7 @@ impl std::str::FromStr for SourceId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct CycleSpec {
     pub date_yyyymmdd: String,
     pub hour_utc: u8,
@@ -1405,6 +1488,60 @@ mod tests {
             CanonicalBundleDescriptor::PressureAnalysis.family(),
             CanonicalDataFamily::Pressure
         );
+        assert_eq!(
+            CanonicalBundleDescriptor::NativeAnalysis.as_str(),
+            "native_analysis"
+        );
+        assert_eq!(
+            CanonicalBundleDescriptor::NativeAnalysis.family(),
+            CanonicalDataFamily::Native
+        );
+    }
+
+    #[test]
+    fn canonical_bundle_id_dedupes_by_full_identity() {
+        let cycle = CycleSpec::new("20260415", 18).unwrap();
+        let surface = CanonicalBundleId::new(
+            ModelId::Hrrr,
+            cycle.clone(),
+            6,
+            SourceId::Aws,
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+            "sfc",
+        );
+        let surface_clone = CanonicalBundleId::new(
+            ModelId::Hrrr,
+            cycle.clone(),
+            6,
+            SourceId::Aws,
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+            "sfc",
+        );
+        let surface_other_hour = CanonicalBundleId::new(
+            ModelId::Hrrr,
+            cycle.clone(),
+            7,
+            SourceId::Aws,
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+            "sfc",
+        );
+        assert_eq!(surface, surface_clone);
+        assert_ne!(surface, surface_other_hour);
+        assert_eq!(surface.family(), CanonicalDataFamily::Surface);
+        assert!(
+            surface
+                .to_string()
+                .contains("surface_analysis@hrrr:2026041518z+f006:sfc")
+        );
+    }
+
+    #[test]
+    fn bundle_requirement_carries_native_override() {
+        let plain = BundleRequirement::new(CanonicalBundleDescriptor::PressureAnalysis, 12);
+        assert!(plain.native_override.is_none());
+        let overridden = plain.clone().with_native_override("prs-na");
+        assert_eq!(overridden.native_override.as_deref(), Some("prs-na"));
+        assert_ne!(plain, overridden);
     }
 
     #[test]

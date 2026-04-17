@@ -447,6 +447,199 @@ pub fn broadcast_levels_pa(levels_hpa: &[f64], n2d: usize) -> Vec<f64> {
     out
 }
 
+/// Subrectangle of a generic surface/pressure grid that the heavy
+/// compute kernels can operate on. Used to keep ECAPE/severe runs fast
+/// on regional renders that only need a fraction of the source domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GridCrop {
+    pub x_start: usize,
+    pub x_end: usize,
+    pub y_start: usize,
+    pub y_end: usize,
+}
+
+impl GridCrop {
+    pub fn width(self) -> usize {
+        self.x_end - self.x_start
+    }
+
+    pub fn height(self) -> usize {
+        self.y_end - self.y_start
+    }
+}
+
+/// Cropped surface+pressure pair plus the recomputed `LatLonGrid`. The
+/// generic loader returns full-domain decoded fields; lane runners that
+/// know they only need a regional slice (mainly `hrrr_batch` for
+/// severe/ECAPE on a small bounding box) crop with this helper.
+#[derive(Debug, Clone)]
+pub struct CroppedHeavyDomain {
+    pub surface: SurfaceFields,
+    pub pressure: PressureFields,
+    pub grid: LatLonGrid,
+}
+
+pub fn crop_heavy_domain(
+    surface: &SurfaceFields,
+    pressure: &PressureFields,
+    bounds: (f64, f64, f64, f64),
+) -> Result<Option<CroppedHeavyDomain>, Box<dyn std::error::Error>> {
+    let Some(crop) = crop_rect_for_bounds(surface, bounds)? else {
+        return Ok(None);
+    };
+    let cropped_surface = crop_surface_fields(surface, crop);
+    let cropped_pressure = crop_pressure_fields(pressure, surface.nx, surface.ny, crop)?;
+    let grid = cropped_surface.core_grid()?;
+    Ok(Some(CroppedHeavyDomain {
+        surface: cropped_surface,
+        pressure: cropped_pressure,
+        grid,
+    }))
+}
+
+fn crop_rect_for_bounds(
+    surface: &SurfaceFields,
+    bounds: (f64, f64, f64, f64),
+) -> Result<Option<GridCrop>, Box<dyn std::error::Error>> {
+    let mut min_x = surface.nx;
+    let mut max_x = 0usize;
+    let mut min_y = surface.ny;
+    let mut max_y = 0usize;
+    let mut found = false;
+
+    for y in 0..surface.ny {
+        let row_offset = y * surface.nx;
+        for x in 0..surface.nx {
+            let idx = row_offset + x;
+            let lat = surface.lat[idx];
+            let lon = surface.lon[idx];
+            if lon >= bounds.0 && lon <= bounds.1 && lat >= bounds.2 && lat <= bounds.3 {
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+                found = true;
+            }
+        }
+    }
+
+    if !found {
+        return Err("requested crop produced an empty heavy-compute domain".into());
+    }
+
+    let crop = GridCrop {
+        x_start: min_x,
+        x_end: max_x + 1,
+        y_start: min_y,
+        y_end: max_y + 1,
+    };
+
+    if crop.x_start == 0
+        && crop.x_end == surface.nx
+        && crop.y_start == 0
+        && crop.y_end == surface.ny
+    {
+        Ok(None)
+    } else {
+        Ok(Some(crop))
+    }
+}
+
+fn crop_surface_fields(surface: &SurfaceFields, crop: GridCrop) -> SurfaceFields {
+    SurfaceFields {
+        lat: crop_2d_values(&surface.lat, surface.nx, crop),
+        lon: crop_2d_values(&surface.lon, surface.nx, crop),
+        nx: crop.width(),
+        ny: crop.height(),
+        psfc_pa: crop_2d_values(&surface.psfc_pa, surface.nx, crop),
+        orog_m: crop_2d_values(&surface.orog_m, surface.nx, crop),
+        orog_is_proxy: surface.orog_is_proxy,
+        t2_k: crop_2d_values(&surface.t2_k, surface.nx, crop),
+        q2_kgkg: crop_2d_values(&surface.q2_kgkg, surface.nx, crop),
+        u10_ms: crop_2d_values(&surface.u10_ms, surface.nx, crop),
+        v10_ms: crop_2d_values(&surface.v10_ms, surface.nx, crop),
+    }
+}
+
+fn crop_pressure_fields(
+    pressure: &PressureFields,
+    source_nx: usize,
+    source_ny: usize,
+    crop: GridCrop,
+) -> Result<PressureFields, Box<dyn std::error::Error>> {
+    let level_count = pressure.pressure_levels_hpa.len();
+    let expected_len = source_nx
+        .checked_mul(source_ny)
+        .and_then(|n2d| n2d.checked_mul(level_count))
+        .ok_or("pressure crop expected length overflowed")?;
+    for (name, values) in [
+        ("temperature_c_3d", &pressure.temperature_c_3d),
+        ("qvapor_kgkg_3d", &pressure.qvapor_kgkg_3d),
+        ("u_ms_3d", &pressure.u_ms_3d),
+        ("v_ms_3d", &pressure.v_ms_3d),
+        ("gh_m_3d", &pressure.gh_m_3d),
+    ] {
+        if values.len() != expected_len {
+            return Err(format!(
+                "pressure field {name} length {} did not match expected source volume length {expected_len}",
+                values.len()
+            )
+            .into());
+        }
+    }
+
+    Ok(PressureFields {
+        pressure_levels_hpa: pressure.pressure_levels_hpa.clone(),
+        temperature_c_3d: crop_3d_values(
+            &pressure.temperature_c_3d,
+            source_nx,
+            source_ny,
+            level_count,
+            crop,
+        ),
+        qvapor_kgkg_3d: crop_3d_values(
+            &pressure.qvapor_kgkg_3d,
+            source_nx,
+            source_ny,
+            level_count,
+            crop,
+        ),
+        u_ms_3d: crop_3d_values(&pressure.u_ms_3d, source_nx, source_ny, level_count, crop),
+        v_ms_3d: crop_3d_values(&pressure.v_ms_3d, source_nx, source_ny, level_count, crop),
+        gh_m_3d: crop_3d_values(&pressure.gh_m_3d, source_nx, source_ny, level_count, crop),
+    })
+}
+
+fn crop_2d_values(values: &[f64], source_nx: usize, crop: GridCrop) -> Vec<f64> {
+    let mut out = Vec::with_capacity(crop.width() * crop.height());
+    for y in crop.y_start..crop.y_end {
+        let row_start = y * source_nx + crop.x_start;
+        let row_end = row_start + crop.width();
+        out.extend_from_slice(&values[row_start..row_end]);
+    }
+    out
+}
+
+fn crop_3d_values(
+    values: &[f64],
+    source_nx: usize,
+    source_ny: usize,
+    level_count: usize,
+    crop: GridCrop,
+) -> Vec<f64> {
+    let source_n2d = source_nx * source_ny;
+    let mut out = Vec::with_capacity(crop.width() * crop.height() * level_count);
+    for level in 0..level_count {
+        let level_offset = level * source_n2d;
+        for y in crop.y_start..crop.y_end {
+            let row_start = level_offset + y * source_nx + crop.x_start;
+            let row_end = row_start + crop.width();
+            out.extend_from_slice(&values[row_start..row_end]);
+        }
+    }
+    out
+}
+
 fn thermo_bundles(
     model: ModelId,
     surface_product_override: Option<&str>,
@@ -522,7 +715,7 @@ pub(crate) fn load_or_decode_surface(
     })
 }
 
-fn load_or_decode_pressure_with_shape(
+pub(crate) fn load_or_decode_pressure_with_shape(
     path: &Path,
     bytes: &[u8],
     use_cache: bool,
@@ -906,7 +1099,7 @@ fn normalize_pressure_level_hpa(level_value_pa: f64) -> f64 {
     level_value_pa / 100.0
 }
 
-fn validate_pressure_decode_against_surface(
+pub(crate) fn validate_pressure_decode_against_surface(
     decoded: &CachedDecode<PressureFields>,
     decoded_shape: Option<(usize, usize)>,
     nx: usize,

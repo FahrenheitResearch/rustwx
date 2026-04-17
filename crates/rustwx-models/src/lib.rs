@@ -1799,10 +1799,40 @@ fn default_canonical_bundle_product(
     match (model, bundle) {
         (ModelId::Hrrr, CanonicalBundleDescriptor::SurfaceAnalysis) => "sfc",
         (ModelId::Hrrr, CanonicalBundleDescriptor::PressureAnalysis) => "prs",
+        // HRRR native (UH/composite reflectivity / sub-hourly bundles) live
+        // in the `nat` GRIB; the direct lane reroutes them onto `sfc` when
+        // the surface family already covers the requested fields, but the
+        // canonical native bundle still maps to `nat` here.
+        (ModelId::Hrrr, CanonicalBundleDescriptor::NativeAnalysis) => "nat",
         (ModelId::Gfs, _) => "pgrb2.0p25",
         (ModelId::EcmwfOpenData, _) => "oper",
         (ModelId::RrfsA, _) => "prs-conus",
     }
+}
+
+/// Build a typed `CanonicalBundleId` for `(model, cycle, fhour, source)`
+/// given a typed `BundleRequirement`. This is the planner-side entry point
+/// that converts requirements into deduplicated load identities.
+pub fn resolve_canonical_bundle_id(
+    model: ModelId,
+    cycle: rustwx_core::CycleSpec,
+    forecast_hour: u16,
+    source: SourceId,
+    requirement: &rustwx_core::BundleRequirement,
+) -> rustwx_core::CanonicalBundleId {
+    let resolved = resolve_canonical_bundle_product(
+        model,
+        requirement.bundle,
+        requirement.native_override.as_deref(),
+    );
+    rustwx_core::CanonicalBundleId::new(
+        model,
+        cycle,
+        forecast_hour,
+        source,
+        requirement.bundle,
+        resolved.native_product,
+    )
 }
 
 pub fn resolve_urls(request: &ModelRunRequest) -> Result<Vec<ResolvedUrl>, ModelError> {

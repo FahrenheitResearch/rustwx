@@ -1,11 +1,11 @@
 use grib_core::grib2::Grib2File;
 use image::DynamicImage;
 use rustwx_core::{
-    CanonicalField, CycleSpec, FieldSelector, ModelId, ModelRunRequest, SelectedField2D, SourceId,
+    BundleRequirement, CanonicalBundleDescriptor, CanonicalField, CycleSpec, FieldSelector,
+    ModelId, SelectedField2D, SourceId,
 };
 use rustwx_io::{
-    CachedFetchResult, FetchRequest, extract_fields_from_grib2, fetch_bytes,
-    fetch_bytes_with_cache, load_cached_selected_field, store_cached_selected_field,
+    extract_fields_from_grib2, load_cached_selected_field, store_cached_selected_field,
 };
 use rustwx_models::{
     LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
@@ -30,10 +30,12 @@ use wrf_render::projection::LambertConformal;
 use wrf_render::render::map_frame_aspect_ratio;
 use wrf_render::text;
 
+use crate::planner::{ExecutionPlan, ExecutionPlanBuilder};
 use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
     fetch_identity_from_cached_result_with_aliases,
 };
+use crate::runtime::{BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan};
 use crate::shared_context::{DomainSpec, ProjectedMap, ProjectedMapProvider};
 use crate::spec::direct_product_specs;
 
@@ -162,19 +164,19 @@ struct PlannedDirectRecipe {
 }
 
 #[derive(Debug, Clone)]
-struct FetchGroup {
-    product: String,
-    fetch_mode: PlotRecipeFetchMode,
+pub struct FetchGroup {
+    pub product: String,
+    pub fetch_mode: PlotRecipeFetchMode,
     // Retained for recipe-level coverage/debugging; the direct/native batch
     // path intentionally pulls full family GRIB bytes and extracts grouped
     // selectors from the parsed full file.
-    variable_patterns: Vec<String>,
-    selectors: Vec<FieldSelector>,
+    pub variable_patterns: Vec<String>,
+    pub selectors: Vec<FieldSelector>,
     /// Sorted set of logical planned-family names (as requested by the
     /// recipes' fetch plans) that collapsed into this canonical fetch. For
     /// HRRR this is how we preserve the "nat" logical identity even when
     /// it reroutes to the physical "sfc" file.
-    planned_family_aliases: std::collections::BTreeSet<String>,
+    pub planned_family_aliases: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -212,6 +214,24 @@ impl DirectBatchRequest {
             product_overrides: HashMap::new(),
         }
     }
+
+    /// Public planner-side conversion: lets the unified non-ECAPE-hour
+    /// runner build a `DirectBatchRequest` from the HRRR-pinned variant
+    /// so it can ask the direct lane to plan its fetch groups before
+    /// loading bundles.
+    pub fn from_hrrr_for_planner(request: &HrrrDirectBatchRequest) -> Self {
+        Self::from_hrrr(request)
+    }
+}
+
+/// Plan the direct lane's fetch groups without running the loader. The
+/// unified non-ECAPE-hour runner uses this to build a single execution
+/// plan that covers direct + derived (+ severe/ECAPE if requested).
+pub fn plan_direct_fetch_groups(
+    request: &DirectBatchRequest,
+) -> Result<Vec<FetchGroup>, Box<dyn std::error::Error>> {
+    let planned = plan_direct_recipes(request.model, &request.recipe_slugs)?;
+    Ok(group_direct_fetches(request, &planned))
 }
 
 fn resolve_direct_run(
@@ -248,17 +268,65 @@ pub fn run_hrrr_direct_batch(
     run_direct_batch(&DirectBatchRequest::from_hrrr(request))
 }
 
-pub(crate) fn run_hrrr_direct_batch_with_context(
+/// Planner-loaded entry point used by `hrrr_non_ecape_hour`. Direct
+/// shares the unified `LoadedBundleSet` with the derived/severe lanes
+/// when they co-run.
+pub(crate) fn run_hrrr_direct_batch_from_loaded(
     request: &HrrrDirectBatchRequest,
-    latest: &LatestRun,
-    shared_context: Option<&crate::hrrr::PreparedHrrrHourContext>,
+    loaded: &LoadedBundleSet,
 ) -> Result<HrrrDirectBatchReport, Box<dyn std::error::Error>> {
     let generic = DirectBatchRequest::from_hrrr(request);
-    run_direct_batch_with_context(
-        &generic,
-        latest,
-        shared_context.map(|ctx| ctx as &dyn ProjectedMapProvider),
-    )
+    run_direct_batch_from_loaded(&generic, loaded, &generic.cache_root, generic.use_cache, None)
+}
+
+pub(crate) fn run_direct_batch_from_loaded(
+    request: &DirectBatchRequest,
+    loaded: &LoadedBundleSet,
+    cache_root: &std::path::Path,
+    use_cache: bool,
+    shared_context: Option<&dyn ProjectedMapProvider>,
+) -> Result<DirectBatchReport, Box<dyn std::error::Error>> {
+    fs::create_dir_all(&request.out_dir)?;
+    if use_cache {
+        fs::create_dir_all(cache_root)?;
+    }
+    let total_start = Instant::now();
+    let planned = plan_direct_recipes(request.model, &request.recipe_slugs)?;
+    let groups = group_direct_fetches(request, &planned);
+    let mut extracted = HashMap::<FieldSelector, SelectedField2D>::new();
+    let mut fetches = Vec::with_capacity(groups.len());
+    let mut fetch_truth_by_actual_product = HashMap::<String, DirectFetchRuntimeInfo>::new();
+
+    for group in &groups {
+        let fetched = find_loaded_bytes_for_group(loaded, group)?;
+        let (fields, timing) = extract_direct_fetch_group_from_loaded(
+            request, group, fetched, use_cache,
+        )?;
+        extracted.extend(fields.into_iter().map(|field| (field.selector, field)));
+        fetch_truth_by_actual_product.insert(group.product.clone(), timing.runtime_fetch.clone());
+        fetches.push(timing);
+    }
+
+    let rendered = render_direct_recipes(
+        request,
+        &loaded.latest,
+        &planned,
+        &extracted,
+        &fetch_truth_by_actual_product,
+        shared_context,
+    )?;
+
+    Ok(DirectBatchReport {
+        model: request.model,
+        date_yyyymmdd: request.date_yyyymmdd.clone(),
+        cycle_utc: loaded.latest.cycle.hour_utc,
+        forecast_hour: request.forecast_hour,
+        source: loaded.latest.source,
+        domain: request.domain.clone(),
+        fetches,
+        recipes: rendered,
+        total_ms: total_start.elapsed().as_millis(),
+    })
 }
 
 fn run_direct_batch_with_context(
@@ -274,18 +342,29 @@ fn run_direct_batch_with_context(
     let total_start = Instant::now();
     let planned = plan_direct_recipes(request.model, &request.recipe_slugs)?;
     let groups = group_direct_fetches(request, &planned);
+    // Build the typed execution plan from the recipe fetch groups. Each
+    // group becomes a NativeAnalysis bundle whose native_override is the
+    // canonical fetched product — the planner merges direct groups that
+    // share a physical file with other lanes (severe/ECAPE). The direct
+    // lane still runs its own per-selector extract out of the bytes the
+    // loader fetched.
+    let plan = build_direct_execution_plan(latest, request.forecast_hour, &groups);
+    let loaded = load_execution_plan(
+        plan,
+        &BundleLoaderConfig {
+            cache_root: request.cache_root.clone(),
+            use_cache: request.use_cache,
+        },
+    )?;
+
     let mut extracted = HashMap::<FieldSelector, SelectedField2D>::new();
     let mut fetches = Vec::with_capacity(groups.len());
     let mut fetch_truth_by_actual_product = HashMap::<String, DirectFetchRuntimeInfo>::new();
 
     for group in &groups {
-        let (fields, timing) = load_direct_fetch_group(
-            request,
-            latest,
-            request.forecast_hour,
-            group,
-            &request.cache_root,
-            request.use_cache,
+        let fetched = find_loaded_bytes_for_group(&loaded, group)?;
+        let (fields, timing) = extract_direct_fetch_group_from_loaded(
+            request, group, fetched, request.use_cache,
         )?;
         extracted.extend(fields.into_iter().map(|field| (field.selector, field)));
         fetch_truth_by_actual_product.insert(group.product.clone(), timing.runtime_fetch.clone());
@@ -312,23 +391,6 @@ fn run_direct_batch_with_context(
         recipes: rendered,
         total_ms: total_start.elapsed().as_millis(),
     })
-}
-
-pub(crate) fn required_direct_projection_sizes(recipe_slugs: &[String]) -> Vec<(u32, u32)> {
-    let mut sizes = vec![(OUTPUT_WIDTH, OUTPUT_HEIGHT)];
-    let mut seen = HashSet::<(u32, u32)>::from_iter(sizes.iter().copied());
-    for slug in recipe_slugs {
-        let normalized = plot_recipe(slug)
-            .map(|recipe| recipe.slug)
-            .unwrap_or(slug.as_str());
-        if let Some(spec) = composite_panel_spec(normalized) {
-            let size = (spec.panel_width, spec.panel_height);
-            if seen.insert(size) {
-                sizes.push(size);
-            }
-        }
-    }
-    sizes
 }
 
 pub fn supported_direct_recipe_slugs(model: ModelId) -> Vec<String> {
@@ -406,50 +468,57 @@ fn canonical_fetch_product(request: &DirectBatchRequest, planned_product: &str) 
     }
 }
 
-fn build_direct_fetch_request(
-    request: &DirectBatchRequest,
+fn build_direct_execution_plan(
     latest: &LatestRun,
     forecast_hour: u16,
-    group: &FetchGroup,
-) -> Result<FetchRequest, rustwx_core::RustwxError> {
-    Ok(FetchRequest {
-        request: ModelRunRequest::new(
-            request.model,
-            latest.cycle.clone(),
+    groups: &[FetchGroup],
+) -> ExecutionPlan {
+    let mut builder = ExecutionPlanBuilder::new(latest, forecast_hour);
+    for group in groups {
+        // Each direct fetch group corresponds to one unique physical
+        // GRIB file. Express it as a NativeAnalysis bundle with the
+        // canonical fetched product as native_override; record every
+        // logical planned family (e.g. "nat", "sfc") so manifests can
+        // surface the aliases.
+        let requirement = BundleRequirement::new(
+            CanonicalBundleDescriptor::NativeAnalysis,
             forecast_hour,
-            group.product.as_str(),
-        )?,
-        source_override: Some(latest.source),
-        // Force full-family GRIB fetches for the direct/native lane. Grouped
-        // extraction remains efficient because we still union selectors per
-        // family and extract them from one parsed full GRIB.
-        variable_patterns: Vec::new(),
-    })
+        )
+        .with_native_override(group.product.clone());
+        for alias in &group.planned_family_aliases {
+            builder.require_with_logical_family(&requirement, Some(alias));
+        }
+    }
+    builder.build()
 }
 
-fn load_direct_fetch_group(
-    request: &DirectBatchRequest,
-    latest: &LatestRun,
-    forecast_hour: u16,
+fn find_loaded_bytes_for_group<'a>(
+    loaded: &'a LoadedBundleSet,
     group: &FetchGroup,
-    cache_root: &std::path::Path,
+) -> Result<&'a FetchedBundleBytes, Box<dyn std::error::Error>> {
+    loaded
+        .fetched
+        .values()
+        .find(|bundle| bundle.key.native_product == group.product)
+        .ok_or_else(|| {
+            format!(
+                "direct planner missed fetch for canonical family '{}'",
+                group.product
+            )
+            .into()
+        })
+}
+
+fn extract_direct_fetch_group_from_loaded(
+    request: &DirectBatchRequest,
+    group: &FetchGroup,
+    fetched: &FetchedBundleBytes,
     use_cache: bool,
 ) -> Result<(Vec<SelectedField2D>, DirectFetchTiming), Box<dyn std::error::Error>> {
     let total_start = Instant::now();
-    let fetch_request = build_direct_fetch_request(request, latest, forecast_hour, group)?;
-
-    let fetch_start = Instant::now();
-    let fetched = if use_cache {
-        fetch_bytes_with_cache(&fetch_request, cache_root, true)?
-    } else {
-        CachedFetchResult {
-            result: fetch_bytes(&fetch_request)?,
-            cache_hit: false,
-            bytes_path: rustwx_io::fetch_cache_paths(cache_root, &fetch_request).0,
-            metadata_path: rustwx_io::fetch_cache_paths(cache_root, &fetch_request).1,
-        }
-    };
-    let fetch_ms = fetch_start.elapsed().as_millis();
+    let fetch_request = &fetched.file.request;
+    let cached_result = &fetched.file.fetched;
+    let fetch_ms = fetched.fetch_ms;
 
     let extract_start = Instant::now();
     let mut extracted = Vec::<SelectedField2D>::new();
@@ -457,7 +526,8 @@ fn load_direct_fetch_group(
     let mut extract_cache_hits = 0usize;
     if use_cache {
         for selector in &group.selectors {
-            if let Some(cached) = load_cached_selected_field(cache_root, &fetch_request, *selector)?
+            if let Some(cached) =
+                load_cached_selected_field(&request.cache_root, fetch_request, *selector)?
             {
                 extracted.push(cached.field);
                 extract_cache_hits += 1;
@@ -473,7 +543,7 @@ fn load_direct_fetch_group(
     let grib = if missing.is_empty() {
         None
     } else {
-        Some(Grib2File::from_bytes(&fetched.result.bytes)?)
+        Some(Grib2File::from_bytes(&fetched.file.bytes)?)
     };
     let parse_ms = parse_start.elapsed().as_millis();
 
@@ -481,7 +551,7 @@ fn load_direct_fetch_group(
         let decoded = extract_fields_from_grib2(grib, &missing)?;
         if use_cache {
             for field in &decoded {
-                store_cached_selected_field(cache_root, &fetch_request, field)?;
+                store_cached_selected_field(&request.cache_root, fetch_request, field)?;
             }
         }
         extracted.extend(decoded);
@@ -497,7 +567,7 @@ fn load_direct_fetch_group(
             parse_ms,
             extract_ms,
             total_ms: total_start.elapsed().as_millis(),
-            fetch_cache_hit: fetched.cache_hit,
+            fetch_cache_hit: cached_result.cache_hit,
             extract_cache_hits,
             extract_cache_misses: missing.len(),
             runtime_fetch: DirectFetchRuntimeInfo {
@@ -514,9 +584,9 @@ fn load_direct_fetch_group(
                     .collect(),
                 requested_source: fetch_request
                     .source_override
-                    .unwrap_or(fetched.result.source),
-                resolved_source: fetched.result.source,
-                resolved_url: fetched.result.url.clone(),
+                    .unwrap_or(cached_result.result.source),
+                resolved_source: cached_result.result.source,
+                resolved_url: cached_result.result.url.clone(),
             },
             input_fetch: fetch_identity_from_cached_result_with_aliases(
                 group.product.as_str(),
@@ -525,8 +595,8 @@ fn load_direct_fetch_group(
                     .iter()
                     .cloned()
                     .collect::<Vec<_>>(),
-                &fetch_request,
-                &fetched,
+                fetch_request,
+                cached_result,
             ),
         },
     ))
@@ -1184,7 +1254,7 @@ fn cached_barb_strides(
     *cache.entry(key).or_insert(strides)
 }
 
-pub(crate) fn build_projected_map(
+pub fn build_projected_map(
     lat_deg: &[f32],
     lon_deg: &[f32],
     bounds: (f64, f64, f64, f64),
@@ -1337,6 +1407,30 @@ mod tests {
             recipe_slugs: Vec::new(),
             product_overrides: HashMap::new(),
         }
+    }
+
+    /// Test-only equivalent of the legacy `build_direct_fetch_request`
+    /// helper. Tests still want to assert that direct's fetch identity
+    /// stays consistent across HRRR's nat→sfc routing and product
+    /// overrides; the production path now builds requests inside the
+    /// loader, but the same routing logic lives in the planner so this
+    /// thin shim stays honest.
+    fn build_direct_fetch_request(
+        request: &DirectBatchRequest,
+        latest: &LatestRun,
+        forecast_hour: u16,
+        group: &FetchGroup,
+    ) -> Result<rustwx_io::FetchRequest, rustwx_core::RustwxError> {
+        Ok(rustwx_io::FetchRequest {
+            request: rustwx_core::ModelRunRequest::new(
+                request.model,
+                latest.cycle.clone(),
+                forecast_hour,
+                group.product.as_str(),
+            )?,
+            source_override: Some(latest.source),
+            variable_patterns: Vec::new(),
+        })
     }
 
     #[test]

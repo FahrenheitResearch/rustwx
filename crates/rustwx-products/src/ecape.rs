@@ -1,11 +1,13 @@
 use crate::direct::build_projected_map;
 use crate::gridded::{
-    PressureFields, SharedTiming, SurfaceFields, load_model_timestep_from_parts,
-    prepare_heavy_volume,
+    PressureFields, SharedTiming, SurfaceFields, prepare_heavy_volume, resolve_model_run,
 };
 use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
-    fetch_identity_from_cached_result,
+};
+use crate::runtime::{BundleLoaderConfig, load_execution_plan};
+use crate::severe::{
+    build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
 };
 use crate::shared_context::{
     DomainSpec, Solar07PanelField, Solar07PanelHeader, Solar07PanelLayout,
@@ -66,32 +68,46 @@ pub fn run_ecape_batch(
     }
 
     let total_start = Instant::now();
-    let timestep = load_model_timestep_from_parts(
+    let latest = resolve_model_run(
         request.model,
         &request.date_yyyymmdd,
         request.cycle_override_utc,
-        request.forecast_hour,
         request.source,
+    )?;
+    // ECAPE consumes the same surface+pressure pair as the severe panel,
+    // so we reuse the same execution-plan builder; the planner dedupes if
+    // both products run in the same pass.
+    let plan = build_severe_execution_plan(
+        &latest,
+        request.forecast_hour,
         request.surface_product_override.as_deref(),
         request.pressure_product_override.as_deref(),
-        &request.cache_root,
-        request.use_cache,
+    );
+    let loaded = load_execution_plan(
+        plan,
+        &BundleLoaderConfig {
+            cache_root: request.cache_root.clone(),
+            use_cache: request.use_cache,
+        },
     )?;
+
+    let (surface_planned, surface_decode, pressure_planned, pressure_decode) = loaded
+        .surface_pressure_pair()
+        .ok_or("ECAPE planner missed surface or pressure bundle")?;
+    let grid = loaded.surface_grid()?;
 
     let project_start = Instant::now();
     let projected = build_projected_map(
-        &timestep.grid.lat_deg,
-        &timestep.grid.lon_deg,
+        &grid.lat_deg,
+        &grid.lon_deg,
         request.domain.bounds,
         Solar07PanelLayout::default().target_aspect_ratio(),
     )?;
     let project_ms = project_start.elapsed().as_millis();
 
     let compute_start = Instant::now();
-    let (fields, failure_count) = compute_ecape8_panel_fields(
-        &timestep.surface_decode.value,
-        &timestep.pressure_decode.value,
-    )?;
+    let (fields, failure_count) =
+        compute_ecape8_panel_fields(&surface_decode.value, &pressure_decode.value)?;
     let compute_ms = compute_start.elapsed().as_millis();
 
     let model_slug = request.model.as_str().replace('-', "_");
@@ -99,14 +115,14 @@ pub fn run_ecape_batch(
         "rustwx_{}_{}_{}z_f{:03}_{}_ecape8_panel.png",
         model_slug,
         request.date_yyyymmdd,
-        timestep.latest.cycle.hour_utc,
+        loaded.latest.cycle.hour_utc,
         request.forecast_hour,
         request.domain.slug
     ));
     let render_start = Instant::now();
     render_two_by_four_solar07_panel(
         &output_path,
-        &timestep.grid,
+        &grid,
         &projected,
         &fields,
         &Solar07PanelHeader::new(format!("{} ECAPE 8-Panel", request.model)),
@@ -114,38 +130,20 @@ pub fn run_ecape_batch(
     )?;
     let render_ms = render_start.elapsed().as_millis();
     let output_identity = artifact_identity_from_path(&output_path)?;
-    let input_fetches = vec![
-        fetch_identity_from_cached_result(
-            timestep
-                .shared_timing
-                .surface_fetch
-                .planned_product
-                .as_str(),
-            &timestep.surface_file.request,
-            &timestep.surface_file.fetched,
-        ),
-        fetch_identity_from_cached_result(
-            timestep
-                .shared_timing
-                .pressure_fetch
-                .planned_product
-                .as_str(),
-            &timestep.pressure_file.request,
-            &timestep.pressure_file.fetched,
-        ),
-    ];
+    let shared_timing = build_shared_timing_for_pair(&loaded, surface_planned, pressure_planned)?;
+    let input_fetches = build_planned_input_fetches(&loaded);
 
     Ok(EcapeBatchReport {
         model: request.model,
         date_yyyymmdd: request.date_yyyymmdd.clone(),
-        cycle_utc: timestep.latest.cycle.hour_utc,
+        cycle_utc: loaded.latest.cycle.hour_utc,
         forecast_hour: request.forecast_hour,
-        source: timestep.latest.source,
+        source: loaded.latest.source,
         domain: request.domain.clone(),
         output_path,
         output_identity,
         input_fetches,
-        shared_timing: timestep.shared_timing,
+        shared_timing,
         project_ms,
         compute_ms,
         render_ms,
@@ -159,6 +157,14 @@ pub fn compute_ecape8_panel_fields(
     pressure: &PressureFields,
 ) -> Result<(Vec<Solar07PanelField>, usize), Box<dyn std::error::Error>> {
     let prepared = prepare_heavy_volume(surface, pressure, false)?;
+    compute_ecape8_panel_fields_with_prepared_volume(surface, pressure, &prepared)
+}
+
+pub fn compute_ecape8_panel_fields_with_prepared_volume(
+    surface: &SurfaceFields,
+    pressure: &PressureFields,
+    prepared: &crate::gridded::PreparedHeavyVolume,
+) -> Result<(Vec<Solar07PanelField>, usize), Box<dyn std::error::Error>> {
     let triplet = compute_ecape_triplet_with_failure_mask_from_parts(
         prepared.grid,
         EcapeVolumeInputs {

@@ -1,12 +1,14 @@
 use crate::direct::build_projected_map;
 use crate::gridded::{
-    PreparedHeavyVolume, PressureFields, SharedTiming, SurfaceFields,
-    load_model_timestep_from_parts, prepare_heavy_volume,
+    PreparedHeavyVolume, PressureFields, SharedTiming, SurfaceFields, prepare_heavy_volume,
+    resolve_model_run,
 };
+use crate::planner::{ExecutionPlan, ExecutionPlanBuilder, PlannedBundle};
 use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
-    fetch_identity_from_cached_result,
+    fetch_identity_from_cached_result_with_aliases,
 };
+use crate::runtime::{BundleLoaderConfig, LoadedBundleSet, load_execution_plan};
 use crate::shared_context::{
     DomainSpec, Solar07PanelField, Solar07PanelHeader, Solar07PanelLayout,
     render_two_by_four_solar07_panel,
@@ -14,7 +16,10 @@ use crate::shared_context::{
 use rustwx_calc::{
     EcapeVolumeInputs, SupportedSevereFields, SurfaceInputs, compute_supported_severe_fields,
 };
-use rustwx_core::{ModelId, SourceId};
+use rustwx_core::{
+    BundleRequirement, CanonicalBundleDescriptor, CanonicalBundleId, ModelId, SourceId,
+};
+use rustwx_models::LatestRun;
 use rustwx_render::Solar07Product;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -63,17 +68,30 @@ pub fn run_severe_batch(
     }
 
     let total_start = Instant::now();
-    let timestep = load_model_timestep_from_parts(
+    let latest = resolve_model_run(
         request.model,
         &request.date_yyyymmdd,
         request.cycle_override_utc,
-        request.forecast_hour,
         request.source,
+    )?;
+    let plan = build_severe_execution_plan(
+        &latest,
+        request.forecast_hour,
         request.surface_product_override.as_deref(),
         request.pressure_product_override.as_deref(),
-        &request.cache_root,
-        request.use_cache,
+    );
+    let loaded = load_execution_plan(
+        plan,
+        &BundleLoaderConfig {
+            cache_root: request.cache_root.clone(),
+            use_cache: request.use_cache,
+        },
     )?;
+
+    let (surface_planned, surface_decode, pressure_planned, pressure_decode) = loaded
+        .surface_pressure_pair()
+        .ok_or("severe planner missed surface or pressure bundle")?;
+    let grid = loaded.surface_grid()?;
 
     let layout = Solar07PanelLayout {
         top_padding: 86,
@@ -81,18 +99,15 @@ pub fn run_severe_batch(
     };
     let project_start = Instant::now();
     let projected = build_projected_map(
-        &timestep.grid.lat_deg,
-        &timestep.grid.lon_deg,
+        &grid.lat_deg,
+        &grid.lon_deg,
         request.domain.bounds,
         layout.target_aspect_ratio(),
     )?;
     let project_ms = project_start.elapsed().as_millis();
 
     let compute_start = Instant::now();
-    let fields = compute_severe_panel_fields(
-        &timestep.surface_decode.value,
-        &timestep.pressure_decode.value,
-    )?;
+    let fields = compute_severe_panel_fields(&surface_decode.value, &pressure_decode.value)?;
     let compute_ms = compute_start.elapsed().as_millis();
 
     let model_slug = request.model.as_str().replace('-', "_");
@@ -100,7 +115,7 @@ pub fn run_severe_batch(
         "rustwx_{}_{}_{}z_f{:03}_{}_severe_proof_panel.png",
         model_slug,
         request.date_yyyymmdd,
-        timestep.latest.cycle.hour_utc,
+        loaded.latest.cycle.hour_utc,
         request.forecast_hour,
         request.domain.slug
     ));
@@ -114,7 +129,7 @@ pub fn run_severe_batch(
         );
     render_two_by_four_solar07_panel(
         &output_path,
-        &timestep.grid,
+        &grid,
         &projected,
         &fields,
         &header,
@@ -122,43 +137,141 @@ pub fn run_severe_batch(
     )?;
     let render_ms = render_start.elapsed().as_millis();
     let output_identity = artifact_identity_from_path(&output_path)?;
-    let input_fetches = vec![
-        fetch_identity_from_cached_result(
-            timestep
-                .shared_timing
-                .surface_fetch
-                .planned_product
-                .as_str(),
-            &timestep.surface_file.request,
-            &timestep.surface_file.fetched,
-        ),
-        fetch_identity_from_cached_result(
-            timestep
-                .shared_timing
-                .pressure_fetch
-                .planned_product
-                .as_str(),
-            &timestep.pressure_file.request,
-            &timestep.pressure_file.fetched,
-        ),
-    ];
+    let shared_timing = build_shared_timing_for_pair(
+        &loaded,
+        surface_planned,
+        pressure_planned,
+    )?;
+    let input_fetches = build_planned_input_fetches(&loaded);
 
     Ok(SevereBatchReport {
         model: request.model,
         date_yyyymmdd: request.date_yyyymmdd.clone(),
-        cycle_utc: timestep.latest.cycle.hour_utc,
+        cycle_utc: loaded.latest.cycle.hour_utc,
         forecast_hour: request.forecast_hour,
-        source: timestep.latest.source,
+        source: loaded.latest.source,
         domain: request.domain.clone(),
         output_path,
         output_identity,
         input_fetches,
-        shared_timing: timestep.shared_timing,
+        shared_timing,
         project_ms,
         compute_ms,
         render_ms,
         total_ms: total_start.elapsed().as_millis(),
     })
+}
+
+/// Build the typed execution plan for a severe-panel run: surface +
+/// pressure analyses at the requested forecast hour, with optional
+/// native-product overrides.
+pub fn build_severe_execution_plan(
+    latest: &LatestRun,
+    forecast_hour: u16,
+    surface_override: Option<&str>,
+    pressure_override: Option<&str>,
+) -> ExecutionPlan {
+    let mut builder = ExecutionPlanBuilder::new(latest, forecast_hour);
+    let mut surface = BundleRequirement::new(CanonicalBundleDescriptor::SurfaceAnalysis, forecast_hour);
+    if let Some(value) = surface_override {
+        surface = surface.with_native_override(value.to_string());
+    }
+    let mut pressure = BundleRequirement::new(
+        CanonicalBundleDescriptor::PressureAnalysis,
+        forecast_hour,
+    );
+    if let Some(value) = pressure_override {
+        pressure = pressure.with_native_override(value.to_string());
+    }
+    builder.require_with_logical_family(
+        &surface,
+        Some(default_logical_family(latest.model, CanonicalBundleDescriptor::SurfaceAnalysis)),
+    );
+    builder.require_with_logical_family(
+        &pressure,
+        Some(default_logical_family(latest.model, CanonicalBundleDescriptor::PressureAnalysis)),
+    );
+    builder.build()
+}
+
+fn default_logical_family(
+    model: ModelId,
+    bundle: CanonicalBundleDescriptor,
+) -> &'static str {
+    match (model, bundle) {
+        (ModelId::Hrrr, CanonicalBundleDescriptor::SurfaceAnalysis) => "sfc",
+        (ModelId::Hrrr, CanonicalBundleDescriptor::PressureAnalysis) => "prs",
+        (ModelId::Hrrr, CanonicalBundleDescriptor::NativeAnalysis) => "nat",
+        (ModelId::Gfs, _) => "pgrb2.0p25",
+        (ModelId::EcmwfOpenData, _) => "oper",
+        (ModelId::RrfsA, _) => "prs-conus",
+    }
+}
+
+/// Reconstruct the legacy `SharedTiming` block from the loader output so
+/// existing consumers keep working unchanged.
+pub(crate) fn build_shared_timing_for_pair(
+    loaded: &LoadedBundleSet,
+    surface_planned: &PlannedBundle,
+    pressure_planned: &PlannedBundle,
+) -> Result<SharedTiming, Box<dyn std::error::Error>> {
+    let surface_fetched = loaded
+        .fetched_for(surface_planned)
+        .ok_or("loader missing surface fetch for severe report")?;
+    let pressure_fetched = loaded
+        .fetched_for(pressure_planned)
+        .ok_or("loader missing pressure fetch for severe report")?;
+    let surface_decode = loaded
+        .surface_decode_for(CanonicalBundleDescriptor::SurfaceAnalysis, loaded.forecast_hour)
+        .ok_or("loader missing surface decode for severe report")?;
+    let pressure_decode = loaded
+        .pressure_decode_for(
+            CanonicalBundleDescriptor::PressureAnalysis,
+            loaded.forecast_hour,
+        )
+        .ok_or("loader missing pressure decode for severe report")?;
+
+    Ok(SharedTiming {
+        fetch_surface_ms: surface_fetched.fetch_ms,
+        fetch_pressure_ms: pressure_fetched.fetch_ms,
+        decode_surface_ms: 0,
+        decode_pressure_ms: 0,
+        fetch_surface_cache_hit: surface_fetched.file.fetched.cache_hit,
+        fetch_pressure_cache_hit: pressure_fetched.file.fetched.cache_hit,
+        decode_surface_cache_hit: surface_decode.cache_hit,
+        decode_pressure_cache_hit: pressure_decode.cache_hit,
+        surface_fetch: surface_fetched
+            .file
+            .runtime_info(&surface_planned.resolved),
+        pressure_fetch: pressure_fetched
+            .file
+            .runtime_info(&pressure_planned.resolved),
+    })
+}
+
+/// Build a deduplicated `PublishedFetchIdentity` list from the planner's
+/// loaded bundles, preserving any logical family aliases the planner
+/// recorded (e.g., HRRR `nat` planned-family that merged onto `sfc`).
+pub(crate) fn build_planned_input_fetches(loaded: &LoadedBundleSet) -> Vec<PublishedFetchIdentity> {
+    let mut by_id: std::collections::BTreeMap<CanonicalBundleId, PublishedFetchIdentity> =
+        std::collections::BTreeMap::new();
+    for bundle in &loaded.plan.bundles {
+        let Some(fetched) = loaded.fetched_for(bundle) else {
+            continue;
+        };
+        let mut planned_aliases = bundle.planned_family_slugs();
+        // Drop the canonical planned product from the aliases set so it
+        // doesn't appear duplicated in the manifest.
+        planned_aliases.retain(|slug| slug != bundle.resolved.native_product.as_str());
+        let identity = fetch_identity_from_cached_result_with_aliases(
+            bundle.resolved.native_product.as_str(),
+            planned_aliases,
+            &fetched.file.request,
+            &fetched.file.fetched,
+        );
+        by_id.insert(bundle.id.clone(), identity);
+    }
+    by_id.into_values().collect()
 }
 
 pub fn severe_panel_fields_from_supported(fields: SupportedSevereFields) -> Vec<Solar07PanelField> {

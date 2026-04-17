@@ -1,23 +1,25 @@
 use crate::derived::{
-    plan_derived_recipes, run_hrrr_derived_batch_with_context, HrrrDerivedBatchReport,
+    plan_derived_recipes, run_hrrr_derived_batch_from_loaded, HrrrDerivedBatchReport,
     HrrrDerivedBatchRequest,
 };
 use crate::direct::{
-    required_direct_projection_sizes, run_hrrr_direct_batch_with_context, HrrrDirectBatchReport,
-    HrrrDirectBatchRequest,
+    run_hrrr_direct_batch_from_loaded, HrrrDirectBatchReport, HrrrDirectBatchRequest,
 };
-use crate::hrrr::{prepare_hrrr_hour_context, DomainSpec};
-use crate::orchestrator::{lane, run_fanout3, PreparedRunContext, PreparedRunMetadata};
+use crate::hrrr::{resolve_hrrr_run, DomainSpec};
+use crate::orchestrator::{lane, run_fanout3};
+use crate::planner::ExecutionPlanBuilder;
 use crate::publication::{
     artifact_identity_from_path, default_run_manifest_path, finalize_and_publish_run_manifest,
     publish_run_manifest_with_attempt, ArtifactPublicationState, PublishedArtifactRecord,
     PublishedFetchIdentity, RunPublicationManifest,
 };
 use crate::publication_provenance::capture_default_build_provenance;
+use crate::runtime::{BundleLoaderConfig, load_execution_plan};
+use crate::severe::build_severe_execution_plan;
 use crate::windowed::{
-    collect_windowed_input_fetches, run_hrrr_windowed_batch_with_context, windowed_product_input_fetch_keys,
-    HrrrWindowedBatchReport, HrrrWindowedBatchRequest, HrrrWindowedProduct,
-    HrrrWindowedRenderedProduct,
+    collect_windowed_input_fetches, run_hrrr_windowed_batch_with_context,
+    windowed_product_input_fetch_keys, HrrrWindowedBatchReport, HrrrWindowedBatchRequest,
+    HrrrWindowedProduct, HrrrWindowedRenderedProduct,
 };
 use rustwx_core::SourceId;
 use rustwx_models::plot_recipe;
@@ -98,31 +100,96 @@ pub fn run_hrrr_non_ecape_hour(
     }
 
     let total_start = Instant::now();
-    let projection_sizes = required_projection_sizes(&normalized);
-    let context = prepare_hrrr_hour_context(
+    let latest = resolve_hrrr_run(
         &request.date_yyyymmdd,
         request.cycle_override_utc,
-        request.forecast_hour,
         request.source,
-        request.domain.bounds,
-        &projection_sizes,
-        &request.cache_root,
-        request.use_cache,
     )?;
-    let prepared = PreparedRunContext::new(
-        PreparedRunMetadata::from_latest(context.timestep().latest(), request.forecast_hour),
-        context,
-    );
-    let metadata = prepared.metadata().clone();
-    let latest = prepared.context().timestep().latest();
-    let timestep = prepared.context().timestep();
-    let context_ref = prepared.context();
-    let pinned_date = metadata.date_yyyymmdd.clone();
-    let pinned_cycle = Some(metadata.cycle_utc);
-    let pinned_source = metadata.source;
+    let pinned_date = latest.cycle.date_yyyymmdd.clone();
+    let pinned_cycle = Some(latest.cycle.hour_utc);
+    let pinned_source = latest.source;
+    let pinned_cycle_utc = latest.cycle.hour_utc;
+
+    // Build a single planner-level execution plan that covers every
+    // bundle every requested lane needs at this hour. Direct and derived
+    // (including severe/ECAPE-style surface+pressure pairs) all flow
+    // through the loader once; the planner dedupes when direct's
+    // `nat`-planned recipes route onto the same `sfc` fetch the derived
+    // surface lane already needs.
+    let direct_groups = if normalized.direct_recipe_slugs.is_empty() {
+        Vec::new()
+    } else {
+        let direct_request = HrrrDirectBatchRequest {
+            date_yyyymmdd: pinned_date.clone(),
+            cycle_override_utc: pinned_cycle,
+            forecast_hour: request.forecast_hour,
+            source: pinned_source,
+            domain: request.domain.clone(),
+            out_dir: request.out_dir.clone(),
+            cache_root: request.cache_root.clone(),
+            use_cache: request.use_cache,
+            recipe_slugs: normalized.direct_recipe_slugs.clone(),
+        };
+        let generic_direct = crate::direct::DirectBatchRequest::from_hrrr_for_planner(&direct_request);
+        crate::direct::plan_direct_fetch_groups(&generic_direct)?
+    };
+    let derived_recipes = if normalized.derived_recipe_slugs.is_empty() {
+        Vec::new()
+    } else {
+        plan_derived_recipes(&normalized.derived_recipe_slugs)?
+    };
+
+    // Combine derived (surface+pressure pair) and direct (per-group
+    // NativeAnalysis) requirements into one execution plan.
+    let mut plan_builder = ExecutionPlanBuilder::new(&latest, request.forecast_hour);
+    if !derived_recipes.is_empty() {
+        // Reuse the severe/ECAPE pair builder; planner dedupes when
+        // direct requirements collapse onto the same sfc/prs fetches.
+        let pair_plan = build_severe_execution_plan(&latest, request.forecast_hour, None, None);
+        for bundle in &pair_plan.bundles {
+            for alias in &bundle.aliases {
+                let mut requirement = rustwx_core::BundleRequirement::new(
+                    alias.bundle,
+                    bundle.id.forecast_hour,
+                );
+                if let Some(ref over) = alias.native_override {
+                    requirement = requirement.with_native_override(over.clone());
+                }
+                plan_builder.require_with_logical_family(
+                    &requirement,
+                    alias.logical_family.as_deref(),
+                );
+            }
+        }
+    }
+    for group in &direct_groups {
+        let requirement = rustwx_core::BundleRequirement::new(
+            rustwx_core::CanonicalBundleDescriptor::NativeAnalysis,
+            request.forecast_hour,
+        )
+        .with_native_override(group.product.clone());
+        for alias in &group.planned_family_aliases {
+            plan_builder.require_with_logical_family(&requirement, Some(alias));
+        }
+    }
+    let plan = plan_builder.build();
+    let needs_load = !plan.bundles.is_empty();
+    let loaded = if needs_load {
+        Some(load_execution_plan(
+            plan,
+            &BundleLoaderConfig {
+                cache_root: request.cache_root.clone(),
+                use_cache: request.use_cache,
+            },
+        )?)
+    } else {
+        None
+    };
+    let loaded_ref = loaded.as_ref();
+
     let run_slug = format!(
         "rustwx_hrrr_{}_{}z_f{:03}_{}_non_ecape_hour",
-        pinned_date, metadata.cycle_utc, metadata.forecast_hour, request.domain.slug
+        pinned_date, pinned_cycle_utc, request.forecast_hour, request.domain.slug
     );
     let manifest_path = default_run_manifest_path(&request.out_dir, &run_slug);
     let mut manifest = build_run_manifest(
@@ -130,14 +197,10 @@ pub fn run_hrrr_non_ecape_hour(
         &request.out_dir,
         &run_slug,
         &pinned_date,
-        metadata.cycle_utc,
-        metadata.forecast_hour,
+        pinned_cycle_utc,
+        request.forecast_hour,
         &request.domain.slug,
     );
-    // Capture build provenance once up-front so the Running snapshot
-    // already carries it; running writes go through the canonical path
-    // only (no attempt-stamped sibling yet) so a crash mid-flight leaves
-    // the most recent state in place to diagnose.
     manifest.build_provenance = Some(capture_default_build_provenance());
     manifest.mark_running();
     crate::publication::publish_run_manifest(&manifest_path, &manifest)?;
@@ -155,25 +218,22 @@ pub fn run_hrrr_non_ecape_hour(
             recipe_slugs: normalized.direct_recipe_slugs.clone(),
         });
 
-    let derived_request = (!normalized.derived_recipe_slugs.is_empty())
-        .then(|| {
-            let recipes = plan_derived_recipes(&normalized.derived_recipe_slugs)?;
-            Ok::<_, Box<dyn std::error::Error>>((
-                HrrrDerivedBatchRequest {
-                    date_yyyymmdd: pinned_date.clone(),
-                    cycle_override_utc: pinned_cycle,
-                    forecast_hour: request.forecast_hour,
-                    source: pinned_source,
-                    domain: request.domain.clone(),
-                    out_dir: request.out_dir.clone(),
-                    cache_root: request.cache_root.clone(),
-                    use_cache: request.use_cache,
-                    recipe_slugs: normalized.derived_recipe_slugs.clone(),
-                },
-                recipes,
-            ))
-        })
-        .transpose()?;
+    let derived_request = (!normalized.derived_recipe_slugs.is_empty()).then(|| {
+        (
+            HrrrDerivedBatchRequest {
+                date_yyyymmdd: pinned_date.clone(),
+                cycle_override_utc: pinned_cycle,
+                forecast_hour: request.forecast_hour,
+                source: pinned_source,
+                domain: request.domain.clone(),
+                out_dir: request.out_dir.clone(),
+                cache_root: request.cache_root.clone(),
+                use_cache: request.use_cache,
+                recipe_slugs: normalized.derived_recipe_slugs.clone(),
+            },
+            derived_recipes.clone(),
+        )
+    });
 
     let windowed_request =
         (!normalized.windowed_products.is_empty()).then(|| HrrrWindowedBatchRequest {
@@ -192,22 +252,29 @@ pub fn run_hrrr_non_ecape_hour(
         should_run_lanes_concurrently(pinned_source),
         direct_request.as_ref().map(|lane_request| {
             lane("direct", move || {
-                run_hrrr_direct_batch_with_context(lane_request, latest, Some(context_ref))
+                run_hrrr_direct_batch_from_loaded(
+                    lane_request,
+                    loaded_ref.expect("planner must load bundles when direct is requested"),
+                )
             })
         }),
         derived_request.as_ref().map(|(lane_request, recipes)| {
             lane("derived", move || {
-                run_hrrr_derived_batch_with_context(
+                run_hrrr_derived_batch_from_loaded(
                     lane_request,
                     recipes,
-                    timestep,
-                    Some(context_ref),
+                    loaded_ref.expect("planner must load bundles when derived is requested"),
                 )
             })
         }),
         windowed_request.as_ref().map(|lane_request| {
+            // Windowed retains its own per-hour fetch path because its
+            // bundle requirements are multi-hour ranges. The planner
+            // can't dedupe today; documented as the last remaining
+            // lane-specific surface.
+            let windowed_latest = latest.clone();
             lane("windowed", move || {
-                run_hrrr_windowed_batch_with_context(lane_request, latest, Some(context_ref))
+                run_hrrr_windowed_batch_with_context(lane_request, &windowed_latest)
             })
         }),
     );
@@ -253,15 +320,6 @@ pub fn run_hrrr_non_ecape_hour(
         windowed,
         total_ms: total_start.elapsed().as_millis(),
     })
-}
-
-fn required_projection_sizes(request: &HrrrNonEcapeHourRequestedProducts) -> Vec<(u32, u32)> {
-    let mut sizes = required_direct_projection_sizes(&request.direct_recipe_slugs);
-    let default_size = (1200_u32, 900_u32);
-    if !sizes.contains(&default_size) {
-        sizes.push(default_size);
-    }
-    sizes
 }
 
 fn validate_requested_work(
