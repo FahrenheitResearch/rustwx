@@ -9,13 +9,15 @@ use crate::direct::{
 use crate::hrrr::{prepare_hrrr_hour_context, DomainSpec};
 use crate::orchestrator::{lane, run_fanout3, PreparedRunContext, PreparedRunMetadata};
 use crate::publication::{
-    artifact_identity_from_path, default_run_manifest_path, publish_run_manifest,
-    ArtifactPublicationState, PublishedArtifactRecord, PublishedFetchIdentity,
-    RunPublicationManifest,
+    artifact_identity_from_path, default_run_manifest_path, finalize_and_publish_run_manifest,
+    publish_run_manifest_with_attempt, ArtifactPublicationState, PublishedArtifactRecord,
+    PublishedFetchIdentity, RunPublicationManifest,
 };
+use crate::publication_provenance::capture_default_build_provenance;
 use crate::windowed::{
-    run_hrrr_windowed_batch_with_context, HrrrWindowedBatchReport, HrrrWindowedBatchRequest,
-    HrrrWindowedProduct, HrrrWindowedRenderedProduct,
+    collect_windowed_input_fetches, run_hrrr_windowed_batch_with_context, windowed_product_input_fetch_keys,
+    HrrrWindowedBatchReport, HrrrWindowedBatchRequest, HrrrWindowedProduct,
+    HrrrWindowedRenderedProduct,
 };
 use rustwx_core::SourceId;
 use rustwx_models::plot_recipe;
@@ -68,7 +70,14 @@ pub struct HrrrNonEcapeHourReport {
     pub out_dir: PathBuf,
     pub cache_root: PathBuf,
     pub use_cache: bool,
+    /// Canonical (latest-attempt) run manifest path — stable across
+    /// reruns and therefore clobberable.
     pub publication_manifest_path: PathBuf,
+    /// Immutable attempt-stamped sibling manifest path. Always present
+    /// on completed runs; paired with [`publication_manifest_path`] it
+    /// forms the `(current truth, immutable attempt)` contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_manifest_path: Option<PathBuf>,
     pub requested: HrrrNonEcapeHourRequestedProducts,
     pub summary: HrrrNonEcapeHourSummary,
     pub direct: Option<HrrrDirectBatchReport>,
@@ -125,8 +134,13 @@ pub fn run_hrrr_non_ecape_hour(
         metadata.forecast_hour,
         &request.domain.slug,
     );
+    // Capture build provenance once up-front so the Running snapshot
+    // already carries it; running writes go through the canonical path
+    // only (no attempt-stamped sibling yet) so a crash mid-flight leaves
+    // the most recent state in place to diagnose.
+    manifest.build_provenance = Some(capture_default_build_provenance());
     manifest.mark_running();
-    publish_run_manifest(&manifest_path, &manifest)?;
+    crate::publication::publish_run_manifest(&manifest_path, &manifest)?;
 
     let direct_request =
         (!normalized.direct_recipe_slugs.is_empty()).then(|| HrrrDirectBatchRequest {
@@ -202,7 +216,14 @@ pub fn run_hrrr_non_ecape_hour(
         Ok(reports) => reports,
         Err(err) => {
             manifest.mark_failed(err.to_string());
-            publish_run_manifest(&manifest_path, &manifest)?;
+            // On hard failure still publish both canonical and
+            // attempt-stamped manifests so the failing run is auditable.
+            let _ = publish_run_manifest_with_attempt(
+                &manifest_path,
+                &request.out_dir,
+                &run_slug,
+                &manifest,
+            );
             return Err(err);
         }
     };
@@ -212,13 +233,8 @@ pub fn run_hrrr_non_ecape_hour(
     apply_direct_manifest_updates(&mut manifest, &direct);
     apply_derived_manifest_updates(&mut manifest, &derived);
     apply_windowed_manifest_updates(&mut manifest, &windowed);
-    let blocked_count = count_blocked_artifacts(&manifest);
-    if blocked_count > 0 {
-        manifest.mark_partial(format!("{blocked_count} artifact(s) blocked"));
-    } else {
-        manifest.mark_complete();
-    }
-    publish_run_manifest(&manifest_path, &manifest)?;
+    let (canonical_manifest_path, attempt_manifest_path) =
+        finalize_and_publish_run_manifest(&mut manifest, &request.out_dir, &run_slug)?;
     Ok(HrrrNonEcapeHourReport {
         date_yyyymmdd: pinned_date,
         cycle_utc: latest.cycle.hour_utc,
@@ -228,7 +244,8 @@ pub fn run_hrrr_non_ecape_hour(
         out_dir: request.out_dir.clone(),
         cache_root: request.cache_root.clone(),
         use_cache: request.use_cache,
-        publication_manifest_path: manifest_path,
+        publication_manifest_path: canonical_manifest_path,
+        attempt_manifest_path: Some(attempt_manifest_path),
         requested: normalized,
         summary,
         direct,
@@ -523,7 +540,7 @@ fn apply_windowed_manifest_updates(
             manifest
                 .update_artifact_identity(&windowed_artifact_key(product.product.slug()), identity);
         }
-        let input_fetch_keys = collect_windowed_input_fetch_keys(product, &report.shared_timing);
+        let input_fetch_keys = windowed_product_input_fetch_keys(product, &report.shared_timing);
         if !input_fetch_keys.is_empty() {
             manifest.update_artifact_input_fetch_keys(
                 &windowed_artifact_key(product.product.slug()),
@@ -580,6 +597,7 @@ fn unique_join<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
     unique.join(",")
 }
 
+#[cfg(test)]
 fn count_blocked_artifacts(manifest: &RunPublicationManifest) -> usize {
     manifest
         .artifacts
@@ -612,52 +630,16 @@ fn collect_input_fetches(
     }
 
     if let Some(report) = windowed {
-        collect_windowed_fetch_identities(report, &mut by_key);
+        for identity in collect_windowed_input_fetches(report) {
+            by_key
+                .entry(identity.fetch_key.clone())
+                .or_insert(identity);
+        }
     }
 
     let mut fetches = by_key.into_values().collect::<Vec<_>>();
     fetches.sort_by(|left, right| left.fetch_key.cmp(&right.fetch_key));
     fetches
-}
-
-fn collect_windowed_fetch_identities(
-    report: &HrrrWindowedBatchReport,
-    by_key: &mut HashMap<String, PublishedFetchIdentity>,
-) {
-    if let Some(identity) = &report.shared_timing.geometry_input_fetch {
-        by_key
-            .entry(identity.fetch_key.clone())
-            .or_insert_with(|| identity.clone());
-    }
-
-    for fetch in report
-        .shared_timing
-        .surface_hour_fetches
-        .iter()
-        .chain(report.shared_timing.uh_hour_fetches.iter())
-    {
-        if let Some(identity) = &fetch.input_fetch {
-            by_key
-                .entry(identity.fetch_key.clone())
-                .or_insert_with(|| identity.clone());
-        }
-    }
-}
-
-fn collect_windowed_input_fetch_keys(
-    product: &HrrrWindowedRenderedProduct,
-    shared_timing: &crate::windowed::HrrrWindowedSharedTiming,
-) -> Vec<String> {
-    let fetches = windowed_runtime_fetches_for_product(product, shared_timing);
-    let mut keys = Vec::new();
-    for fetch in fetches {
-        if let Some(identity) = &fetch.input_fetch {
-            if !keys.contains(&identity.fetch_key) {
-                keys.push(identity.fetch_key.clone());
-            }
-        }
-    }
-    keys
 }
 
 fn windowed_runtime_fetches_for_product<'a>(
@@ -1207,7 +1189,7 @@ mod tests {
             uh_hour_fetches: Vec::new(),
         };
 
-        let keys = collect_windowed_input_fetch_keys(&product, &shared_timing);
+        let keys = windowed_product_input_fetch_keys(&product, &shared_timing);
         assert_eq!(
             keys,
             vec![windowed_fetch_identity("sfc", "sfc", 6).fetch_key]
@@ -1283,6 +1265,7 @@ mod tests {
             cache_root: PathBuf::from("C:\\proof\\bench\\cache"),
             use_cache: false,
             publication_manifest_path: PathBuf::from("C:\\proof\\bench\\run_manifest.json"),
+            attempt_manifest_path: None,
             requested: HrrrNonEcapeHourRequestedProducts {
                 direct_recipe_slugs: vec!["500mb_height_winds".into()],
                 derived_recipe_slugs: vec!["sbcape".into()],

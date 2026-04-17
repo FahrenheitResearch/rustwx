@@ -10,8 +10,7 @@ use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::hrrr::{HrrrBatchProduct, HrrrBatchRequest, run_hrrr_batch};
 use rustwx_products::publication::{
     ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest,
-    artifact_identity_from_path, atomic_write_json, default_run_manifest_path,
-    publish_run_manifest,
+    artifact_identity_from_path, atomic_write_json, finalize_and_publish_run_manifest,
 };
 use rustwx_products::shared_context::DomainSpec;
 
@@ -93,7 +92,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "rustwx_hrrr_{}_{}z_f{:02}_{}_batch",
         report.date_yyyymmdd, report.cycle_utc, report.forecast_hour, report.domain.slug
     );
-    let run_manifest_path = default_run_manifest_path(&args.out_dir, &run_slug);
     atomic_write_json(&report_path, &report)?;
     let mut artifacts = Vec::with_capacity(report.products.len());
     for product in &report.products {
@@ -114,7 +112,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         artifacts.push(record);
     }
     let mut run_manifest =
-        RunPublicationManifest::new("hrrr_batch", run_slug, args.out_dir.clone())
+        RunPublicationManifest::new("hrrr_batch", run_slug.clone(), args.out_dir.clone())
             .with_run_metadata(
                 "hrrr",
                 report.date_yyyymmdd.clone(),
@@ -125,14 +123,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .with_input_fetches(report.input_fetches.clone())
             .with_artifacts(artifacts);
-    run_manifest.mark_complete();
-    publish_run_manifest(&run_manifest_path, &run_manifest)?;
+    let (canonical_manifest, attempt_manifest) =
+        finalize_and_publish_run_manifest(&mut run_manifest, &args.out_dir, &run_slug)?;
 
     for product in &report.products {
         println!("{}", product.output_path.display());
     }
     println!("{}", report_path.display());
-    println!("{}", run_manifest_path.display());
+    println!("{}", canonical_manifest.display());
+    println!("{}", attempt_manifest.display());
     Ok(())
 }
 

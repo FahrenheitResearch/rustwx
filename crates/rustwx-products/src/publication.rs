@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const RUN_PUBLICATION_SCHEMA_VERSION: u32 = 3;
+use crate::publication_provenance::{BuildProvenance, new_attempt_id};
+
+pub const RUN_PUBLICATION_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct ArtifactContentIdentity {
@@ -107,6 +109,24 @@ pub struct RunPublicationManifest {
     pub run_kind: String,
     pub run_label: String,
     pub output_root: PathBuf,
+    /// Unique 16-hex-digit identifier per invocation. Lets reruns coexist
+    /// in the filesystem without silently clobbering each other when paired
+    /// with [`publish_run_manifest_with_attempt`], and lets downstream
+    /// systems cite "this specific attempt" rather than "the latest one".
+    #[serde(default = "default_attempt_id")]
+    pub attempt_id: String,
+    /// Wall-clock start of this attempt. Distinct from [`started_unix_ms`]
+    /// for older schema readers — schema v3 had only a single start time
+    /// and no attempt identity, so `attempt_started_unix_ms` defaults to
+    /// matching `started_unix_ms` during upgrade.
+    #[serde(default)]
+    pub attempt_started_unix_ms: u128,
+    /// Build/dependency provenance captured at publish time: rustwx git
+    /// SHA/dirty, sibling repo SHAs (metrust-py, wrf-rust-plots, cfrust,
+    /// sharprs), Cargo.lock hash, toolchain/profile/target. `None` for
+    /// legacy manifests that predate the provenance block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_provenance: Option<BuildProvenance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -128,17 +148,25 @@ pub struct RunPublicationManifest {
     pub artifacts: Vec<PublishedArtifactRecord>,
 }
 
+fn default_attempt_id() -> String {
+    new_attempt_id()
+}
+
 impl RunPublicationManifest {
     pub fn new(
         run_kind: impl Into<String>,
         run_label: impl Into<String>,
         output_root: impl Into<PathBuf>,
     ) -> Self {
+        let now = unix_time_ms();
         Self {
             schema_version: RUN_PUBLICATION_SCHEMA_VERSION,
             run_kind: run_kind.into(),
             run_label: run_label.into(),
             output_root: output_root.into(),
+            attempt_id: new_attempt_id(),
+            attempt_started_unix_ms: now,
+            build_provenance: None,
             model: None,
             date_yyyymmdd: None,
             cycle_utc: None,
@@ -146,11 +174,71 @@ impl RunPublicationManifest {
             source: None,
             domain_slug: None,
             state: RunPublicationState::Planned,
-            started_unix_ms: unix_time_ms(),
+            started_unix_ms: now,
             finished_unix_ms: None,
             detail: None,
             input_fetches: Vec::new(),
             artifacts: Vec::new(),
+        }
+    }
+
+    /// Attach captured build/dependency provenance. Typically wired by
+    /// the runner via
+    /// [`crate::publication_provenance::capture_build_provenance`] once
+    /// and reused across manifest mutations.
+    pub fn with_build_provenance(mut self, provenance: BuildProvenance) -> Self {
+        self.build_provenance = Some(provenance);
+        self
+    }
+
+    /// Convenience for runners: capture provenance from a workspace
+    /// root and attach it in one call.
+    pub fn with_captured_build_provenance(self, workspace_root: &Path) -> Self {
+        self.with_build_provenance(
+            crate::publication_provenance::capture_build_provenance(workspace_root),
+        )
+    }
+
+    /// Choose a run state based on the current artifact state mix:
+    ///
+    /// - all `Complete` or `CacheHit` → [`RunPublicationState::Complete`]
+    /// - any `Failed`                 → [`RunPublicationState::Failed`]
+    /// - any `Blocked` (but no failures) → [`RunPublicationState::Partial`]
+    /// - otherwise                    → leaves state unchanged
+    ///
+    /// Keeps the single source of truth on artifact state so each runner
+    /// doesn't have to hand-roll its own completeness calculation.
+    pub fn finalize_from_artifact_states(&mut self) {
+        let mut has_failure = false;
+        let mut has_blocked = false;
+        let mut has_planned_or_running = false;
+        for artifact in &self.artifacts {
+            match artifact.state {
+                ArtifactPublicationState::Complete | ArtifactPublicationState::CacheHit => {}
+                ArtifactPublicationState::Failed => has_failure = true,
+                ArtifactPublicationState::Blocked => has_blocked = true,
+                ArtifactPublicationState::Planned | ArtifactPublicationState::Running => {
+                    has_planned_or_running = true;
+                }
+            }
+        }
+        if has_failure {
+            let failed_keys = self
+                .artifacts
+                .iter()
+                .filter(|artifact| artifact.state == ArtifactPublicationState::Failed)
+                .map(|artifact| artifact.artifact_key.clone())
+                .collect::<Vec<_>>();
+            self.mark_failed(format!("failed artifact(s): {}", failed_keys.join(", ")));
+        } else if has_blocked {
+            let blocked = self
+                .artifacts
+                .iter()
+                .filter(|artifact| artifact.state == ArtifactPublicationState::Blocked)
+                .count();
+            self.mark_partial(format!("{blocked} artifact(s) blocked"));
+        } else if !has_planned_or_running {
+            self.mark_complete();
         }
     }
 
@@ -269,11 +357,75 @@ pub fn default_run_manifest_path(output_root: &Path, run_slug: &str) -> PathBuf 
     output_root.join(format!("{run_slug}_run_manifest.json"))
 }
 
+/// Where the immutable attempt-specific sibling manifest lives.
+///
+/// The canonical path returned by [`default_run_manifest_path`] is
+/// overwritten on every rerun and therefore always reflects the latest
+/// attempt. This attempt path — `<slug>_run_manifest.<attempt_id>.json`
+/// — is written exactly once per attempt, so audits can quote a
+/// specific run that will not silently change later. Paired with the
+/// `attempt_id` stored inside the manifest body they form the
+/// immutable-attempt contract.
+pub fn attempt_run_manifest_path(
+    output_root: &Path,
+    run_slug: &str,
+    attempt_id: &str,
+) -> PathBuf {
+    output_root.join(format!(
+        "{run_slug}_run_manifest.{attempt_id}.json"
+    ))
+}
+
 pub fn publish_run_manifest(
     path: &Path,
     manifest: &RunPublicationManifest,
 ) -> Result<(), Box<dyn std::error::Error>> {
     atomic_write_json(path, manifest)
+}
+
+/// Publish the canonical (overwritable) run manifest and, alongside it,
+/// an attempt-stamped sibling. Returns `(canonical_path, attempt_path)`.
+///
+/// The canonical path is the value passed via `canonical_path`; the
+/// attempt path is derived from `run_slug` + `manifest.attempt_id`. A
+/// run that only calls [`publish_run_manifest`] still gets a readable
+/// manifest, but reruns clobber it in place — this helper is the
+/// supported way to keep per-attempt immutable records.
+pub fn publish_run_manifest_with_attempt(
+    canonical_path: &Path,
+    output_root: &Path,
+    run_slug: &str,
+    manifest: &RunPublicationManifest,
+) -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
+    let attempt_path =
+        attempt_run_manifest_path(output_root, run_slug, &manifest.attempt_id);
+    atomic_write_json(canonical_path, manifest)?;
+    atomic_write_json(&attempt_path, manifest)?;
+    Ok((canonical_path.to_path_buf(), attempt_path))
+}
+
+/// One-call finalize-and-publish wiring for runners.
+///
+/// Fills in build provenance if missing (the default path — capturing
+/// the workspace rustwx-products lives in), derives run state from
+/// artifact state via [`RunPublicationManifest::finalize_from_artifact_states`],
+/// and publishes both the canonical and attempt-stamped manifest files
+/// via [`publish_run_manifest_with_attempt`]. Returns the two published
+/// paths. Every operational CLI bin in the workspace funnels through
+/// this helper so the publication contract is the single source of
+/// truth regardless of which binary ran.
+pub fn finalize_and_publish_run_manifest(
+    manifest: &mut RunPublicationManifest,
+    output_root: &Path,
+    run_slug: &str,
+) -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
+    if manifest.build_provenance.is_none() {
+        manifest.build_provenance =
+            Some(crate::publication_provenance::capture_default_build_provenance());
+    }
+    manifest.finalize_from_artifact_states();
+    let canonical = default_run_manifest_path(output_root, run_slug);
+    publish_run_manifest_with_attempt(&canonical, output_root, run_slug, manifest)
 }
 
 pub fn atomic_write_json<T: Serialize>(
@@ -612,6 +764,89 @@ mod tests {
                 .state,
             ArtifactPublicationState::Blocked
         );
+    }
+
+    #[test]
+    fn finalize_from_artifact_states_picks_complete_partial_or_failed() {
+        let mut complete = RunPublicationManifest::new("x", "y", PathBuf::from("z"))
+            .with_artifacts(vec![
+                PublishedArtifactRecord::planned("a", "a.png")
+                    .with_state(ArtifactPublicationState::Complete),
+                PublishedArtifactRecord::planned("b", "b.png")
+                    .with_state(ArtifactPublicationState::CacheHit),
+            ]);
+        complete.finalize_from_artifact_states();
+        assert_eq!(complete.state, RunPublicationState::Complete);
+
+        let mut partial = RunPublicationManifest::new("x", "y", PathBuf::from("z"))
+            .with_artifacts(vec![
+                PublishedArtifactRecord::planned("a", "a.png")
+                    .with_state(ArtifactPublicationState::Complete),
+                PublishedArtifactRecord::planned("b", "b.png")
+                    .with_state(ArtifactPublicationState::Blocked)
+                    .with_detail("missing input"),
+            ]);
+        partial.finalize_from_artifact_states();
+        assert_eq!(partial.state, RunPublicationState::Partial);
+        assert_eq!(partial.detail.as_deref(), Some("1 artifact(s) blocked"));
+
+        let mut failed = RunPublicationManifest::new("x", "y", PathBuf::from("z"))
+            .with_artifacts(vec![
+                PublishedArtifactRecord::planned("a", "a.png")
+                    .with_state(ArtifactPublicationState::Failed)
+                    .with_detail("boom"),
+                PublishedArtifactRecord::planned("b", "b.png")
+                    .with_state(ArtifactPublicationState::Blocked),
+            ]);
+        failed.finalize_from_artifact_states();
+        assert_eq!(failed.state, RunPublicationState::Failed);
+        assert!(failed.detail.as_deref().unwrap().contains("a"));
+    }
+
+    #[test]
+    fn publish_with_attempt_writes_both_canonical_and_attempt_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "rustwx_pub_attempt_{}",
+            process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let slug = "demo_run";
+        let canonical = default_run_manifest_path(&root, slug);
+        let manifest = RunPublicationManifest::new("demo_batch", slug, root.clone());
+
+        let (canonical_path, attempt_path) =
+            publish_run_manifest_with_attempt(&canonical, &root, slug, &manifest).unwrap();
+        assert_eq!(canonical_path, canonical);
+        assert!(canonical.exists());
+        assert!(attempt_path.exists());
+        assert!(
+            attempt_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap()
+                .contains(&manifest.attempt_id)
+        );
+
+        // Rerunning with a fresh attempt id leaves the old attempt file
+        // untouched; the canonical file is overwritten in place.
+        let second = RunPublicationManifest::new("demo_batch", slug, root.clone());
+        assert_ne!(second.attempt_id, manifest.attempt_id);
+        let (_, second_attempt) =
+            publish_run_manifest_with_attempt(&canonical, &root, slug, &second).unwrap();
+        assert!(attempt_path.exists());
+        assert!(second_attempt.exists());
+        assert_ne!(attempt_path, second_attempt);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn attempt_id_is_stable_within_a_single_manifest() {
+        let manifest = RunPublicationManifest::new("demo", "label", PathBuf::from("/tmp"));
+        let serialized = serde_json::to_string(&manifest).unwrap();
+        let round_tripped: RunPublicationManifest = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(manifest.attempt_id, round_tripped.attempt_id);
+        assert_eq!(round_tripped.schema_version, RUN_PUBLICATION_SCHEMA_VERSION);
     }
 
     #[test]

@@ -301,6 +301,70 @@ fn hrrr_fetch_runtime_info_from_bundle(fetch: &FetchRuntimeInfo) -> HrrrFetchRun
     }
 }
 
+/// All `PublishedFetchIdentity` values that contributed to a windowed
+/// batch, deduplicated by fetch key. Extracted so standalone runners
+/// (`hrrr_windowed_batch`) and the unified runner (`hrrr_non_ecape_hour`)
+/// publish the same input-fetch set.
+pub fn collect_windowed_input_fetches(
+    report: &HrrrWindowedBatchReport,
+) -> Vec<PublishedFetchIdentity> {
+    let mut by_key = std::collections::BTreeMap::<String, PublishedFetchIdentity>::new();
+    if let Some(identity) = &report.shared_timing.geometry_input_fetch {
+        by_key
+            .entry(identity.fetch_key.clone())
+            .or_insert_with(|| identity.clone());
+    }
+    for fetch in report
+        .shared_timing
+        .surface_hour_fetches
+        .iter()
+        .chain(report.shared_timing.uh_hour_fetches.iter())
+    {
+        if let Some(identity) = &fetch.input_fetch {
+            by_key
+                .entry(identity.fetch_key.clone())
+                .or_insert_with(|| identity.clone());
+        }
+    }
+    by_key.into_values().collect()
+}
+
+/// Fetch keys that cited this product as an input, in contributing-hour
+/// order. Mirrors the runtime identity the rendered product actually
+/// depended on (QPF products consume `sfc` hourly fetches; UH products
+/// consume `nat` hourly fetches).
+pub fn windowed_product_input_fetch_keys(
+    product: &HrrrWindowedRenderedProduct,
+    shared_timing: &HrrrWindowedSharedTiming,
+) -> Vec<String> {
+    let is_qpf = matches!(
+        product.product,
+        HrrrWindowedProduct::Qpf1h
+            | HrrrWindowedProduct::Qpf6h
+            | HrrrWindowedProduct::Qpf12h
+            | HrrrWindowedProduct::Qpf24h
+            | HrrrWindowedProduct::QpfTotal
+    );
+    let contributing_hours = &product.metadata.contributing_forecast_hours;
+    let fetches = if is_qpf {
+        &shared_timing.surface_hour_fetches
+    } else {
+        &shared_timing.uh_hour_fetches
+    };
+    let mut keys = Vec::new();
+    for fetch in fetches
+        .iter()
+        .filter(|fetch| contributing_hours.contains(&fetch.hour))
+    {
+        if let Some(identity) = &fetch.input_fetch {
+            if !keys.contains(&identity.fetch_key) {
+                keys.push(identity.fetch_key.clone());
+            }
+        }
+    }
+    keys
+}
+
 pub fn run_hrrr_windowed_batch(
     request: &HrrrWindowedBatchRequest,
 ) -> Result<HrrrWindowedBatchReport, Box<dyn std::error::Error>> {

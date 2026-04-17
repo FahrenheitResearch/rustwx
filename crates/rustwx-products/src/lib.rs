@@ -9,6 +9,7 @@ pub mod hrrr;
 pub mod non_ecape;
 pub mod orchestrator;
 pub mod publication;
+pub mod publication_provenance;
 pub mod severe;
 pub mod shared_context;
 pub mod spec;

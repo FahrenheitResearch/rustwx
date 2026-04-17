@@ -11,7 +11,7 @@ use rustwx_models::model_summary;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::publication::{
     ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
-    default_run_manifest_path, publish_run_manifest,
+    finalize_and_publish_run_manifest,
 };
 use rustwx_products::shared_context::DomainSpec;
 use rustwx_products::severe::{SevereBatchRequest, run_severe_batch};
@@ -86,7 +86,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let manifest_path = args.out_dir.join(format!("{stem}_manifest.json"));
     let timing_path = args.out_dir.join(format!("{stem}_timing.json"));
-    let run_manifest_path = default_run_manifest_path(&args.out_dir, &stem);
     atomic_write_json(&manifest_path, &report)?;
     atomic_write_json(
         &timing_path,
@@ -131,13 +130,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .collect(),
                 ),
             ]);
-    run_manifest.mark_complete();
-    publish_run_manifest(&run_manifest_path, &run_manifest)?;
+    let (canonical_manifest, attempt_manifest) =
+        finalize_and_publish_run_manifest(&mut run_manifest, &args.out_dir, &stem)?;
 
     println!("{}", report.output_path.display());
     println!("{}", manifest_path.display());
     println!("{}", timing_path.display());
-    println!("{}", run_manifest_path.display());
+    println!("{}", canonical_manifest.display());
+    println!("{}", attempt_manifest.display());
     Ok(())
 }
 
