@@ -94,7 +94,25 @@ pub fn run_ecape_batch(
     let (surface_planned, surface_decode, pressure_planned, pressure_decode) = loaded
         .surface_pressure_pair()
         .ok_or("ECAPE planner missed surface or pressure bundle")?;
-    let grid = loaded.surface_grid()?;
+    let full_surface = &surface_decode.value;
+    let full_pressure = &pressure_decode.value;
+
+    // Same rationale as severe_batch: crop before compute so ECAPE's
+    // per-cell parcel ascent runs on ~300×300 midwest cells instead of
+    // ~1800×1000 CONUS.
+    let cropped = crate::gridded::crop_heavy_domain(
+        full_surface,
+        full_pressure,
+        request.domain.bounds,
+    )?;
+    let owned_full_grid;
+    let (surface, pressure, grid) = match cropped.as_ref() {
+        Some(cropped) => (&cropped.surface, &cropped.pressure, cropped.grid.clone()),
+        None => {
+            owned_full_grid = full_surface.core_grid()?;
+            (full_surface, full_pressure, owned_full_grid)
+        }
+    };
 
     let project_start = Instant::now();
     let projected = build_projected_map(
@@ -107,7 +125,7 @@ pub fn run_ecape_batch(
 
     let compute_start = Instant::now();
     let (fields, failure_count) =
-        compute_ecape8_panel_fields(&surface_decode.value, &pressure_decode.value)?;
+        compute_ecape8_panel_fields(surface, pressure)?;
     let compute_ms = compute_start.elapsed().as_millis();
 
     let model_slug = request.model.as_str().replace('-', "_");

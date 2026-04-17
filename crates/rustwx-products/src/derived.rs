@@ -722,7 +722,25 @@ fn run_derived_batch_from_loaded_bundles(
     let (surface_planned, surface_decode, pressure_planned, pressure_decode) = loaded
         .surface_pressure_pair()
         .ok_or("derived planner missed surface or pressure bundle")?;
-    let grid = loaded.surface_grid()?;
+    let full_surface = &surface_decode.value;
+    let full_pressure = &pressure_decode.value;
+
+    // Crop to domain before per-cell CAPE/CIN/shear/SRH compute. Same
+    // rationale as severe/ECAPE: avoids doing parcel ascents on every
+    // CONUS cell when we only want a regional panel.
+    let cropped = crate::gridded::crop_heavy_domain(
+        full_surface,
+        full_pressure,
+        request.domain.bounds,
+    )?;
+    let owned_full_grid;
+    let (surface, pressure, grid) = match cropped.as_ref() {
+        Some(cropped) => (&cropped.surface, &cropped.pressure, cropped.grid.clone()),
+        None => {
+            owned_full_grid = full_surface.core_grid()?;
+            (full_surface, full_pressure, owned_full_grid)
+        }
+    };
 
     let project_start = Instant::now();
     let projected = build_projected_map_from_latlon(
@@ -735,7 +753,7 @@ fn run_derived_batch_from_loaded_bundles(
 
     let compute_start = Instant::now();
     let computed =
-        compute_derived_fields_generic(&surface_decode.value, &pressure_decode.value, recipes)?;
+        compute_derived_fields_generic(surface, pressure, recipes)?;
     let compute_ms = compute_start.elapsed().as_millis();
     let input_fetches = build_planned_input_fetches(loaded);
     let input_fetch_keys = unique_input_fetch_keys(&input_fetches);

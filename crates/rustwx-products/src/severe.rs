@@ -91,7 +91,27 @@ pub fn run_severe_batch(
     let (surface_planned, surface_decode, pressure_planned, pressure_decode) = loaded
         .surface_pressure_pair()
         .ok_or("severe planner missed surface or pressure bundle")?;
-    let grid = loaded.surface_grid()?;
+    let full_surface = &surface_decode.value;
+    let full_pressure = &pressure_decode.value;
+
+    // Crop surface+pressure to the requested domain BEFORE parcel-ascent
+    // compute. Without this severe_batch runs CAPE on every CONUS cell
+    // (~1.8M for HRRR) even when the user only wants a 300×300 midwest
+    // panel — 20× wasted work. run_hrrr_batch_from_loaded already does
+    // this; the per-model severe_batch needs the same shortcut.
+    let cropped = crate::gridded::crop_heavy_domain(
+        full_surface,
+        full_pressure,
+        request.domain.bounds,
+    )?;
+    let owned_full_grid;
+    let (surface, pressure, grid) = match cropped.as_ref() {
+        Some(cropped) => (&cropped.surface, &cropped.pressure, cropped.grid.clone()),
+        None => {
+            owned_full_grid = full_surface.core_grid()?;
+            (full_surface, full_pressure, owned_full_grid)
+        }
+    };
 
     let layout = Solar07PanelLayout {
         top_padding: 86,
@@ -107,7 +127,7 @@ pub fn run_severe_batch(
     let project_ms = project_start.elapsed().as_millis();
 
     let compute_start = Instant::now();
-    let fields = compute_severe_panel_fields(&surface_decode.value, &pressure_decode.value)?;
+    let fields = compute_severe_panel_fields(surface, pressure)?;
     let compute_ms = compute_start.elapsed().as_millis();
 
     let model_slug = request.model.as_str().replace('-', "_");
