@@ -351,16 +351,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (direct_recipes.clone(), derived_recipes.clone())
             };
 
+            // Pin the cycle ONCE per model so severe/ECAPE/direct/derived
+            // all use the same run. Without this each per-lane batch
+            // re-runs latest_available_run(), and if a new cycle publishes
+            // mid-run (e.g. 18z severe, 19z ECAPE) every subsequent lane
+            // invalidates the fetch cache and does a full wrfsfc+wrfprs
+            // re-download + re-decode — the HRRR midwest bench was taking
+            // 30-40 min per model because of this.
+            let pinned_cycle: Option<u8> = args.cycle.or_else(|| {
+                match rustwx_models::latest_available_run(model, Some(source), &date) {
+                    Ok(run) => {
+                        println!("[cycle] {model}: pinned to {:02}z ({})", run.cycle.hour_utc, run.cycle.date_yyyymmdd);
+                        Some(run.cycle.hour_utc)
+                    }
+                    Err(err) => {
+                        eprintln!("[cycle] {model}: latest-run resolve failed: {err}");
+                        None
+                    }
+                }
+            });
+
             for &fh in &hours {
                 if !args.skip_severe {
                     let outcome = run_severe_lane(
-                        model, &date, args.cycle, fh, source, &domain, &args, counts,
+                        model, &date, pinned_cycle, fh, source, &domain, &args, counts,
                     );
                     annotate_region(&mut outcomes, outcome, region);
                 }
                 if !args.skip_ecape {
                     let outcome = run_ecape_lane(
-                        model, &date, args.cycle, fh, source, &domain, &args, counts,
+                        model, &date, pinned_cycle, fh, source, &domain, &args, counts,
                     );
                     annotate_region(&mut outcomes, outcome, region);
                 }
@@ -368,7 +388,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let outcome = run_direct_lane(
                         model,
                         &date,
-                        args.cycle,
+                        pinned_cycle,
                         fh,
                         source,
                         &domain,
@@ -382,7 +402,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let outcome = run_derived_lane(
                         model,
                         &date,
-                        args.cycle,
+                        pinned_cycle,
                         fh,
                         source,
                         &domain,
