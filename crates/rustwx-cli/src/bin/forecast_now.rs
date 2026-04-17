@@ -52,9 +52,10 @@ struct Args {
     #[arg(long, default_value = "0-6")]
     hours: String,
 
-    /// Region crop.
-    #[arg(long, value_enum, default_value_t = RegionPreset::Midwest)]
-    region: RegionPreset,
+    /// Region crop(s). Comma-separated for multi-region runs
+    /// (--regions=midwest,southeast,great_lakes).
+    #[arg(long, value_delimiter = ',', default_value = "midwest")]
+    regions: Vec<RegionPreset>,
 
     /// Date of the run in YYYYMMDD. Defaults to today (UTC).
     #[arg(long)]
@@ -103,6 +104,12 @@ struct Args {
     /// curated severe-weather set.
     #[arg(long, value_delimiter = ',')]
     derived_recipes: Option<Vec<String>>,
+
+    /// Use every supported direct + derived slug from the product
+    /// catalog, ignoring --direct-recipes / --derived-recipes. Intended
+    /// for benchmark runs ("every product of every model").
+    #[arg(long, default_value_t = false)]
+    all_supported: bool,
 }
 
 fn default_direct_recipes() -> Vec<String> {
@@ -181,6 +188,8 @@ impl Lane {
 
 #[derive(Debug, Clone, Serialize)]
 struct LaneOutcome {
+    #[serde(default)]
+    region: String,
     model: ModelId,
     forecast_hour: u16,
     lane: String,
@@ -194,12 +203,46 @@ struct LaneOutcome {
     blockers: Vec<String>,
 }
 
+fn annotate_region(outcomes: &mut Vec<LaneOutcome>, mut outcome: LaneOutcome, region: RegionPreset) {
+    outcome.region = region.slug().to_string();
+    outcomes.push(outcome);
+}
+
+/// Pull every 'supported' direct + derived slug straight from the
+/// product catalog. Used by --all-supported for benchmark runs
+/// ("every product of every model"). Partial-support slugs (e.g.
+/// composite_reflectivity, which HRRR has but GFS doesn't) are
+/// included — the soft-fail paths handle them per-recipe per-model.
+fn all_supported_recipe_lists() -> (Vec<String>, Vec<String>) {
+    use rustwx_products::catalog::{ProductCatalogStatus, build_supported_products_catalog};
+    let catalog = build_supported_products_catalog();
+    let include = |status: ProductCatalogStatus| {
+        matches!(
+            status,
+            ProductCatalogStatus::Supported | ProductCatalogStatus::Partial
+        )
+    };
+    let direct: Vec<String> = catalog
+        .direct
+        .iter()
+        .filter(|e| include(e.status))
+        .map(|e| e.slug.clone())
+        .collect();
+    let derived: Vec<String> = catalog
+        .derived
+        .iter()
+        .filter(|e| include(e.status))
+        .map(|e| e.slug.clone())
+        .collect();
+    (direct, derived)
+}
+
 #[derive(Debug, Serialize)]
 struct RunSummary {
     started_utc: String,
     finished_utc: String,
     wall_clock_ms: u128,
-    region: String,
+    regions: Vec<String>,
     date_yyyymmdd: String,
     cycle_override_utc: Option<u8>,
     models: Vec<ModelId>,
@@ -225,80 +268,89 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let date = args.date.clone().unwrap_or_else(today_utc_yyyymmdd);
     let hours = parse_hours(&args.hours)?;
-    let domain = DomainSpec::new(args.region.slug(), args.region.bounds());
 
     fs::create_dir_all(&args.out_dir)?;
     if !args.no_cache {
         ensure_dir(&args.cache_dir)?;
     }
 
-    let direct_recipes = args
-        .direct_recipes
-        .clone()
-        .unwrap_or_else(default_direct_recipes);
-    let derived_recipes = args
-        .derived_recipes
-        .clone()
-        .unwrap_or_else(default_derived_recipes);
+    let (direct_recipes, derived_recipes) = if args.all_supported {
+        all_supported_recipe_lists()
+    } else {
+        (
+            args.direct_recipes
+                .clone()
+                .unwrap_or_else(default_direct_recipes),
+            args.derived_recipes
+                .clone()
+                .unwrap_or_else(default_derived_recipes),
+        )
+    };
 
     println!(
-        "[forecast-now] date={date} region={} hours={:?} models={:?}",
-        args.region.slug(),
+        "[forecast-now] date={date} regions={:?} hours={:?} models={:?} direct={} derived={}",
+        args.regions.iter().map(|r| r.slug()).collect::<Vec<_>>(),
         hours,
-        args.models
+        args.models,
+        direct_recipes.len(),
+        derived_recipes.len(),
     );
 
     let mut outcomes = Vec::<LaneOutcome>::new();
     let mut counts_by_model: BTreeMap<String, ModelCounts> = BTreeMap::new();
 
-    for &model in &args.models {
-        let counts = counts_by_model
-            .entry(model.to_string())
-            .or_default();
-        let source = args
-            .source
-            .unwrap_or(model_summary(model).sources[0].id);
+    for &region in &args.regions {
+        let domain = DomainSpec::new(region.slug(), region.bounds());
+        println!("\n=== region: {} ===", region.slug());
+        for &model in &args.models {
+            let counts = counts_by_model
+                .entry(format!("{}:{}", region.slug(), model))
+                .or_default();
+            let source = args
+                .source
+                .unwrap_or(model_summary(model).sources[0].id);
 
-        for &fh in &hours {
-            if !args.skip_severe {
-                let outcome = run_severe_lane(
-                    model, &date, args.cycle, fh, source, &domain, &args, counts,
-                );
-                outcomes.push(outcome);
-            }
-            if !args.skip_ecape {
-                let outcome = run_ecape_lane(
-                    model, &date, args.cycle, fh, source, &domain, &args, counts,
-                );
-                outcomes.push(outcome);
-            }
-            if !args.skip_direct {
-                let outcome = run_direct_lane(
-                    model,
-                    &date,
-                    args.cycle,
-                    fh,
-                    source,
-                    &domain,
-                    &args,
-                    &direct_recipes,
-                    counts,
-                );
-                outcomes.push(outcome);
-            }
-            if !args.skip_derived {
-                let outcome = run_derived_lane(
-                    model,
-                    &date,
-                    args.cycle,
-                    fh,
-                    source,
-                    &domain,
-                    &args,
-                    &derived_recipes,
-                    counts,
-                );
-                outcomes.push(outcome);
+            for &fh in &hours {
+                if !args.skip_severe {
+                    let outcome = run_severe_lane(
+                        model, &date, args.cycle, fh, source, &domain, &args, counts,
+                    );
+                    annotate_region(&mut outcomes, outcome, region);
+                }
+                if !args.skip_ecape {
+                    let outcome = run_ecape_lane(
+                        model, &date, args.cycle, fh, source, &domain, &args, counts,
+                    );
+                    annotate_region(&mut outcomes, outcome, region);
+                }
+                if !args.skip_direct {
+                    let outcome = run_direct_lane(
+                        model,
+                        &date,
+                        args.cycle,
+                        fh,
+                        source,
+                        &domain,
+                        &args,
+                        &direct_recipes,
+                        counts,
+                    );
+                    annotate_region(&mut outcomes, outcome, region);
+                }
+                if !args.skip_derived {
+                    let outcome = run_derived_lane(
+                        model,
+                        &date,
+                        args.cycle,
+                        fh,
+                        source,
+                        &domain,
+                        &args,
+                        &derived_recipes,
+                        counts,
+                    );
+                    annotate_region(&mut outcomes, outcome, region);
+                }
             }
         }
     }
@@ -310,7 +362,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         started_utc,
         finished_utc,
         wall_clock_ms,
-        region: args.region.slug().to_string(),
+        regions: args.regions.iter().map(|r| r.slug().to_string()).collect(),
         date_yyyymmdd: date.clone(),
         cycle_override_utc: args.cycle,
         models: args.models.clone(),
@@ -440,6 +492,7 @@ fn run_severe_lane(
             counts.succeeded += 1;
             counts.outputs += 1;
             LaneOutcome {
+                region: String::new(),
                 model,
                 forecast_hour: fh,
                 lane: slug.to_string(),
@@ -454,6 +507,7 @@ fn run_severe_lane(
             eprintln!("[fail] {model} f{fh:03} {slug}: {err}");
             counts.failed += 1;
             LaneOutcome {
+                region: String::new(),
                 model,
                 forecast_hour: fh,
                 lane: slug.to_string(),
@@ -499,6 +553,7 @@ fn run_ecape_lane(
             counts.succeeded += 1;
             counts.outputs += 1;
             LaneOutcome {
+                region: String::new(),
                 model,
                 forecast_hour: fh,
                 lane: slug.to_string(),
@@ -513,6 +568,7 @@ fn run_ecape_lane(
             eprintln!("[fail] {model} f{fh:03} {slug}: {err}");
             counts.failed += 1;
             LaneOutcome {
+                region: String::new(),
                 model,
                 forecast_hour: fh,
                 lane: slug.to_string(),
@@ -579,6 +635,7 @@ fn run_direct_lane(
                 blockers.len()
             );
             LaneOutcome {
+                region: String::new(),
                 model,
                 forecast_hour: fh,
                 lane: slug.to_string(),
@@ -593,6 +650,7 @@ fn run_direct_lane(
             eprintln!("[fail] {model} f{fh:03} {slug}: {err}");
             counts.failed += 1;
             LaneOutcome {
+                region: String::new(),
                 model,
                 forecast_hour: fh,
                 lane: slug.to_string(),
@@ -647,6 +705,7 @@ fn run_derived_lane(
                 outputs.len()
             );
             LaneOutcome {
+                region: String::new(),
                 model,
                 forecast_hour: fh,
                 lane: slug.to_string(),
@@ -661,6 +720,7 @@ fn run_derived_lane(
             eprintln!("[fail] {model} f{fh:03} {slug}: {err}");
             counts.failed += 1;
             LaneOutcome {
+                region: String::new(),
                 model,
                 forecast_hour: fh,
                 lane: slug.to_string(),
