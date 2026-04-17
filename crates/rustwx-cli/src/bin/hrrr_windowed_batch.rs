@@ -9,7 +9,8 @@ use region::RegionPreset;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::publication::{
     ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest,
-    artifact_identity_from_path, atomic_write_json, finalize_and_publish_run_manifest,
+    artifact_identity_from_path, atomic_write_json, canonical_run_slug,
+    finalize_and_publish_run_manifest, publish_failure_manifest,
 };
 use rustwx_products::shared_context::DomainSpec;
 use rustwx_products::windowed::{
@@ -78,6 +79,29 @@ struct Args {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    let failure_slug = canonical_run_slug(
+        "hrrr",
+        &args.date,
+        args.cycle,
+        args.forecast_hour,
+        args.region.slug(),
+        "windowed",
+    );
+    let failure_out_dir = args.out_dir.clone();
+    if let Err(err) = run(&args) {
+        let _ = publish_failure_manifest(
+            "hrrr_windowed_batch",
+            &failure_slug,
+            &failure_out_dir,
+            &failure_slug,
+            err.to_string(),
+        );
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(&args.out_dir)?;
     let cache_root = args
         .cache_dir
@@ -96,7 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         out_dir: args.out_dir.clone(),
         cache_root,
         use_cache: !args.no_cache,
-        products: args.products.into_iter().map(Into::into).collect(),
+        products: args.products.iter().copied().map(Into::into).collect(),
     };
     let report = run_hrrr_windowed_batch(&request)?;
     let report_path = args.out_dir.join(format!(

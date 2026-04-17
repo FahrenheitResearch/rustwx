@@ -10,7 +10,7 @@ use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::derived::{HrrrDerivedBatchRequest, run_hrrr_derived_batch};
 use rustwx_products::publication::{
     ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
-    finalize_and_publish_run_manifest,
+    canonical_run_slug, finalize_and_publish_run_manifest, publish_failure_manifest,
 };
 use rustwx_products::shared_context::DomainSpec;
 
@@ -42,6 +42,29 @@ struct Args {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    let failure_slug = canonical_run_slug(
+        "hrrr",
+        &args.date,
+        args.cycle,
+        args.forecast_hour,
+        args.region.slug(),
+        "derived",
+    );
+    let failure_out_dir = args.out_dir.clone();
+    if let Err(err) = run(&args) {
+        let _ = publish_failure_manifest(
+            "hrrr_derived_batch",
+            &failure_slug,
+            &failure_out_dir,
+            &failure_slug,
+            err.to_string(),
+        );
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(&args.out_dir)?;
     let cache_root = args
         .cache_dir
@@ -60,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         out_dir: args.out_dir.clone(),
         cache_root: cache_root.clone(),
         use_cache: !args.no_cache,
-        recipe_slugs: args.recipes,
+        recipe_slugs: args.recipes.clone(),
     };
     let report = run_hrrr_derived_batch(&request)?;
 

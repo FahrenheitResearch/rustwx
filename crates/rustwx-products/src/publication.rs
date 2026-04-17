@@ -404,6 +404,70 @@ pub fn publish_run_manifest_with_attempt(
     Ok((canonical_path.to_path_buf(), attempt_path))
 }
 
+/// Publish a skeleton failure manifest so any operational runner that
+/// errors before completing its work still leaves an auditable record
+/// on disk. Captures build provenance, sets `state = failed` with the
+/// supplied `detail`, and writes both the canonical and the
+/// attempt-stamped sibling paths.
+///
+/// Returns the `(canonical_path, attempt_path)` pair so the caller can
+/// surface them in stderr or a post-mortem log. Intended to be invoked
+/// from a runner's top-level error branch:
+///
+/// ```no_run
+/// # use rustwx_products::publication::{publish_failure_manifest, RunPublicationManifest};
+/// # use std::path::Path;
+/// # fn work() -> Result<(), Box<dyn std::error::Error>> { Ok(()) }
+/// # let out_dir = Path::new("/tmp/rustwx");
+/// # let slug = "rustwx_demo";
+/// if let Err(err) = work() {
+///     let _ = publish_failure_manifest(
+///         "demo_batch",
+///         slug,
+///         out_dir,
+///         slug,
+///         err.to_string(),
+///     );
+///     return Err(err);
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn publish_failure_manifest(
+    run_kind: &str,
+    run_label: &str,
+    output_root: &Path,
+    run_slug: &str,
+    detail: impl Into<String>,
+) -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
+    fs::create_dir_all(output_root)?;
+    let mut manifest = RunPublicationManifest::new(run_kind, run_label, output_root);
+    manifest.build_provenance =
+        Some(crate::publication_provenance::capture_default_build_provenance());
+    manifest.mark_failed(detail);
+    let canonical = default_run_manifest_path(output_root, run_slug);
+    publish_run_manifest_with_attempt(&canonical, output_root, run_slug, &manifest)
+}
+
+/// Build the canonical run-slug the operational CLI bins use for their
+/// manifest file names. Centralized so failure-path publication can
+/// produce a slug that matches the success path byte-for-byte given the
+/// same inputs.
+pub fn canonical_run_slug(
+    model_slug: &str,
+    date_yyyymmdd: &str,
+    cycle_hint: Option<u8>,
+    forecast_hour: u16,
+    region_slug: &str,
+    kind_suffix: &str,
+) -> String {
+    let cycle_label = cycle_hint
+        .map(|hour| format!("{hour:02}"))
+        .unwrap_or_else(|| "XX".to_string());
+    format!(
+        "rustwx_{model_slug}_{date_yyyymmdd}_{cycle_label}z_f{forecast_hour:03}_{region_slug}_{kind_suffix}"
+    )
+}
+
 /// One-call finalize-and-publish wiring for runners.
 ///
 /// Fills in build provenance if missing (the default path — capturing
@@ -847,6 +911,52 @@ mod tests {
         let round_tripped: RunPublicationManifest = serde_json::from_str(&serialized).unwrap();
         assert_eq!(manifest.attempt_id, round_tripped.attempt_id);
         assert_eq!(round_tripped.schema_version, RUN_PUBLICATION_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn publish_failure_manifest_writes_canonical_and_attempt_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "rustwx_pub_failure_{}",
+            process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let slug = "rustwx_demo_failure";
+        let (canonical, attempt) = publish_failure_manifest(
+            "demo_batch",
+            slug,
+            &root,
+            slug,
+            "simulated upstream outage",
+        )
+        .unwrap();
+        assert!(canonical.exists());
+        assert!(attempt.exists());
+        let parsed: RunPublicationManifest =
+            serde_json::from_slice(&fs::read(&canonical).unwrap()).unwrap();
+        assert_eq!(parsed.state, RunPublicationState::Failed);
+        assert_eq!(parsed.detail.as_deref(), Some("simulated upstream outage"));
+        assert!(parsed.build_provenance.is_some());
+        assert!(
+            attempt
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap()
+                .contains(&parsed.attempt_id)
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn canonical_run_slug_matches_success_path_layout() {
+        assert_eq!(
+            canonical_run_slug("hrrr", "20260414", Some(23), 6, "midwest", "direct"),
+            "rustwx_hrrr_20260414_23z_f006_midwest_direct"
+        );
+        assert_eq!(
+            canonical_run_slug("gfs", "20260414", None, 12, "conus", "derived"),
+            "rustwx_gfs_20260414_XXz_f012_conus_derived"
+        );
     }
 
     #[test]
