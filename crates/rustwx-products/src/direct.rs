@@ -32,7 +32,7 @@ use wrf_render::text;
 
 use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
-    fetch_identity_from_cached_result,
+    fetch_identity_from_cached_result_with_aliases,
 };
 use crate::shared_context::{DomainSpec, ProjectedMap, ProjectedMapProvider};
 use crate::spec::direct_product_specs;
@@ -79,8 +79,22 @@ pub struct HrrrDirectBatchRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectFetchRuntimeInfo {
     pub fetch_key: String,
+    /// Canonical (physical) family name that was actually fetched.
+    ///
+    /// Kept equal to `fetched_product` for backward-compatibility with
+    /// existing manifest consumers; the logical families that contributed
+    /// to this canonical fetch are surfaced separately in
+    /// `planned_family_aliases` so audit tooling can tell which recipes
+    /// rerouted (e.g. HRRR "nat" → "sfc").
     pub planned_product: String,
     pub fetched_product: String,
+    /// Sorted de-duplicated set of logical planned families (before
+    /// canonicalization) that were merged into this fetch. For non-HRRR
+    /// models this equals `[planned_product]`; for HRRR it can include
+    /// "nat" alongside "sfc" when composite/native-family recipes share
+    /// the wrfsfc file with surface recipes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub planned_family_aliases: Vec<String>,
     pub requested_source: SourceId,
     pub resolved_source: SourceId,
     pub resolved_url: String,
@@ -156,6 +170,11 @@ struct FetchGroup {
     // selectors from the parsed full file.
     variable_patterns: Vec<String>,
     selectors: Vec<FieldSelector>,
+    /// Sorted set of logical planned-family names (as requested by the
+    /// recipes' fetch plans) that collapsed into this canonical fetch. For
+    /// HRRR this is how we preserve the "nat" logical identity even when
+    /// it reroutes to the physical "sfc" file.
+    planned_family_aliases: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -350,13 +369,16 @@ fn plan_direct_recipes(
 fn group_direct_fetches(request: &DirectBatchRequest, recipes: &[PlannedDirectRecipe]) -> Vec<FetchGroup> {
     let mut grouped = HashMap::<String, FetchGroup>::new();
     for item in recipes {
-        let key = canonical_fetch_product(request, item.plan.product.as_ref());
+        let planned_family = item.plan.product.to_string();
+        let key = canonical_fetch_product(request, planned_family.as_str());
         let entry = grouped.entry(key.clone()).or_insert_with(|| FetchGroup {
-            product: key,
+            product: key.clone(),
             fetch_mode: PlotRecipeFetchMode::WholeFileStructuredExtract,
             variable_patterns: Vec::new(),
             selectors: Vec::new(),
+            planned_family_aliases: std::collections::BTreeSet::new(),
         });
+        entry.planned_family_aliases.insert(planned_family);
         for pattern in item.plan.variable_patterns() {
             if !entry.variable_patterns.iter().any(|value| value == pattern) {
                 entry.variable_patterns.push(pattern.to_string());
@@ -485,14 +507,24 @@ fn load_direct_fetch_group(
                 ),
                 planned_product: group.product.clone(),
                 fetched_product: fetch_request.request.product.clone(),
+                planned_family_aliases: group
+                    .planned_family_aliases
+                    .iter()
+                    .cloned()
+                    .collect(),
                 requested_source: fetch_request
                     .source_override
                     .unwrap_or(fetched.result.source),
                 resolved_source: fetched.result.source,
                 resolved_url: fetched.result.url.clone(),
             },
-            input_fetch: fetch_identity_from_cached_result(
+            input_fetch: fetch_identity_from_cached_result_with_aliases(
                 group.product.as_str(),
+                group
+                    .planned_family_aliases
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>(),
                 &fetch_request,
                 &fetched,
             ),
@@ -1323,6 +1355,29 @@ mod tests {
     }
 
     #[test]
+    fn grouping_preserves_logical_family_aliases_when_nat_reroutes_to_sfc() {
+        let planned = plan_direct_recipes(
+            ModelId::Hrrr,
+            &[
+                "composite_reflectivity".to_string(),
+                "2m_temperature_10m_winds".to_string(),
+            ],
+        )
+        .unwrap();
+        let request = sample_direct_request(ModelId::Hrrr);
+        let groups = group_direct_fetches(&request, &planned);
+        // Both recipes share the canonical sfc fetch, but the logical
+        // planning recorded "nat" for composite_reflectivity; the alias
+        // set must retain both "nat" and "sfc" for provenance.
+        let sfc_group = groups
+            .iter()
+            .find(|group| group.product == "sfc")
+            .expect("expected a canonical sfc fetch group");
+        assert!(sfc_group.planned_family_aliases.contains("nat"));
+        assert!(sfc_group.planned_family_aliases.contains("sfc"));
+    }
+
+    #[test]
     fn grouping_keeps_shared_prs_selector_union_under_whole_file_fetches() {
         let planned = plan_direct_recipes(
             ModelId::Hrrr,
@@ -1366,6 +1421,7 @@ mod tests {
             fetch_mode: PlotRecipeFetchMode::WholeFileStructuredExtract,
             variable_patterns: vec!["TMP:500 mb".to_string()],
             selectors: vec![FieldSelector::isobaric(CanonicalField::Temperature, 500)],
+            planned_family_aliases: std::collections::BTreeSet::from(["prs".to_string()]),
         };
         let fetch = build_direct_fetch_request(&request, &latest, 6, &group).unwrap();
         assert_eq!(fetch.request.product, "prs");
@@ -1388,6 +1444,7 @@ mod tests {
             selectors: vec![FieldSelector::entire_atmosphere(
                 CanonicalField::CompositeReflectivity,
             )],
+            planned_family_aliases: std::collections::BTreeSet::from(["nat".to_string()]),
         };
         let fetch = build_direct_fetch_request(&request, &latest, 6, &group).unwrap();
         assert_eq!(fetch.request.product, "sfc");
@@ -1409,18 +1466,21 @@ mod tests {
             selectors: vec![FieldSelector::entire_atmosphere(
                 CanonicalField::CompositeReflectivity,
             )],
+            planned_family_aliases: std::collections::BTreeSet::from([planned_product.to_string()]),
         };
         let fetch = build_direct_fetch_request(&request, &latest, 6, &group).unwrap();
         let runtime = HrrrDirectFetchRuntimeInfo {
             fetch_key: crate::publication::fetch_key(planned_product, &fetch.request),
             planned_product: planned_product.into(),
             fetched_product: fetch.request.product.clone(),
+            planned_family_aliases: vec![planned_product.into()],
             requested_source: fetch.source_override.unwrap(),
             resolved_source: SourceId::Nomads,
             resolved_url: "https://example.test/hrrr.t23z.wrfsfcf06.grib2".into(),
         };
         assert_eq!(runtime.planned_product, "nat");
         assert_eq!(runtime.fetched_product, "sfc");
+        assert_eq!(runtime.planned_family_aliases, vec!["nat".to_string()]);
         assert_eq!(runtime.resolved_source, SourceId::Nomads);
         assert!(runtime.resolved_url.contains("wrfsfc"));
     }
@@ -1554,6 +1614,7 @@ mod tests {
             fetch_mode: PlotRecipeFetchMode::WholeFileStructuredExtract,
             variable_patterns: Vec::new(),
             selectors: vec![FieldSelector::isobaric(CanonicalField::Temperature, 500)],
+            planned_family_aliases: std::collections::BTreeSet::from(["prs-conus".to_string()]),
         };
         let fetch = build_direct_fetch_request(&request, &latest, 2, &group).unwrap();
         assert_eq!(fetch.request.product, "prs-na");

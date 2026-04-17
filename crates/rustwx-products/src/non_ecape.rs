@@ -732,6 +732,7 @@ mod tests {
         PublishedFetchIdentity {
             fetch_key: crate::publication::fetch_key(planned_family, &request),
             planned_family: planned_family.to_string(),
+            planned_family_aliases: Vec::new(),
             request,
             source_override: Some(SourceId::Aws),
             resolved_source: SourceId::Aws,

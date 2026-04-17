@@ -1415,12 +1415,12 @@ fn q_to_mixing_ratio(values: &[f64]) -> Vec<f64> {
         .collect()
 }
 
-fn normalize_pressure_level_hpa(level: f64) -> f64 {
-    if level > 2_000.0 {
-        level / 100.0
-    } else {
-        level
-    }
+// Matches the rustwx_io / rustwx_products note: GRIB2 level type 100 is Pa,
+// so the hPa conversion is always a /100. HRRR never reaches stratospheric
+// levels that would collide with tropospheric hectopascal numbers, but the
+// function is kept consistent across crates so model-generic paths agree.
+fn normalize_pressure_level_hpa(level_value_pa: f64) -> f64 {
+    level_value_pa / 100.0
 }
 
 fn normalize_longitude(lon: f64) -> f64 {

@@ -393,22 +393,10 @@ fn idx_subset_ranges(idx_text: &str, patterns: &[&str]) -> Result<Option<Vec<(u6
 }
 
 fn candidate_hours(model: ModelId, cycle_hour: u8) -> Vec<u16> {
-    match model {
-        ModelId::Hrrr => {
-            if cycle_hour % 6 == 0 {
-                (0..=48).collect()
-            } else {
-                (0..=18).collect()
-            }
-        }
-        ModelId::Gfs => {
-            let mut hours = (0..=120).collect::<Vec<u16>>();
-            hours.extend((123..=384).step_by(3));
-            hours
-        }
-        ModelId::EcmwfOpenData => (0..=240).step_by(3).collect(),
-        ModelId::RrfsA => (0..=60).collect(),
-    }
+    // Delegate to the canonical schedule in rustwx-models so availability
+    // probes match the cycle-aware horizons that the catalog and fetch
+    // plan already encode (e.g. ECMWF 00/12z goes to 360h, 06/18z to 144h).
+    rustwx_models::supported_forecast_hours(model, cycle_hour)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -978,12 +966,13 @@ fn build_selected_field(
     SelectedField2D::new(selector, units, grid, values).map_err(Into::into)
 }
 
-fn normalize_pressure_level_hpa(level: f64) -> f64 {
-    if level > 2_000.0 {
-        level / 100.0
-    } else {
-        level
-    }
+// GRIB2 Code Table 4.5 level type 100 (isobaric surface) always encodes the
+// pressure value in pascals. Converting to hectopascals is a plain /100. The
+// old heuristic "only divide when > 2000" collapsed stratospheric levels
+// (e.g. 700 Pa = 7 hPa) onto tropospheric hectopascal numbers (e.g. 700 hPa),
+// which made GFS and RRFS-A pick the wrong 700 mb RH message (flat brown).
+fn normalize_pressure_level_hpa(level_value_pa: f64) -> f64 {
+    level_value_pa / 100.0
 }
 
 fn normalize_longitude(lon: f64) -> f64 {
@@ -1107,6 +1096,23 @@ mod tests {
         assert_eq!(
             candidate_hours(ModelId::RrfsA, 20).last().copied(),
             Some(60)
+        );
+        // ECMWF open-data 00/12z stream reaches f360; 06/18z stops at f144.
+        assert_eq!(
+            candidate_hours(ModelId::EcmwfOpenData, 0).last().copied(),
+            Some(360)
+        );
+        assert_eq!(
+            candidate_hours(ModelId::EcmwfOpenData, 12).last().copied(),
+            Some(360)
+        );
+        assert_eq!(
+            candidate_hours(ModelId::EcmwfOpenData, 6).last().copied(),
+            Some(144)
+        );
+        assert_eq!(
+            candidate_hours(ModelId::EcmwfOpenData, 18).last().copied(),
+            Some(144)
         );
     }
 
@@ -1266,7 +1272,7 @@ mod tests {
         ))
         .unwrap();
         let wind_300_message =
-            ieee_f32_message(PARAMETER_VGRD[0], 100, 300.0, &[36.0], -99.0, -99.0);
+            ieee_f32_message(PARAMETER_VGRD[0], 100, 30_000.0, &[36.0], -99.0, -99.0);
         assert!(wind_300.matches(&wind_300_message));
 
         let wind_selector = StructuredMessageSelector::try_from(FieldSelector::isobaric(
@@ -1275,7 +1281,7 @@ mod tests {
         ))
         .unwrap();
         let wind_message =
-            ieee_f32_message(PARAMETER_UGRD[0], 100, 850.0, &[12.0, 15.0], -99.0, -98.0);
+            ieee_f32_message(PARAMETER_UGRD[0], 100, 85_000.0, &[12.0, 15.0], -99.0, -98.0);
         assert!(wind_selector.matches(&wind_message));
 
         let temp_700 = StructuredMessageSelector::try_from(FieldSelector::isobaric(
@@ -1286,14 +1292,25 @@ mod tests {
         let temp_message =
             ieee_f32_message(PARAMETER_TMP[0], 100, 70_000.0, &[274.0], -99.0, -99.0);
         assert!(temp_700.matches(&temp_message));
+        // Stratospheric 7 hPa (level_value=700 Pa) must NOT alias onto 700 hPa.
+        let stratospheric_tmp_message =
+            ieee_f32_message(PARAMETER_TMP[0], 100, 700.0, &[210.0], -99.0, -99.0);
+        assert!(!temp_700.matches(&stratospheric_tmp_message));
 
         let rh_700 = StructuredMessageSelector::try_from(FieldSelector::isobaric(
             CanonicalField::RelativeHumidity,
             700,
         ))
         .unwrap();
-        let rh_message = ieee_f32_message(PARAMETER_RH[0], 100, 700.0, &[61.0], -99.0, -99.0);
+        let rh_message = ieee_f32_message(PARAMETER_RH[0], 100, 70_000.0, &[61.0], -99.0, -99.0);
         assert!(rh_700.matches(&rh_message));
+        // GFS/RRFS carry stratospheric RH at level_value=700 Pa (7 hPa). With the
+        // old "divide by 100 only when > 2000" heuristic this collided with 700
+        // hPa and the first-match extraction picked up the near-zero
+        // stratospheric RH, producing a flat-brown 700 mb render.
+        let stratospheric_rh_message =
+            ieee_f32_message(PARAMETER_RH[0], 100, 700.0, &[0.1], -99.0, -99.0);
+        assert!(!rh_700.matches(&stratospheric_rh_message));
 
         let dewpoint_850 = StructuredMessageSelector::try_from(FieldSelector::isobaric(
             CanonicalField::Dewpoint,
@@ -1301,7 +1318,7 @@ mod tests {
         ))
         .unwrap();
         let dewpoint_message =
-            ieee_f32_message(PARAMETER_DPT[0], 100, 850.0, &[281.0], -99.0, -99.0);
+            ieee_f32_message(PARAMETER_DPT[0], 100, 85_000.0, &[281.0], -99.0, -99.0);
         assert!(dewpoint_850.matches(&dewpoint_message));
 
         let dewpoint_700 = StructuredMessageSelector::try_from(FieldSelector::isobaric(
@@ -1310,7 +1327,7 @@ mod tests {
         ))
         .unwrap();
         let dewpoint_700_message =
-            ieee_f32_message(PARAMETER_DPT[0], 100, 700.0, &[270.0], -99.0, -99.0);
+            ieee_f32_message(PARAMETER_DPT[0], 100, 70_000.0, &[270.0], -99.0, -99.0);
         assert!(dewpoint_700.matches(&dewpoint_700_message));
 
         let vorticity_500 = StructuredMessageSelector::try_from(FieldSelector::isobaric(
@@ -1321,7 +1338,7 @@ mod tests {
         let vorticity_message = ieee_f32_message(
             PARAMETER_ABSOLUTE_VORTICITY[0],
             100,
-            500.0,
+            50_000.0,
             &[0.00012],
             -99.0,
             -99.0,
@@ -1623,8 +1640,30 @@ mod tests {
     }
 
     #[test]
+    fn extract_ignores_stratospheric_pa_alias_of_tropospheric_level() {
+        // GFS/RRFS-A carry both 7 hPa (level_value = 700 Pa) and 700 hPa
+        // (level_value = 70_000 Pa) messages in the same file. The 7 hPa one
+        // appears first. The extractor must return the 700 hPa message.
+        let stratospheric =
+            ieee_f32_message(PARAMETER_RH[0], 100, 700.0, &[0.1, 0.2], 261.0, 262.0);
+        let tropospheric =
+            ieee_f32_message(PARAMETER_RH[0], 100, 70_000.0, &[55.0, 65.0], 261.0, 262.0);
+        let grib = Grib2File {
+            messages: vec![stratospheric, tropospheric],
+        };
+
+        let field =
+            extract_pressure_field_from_grib2(&grib, CanonicalField::RelativeHumidity, 700)
+                .unwrap();
+
+        assert_eq!(field.values, vec![55.0, 65.0]);
+    }
+
+    #[test]
     fn extract_field_from_grib2_returns_selector_backed_field() {
-        let message = ieee_f32_message(PARAMETER_TMP[0], 100, 500.0, &[255.0, 256.5], 261.0, 262.0);
+        // 500 hPa is encoded as 50_000 Pa per GRIB2 Code Table 4.5 level 100.
+        let message =
+            ieee_f32_message(PARAMETER_TMP[0], 100, 50_000.0, &[255.0, 256.5], 261.0, 262.0);
         let grib = Grib2File {
             messages: vec![message],
         };

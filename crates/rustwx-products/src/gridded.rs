@@ -898,12 +898,12 @@ fn mixing_ratio_from_vapor_pressure(pressure_hpa: f64, vapor_pressure_hpa: f64) 
     (epsilon * e / (pressure_hpa - e).max(1.0e-6)).max(1.0e-10)
 }
 
-fn normalize_pressure_level_hpa(level: f64) -> f64 {
-    if level > 2_000.0 {
-        level / 100.0
-    } else {
-        level
-    }
+// GRIB2 level type 100 (isobaric surface) values are always pascals; see the
+// matching note in rustwx_io. The old "only divide when > 2000" heuristic
+// aliased stratospheric Pa levels onto tropospheric hectopascal numbers, so
+// GFS/RRFS-A moisture columns picked up bogus mid-level RH values.
+fn normalize_pressure_level_hpa(level_value_pa: f64) -> f64 {
+    level_value_pa / 100.0
 }
 
 fn validate_pressure_decode_against_surface(

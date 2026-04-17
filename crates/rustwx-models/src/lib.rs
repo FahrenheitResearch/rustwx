@@ -1865,24 +1865,77 @@ where
         return Err(ModelError::NoAvailableRun { model });
     }
 
-    for hour_utc in summary.cycle_hours_utc.iter().rev().copied() {
-        let cycle = CycleSpec::new(date_yyyymmdd, hour_utc)?;
-        let request = ModelRunRequest::new(model, cycle.clone(), 0, summary.default_product)?;
-        let available = resolve_urls(&request)?
-            .into_iter()
-            .filter(|resolved| allowed_sources.contains(&resolved.source))
-            .find(|resolved| probe_available(resolved));
+    // Walk today, then (if nothing on today) yesterday. During the publishing
+    // window between two cycles the newest cycle may not be available yet,
+    // but the previous day's last cycle typically still is — without this
+    // rollback, `latest_available_run` wrongly reports NoAvailableRun just
+    // after UTC rollover or during a publication delay.
+    let candidate_dates = cycle_date_rollback_candidates(date_yyyymmdd);
+    for candidate_date in &candidate_dates {
+        for hour_utc in summary.cycle_hours_utc.iter().rev().copied() {
+            let cycle = match CycleSpec::new(candidate_date.clone(), hour_utc) {
+                Ok(cycle) => cycle,
+                Err(_) => continue,
+            };
+            let request = ModelRunRequest::new(model, cycle.clone(), 0, summary.default_product)?;
+            let available = resolve_urls(&request)?
+                .into_iter()
+                .filter(|resolved| allowed_sources.contains(&resolved.source))
+                .find(|resolved| probe_available(resolved));
 
-        if let Some(resolved) = available {
-            return Ok(LatestRun {
-                model,
-                cycle,
-                source: resolved.source,
-            });
+            if let Some(resolved) = available {
+                return Ok(LatestRun {
+                    model,
+                    cycle,
+                    source: resolved.source,
+                });
+            }
         }
     }
 
     Err(ModelError::NoAvailableRun { model })
+}
+
+fn cycle_date_rollback_candidates(date_yyyymmdd: &str) -> Vec<String> {
+    let mut dates = Vec::with_capacity(2);
+    dates.push(date_yyyymmdd.to_string());
+    if let Some(previous) = previous_day_yyyymmdd(date_yyyymmdd) {
+        dates.push(previous);
+    }
+    dates
+}
+
+fn previous_day_yyyymmdd(date_yyyymmdd: &str) -> Option<String> {
+    if date_yyyymmdd.len() != 8 || !date_yyyymmdd.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let year: i32 = date_yyyymmdd[..4].parse().ok()?;
+    let month: u32 = date_yyyymmdd[4..6].parse().ok()?;
+    let day: u32 = date_yyyymmdd[6..8].parse().ok()?;
+    let (new_year, new_month, new_day) = if day > 1 {
+        (year, month, day - 1)
+    } else if month > 1 {
+        (year, month - 1, days_in_month(year, month - 1))
+    } else {
+        (year - 1, 12, 31)
+    };
+    if new_year < 1 {
+        return None;
+    }
+    Some(format!("{:04}{:02}{:02}", new_year, new_month, new_day))
+}
+
+fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            let is_leap =
+                (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+            if is_leap { 29 } else { 28 }
+        }
+        _ => 30,
+    }
 }
 
 fn build_agent() -> ureq::Agent {
@@ -2945,6 +2998,54 @@ mod tests {
 
         assert_eq!(latest.cycle.hour_utc, 18);
         assert_eq!(latest.source, SourceId::Ecmwf);
+    }
+
+    #[test]
+    fn latest_available_run_rolls_back_to_previous_day_when_today_is_unpublished() {
+        // Simulate a UTC-rollover / publication window where no cycle of the
+        // requested date has been published yet, but yesterday's 18z is still
+        // serving. The probe returns true only for yesterday's 18z URL.
+        let latest =
+            latest_available_run_with_probe(ModelId::Gfs, None, "20260415", |resolved| {
+                resolved
+                    .availability_probe_url()
+                    .contains("gfs.20260414/18/atmos/gfs.t18z.pgrb2.0p25.f000")
+            })
+            .unwrap();
+
+        assert_eq!(latest.cycle.date_yyyymmdd, "20260414");
+        assert_eq!(latest.cycle.hour_utc, 18);
+    }
+
+    #[test]
+    fn latest_available_run_prefers_today_even_with_rollback_enabled() {
+        // If both today and yesterday are available, today wins — the
+        // rollback must not demote a published current-day run.
+        let latest = latest_available_run_with_probe(
+            ModelId::EcmwfOpenData,
+            None,
+            "20260414",
+            |resolved| {
+                let url = resolved.availability_probe_url();
+                url.contains("/20260414/06z/") || url.contains("/20260413/18z/")
+            },
+        )
+        .unwrap();
+
+        assert_eq!(latest.cycle.date_yyyymmdd, "20260414");
+        assert_eq!(latest.cycle.hour_utc, 6);
+    }
+
+    #[test]
+    fn previous_day_yyyymmdd_handles_month_and_year_boundaries() {
+        assert_eq!(previous_day_yyyymmdd("20260415").as_deref(), Some("20260414"));
+        assert_eq!(previous_day_yyyymmdd("20260401").as_deref(), Some("20260331"));
+        assert_eq!(previous_day_yyyymmdd("20260101").as_deref(), Some("20251231"));
+        // Leap-year awareness: 2028 is a leap year, so 2028-03-01 rolls back
+        // to 2028-02-29, while 2027-03-01 rolls back to 2027-02-28.
+        assert_eq!(previous_day_yyyymmdd("20280301").as_deref(), Some("20280229"));
+        assert_eq!(previous_day_yyyymmdd("20270301").as_deref(), Some("20270228"));
+        assert_eq!(previous_day_yyyymmdd("notadate"), None);
     }
 
     #[test]

@@ -19,6 +19,13 @@ pub struct ArtifactContentIdentity {
 pub struct PublishedFetchIdentity {
     pub fetch_key: String,
     pub planned_family: String,
+    /// Logical planned families (as requested by recipe fetch plans)
+    /// that share this canonical fetch. Typically a single-element list
+    /// equal to `planned_family`, but for HRRR the same wrfsfc fetch
+    /// services both "nat"-planned native-family recipes and
+    /// "sfc"-planned surface recipes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub planned_family_aliases: Vec<String>,
     pub request: ModelRunRequest,
     pub source_override: Option<SourceId>,
     pub resolved_source: SourceId,
@@ -335,9 +342,30 @@ pub fn fetch_identity_from_cached_result(
     fetch: &FetchRequest,
     fetched: &CachedFetchResult,
 ) -> PublishedFetchIdentity {
+    fetch_identity_from_cached_result_with_aliases(
+        planned_family,
+        Vec::new(),
+        fetch,
+        fetched,
+    )
+}
+
+pub fn fetch_identity_from_cached_result_with_aliases(
+    planned_family: &str,
+    mut planned_family_aliases: Vec<String>,
+    fetch: &FetchRequest,
+    fetched: &CachedFetchResult,
+) -> PublishedFetchIdentity {
+    // Preserve only the logical aliases that actually differ from the
+    // canonical family — otherwise the aliases list is redundant and we
+    // keep the JSON skipped via `skip_serializing_if`.
+    planned_family_aliases.retain(|alias| alias != planned_family);
+    planned_family_aliases.sort();
+    planned_family_aliases.dedup();
     PublishedFetchIdentity {
         fetch_key: fetch_key(planned_family, &fetch.request),
         planned_family: planned_family.to_string(),
+        planned_family_aliases,
         request: fetch.request.clone(),
         source_override: fetch.source_override,
         resolved_source: fetched.result.source,
@@ -517,6 +545,7 @@ mod tests {
         .with_input_fetches(vec![PublishedFetchIdentity {
             fetch_key: "prs".into(),
             planned_family: "prs".into(),
+            planned_family_aliases: Vec::new(),
             request: ModelRunRequest::new(
                 rustwx_core::ModelId::Hrrr,
                 rustwx_core::CycleSpec::new("20260414", 23).unwrap(),
