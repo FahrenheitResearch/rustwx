@@ -106,17 +106,24 @@ struct Args {
 }
 
 fn default_direct_recipes() -> Vec<String> {
+    // Curated severe-weather forecaster set. Slugs match the
+    // product_catalog. Recipes that aren't supported on a given model
+    // (e.g. composite_reflectivity on GFS) degrade per-recipe via the
+    // DirectRecipeBlocker path — the rest of the recipes still render.
     vec![
-        "radar_reflectivity",
-        "2m_temperature",
-        "2m_dewpoint",
-        "2m_relative_humidity",
+        "composite_reflectivity",
         "2m_temperature_10m_winds",
+        "2m_dewpoint_10m_winds",
+        "2m_relative_humidity",
         "500mb_height_winds",
         "700mb_height_winds",
         "850mb_height_winds",
+        "500mb_rh_height_winds",
+        "700mb_temperature_height_winds",
+        "850mb_temperature_height_winds",
+        "mslp_10m_winds",
         "precipitable_water",
-        "mean_sea_level_pressure",
+        "10m_wind_gusts",
     ]
     .into_iter()
     .map(str::to_string)
@@ -124,11 +131,29 @@ fn default_direct_recipes() -> Vec<String> {
 }
 
 fn default_derived_recipes() -> Vec<String> {
+    // Severe-weather forecaster staples derived from the surface +
+    // pressure bundle. Every slug here is 'supported' in the
+    // product_catalog; derived_batch currently errors out on the first
+    // unsupported slug (will be softened in a later pass), so keep
+    // this list to genuinely-available products.
     vec![
-        "2m_dewpoint_depression",
-        "2m_theta_e_10m_winds",
+        "sbcape",
+        "mlcape",
+        "mucape",
+        "sbcin",
+        "mlcin",
         "bulk_shear_0_6km",
-        "500mb_absolute_vorticity",
+        "bulk_shear_0_1km",
+        "srh_0_1km",
+        "srh_0_3km",
+        "ehi_0_1km",
+        "ehi_0_3km",
+        "stp_fixed",
+        "scp_mu_0_3km_0_6km_proxy",
+        "lapse_rate_700_500",
+        "lapse_rate_0_3km",
+        "theta_e_2m_10m_winds",
+        "lifted_index",
     ]
     .into_iter()
     .map(str::to_string)
