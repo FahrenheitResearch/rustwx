@@ -1,7 +1,7 @@
 use crate::gridded::{
-    PreparedHeavyVolume as GenericPreparedHeavyVolume,
-    PressureFields as GenericPressureFields, SurfaceFields as GenericSurfaceFields,
-    crop_heavy_domain, prepare_heavy_volume as prepare_generic_heavy_volume,
+    PreparedHeavyVolume as GenericPreparedHeavyVolume, PressureFields as GenericPressureFields,
+    SurfaceFields as GenericSurfaceFields, crop_heavy_domain,
+    prepare_heavy_volume as prepare_generic_heavy_volume,
 };
 use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
@@ -18,7 +18,7 @@ pub use crate::shared_context::{
 };
 use rustwx_calc::SupportedSevereFields;
 use rustwx_core::{CycleSpec, ModelId, SourceId};
-use rustwx_models::{LatestRun, latest_available_run};
+use rustwx_models::{LatestRun, latest_available_run_at_forecast_hour};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
@@ -130,6 +130,7 @@ pub struct HrrrBatchReport {
 pub fn resolve_hrrr_run(
     date: &str,
     cycle_override: Option<u8>,
+    forecast_hour: u16,
     source: SourceId,
 ) -> Result<LatestRun, Box<dyn std::error::Error>> {
     match cycle_override {
@@ -138,7 +139,12 @@ pub fn resolve_hrrr_run(
             cycle: CycleSpec::new(date, hour)?,
             source,
         }),
-        None => Ok(latest_available_run(ModelId::Hrrr, Some(source), date)?),
+        None => Ok(latest_available_run_at_forecast_hour(
+            ModelId::Hrrr,
+            Some(source),
+            date,
+            forecast_hour,
+        )?),
     }
 }
 
@@ -153,6 +159,7 @@ pub fn run_hrrr_batch(
     let latest = resolve_hrrr_run(
         &request.date_yyyymmdd,
         request.cycle_override_utc,
+        request.forecast_hour,
         request.source,
     )?;
     // Build a planner-driven execution plan for this hour: surface +
@@ -183,7 +190,8 @@ pub(crate) fn run_hrrr_batch_from_loaded(
         .ok_or("HRRR batch planner missed surface or pressure bundle")?;
     let surface_full = &surface_decode.value;
     let pressure_full = &pressure_decode.value;
-    let cropped_heavy_domain = crop_heavy_domain(surface_full, pressure_full, request.domain.bounds)?;
+    let cropped_heavy_domain =
+        crop_heavy_domain(surface_full, pressure_full, request.domain.bounds)?;
     let owned_full_grid;
     let (surface, pressure, grid) = match cropped_heavy_domain.as_ref() {
         Some(cropped) => (&cropped.surface, &cropped.pressure, &cropped.grid),
@@ -289,8 +297,8 @@ pub(crate) fn run_hrrr_batch_from_loaded(
                     )
                     .map_err(self::thread_render_error)?;
                     let render_ms = render_start.elapsed().as_millis();
-                    let content_identity =
-                        artifact_identity_from_path(&output_path).map_err(self::thread_render_error)?;
+                    let content_identity = artifact_identity_from_path(&output_path)
+                        .map_err(self::thread_render_error)?;
 
                     Ok(HrrrRenderedProduct {
                         product,
@@ -537,7 +545,7 @@ mod tests {
 
     #[test]
     fn explicit_hrrr_cycle_avoids_latest_probe() {
-        let latest = resolve_hrrr_run("20260414", Some(19), SourceId::Aws).unwrap();
+        let latest = resolve_hrrr_run("20260414", Some(19), 0, SourceId::Aws).unwrap();
         assert_eq!(latest.model, ModelId::Hrrr);
         assert_eq!(latest.cycle.date_yyyymmdd, "20260414");
         assert_eq!(latest.cycle.hour_utc, 19);

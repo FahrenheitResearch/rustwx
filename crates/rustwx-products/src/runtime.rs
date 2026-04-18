@@ -130,14 +130,20 @@ impl LoadedBundleSet {
     /// the matching planned bundles in one call.
     pub fn surface_pressure_pair(
         &self,
-    ) -> Option<(&PlannedBundle, &CachedDecode<SurfaceFields>, &PlannedBundle, &CachedDecode<PressureFields>)>
-    {
-        let surface = self
-            .plan
-            .bundle_for(CanonicalBundleDescriptor::SurfaceAnalysis, self.forecast_hour)?;
-        let pressure = self
-            .plan
-            .bundle_for(CanonicalBundleDescriptor::PressureAnalysis, self.forecast_hour)?;
+    ) -> Option<(
+        &PlannedBundle,
+        &CachedDecode<SurfaceFields>,
+        &PlannedBundle,
+        &CachedDecode<PressureFields>,
+    )> {
+        let surface = self.plan.bundle_for(
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+            self.forecast_hour,
+        )?;
+        let pressure = self.plan.bundle_for(
+            CanonicalBundleDescriptor::PressureAnalysis,
+            self.forecast_hour,
+        )?;
         let surface_decode = self.surface_decodes.get(&surface.id)?;
         let pressure_decode = self.pressure_decodes.get(&pressure.id)?;
         Some((surface, surface_decode, pressure, pressure_decode))
@@ -225,7 +231,10 @@ impl LoadedBundleSet {
     /// grid (uses the surface bundle at the run's nominal forecast hour).
     pub fn surface_grid(&self) -> Result<LatLonGrid, RustwxError> {
         let surface_decode = self
-            .surface_decode_for(CanonicalBundleDescriptor::SurfaceAnalysis, self.forecast_hour)
+            .surface_decode_for(
+                CanonicalBundleDescriptor::SurfaceAnalysis,
+                self.forecast_hour,
+            )
             .expect("surface bundle missing from loaded plan");
         surface_decode.value.core_grid()
     }
@@ -267,44 +276,46 @@ pub fn load_execution_plan(
     let fetch_keys = plan.fetch_keys();
     let cache_root = config.cache_root.clone();
     let use_cache = config.use_cache;
-    let fetch_results: Vec<(BundleFetchKey, Result<FetchedBundleBytes, Box<dyn std::error::Error + Send + Sync>>)> =
-        if parallel_fetches && fetch_keys.len() > 1 {
-            std::thread::scope(|scope| -> Vec<_> {
-                let handles: Vec<_> = fetch_keys
-                    .iter()
-                    .cloned()
-                    .map(|key| {
-                        let cache_root = cache_root.clone();
-                        let use_cache = use_cache;
-                        let key_for_worker = key.clone();
-                        let plan = &plan;
-                        let handle =
-                            scope.spawn(move || fetch_one(plan, key_for_worker, &cache_root, use_cache));
-                        (key, handle)
-                    })
-                    .collect();
-                handles
-                    .into_iter()
-                    .map(|(key, handle)| {
-                        let result = handle.join().unwrap_or_else(|_| {
-                            Err(Box::<dyn std::error::Error + Send + Sync>::from(
-                                "planner fetch worker panicked",
-                            ))
-                        });
-                        (key, result)
-                    })
-                    .collect()
-            })
-        } else {
-            fetch_keys
+    let fetch_results: Vec<(
+        BundleFetchKey,
+        Result<FetchedBundleBytes, Box<dyn std::error::Error + Send + Sync>>,
+    )> = if parallel_fetches && fetch_keys.len() > 1 {
+        std::thread::scope(|scope| -> Vec<_> {
+            let handles: Vec<_> = fetch_keys
                 .iter()
                 .cloned()
                 .map(|key| {
-                    let result = fetch_one(&plan, key.clone(), &cache_root, use_cache);
+                    let cache_root = cache_root.clone();
+                    let use_cache = use_cache;
+                    let key_for_worker = key.clone();
+                    let plan = &plan;
+                    let handle = scope
+                        .spawn(move || fetch_one(plan, key_for_worker, &cache_root, use_cache));
+                    (key, handle)
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|(key, handle)| {
+                    let result = handle.join().unwrap_or_else(|_| {
+                        Err(Box::<dyn std::error::Error + Send + Sync>::from(
+                            "planner fetch worker panicked",
+                        ))
+                    });
                     (key, result)
                 })
                 .collect()
-        };
+        })
+    } else {
+        fetch_keys
+            .iter()
+            .cloned()
+            .map(|key| {
+                let result = fetch_one(&plan, key.clone(), &cache_root, use_cache);
+                (key, result)
+            })
+            .collect()
+    };
 
     let mut fetched: BTreeMap<BundleFetchKey, FetchedBundleBytes> = BTreeMap::new();
     let mut fetch_failures: BTreeMap<BundleFetchKey, String> = BTreeMap::new();
@@ -347,11 +358,8 @@ pub fn load_execution_plan(
         };
         match bundle.id.bundle {
             CanonicalBundleDescriptor::SurfaceAnalysis => {
-                let cache_path = decode_cache_path(
-                    &config.cache_root,
-                    &fetched_bytes.file.request,
-                    "surface",
-                );
+                let cache_path =
+                    decode_cache_path(&config.cache_root, &fetched_bytes.file.request, "surface");
                 let start = Instant::now();
                 match load_or_decode_surface(
                     &cache_path,
@@ -369,11 +377,8 @@ pub fn load_execution_plan(
                 }
             }
             CanonicalBundleDescriptor::PressureAnalysis => {
-                let cache_path = decode_cache_path(
-                    &config.cache_root,
-                    &fetched_bytes.file.request,
-                    "pressure",
-                );
+                let cache_path =
+                    decode_cache_path(&config.cache_root, &fetched_bytes.file.request, "pressure");
                 let start = Instant::now();
                 let decode_outcome = load_or_decode_pressure_with_shape(
                     &cache_path,
@@ -431,24 +436,40 @@ pub fn load_execution_plan(
     })
 }
 
-fn build_fetch_request(plan: &ExecutionPlan, key: &BundleFetchKey) -> Result<FetchRequest, RustwxError> {
-    let variable_patterns = plan
+fn build_fetch_request(
+    plan: &ExecutionPlan,
+    key: &BundleFetchKey,
+) -> Result<FetchRequest, RustwxError> {
+    let sharing_bundles: Vec<_> = plan
         .bundles
         .iter()
         .filter(|bundle| bundle.fetch_key() == *key)
-        .flat_map(|bundle| {
+        .collect();
+    let variable_patterns = sharing_bundles
+        .iter()
+        .map(|bundle| {
             crate::gridded::bundle_fetch_variable_patterns(
                 bundle.id.model,
                 bundle.id.bundle,
                 bundle.resolved.native_product.as_str(),
             )
         })
-        .fold(Vec::<String>::new(), |mut merged, pattern| {
-            if !merged.contains(&pattern) {
-                merged.push(pattern);
+        // Indexed subsetting is only safe when every consumer that
+        // shares this physical GRIB explicitly declares a safe subset.
+        // If even one bundle on the fetch key lacks a subset contract,
+        // keep the whole-file path so we don't truncate sibling lanes.
+        .try_fold(Vec::<String>::new(), |mut merged, patterns| {
+            if patterns.is_empty() {
+                return None;
             }
-            merged
-        });
+            for pattern in patterns {
+                if !merged.contains(&pattern) {
+                    merged.push(pattern);
+                }
+            }
+            Some(merged)
+        })
+        .unwrap_or_default();
     Ok(FetchRequest {
         request: ModelRunRequest::new(
             key.model,
@@ -470,9 +491,8 @@ fn fetch_one(
     cache_root: &Path,
     use_cache: bool,
 ) -> Result<FetchedBundleBytes, Box<dyn std::error::Error + Send + Sync>> {
-    let request = build_fetch_request(plan, &key).map_err(|err| {
-        Box::<dyn std::error::Error + Send + Sync>::from(err.to_string())
-    })?;
+    let request = build_fetch_request(plan, &key)
+        .map_err(|err| Box::<dyn std::error::Error + Send + Sync>::from(err.to_string()))?;
     let start = Instant::now();
     let cached = fetch_bytes_with_cache(&request, cache_root, use_cache)
         .map_err(|err| Box::<dyn std::error::Error + Send + Sync>::from(err.to_string()))?;
@@ -508,21 +528,29 @@ pub fn build_single_pair_plan(
     pressure_override: Option<String>,
 ) -> ExecutionPlan {
     let mut builder = crate::planner::ExecutionPlanBuilder::new(latest, forecast_hour);
-    let mut surface = BundleRequirement::new(CanonicalBundleDescriptor::SurfaceAnalysis, forecast_hour);
+    let mut surface =
+        BundleRequirement::new(CanonicalBundleDescriptor::SurfaceAnalysis, forecast_hour);
     if let Some(value) = surface_override {
         surface = surface.with_native_override(value);
     }
-    let mut pressure = BundleRequirement::new(CanonicalBundleDescriptor::PressureAnalysis, forecast_hour);
+    let mut pressure =
+        BundleRequirement::new(CanonicalBundleDescriptor::PressureAnalysis, forecast_hour);
     if let Some(value) = pressure_override {
         pressure = pressure.with_native_override(value);
     }
     builder.require_with_logical_family(
         &surface,
-        Some(default_planned_family_slug(latest.model, CanonicalBundleDescriptor::SurfaceAnalysis)),
+        Some(default_planned_family_slug(
+            latest.model,
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+        )),
     );
     builder.require_with_logical_family(
         &pressure,
-        Some(default_planned_family_slug(latest.model, CanonicalBundleDescriptor::PressureAnalysis)),
+        Some(default_planned_family_slug(
+            latest.model,
+            CanonicalBundleDescriptor::PressureAnalysis,
+        )),
     );
     builder.build()
 }
@@ -636,7 +664,11 @@ mod tests {
         );
         assert_eq!(plan.bundles.len(), 2);
         assert_eq!(plan.fetch_keys().len(), 2);
-        let products: Vec<_> = plan.fetch_keys().iter().map(|k| k.native_product.clone()).collect();
+        let products: Vec<_> = plan
+            .fetch_keys()
+            .iter()
+            .map(|k| k.native_product.clone())
+            .collect();
         assert!(products.contains(&"sfc".to_string()));
         assert!(products.contains(&"prs".to_string()));
     }
@@ -688,21 +720,59 @@ mod tests {
             .expect("rrfs plan includes prs-na");
         let nat_request = build_fetch_request(&plan, &nat_key).expect("nat-na request builds");
         let prs_request = build_fetch_request(&plan, &prs_key).expect("prs-na request builds");
-        assert!(nat_request
-            .variable_patterns
-            .contains(&"TMP:2 m above ground".to_string()));
-        assert!(nat_request
-            .variable_patterns
-            .contains(&"UGRD:10 m above ground".to_string()));
+        assert!(
+            nat_request
+                .variable_patterns
+                .contains(&"TMP:2 m above ground".to_string())
+        );
+        assert!(
+            nat_request
+                .variable_patterns
+                .contains(&"UGRD:10 m above ground".to_string())
+        );
         assert_eq!(
             prs_request.variable_patterns,
             vec![
                 "HGT".to_string(),
+                "GP".to_string(),
                 "TMP".to_string(),
                 "SPFH".to_string(),
+                "DPT".to_string(),
+                "RH".to_string(),
                 "UGRD".to_string(),
                 "VGRD".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn rrfs_shared_fetch_with_unsubsetted_native_consumer_uses_whole_file() {
+        use rustwx_core::BundleRequirement;
+
+        let latest = LatestRun {
+            model: rustwx_core::ModelId::RrfsA,
+            cycle: CycleSpec::new("20260415", 18).unwrap(),
+            source: SourceId::Aws,
+        };
+        let mut builder = crate::planner::ExecutionPlanBuilder::new(&latest, 6);
+        builder.require(&BundleRequirement::new(
+            CanonicalBundleDescriptor::PressureAnalysis,
+            6,
+        ));
+        builder.require(
+            &BundleRequirement::new(CanonicalBundleDescriptor::NativeAnalysis, 6)
+                .with_native_override("prs-na".to_string()),
+        );
+        let plan = builder.build();
+        let prs_key = plan
+            .fetch_keys()
+            .into_iter()
+            .find(|key| key.native_product == "prs-na")
+            .expect("rrfs plan includes prs-na");
+        let request = build_fetch_request(&plan, &prs_key).expect("request builds");
+        assert!(
+            request.variable_patterns.is_empty(),
+            "shared fetch should keep whole-file bytes when any consumer lacks an explicit subset contract"
         );
     }
 }

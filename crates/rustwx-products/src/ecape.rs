@@ -72,6 +72,7 @@ pub fn run_ecape_batch(
         request.model,
         &request.date_yyyymmdd,
         request.cycle_override_utc,
+        request.forecast_hour,
         request.source,
         request.surface_product_override.as_deref(),
         request.pressure_product_override.as_deref(),
@@ -102,11 +103,8 @@ pub fn run_ecape_batch(
     // Same rationale as severe_batch: crop before compute so ECAPE's
     // per-cell parcel ascent runs on ~300×300 midwest cells instead of
     // ~1800×1000 CONUS.
-    let cropped = crate::gridded::crop_heavy_domain(
-        full_surface,
-        full_pressure,
-        request.domain.bounds,
-    )?;
+    let cropped =
+        crate::gridded::crop_heavy_domain(full_surface, full_pressure, request.domain.bounds)?;
     let owned_full_grid;
     let (surface, pressure, grid) = match cropped.as_ref() {
         Some(cropped) => (&cropped.surface, &cropped.pressure, cropped.grid.clone()),
@@ -126,8 +124,7 @@ pub fn run_ecape_batch(
     let project_ms = project_start.elapsed().as_millis();
 
     let compute_start = Instant::now();
-    let (fields, failure_count) =
-        compute_ecape8_panel_fields(surface, pressure)?;
+    let (fields, failure_count) = compute_ecape8_panel_fields(surface, pressure)?;
     let compute_ms = compute_start.elapsed().as_millis();
 
     let model_slug = request.model.as_str().replace('-', "_");

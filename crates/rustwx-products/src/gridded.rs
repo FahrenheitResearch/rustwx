@@ -11,9 +11,8 @@ use rustwx_core::{
 };
 use rustwx_io::{CachedFetchResult, FetchRequest, artifact_cache_dir, fetch_bytes_with_cache};
 use rustwx_models::{
-    LatestRun, ResolvedCanonicalBundleProduct, latest_available_run,
-    latest_available_run_for_products,
-    resolve_canonical_bundle_product,
+    LatestRun, ResolvedCanonicalBundleProduct, latest_available_run_at_forecast_hour,
+    latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -155,6 +154,7 @@ pub fn resolve_model_run(
     model: ModelId,
     date: &str,
     cycle_override: Option<u8>,
+    forecast_hour: u16,
     source: SourceId,
 ) -> Result<LatestRun, Box<dyn std::error::Error>> {
     match cycle_override {
@@ -163,7 +163,12 @@ pub fn resolve_model_run(
             cycle: CycleSpec::new(date, hour)?,
             source,
         }),
-        None => Ok(latest_available_run(model, Some(source), date)?),
+        None => Ok(latest_available_run_at_forecast_hour(
+            model,
+            Some(source),
+            date,
+            forecast_hour,
+        )?),
     }
 }
 
@@ -171,6 +176,7 @@ pub fn resolve_thermo_pair_run(
     model: ModelId,
     date: &str,
     cycle_override: Option<u8>,
+    forecast_hour: u16,
     source: SourceId,
     surface_product_override: Option<&str>,
     pressure_product_override: Option<&str>,
@@ -188,11 +194,12 @@ pub fn resolve_thermo_pair_run(
                 surface_bundle.native_product.as_str(),
                 pressure_bundle.native_product.as_str(),
             ];
-            Ok(latest_available_run_for_products(
+            Ok(latest_available_run_for_products_at_forecast_hour(
                 model,
                 Some(source),
                 date,
                 &required_products,
+                forecast_hour,
             )?)
         }
     }
@@ -209,7 +216,13 @@ pub fn load_model_timestep_from_parts(
     cache_root: &Path,
     use_cache: bool,
 ) -> Result<LoadedModelTimestep, Box<dyn std::error::Error>> {
-    let latest = resolve_model_run(model, date_yyyymmdd, cycle_override_utc, source)?;
+    let latest = resolve_model_run(
+        model,
+        date_yyyymmdd,
+        cycle_override_utc,
+        forecast_hour,
+        source,
+    )?;
     load_model_timestep_from_latest(
         latest,
         forecast_hour,
@@ -763,8 +776,11 @@ pub(crate) fn bundle_fetch_variable_patterns(
         (CanonicalBundleDescriptor::SurfaceAnalysis, "nat-na") => vec![
             "PRES:surface",
             "HGT:surface",
+            "GP:surface",
             "TMP:2 m above ground",
             "SPFH:2 m above ground",
+            "DPT:2 m above ground",
+            "RH:2 m above ground",
             "UGRD:10 m above ground",
             "VGRD:10 m above ground",
         ]
@@ -772,7 +788,7 @@ pub(crate) fn bundle_fetch_variable_patterns(
         .map(str::to_string)
         .collect(),
         (CanonicalBundleDescriptor::PressureAnalysis, "prs-na") => {
-            vec!["HGT", "TMP", "SPFH", "UGRD", "VGRD"]
+            vec!["HGT", "GP", "TMP", "SPFH", "DPT", "RH", "UGRD", "VGRD"]
                 .into_iter()
                 .map(str::to_string)
                 .collect()
@@ -1324,8 +1340,11 @@ mod tests {
             vec![
                 "PRES:surface".to_string(),
                 "HGT:surface".to_string(),
+                "GP:surface".to_string(),
                 "TMP:2 m above ground".to_string(),
                 "SPFH:2 m above ground".to_string(),
+                "DPT:2 m above ground".to_string(),
+                "RH:2 m above ground".to_string(),
                 "UGRD:10 m above ground".to_string(),
                 "VGRD:10 m above ground".to_string(),
             ]
@@ -1338,8 +1357,11 @@ mod tests {
             ),
             vec![
                 "HGT".to_string(),
+                "GP".to_string(),
                 "TMP".to_string(),
                 "SPFH".to_string(),
+                "DPT".to_string(),
+                "RH".to_string(),
                 "UGRD".to_string(),
                 "VGRD".to_string(),
             ]

@@ -1887,6 +1887,23 @@ pub fn latest_available_run(
     })
 }
 
+pub fn latest_available_run_at_forecast_hour(
+    model: ModelId,
+    source: Option<SourceId>,
+    date_yyyymmdd: &str,
+    forecast_hour: u16,
+) -> Result<LatestRun, ModelError> {
+    let agent = build_agent();
+    latest_available_run_for_products_with_probe_at_forecast_hour(
+        model,
+        source,
+        date_yyyymmdd,
+        &[model_summary(model).default_product],
+        forecast_hour,
+        |resolved| availability_probe_ok(&agent, resolved),
+    )
+}
+
 pub fn latest_available_run_for_products(
     model: ModelId,
     source: Option<SourceId>,
@@ -1903,6 +1920,24 @@ pub fn latest_available_run_for_products(
     )
 }
 
+pub fn latest_available_run_for_products_at_forecast_hour(
+    model: ModelId,
+    source: Option<SourceId>,
+    date_yyyymmdd: &str,
+    products: &[&str],
+    forecast_hour: u16,
+) -> Result<LatestRun, ModelError> {
+    let agent = build_agent();
+    latest_available_run_for_products_with_probe_at_forecast_hour(
+        model,
+        source,
+        date_yyyymmdd,
+        products,
+        forecast_hour,
+        |resolved| availability_probe_ok(&agent, resolved),
+    )
+}
+
 fn latest_available_run_with_probe<F>(
     model: ModelId,
     source: Option<SourceId>,
@@ -1912,11 +1947,12 @@ fn latest_available_run_with_probe<F>(
 where
     F: FnMut(&ResolvedUrl) -> bool,
 {
-    latest_available_run_for_products_with_probe(
+    latest_available_run_for_products_with_probe_at_forecast_hour(
         model,
         source,
         date_yyyymmdd,
         &[model_summary(model).default_product],
+        0,
         probe_available,
     )
 }
@@ -1926,6 +1962,27 @@ fn latest_available_run_for_products_with_probe<F>(
     source: Option<SourceId>,
     date_yyyymmdd: &str,
     products: &[&str],
+    probe_available: F,
+) -> Result<LatestRun, ModelError>
+where
+    F: FnMut(&ResolvedUrl) -> bool,
+{
+    latest_available_run_for_products_with_probe_at_forecast_hour(
+        model,
+        source,
+        date_yyyymmdd,
+        products,
+        0,
+        probe_available,
+    )
+}
+
+fn latest_available_run_for_products_with_probe_at_forecast_hour<F>(
+    model: ModelId,
+    source: Option<SourceId>,
+    date_yyyymmdd: &str,
+    products: &[&str],
+    forecast_hour: u16,
     mut probe_available: F,
 ) -> Result<LatestRun, ModelError>
 where
@@ -1961,16 +2018,20 @@ where
     let candidate_dates = cycle_date_rollback_candidates(date_yyyymmdd);
     for candidate_date in &candidate_dates {
         for hour_utc in summary.cycle_hours_utc.iter().rev().copied() {
+            if !forecast_hour_supported(model, hour_utc, forecast_hour) {
+                continue;
+            }
             let cycle = match CycleSpec::new(candidate_date.clone(), hour_utc) {
                 Ok(cycle) => cycle,
                 Err(_) => continue,
             };
             let available_source = allowed_sources.iter().copied().find(|candidate_source| {
                 required_products.iter().all(|product| {
-                    let request = match ModelRunRequest::new(model, cycle.clone(), 0, *product) {
-                        Ok(request) => request,
-                        Err(_) => return false,
-                    };
+                    let request =
+                        match ModelRunRequest::new(model, cycle.clone(), forecast_hour, *product) {
+                            Ok(request) => request,
+                            Err(_) => return false,
+                        };
                     resolve_urls(&request)
                         .map(|resolved_urls| {
                             resolved_urls.into_iter().any(|resolved| {
@@ -2028,8 +2089,7 @@ fn days_in_month(year: i32, month: u32) -> u32 {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
         2 => {
-            let is_leap =
-                (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+            let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
             if is_leap { 29 } else { 28 }
         }
         _ => 30,
@@ -2183,13 +2243,11 @@ fn build_ecmwf_url(source: SourceId, request: &ModelRunRequest) -> Result<String
     if source != SourceId::Ecmwf {
         return Ok(unsupported_source(source, request.model));
     }
-    if !forecast_hour_supported(
-        request.model,
-        request.cycle.hour_utc,
-        request.forecast_hour,
-    ) {
+    if !forecast_hour_supported(request.model, request.cycle.hour_utc, request.forecast_hour) {
         let reason = match request.cycle.hour_utc {
-            0 | 12 => "00/12z open-data runs expose 3-hourly steps to 144h, then 6-hourly steps to 360h",
+            0 | 12 => {
+                "00/12z open-data runs expose 3-hourly steps to 144h, then 6-hourly steps to 360h"
+            }
             6 | 18 => "06/18z open-data runs expose 3-hourly steps to 144h only",
             _ => "ECMWF open-data runs are currently expected at 00/06/12/18 UTC",
         };
@@ -3099,17 +3157,35 @@ mod tests {
     }
 
     #[test]
+    fn latest_available_run_at_forecast_hour_prefers_ecmwf_long_cycle_when_needed() {
+        let latest = latest_available_run_for_products_with_probe_at_forecast_hour(
+            ModelId::EcmwfOpenData,
+            None,
+            "20260414",
+            &["oper"],
+            150,
+            |resolved| {
+                let url = resolved.availability_probe_url();
+                url.contains("/20260414/12z/ifs/0p25/oper/") && url.contains("150h-oper-fc.grib2")
+            },
+        )
+        .unwrap();
+
+        assert_eq!(latest.cycle.date_yyyymmdd, "20260414");
+        assert_eq!(latest.cycle.hour_utc, 12);
+    }
+
+    #[test]
     fn latest_available_run_rolls_back_to_previous_day_when_today_is_unpublished() {
         // Simulate a UTC-rollover / publication window where no cycle of the
         // requested date has been published yet, but yesterday's 18z is still
         // serving. The probe returns true only for yesterday's 18z URL.
-        let latest =
-            latest_available_run_with_probe(ModelId::Gfs, None, "20260415", |resolved| {
-                resolved
-                    .availability_probe_url()
-                    .contains("gfs.20260414/18/atmos/gfs.t18z.pgrb2.0p25.f000")
-            })
-            .unwrap();
+        let latest = latest_available_run_with_probe(ModelId::Gfs, None, "20260415", |resolved| {
+            resolved
+                .availability_probe_url()
+                .contains("gfs.20260414/18/atmos/gfs.t18z.pgrb2.0p25.f000")
+        })
+        .unwrap();
 
         assert_eq!(latest.cycle.date_yyyymmdd, "20260414");
         assert_eq!(latest.cycle.hour_utc, 18);
@@ -3119,16 +3195,12 @@ mod tests {
     fn latest_available_run_prefers_today_even_with_rollback_enabled() {
         // If both today and yesterday are available, today wins — the
         // rollback must not demote a published current-day run.
-        let latest = latest_available_run_with_probe(
-            ModelId::EcmwfOpenData,
-            None,
-            "20260414",
-            |resolved| {
+        let latest =
+            latest_available_run_with_probe(ModelId::EcmwfOpenData, None, "20260414", |resolved| {
                 let url = resolved.availability_probe_url();
                 url.contains("/20260414/06z/") || url.contains("/20260413/18z/")
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
 
         assert_eq!(latest.cycle.date_yyyymmdd, "20260414");
         assert_eq!(latest.cycle.hour_utc, 6);
@@ -3144,8 +3216,7 @@ mod tests {
             |resolved| {
                 let url = resolved.availability_probe_url();
                 url.contains("20260417/22/")
-                    || (url.contains("20260417/23/")
-                        && url.contains("prslev.3km.f000.conus"))
+                    || (url.contains("20260417/23/") && url.contains("prslev.3km.f000.conus"))
             },
         )
         .unwrap();
@@ -3157,13 +3228,28 @@ mod tests {
 
     #[test]
     fn previous_day_yyyymmdd_handles_month_and_year_boundaries() {
-        assert_eq!(previous_day_yyyymmdd("20260415").as_deref(), Some("20260414"));
-        assert_eq!(previous_day_yyyymmdd("20260401").as_deref(), Some("20260331"));
-        assert_eq!(previous_day_yyyymmdd("20260101").as_deref(), Some("20251231"));
+        assert_eq!(
+            previous_day_yyyymmdd("20260415").as_deref(),
+            Some("20260414")
+        );
+        assert_eq!(
+            previous_day_yyyymmdd("20260401").as_deref(),
+            Some("20260331")
+        );
+        assert_eq!(
+            previous_day_yyyymmdd("20260101").as_deref(),
+            Some("20251231")
+        );
         // Leap-year awareness: 2028 is a leap year, so 2028-03-01 rolls back
         // to 2028-02-29, while 2027-03-01 rolls back to 2027-02-28.
-        assert_eq!(previous_day_yyyymmdd("20280301").as_deref(), Some("20280229"));
-        assert_eq!(previous_day_yyyymmdd("20270301").as_deref(), Some("20270228"));
+        assert_eq!(
+            previous_day_yyyymmdd("20280301").as_deref(),
+            Some("20280229")
+        );
+        assert_eq!(
+            previous_day_yyyymmdd("20270301").as_deref(),
+            Some("20270228")
+        );
         assert_eq!(previous_day_yyyymmdd("notadate"), None);
     }
 

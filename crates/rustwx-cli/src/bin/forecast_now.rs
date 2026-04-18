@@ -210,6 +210,11 @@ struct LaneOutcome {
     model: ModelId,
     forecast_hour: u16,
     lane: String,
+    run_date_yyyymmdd: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_cycle_utc: Option<u8>,
+    run_source: SourceId,
+    pin_resolution: PinResolution,
     ok: bool,
     duration_ms: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -220,9 +225,41 @@ struct LaneOutcome {
     blockers: Vec<String>,
 }
 
-fn annotate_region(outcomes: &mut Vec<LaneOutcome>, mut outcome: LaneOutcome, region: RegionPreset) {
+fn annotate_region(
+    outcomes: &mut Vec<LaneOutcome>,
+    mut outcome: LaneOutcome,
+    region: RegionPreset,
+) {
     outcome.region = region.slug().to_string();
     outcomes.push(outcome);
+}
+
+fn lane_outcome_from_pinned(
+    pinned: &PinnedRunRequest,
+    model: ModelId,
+    forecast_hour: u16,
+    lane: &str,
+    ok: bool,
+    duration_ms: u128,
+    error: Option<String>,
+    outputs: Vec<String>,
+    blockers: Vec<String>,
+) -> LaneOutcome {
+    LaneOutcome {
+        region: String::new(),
+        model,
+        forecast_hour,
+        lane: lane.to_string(),
+        run_date_yyyymmdd: pinned.date_yyyymmdd.clone(),
+        run_cycle_utc: pinned.cycle_override_utc,
+        run_source: pinned.source,
+        pin_resolution: pinned.resolution,
+        ok,
+        duration_ms,
+        error,
+        outputs,
+        blockers,
+    }
 }
 
 /// Global union of every 'supported' or 'partial' direct + derived
@@ -262,14 +299,12 @@ fn all_supported_recipe_lists() -> (Vec<String>, Vec<String>) {
 /// currently errors on the first unsupported slug, so per-model
 /// filtering keeps the benchmark honest.
 fn model_supported_recipe_lists(model: ModelId) -> (Vec<String>, Vec<String>) {
-    use rustwx_products::catalog::{
-        ProductTargetStatus, build_supported_products_catalog,
-    };
+    use rustwx_products::catalog::{ProductTargetStatus, build_supported_products_catalog};
     let catalog = build_supported_products_catalog();
     let supported_for_model = |support: &[rustwx_products::catalog::ProductTargetSupport]| {
-        support.iter().any(|s| {
-            s.model == Some(model) && matches!(s.status, ProductTargetStatus::Supported)
-        })
+        support
+            .iter()
+            .any(|s| s.model == Some(model) && matches!(s.status, ProductTargetStatus::Supported))
     };
     let direct: Vec<String> = catalog
         .direct
@@ -308,6 +343,7 @@ struct RunSummary {
     derived_recipes: Vec<String>,
     outcomes: Vec<LaneOutcome>,
     counts_by_model: BTreeMap<String, ModelCounts>,
+    resolved_runs_by_model: BTreeMap<String, ResolvedRunSummary>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -322,6 +358,36 @@ struct ModelCounts {
 struct PinnedRunRequest {
     date_yyyymmdd: String,
     cycle_override_utc: Option<u8>,
+    source: SourceId,
+    resolution: PinResolution,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PinResolution {
+    RequestedOverride,
+    AutoLatest,
+    UnresolvedFallback,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ResolvedRunSummary {
+    run_date_yyyymmdd: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_cycle_utc: Option<u8>,
+    run_source: SourceId,
+    pin_resolution: PinResolution,
+}
+
+impl From<&PinnedRunRequest> for ResolvedRunSummary {
+    fn from(value: &PinnedRunRequest) -> Self {
+        Self {
+            run_date_yyyymmdd: value.date_yyyymmdd.clone(),
+            run_cycle_utc: value.cycle_override_utc,
+            run_source: value.source,
+            pin_resolution: value.resolution,
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -359,6 +425,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         derived_recipes.len(),
     );
 
+    let pin_forecast_hour = hours.iter().copied().max().unwrap_or(0);
+    let mut pinned_runs_by_model = BTreeMap::<String, PinnedRunRequest>::new();
+    for &model in &args.models {
+        let source = args.source.unwrap_or(model_summary(model).sources[0].id);
+        let pinned_request = if let Some(cycle_override_utc) = args.cycle {
+            PinnedRunRequest {
+                date_yyyymmdd: date.clone(),
+                cycle_override_utc: Some(cycle_override_utc),
+                source,
+                resolution: PinResolution::RequestedOverride,
+            }
+        } else {
+            let required_products = forecast_now_required_products(model, &args);
+            let latest = if required_products.is_empty() {
+                rustwx_models::latest_available_run_at_forecast_hour(
+                    model,
+                    Some(source),
+                    &date,
+                    pin_forecast_hour,
+                )
+            } else {
+                rustwx_models::latest_available_run_for_products_at_forecast_hour(
+                    model,
+                    Some(source),
+                    &date,
+                    &required_products,
+                    pin_forecast_hour,
+                )
+            };
+            match latest {
+                Ok(run) => {
+                    println!(
+                        "[cycle] {model}: pinned to {:02}z ({}) via {:?}",
+                        run.cycle.hour_utc, run.cycle.date_yyyymmdd, run.source
+                    );
+                    PinnedRunRequest {
+                        date_yyyymmdd: run.cycle.date_yyyymmdd,
+                        cycle_override_utc: Some(run.cycle.hour_utc),
+                        source: run.source,
+                        resolution: PinResolution::AutoLatest,
+                    }
+                }
+                Err(err) => {
+                    eprintln!("[cycle] {model}: latest-run resolve failed: {err}");
+                    PinnedRunRequest {
+                        date_yyyymmdd: date.clone(),
+                        cycle_override_utc: None,
+                        source,
+                        resolution: PinResolution::UnresolvedFallback,
+                    }
+                }
+            }
+        };
+        pinned_runs_by_model.insert(model.to_string(), pinned_request);
+    }
+
     let mut outcomes = Vec::<LaneOutcome>::new();
     let mut counts_by_model: BTreeMap<String, ModelCounts> = BTreeMap::new();
 
@@ -369,9 +491,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let counts = counts_by_model
                 .entry(format!("{}:{}", region.slug(), model))
                 .or_default();
-            let source = args
-                .source
-                .unwrap_or(model_summary(model).sources[0].id);
+            let pinned_request = pinned_runs_by_model
+                .get(&model.to_string())
+                .expect("model pin should be computed before execution");
 
             // Per-model recipe selection for --all-supported so derived
             // doesn't abort on a slug that's Supported in the catalog's
@@ -393,48 +515,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (direct_for_model, derived_for_model)
             };
 
-            // Pin the cycle ONCE per model so severe/ECAPE/direct/derived
-            // all use the same run. Without this each per-lane batch
-            // re-runs latest_available_run(), and if a new cycle publishes
-            // mid-run (e.g. 18z severe, 19z ECAPE) every subsequent lane
-            // invalidates the fetch cache and does a full wrfsfc+wrfprs
-            // re-download + re-decode — the HRRR midwest bench was taking
-            // 30-40 min per model because of this.
-            let pinned_request = if let Some(cycle_override_utc) = args.cycle {
-                PinnedRunRequest {
-                    date_yyyymmdd: date.clone(),
-                    cycle_override_utc: Some(cycle_override_utc),
-                }
-            } else {
-                let required_products = forecast_now_required_products(model, &args);
-                let latest = if required_products.is_empty() {
-                    rustwx_models::latest_available_run(model, Some(source), &date)
-                } else {
-                    rustwx_models::latest_available_run_for_products(
-                        model,
-                        Some(source),
-                        &date,
-                        &required_products,
-                    )
-                };
-                match latest {
-                    Ok(run) => {
-                        println!("[cycle] {model}: pinned to {:02}z ({})", run.cycle.hour_utc, run.cycle.date_yyyymmdd);
-                        PinnedRunRequest {
-                            date_yyyymmdd: run.cycle.date_yyyymmdd,
-                            cycle_override_utc: Some(run.cycle.hour_utc),
-                        }
-                    }
-                    Err(err) => {
-                        eprintln!("[cycle] {model}: latest-run resolve failed: {err}");
-                        PinnedRunRequest {
-                            date_yyyymmdd: date.clone(),
-                            cycle_override_utc: None,
-                        }
-                    }
-                }
-            };
-
+            // Pinning now happens once per model before any region work,
+            // then every region/hour/lane reuses that resolved run.
             for &fh in &hours {
                 // HRRR has optimized unified runners that share the
                 // planner-loaded surface+pressure bundle and the
@@ -450,10 +532,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // for those yet).
                 if matches!(model, ModelId::Hrrr) {
                     let hrrr_outcomes = run_hrrr_unified(
-                        &pinned_request.date_yyyymmdd,
-                        pinned_request.cycle_override_utc,
+                        pinned_request,
                         fh,
-                        source,
                         &domain,
                         &args,
                         &direct_for_model,
@@ -467,38 +547,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if !args.skip_severe {
-                    let outcome = run_severe_lane(
-                        model,
-                        &pinned_request.date_yyyymmdd,
-                        pinned_request.cycle_override_utc,
-                        fh,
-                        source,
-                        &domain,
-                        &args,
-                        counts,
-                    );
+                    let outcome =
+                        run_severe_lane(model, pinned_request, fh, &domain, &args, counts);
                     annotate_region(&mut outcomes, outcome, region);
                 }
                 if !args.skip_ecape {
-                    let outcome = run_ecape_lane(
-                        model,
-                        &pinned_request.date_yyyymmdd,
-                        pinned_request.cycle_override_utc,
-                        fh,
-                        source,
-                        &domain,
-                        &args,
-                        counts,
-                    );
+                    let outcome = run_ecape_lane(model, pinned_request, fh, &domain, &args, counts);
                     annotate_region(&mut outcomes, outcome, region);
                 }
                 if !args.skip_direct {
                     let outcome = run_direct_lane(
                         model,
-                        &pinned_request.date_yyyymmdd,
-                        pinned_request.cycle_override_utc,
+                        pinned_request,
                         fh,
-                        source,
                         &domain,
                         &args,
                         &direct_for_model,
@@ -509,10 +570,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if !args.skip_derived {
                     let outcome = run_derived_lane(
                         model,
-                        &pinned_request.date_yyyymmdd,
-                        pinned_request.cycle_override_utc,
+                        pinned_request,
                         fh,
-                        source,
                         &domain,
                         &args,
                         &derived_for_model,
@@ -540,6 +599,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         derived_recipes,
         outcomes,
         counts_by_model,
+        resolved_runs_by_model: pinned_runs_by_model
+            .iter()
+            .map(|(model, pinned)| (model.clone(), ResolvedRunSummary::from(pinned)))
+            .collect(),
     };
 
     let summary_path = args
@@ -563,13 +626,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::PinnedRunRequest;
+    use super::{PinResolution, PinnedRunRequest};
+    use rustwx_core::SourceId;
 
     #[test]
     fn pinned_request_uses_resolved_cycle_date() {
         let pinned = PinnedRunRequest {
             date_yyyymmdd: "20260417".to_string(),
             cycle_override_utc: Some(12),
+            source: SourceId::Aws,
+            resolution: PinResolution::AutoLatest,
         };
         assert_eq!(pinned.date_yyyymmdd, "20260417");
         assert_eq!(pinned.cycle_override_utc, Some(12));
@@ -646,10 +712,8 @@ fn civil_from_days(z: i64) -> (i32, u32, u32) {
 
 fn run_severe_lane(
     model: ModelId,
-    date: &str,
-    cycle: Option<u8>,
+    pinned: &PinnedRunRequest,
     fh: u16,
-    source: SourceId,
     domain: &DomainSpec,
     args: &Args,
     counts: &mut ModelCounts,
@@ -657,10 +721,10 @@ fn run_severe_lane(
     let start = Instant::now();
     let request = SevereBatchRequest {
         model,
-        date_yyyymmdd: date.to_string(),
-        cycle_override_utc: cycle,
+        date_yyyymmdd: pinned.date_yyyymmdd.clone(),
+        cycle_override_utc: pinned.cycle_override_utc,
         forecast_hour: fh,
-        source,
+        source: pinned.source,
         domain: domain.clone(),
         out_dir: args.out_dir.clone(),
         cache_root: args.cache_dir.clone(),
@@ -675,42 +739,40 @@ fn run_severe_lane(
             println!("[ok  ] {model} f{fh:03} {slug}: {png}");
             counts.succeeded += 1;
             counts.outputs += 1;
-            LaneOutcome {
-                region: String::new(),
+            lane_outcome_from_pinned(
+                pinned,
                 model,
-                forecast_hour: fh,
-                lane: slug.to_string(),
-                ok: true,
-                duration_ms: start.elapsed().as_millis(),
-                error: None,
-                outputs: vec![png],
-                blockers: Vec::new(),
-            }
+                fh,
+                slug,
+                true,
+                start.elapsed().as_millis(),
+                None,
+                vec![png],
+                Vec::new(),
+            )
         }
         Err(err) => {
             eprintln!("[fail] {model} f{fh:03} {slug}: {err}");
             counts.failed += 1;
-            LaneOutcome {
-                region: String::new(),
+            lane_outcome_from_pinned(
+                pinned,
                 model,
-                forecast_hour: fh,
-                lane: slug.to_string(),
-                ok: false,
-                duration_ms: start.elapsed().as_millis(),
-                error: Some(err.to_string()),
-                outputs: Vec::new(),
-                blockers: Vec::new(),
-            }
+                fh,
+                slug,
+                false,
+                start.elapsed().as_millis(),
+                Some(err.to_string()),
+                Vec::new(),
+                Vec::new(),
+            )
         }
     }
 }
 
 fn run_ecape_lane(
     model: ModelId,
-    date: &str,
-    cycle: Option<u8>,
+    pinned: &PinnedRunRequest,
     fh: u16,
-    source: SourceId,
     domain: &DomainSpec,
     args: &Args,
     counts: &mut ModelCounts,
@@ -718,10 +780,10 @@ fn run_ecape_lane(
     let start = Instant::now();
     let request = EcapeBatchRequest {
         model,
-        date_yyyymmdd: date.to_string(),
-        cycle_override_utc: cycle,
+        date_yyyymmdd: pinned.date_yyyymmdd.clone(),
+        cycle_override_utc: pinned.cycle_override_utc,
         forecast_hour: fh,
-        source,
+        source: pinned.source,
         domain: domain.clone(),
         out_dir: args.out_dir.clone(),
         cache_root: args.cache_dir.clone(),
@@ -736,42 +798,40 @@ fn run_ecape_lane(
             println!("[ok  ] {model} f{fh:03} {slug}: {png}");
             counts.succeeded += 1;
             counts.outputs += 1;
-            LaneOutcome {
-                region: String::new(),
+            lane_outcome_from_pinned(
+                pinned,
                 model,
-                forecast_hour: fh,
-                lane: slug.to_string(),
-                ok: true,
-                duration_ms: start.elapsed().as_millis(),
-                error: None,
-                outputs: vec![png],
-                blockers: Vec::new(),
-            }
+                fh,
+                slug,
+                true,
+                start.elapsed().as_millis(),
+                None,
+                vec![png],
+                Vec::new(),
+            )
         }
         Err(err) => {
             eprintln!("[fail] {model} f{fh:03} {slug}: {err}");
             counts.failed += 1;
-            LaneOutcome {
-                region: String::new(),
+            lane_outcome_from_pinned(
+                pinned,
                 model,
-                forecast_hour: fh,
-                lane: slug.to_string(),
-                ok: false,
-                duration_ms: start.elapsed().as_millis(),
-                error: Some(err.to_string()),
-                outputs: Vec::new(),
-                blockers: Vec::new(),
-            }
+                fh,
+                slug,
+                false,
+                start.elapsed().as_millis(),
+                Some(err.to_string()),
+                Vec::new(),
+                Vec::new(),
+            )
         }
     }
 }
 
 fn run_direct_lane(
     model: ModelId,
-    date: &str,
-    cycle: Option<u8>,
+    pinned: &PinnedRunRequest,
     fh: u16,
-    source: SourceId,
     domain: &DomainSpec,
     args: &Args,
     recipes: &[String],
@@ -780,10 +840,10 @@ fn run_direct_lane(
     let start = Instant::now();
     let request = DirectBatchRequest {
         model,
-        date_yyyymmdd: date.to_string(),
-        cycle_override_utc: cycle,
+        date_yyyymmdd: pinned.date_yyyymmdd.clone(),
+        cycle_override_utc: pinned.cycle_override_utc,
         forecast_hour: fh,
-        source,
+        source: pinned.source,
         domain: domain.clone(),
         out_dir: args.out_dir.clone(),
         cache_root: args.cache_dir.clone(),
@@ -818,42 +878,40 @@ fn run_direct_lane(
                 outputs.len(),
                 blockers.len()
             );
-            LaneOutcome {
-                region: String::new(),
+            lane_outcome_from_pinned(
+                pinned,
                 model,
-                forecast_hour: fh,
-                lane: slug.to_string(),
-                ok: !outputs.is_empty() || blockers.is_empty(),
-                duration_ms: start.elapsed().as_millis(),
-                error: None,
+                fh,
+                slug,
+                !outputs.is_empty() || blockers.is_empty(),
+                start.elapsed().as_millis(),
+                None,
                 outputs,
                 blockers,
-            }
+            )
         }
         Err(err) => {
             eprintln!("[fail] {model} f{fh:03} {slug}: {err}");
             counts.failed += 1;
-            LaneOutcome {
-                region: String::new(),
+            lane_outcome_from_pinned(
+                pinned,
                 model,
-                forecast_hour: fh,
-                lane: slug.to_string(),
-                ok: false,
-                duration_ms: start.elapsed().as_millis(),
-                error: Some(err.to_string()),
-                outputs: Vec::new(),
-                blockers: Vec::new(),
-            }
+                fh,
+                slug,
+                false,
+                start.elapsed().as_millis(),
+                Some(err.to_string()),
+                Vec::new(),
+                Vec::new(),
+            )
         }
     }
 }
 
 fn run_derived_lane(
     model: ModelId,
-    date: &str,
-    cycle: Option<u8>,
+    pinned: &PinnedRunRequest,
     fh: u16,
-    source: SourceId,
     domain: &DomainSpec,
     args: &Args,
     recipes: &[String],
@@ -862,10 +920,10 @@ fn run_derived_lane(
     let start = Instant::now();
     let request = DerivedBatchRequest {
         model,
-        date_yyyymmdd: date.to_string(),
-        cycle_override_utc: cycle,
+        date_yyyymmdd: pinned.date_yyyymmdd.clone(),
+        cycle_override_utc: pinned.cycle_override_utc,
         forecast_hour: fh,
-        source,
+        source: pinned.source,
         domain: domain.clone(),
         out_dir: args.out_dir.clone(),
         cache_root: args.cache_dir.clone(),
@@ -884,36 +942,33 @@ fn run_derived_lane(
                 .collect();
             counts.outputs += outputs.len();
             counts.succeeded += 1;
-            println!(
-                "[ok  ] {model} f{fh:03} {slug}: {} png",
-                outputs.len()
-            );
-            LaneOutcome {
-                region: String::new(),
+            println!("[ok  ] {model} f{fh:03} {slug}: {} png", outputs.len());
+            lane_outcome_from_pinned(
+                pinned,
                 model,
-                forecast_hour: fh,
-                lane: slug.to_string(),
-                ok: true,
-                duration_ms: start.elapsed().as_millis(),
-                error: None,
+                fh,
+                slug,
+                true,
+                start.elapsed().as_millis(),
+                None,
                 outputs,
-                blockers: Vec::new(),
-            }
+                Vec::new(),
+            )
         }
         Err(err) => {
             eprintln!("[fail] {model} f{fh:03} {slug}: {err}");
             counts.failed += 1;
-            LaneOutcome {
-                region: String::new(),
+            lane_outcome_from_pinned(
+                pinned,
                 model,
-                forecast_hour: fh,
-                lane: slug.to_string(),
-                ok: false,
-                duration_ms: start.elapsed().as_millis(),
-                error: Some(err.to_string()),
-                outputs: Vec::new(),
-                blockers: Vec::new(),
-            }
+                fh,
+                slug,
+                false,
+                start.elapsed().as_millis(),
+                Some(err.to_string()),
+                Vec::new(),
+                Vec::new(),
+            )
         }
     }
 }
@@ -934,10 +989,8 @@ fn run_derived_lane(
 /// route through the per-lane runners (no unified variant exists for
 /// them yet).
 fn run_hrrr_unified(
-    date: &str,
-    cycle: Option<u8>,
+    pinned: &PinnedRunRequest,
     fh: u16,
-    source: SourceId,
     domain: &DomainSpec,
     args: &Args,
     direct_recipes: &[String],
@@ -957,10 +1010,10 @@ fn run_hrrr_unified(
     if !products.is_empty() {
         let start = Instant::now();
         let request = HrrrBatchRequest {
-            date_yyyymmdd: date.to_string(),
-            cycle_override_utc: cycle,
+            date_yyyymmdd: pinned.date_yyyymmdd.clone(),
+            cycle_override_utc: pinned.cycle_override_utc,
             forecast_hour: fh,
-            source,
+            source: pinned.source,
             domain: domain.clone(),
             out_dir: args.out_dir.clone(),
             cache_root: args.cache_dir.clone(),
@@ -989,32 +1042,32 @@ fn run_hrrr_unified(
                 );
                 counts.succeeded += 1;
                 counts.outputs += outputs.len();
-                outcomes.push(LaneOutcome {
-                    region: String::new(),
-                    model: ModelId::Hrrr,
-                    forecast_hour: fh,
-                    lane: slug.to_string(),
-                    ok: true,
-                    duration_ms: dur,
-                    error: None,
+                outcomes.push(lane_outcome_from_pinned(
+                    pinned,
+                    ModelId::Hrrr,
+                    fh,
+                    slug,
+                    true,
+                    dur,
+                    None,
                     outputs,
-                    blockers: Vec::new(),
-                });
+                    Vec::new(),
+                ));
             }
             Err(err) => {
                 eprintln!("[fail] hrrr f{fh:03} {slug}: {err}");
                 counts.failed += 1;
-                outcomes.push(LaneOutcome {
-                    region: String::new(),
-                    model: ModelId::Hrrr,
-                    forecast_hour: fh,
-                    lane: slug.to_string(),
-                    ok: false,
-                    duration_ms: start.elapsed().as_millis(),
-                    error: Some(err.to_string()),
-                    outputs: Vec::new(),
-                    blockers: Vec::new(),
-                });
+                outcomes.push(lane_outcome_from_pinned(
+                    pinned,
+                    ModelId::Hrrr,
+                    fh,
+                    slug,
+                    false,
+                    start.elapsed().as_millis(),
+                    Some(err.to_string()),
+                    Vec::new(),
+                    Vec::new(),
+                ));
             }
         }
     }
@@ -1025,10 +1078,10 @@ fn run_hrrr_unified(
     if want_direct || want_derived {
         let start = Instant::now();
         let request = HrrrNonEcapeHourRequest {
-            date_yyyymmdd: date.to_string(),
-            cycle_override_utc: cycle,
+            date_yyyymmdd: pinned.date_yyyymmdd.clone(),
+            cycle_override_utc: pinned.cycle_override_utc,
             forecast_hour: fh,
-            source,
+            source: pinned.source,
             domain: domain.clone(),
             out_dir: args.out_dir.clone(),
             cache_root: args.cache_dir.clone(),
@@ -1061,32 +1114,32 @@ fn run_hrrr_unified(
                 );
                 counts.succeeded += 1;
                 counts.outputs += outputs.len();
-                outcomes.push(LaneOutcome {
-                    region: String::new(),
-                    model: ModelId::Hrrr,
-                    forecast_hour: fh,
-                    lane: "hrrr_non_ecape_hour".to_string(),
-                    ok: true,
-                    duration_ms: dur,
-                    error: None,
+                outcomes.push(lane_outcome_from_pinned(
+                    pinned,
+                    ModelId::Hrrr,
+                    fh,
+                    "hrrr_non_ecape_hour",
+                    true,
+                    dur,
+                    None,
                     outputs,
-                    blockers: Vec::new(),
-                });
+                    Vec::new(),
+                ));
             }
             Err(err) => {
                 eprintln!("[fail] hrrr f{fh:03} hrrr_non_ecape_hour: {err}");
                 counts.failed += 1;
-                outcomes.push(LaneOutcome {
-                    region: String::new(),
-                    model: ModelId::Hrrr,
-                    forecast_hour: fh,
-                    lane: "hrrr_non_ecape_hour".to_string(),
-                    ok: false,
-                    duration_ms: start.elapsed().as_millis(),
-                    error: Some(err.to_string()),
-                    outputs: Vec::new(),
-                    blockers: Vec::new(),
-                });
+                outcomes.push(lane_outcome_from_pinned(
+                    pinned,
+                    ModelId::Hrrr,
+                    fh,
+                    "hrrr_non_ecape_hour",
+                    false,
+                    start.elapsed().as_millis(),
+                    Some(err.to_string()),
+                    Vec::new(),
+                    Vec::new(),
+                ));
             }
         }
     }

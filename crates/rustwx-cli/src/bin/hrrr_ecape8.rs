@@ -76,7 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // this bin only adds optional proof-artifact dumps so a developer
     // can inspect the raw fetched bytes and decode statistics for one
     // hour without invoking the full operational manifest pipeline.
-    let latest = resolve_hrrr_run(&args.date, args.cycle, args.source)?;
+    let latest = resolve_hrrr_run(&args.date, args.cycle, args.forecast_hour, args.source)?;
     let plan = build_severe_execution_plan(&latest, args.forecast_hour, None, None);
     let loaded = load_execution_plan(
         plan,
@@ -90,17 +90,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cycle = loaded.latest.cycle.hour_utc;
     let surface_planned = loaded
         .plan
-        .bundle_for(CanonicalBundleDescriptor::SurfaceAnalysis, args.forecast_hour)
+        .bundle_for(
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+            args.forecast_hour,
+        )
         .ok_or("planner missed HRRR surface analysis bundle")?;
     let pressure_planned = loaded
         .plan
-        .bundle_for(CanonicalBundleDescriptor::PressureAnalysis, args.forecast_hour)
+        .bundle_for(
+            CanonicalBundleDescriptor::PressureAnalysis,
+            args.forecast_hour,
+        )
         .ok_or("planner missed HRRR pressure analysis bundle")?;
     let surface_decode = loaded
-        .surface_decode_for(CanonicalBundleDescriptor::SurfaceAnalysis, args.forecast_hour)
+        .surface_decode_for(
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+            args.forecast_hour,
+        )
         .ok_or("loader missing surface decode")?;
     let pressure_decode = loaded
-        .pressure_decode_for(CanonicalBundleDescriptor::PressureAnalysis, args.forecast_hour)
+        .pressure_decode_for(
+            CanonicalBundleDescriptor::PressureAnalysis,
+            args.forecast_hour,
+        )
         .ok_or("loader missing pressure decode")?;
     let surface_fetched = loaded
         .fetched_for(surface_planned)
@@ -179,14 +191,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .with_subtitle_line(
         "Parcel-specific ECAPE shown for SB, ML, and MU. Single NCAPE context plus SBECIN and MLECIN. Experimental SCP/EHI shown.",
     );
-    render_two_by_four_solar07_panel(
-        &panel_path,
-        &grid,
-        &projected,
-        &fields,
-        &header,
-        layout,
-    )?;
+    render_two_by_four_solar07_panel(&panel_path, &grid, &projected, &fields, &header, layout)?;
     let render_ms = render_start.elapsed().as_millis();
 
     let _ = ModelId::Hrrr;

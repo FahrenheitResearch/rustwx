@@ -1,20 +1,20 @@
 use crate::gridded::{
-    decode_cache_path, load_surface_geometry_from_latest, resolve_model_run, FetchRuntimeInfo,
+    FetchRuntimeInfo, decode_cache_path, load_surface_geometry_from_latest, resolve_model_run,
 };
 use crate::hrrr::HrrrFetchRuntimeInfo;
 use crate::planner::ExecutionPlanBuilder;
-use crate::publication::{fetch_identity_from_cached_result, PublishedFetchIdentity};
-use crate::runtime::{BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan};
+use crate::publication::{PublishedFetchIdentity, fetch_identity_from_cached_result};
+use crate::runtime::{
+    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
+};
 use crate::shared_context::{DomainSpec, ProjectedMap};
 use crate::windowed_decoder::{
-    compute_qpf_product, compute_uh_product, load_or_decode_apcp, load_or_decode_uh25,
-    HrrrApcpDecode, HrrrUhDecode,
+    HrrrApcpDecode, HrrrUhDecode, compute_qpf_product, compute_uh_product, load_or_decode_apcp,
+    load_or_decode_uh25,
 };
-use rustwx_core::{
-    BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId,
-};
+use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
 use rustwx_models::LatestRun;
-use rustwx_render::{save_png, MapRenderRequest, Solar07Product};
+use rustwx_render::{MapRenderRequest, Solar07Product, save_png};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -313,6 +313,7 @@ pub fn run_hrrr_windowed_batch(
         ModelId::Hrrr,
         &request.date_yyyymmdd,
         request.cycle_override_utc,
+        request.forecast_hour,
         request.source,
     )?;
     run_hrrr_windowed_batch_with_context(request, &latest)
@@ -352,11 +353,8 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
 
     let mut plan_builder = ExecutionPlanBuilder::new(latest, request.forecast_hour);
     for &hour in &all_hours {
-        let requirement = BundleRequirement::new(
-            CanonicalBundleDescriptor::NativeAnalysis,
-            hour,
-        )
-        .with_native_override("sfc");
+        let requirement = BundleRequirement::new(CanonicalBundleDescriptor::NativeAnalysis, hour)
+            .with_native_override("sfc");
         // Preserve the logical alias names manifests have always
         // surfaced for windowed: QPF hours show up as "sfc"; UH hours
         // show up as "nat" because the windowed lane historically
@@ -671,18 +669,12 @@ fn load_apcp_hours_from_plan(
             }
         };
         total_fetch_ms += fetched.fetch_ms;
-        let decode_path = decode_cache_path(
-            &request.cache_root,
-            &fetched.file.request,
-            "windowed_apcp",
-        );
+        let decode_path =
+            decode_cache_path(&request.cache_root, &fetched.file.request, "windowed_apcp");
         let decode_start = Instant::now();
-        let decode_result = load_or_decode_apcp(
-            &decode_path,
-            &fetched.file.bytes,
-            request.use_cache,
-        )
-        .map_err(|err| err.to_string());
+        let decode_result =
+            load_or_decode_apcp(&decode_path, &fetched.file.bytes, request.use_cache)
+                .map_err(|err| err.to_string());
         total_decode_ms += decode_start.elapsed().as_millis();
         fetches.push(HrrrWindowedHourFetchInfo {
             hour,
@@ -742,18 +734,12 @@ fn load_uh_hours_from_plan(
             }
         };
         total_fetch_ms += fetched.fetch_ms;
-        let decode_path = decode_cache_path(
-            &request.cache_root,
-            &fetched.file.request,
-            "windowed_uh25",
-        );
+        let decode_path =
+            decode_cache_path(&request.cache_root, &fetched.file.request, "windowed_uh25");
         let decode_start = Instant::now();
-        let decode_result = load_or_decode_uh25(
-            &decode_path,
-            &fetched.file.bytes,
-            request.use_cache,
-        )
-        .map_err(|err| err.to_string());
+        let decode_result =
+            load_or_decode_uh25(&decode_path, &fetched.file.bytes, request.use_cache)
+                .map_err(|err| err.to_string());
         total_decode_ms += decode_start.elapsed().as_millis();
         fetches.push(HrrrWindowedHourFetchInfo {
             hour,

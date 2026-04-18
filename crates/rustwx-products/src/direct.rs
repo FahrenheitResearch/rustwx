@@ -9,7 +9,7 @@ use rustwx_io::{
 };
 use rustwx_models::{
     LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
-    latest_available_run, plot_recipe, plot_recipe_fetch_plan,
+    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan,
 };
 use rustwx_render::{
     Color, ColorScale, ContourLayer, DiscreteColorScale, ExtendMode, MapRenderRequest,
@@ -35,7 +35,9 @@ use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
     fetch_identity_from_cached_result_with_aliases,
 };
-use crate::runtime::{BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan};
+use crate::runtime::{
+    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
+};
 use crate::shared_context::{DomainSpec, ProjectedMap, ProjectedMapProvider};
 use crate::spec::direct_product_specs;
 
@@ -255,6 +257,7 @@ fn resolve_direct_run(
     model: ModelId,
     date: &str,
     cycle_override: Option<u8>,
+    forecast_hour: u16,
     source: SourceId,
 ) -> Result<LatestRun, Box<dyn std::error::Error>> {
     match cycle_override {
@@ -263,7 +266,12 @@ fn resolve_direct_run(
             cycle: CycleSpec::new(date, hour)?,
             source,
         }),
-        None => Ok(latest_available_run(model, Some(source), date)?),
+        None => Ok(latest_available_run_at_forecast_hour(
+            model,
+            Some(source),
+            date,
+            forecast_hour,
+        )?),
     }
 }
 
@@ -274,6 +282,7 @@ pub fn run_direct_batch(
         request.model,
         &request.date_yyyymmdd,
         request.cycle_override_utc,
+        request.forecast_hour,
         request.source,
     )?;
     run_direct_batch_with_context(request, &latest, None)
@@ -293,7 +302,13 @@ pub(crate) fn run_hrrr_direct_batch_from_loaded(
     loaded: &LoadedBundleSet,
 ) -> Result<HrrrDirectBatchReport, Box<dyn std::error::Error>> {
     let generic = DirectBatchRequest::from_hrrr(request);
-    run_direct_batch_from_loaded(&generic, loaded, &generic.cache_root, generic.use_cache, None)
+    run_direct_batch_from_loaded(
+        &generic,
+        loaded,
+        &generic.cache_root,
+        generic.use_cache,
+        None,
+    )
 }
 
 pub(crate) fn run_direct_batch_from_loaded(
@@ -336,9 +351,8 @@ pub(crate) fn run_direct_batch_from_loaded(
                 continue;
             }
         };
-        let (fields, unmatched, timing) = extract_direct_fetch_group_from_loaded(
-            request, group, fetched, use_cache,
-        )?;
+        let (fields, unmatched, timing) =
+            extract_direct_fetch_group_from_loaded(request, group, fetched, use_cache)?;
         extracted.extend(fields.into_iter().map(|field| (field.selector, field)));
         for selector in unmatched {
             missing_selectors.insert(selector);
@@ -425,9 +439,8 @@ fn run_direct_batch_with_context(
                 continue;
             }
         };
-        let (fields, unmatched, timing) = extract_direct_fetch_group_from_loaded(
-            request, group, fetched, request.use_cache,
-        )?;
+        let (fields, unmatched, timing) =
+            extract_direct_fetch_group_from_loaded(request, group, fetched, request.use_cache)?;
         extracted.extend(fields.into_iter().map(|field| (field.selector, field)));
         for selector in unmatched {
             missing_selectors.insert(selector);
@@ -574,7 +587,10 @@ fn recipe_block_reason(recipe: &PlotRecipe, missing: &HashSet<FieldSelector>) ->
     None
 }
 
-fn group_direct_fetches(request: &DirectBatchRequest, recipes: &[PlannedDirectRecipe]) -> Vec<FetchGroup> {
+fn group_direct_fetches(
+    request: &DirectBatchRequest,
+    recipes: &[PlannedDirectRecipe],
+) -> Vec<FetchGroup> {
     let mut grouped = HashMap::<String, FetchGroup>::new();
     for item in recipes {
         let planned_family = item.plan.product.to_string();
@@ -626,11 +642,9 @@ fn build_direct_execution_plan(
         // canonical fetched product as native_override; record every
         // logical planned family (e.g. "nat", "sfc") so manifests can
         // surface the aliases.
-        let requirement = BundleRequirement::new(
-            CanonicalBundleDescriptor::NativeAnalysis,
-            forecast_hour,
-        )
-        .with_native_override(group.product.clone());
+        let requirement =
+            BundleRequirement::new(CanonicalBundleDescriptor::NativeAnalysis, forecast_hour)
+                .with_native_override(group.product.clone());
         for alias in &group.planned_family_aliases {
             builder.require_with_logical_family(&requirement, Some(alias));
         }
@@ -660,14 +674,8 @@ fn extract_direct_fetch_group_from_loaded(
     group: &FetchGroup,
     fetched: &FetchedBundleBytes,
     use_cache: bool,
-) -> Result<
-    (
-        Vec<SelectedField2D>,
-        Vec<FieldSelector>,
-        DirectFetchTiming,
-    ),
-    Box<dyn std::error::Error>,
-> {
+) -> Result<(Vec<SelectedField2D>, Vec<FieldSelector>, DirectFetchTiming), Box<dyn std::error::Error>>
+{
     let total_start = Instant::now();
     let fetch_request = &fetched.file.request;
     let cached_result = &fetched.file.fetched;
@@ -743,11 +751,7 @@ fn extract_direct_fetch_group_from_loaded(
                 ),
                 planned_product: group.product.clone(),
                 fetched_product: fetch_request.request.product.clone(),
-                planned_family_aliases: group
-                    .planned_family_aliases
-                    .iter()
-                    .cloned()
-                    .collect(),
+                planned_family_aliases: group.planned_family_aliases.iter().cloned().collect(),
                 requested_source: fetch_request
                     .source_override
                     .unwrap_or(cached_result.result.source),
@@ -1633,10 +1637,8 @@ mod tests {
         // missing APCP@Surface, ECMWF f000 missing RH@2m_agl). Now a
         // missing selector produces a per-recipe blocker and the rest
         // of the recipes still render.
-        let rh_recipe = plot_recipe("2m_relative_humidity")
-            .expect("2m RH recipe should exist");
-        let tmp_recipe = plot_recipe("2m_temperature")
-            .expect("2m temperature recipe should exist");
+        let rh_recipe = plot_recipe("2m_relative_humidity").expect("2m RH recipe should exist");
+        let tmp_recipe = plot_recipe("2m_temperature").expect("2m temperature recipe should exist");
 
         let planned = vec![
             PlannedDirectRecipe {
@@ -1656,8 +1658,7 @@ mod tests {
                 .expect("2m RH recipe has a filled selector"),
         );
 
-        let (renderable, blockers) =
-            partition_recipes_by_selector_availability(&planned, &missing);
+        let (renderable, blockers) = partition_recipes_by_selector_availability(&planned, &missing);
         assert_eq!(renderable.len(), 1);
         assert_eq!(renderable[0].recipe.slug, tmp_recipe.slug);
         assert_eq!(blockers.len(), 1);

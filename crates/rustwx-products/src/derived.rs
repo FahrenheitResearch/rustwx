@@ -679,6 +679,7 @@ pub fn run_derived_batch(
         request.model,
         &request.date_yyyymmdd,
         request.cycle_override_utc,
+        request.forecast_hour,
         request.source,
         request.surface_product_override.as_deref(),
         request.pressure_product_override.as_deref(),
@@ -730,11 +731,8 @@ fn run_derived_batch_from_loaded_bundles(
     // Crop to domain before per-cell CAPE/CIN/shear/SRH compute. Same
     // rationale as severe/ECAPE: avoids doing parcel ascents on every
     // CONUS cell when we only want a regional panel.
-    let cropped = crate::gridded::crop_heavy_domain(
-        full_surface,
-        full_pressure,
-        request.domain.bounds,
-    )?;
+    let cropped =
+        crate::gridded::crop_heavy_domain(full_surface, full_pressure, request.domain.bounds)?;
     let owned_full_grid;
     let (surface, pressure, grid) = match cropped.as_ref() {
         Some(cropped) => (&cropped.surface, &cropped.pressure, cropped.grid.clone()),
@@ -754,12 +752,12 @@ fn run_derived_batch_from_loaded_bundles(
     let project_ms = project_start.elapsed().as_millis();
 
     let compute_start = Instant::now();
-    let computed =
-        compute_derived_fields_generic(surface, pressure, recipes)?;
+    let computed = compute_derived_fields_generic(surface, pressure, recipes)?;
     let compute_ms = compute_start.elapsed().as_millis();
     let input_fetches = build_planned_input_fetches(loaded);
     let input_fetch_keys = unique_input_fetch_keys(&input_fetches);
-    let shared_timing_pair = build_shared_timing_for_pair(loaded, surface_planned, pressure_planned)?;
+    let shared_timing_pair =
+        build_shared_timing_for_pair(loaded, surface_planned, pressure_planned)?;
 
     let render_parallelism = png_render_parallelism(recipes.len());
     let grid_ref = &grid;
@@ -770,69 +768,67 @@ fn run_derived_batch_from_loaded_bundles(
     let source = loaded.latest.source;
     let model = request.model;
     let computed = &computed;
-    let rendered = thread::scope(
-        |scope| -> Result<Vec<DerivedRenderedRecipe>, io::Error> {
-            let mut rendered = Vec::with_capacity(recipes.len());
-            let mut pending = VecDeque::new();
+    let rendered = thread::scope(|scope| -> Result<Vec<DerivedRenderedRecipe>, io::Error> {
+        let mut rendered = Vec::with_capacity(recipes.len());
+        let mut pending = VecDeque::new();
 
-            for &recipe in recipes {
-                let model_slug = request.model.as_str().replace('-', "_");
-                let output_path = request.out_dir.join(format!(
-                    "rustwx_{}_{}_{}z_f{:03}_{}_{}.png",
-                    model_slug,
-                    request.date_yyyymmdd,
-                    cycle_utc,
-                    request.forecast_hour,
-                    request.domain.slug,
-                    recipe.slug()
-                ));
-                let lane_fetch_keys = input_fetch_keys.clone();
-                pending.push_back(scope.spawn(
-                    move || -> Result<DerivedRenderedRecipe, io::Error> {
-                        let render_start = Instant::now();
-                        let render_artifact = build_render_artifact(
-                            recipe,
-                            grid_ref,
-                            projected,
-                            date_yyyymmdd,
-                            cycle_utc,
-                            forecast_hour,
-                            source,
-                            model,
-                            computed,
-                        )
+        for &recipe in recipes {
+            let model_slug = request.model.as_str().replace('-', "_");
+            let output_path = request.out_dir.join(format!(
+                "rustwx_{}_{}_{}z_f{:03}_{}_{}.png",
+                model_slug,
+                request.date_yyyymmdd,
+                cycle_utc,
+                request.forecast_hour,
+                request.domain.slug,
+                recipe.slug()
+            ));
+            let lane_fetch_keys = input_fetch_keys.clone();
+            pending.push_back(
+                scope.spawn(move || -> Result<DerivedRenderedRecipe, io::Error> {
+                    let render_start = Instant::now();
+                    let render_artifact = build_render_artifact(
+                        recipe,
+                        grid_ref,
+                        projected,
+                        date_yyyymmdd,
+                        cycle_utc,
+                        forecast_hour,
+                        source,
+                        model,
+                        computed,
+                    )
+                    .map_err(thread_render_error)?;
+                    save_png(&render_artifact.request, &output_path)
                         .map_err(thread_render_error)?;
-                        save_png(&render_artifact.request, &output_path)
-                            .map_err(thread_render_error)?;
-                        let render_ms = render_start.elapsed().as_millis();
-                        let content_identity = artifact_identity_from_path(&output_path)
-                            .map_err(thread_render_error)?;
-                        Ok(DerivedRenderedRecipe {
-                            recipe_slug: render_artifact.recipe_slug,
-                            title: render_artifact.title,
-                            output_path,
-                            content_identity,
-                            input_fetch_keys: lane_fetch_keys,
-                            timing: DerivedRecipeTiming {
-                                render_ms,
-                                total_ms: render_ms,
-                            },
-                        })
-                    },
-                ));
+                    let render_ms = render_start.elapsed().as_millis();
+                    let content_identity =
+                        artifact_identity_from_path(&output_path).map_err(thread_render_error)?;
+                    Ok(DerivedRenderedRecipe {
+                        recipe_slug: render_artifact.recipe_slug,
+                        title: render_artifact.title,
+                        output_path,
+                        content_identity,
+                        input_fetch_keys: lane_fetch_keys,
+                        timing: DerivedRecipeTiming {
+                            render_ms,
+                            total_ms: render_ms,
+                        },
+                    })
+                }),
+            );
 
-                if pending.len() >= render_parallelism {
-                    rendered.push(join_render_job(pending.pop_front().unwrap())?);
-                }
+            if pending.len() >= render_parallelism {
+                rendered.push(join_render_job(pending.pop_front().unwrap())?);
             }
+        }
 
-            while let Some(handle) = pending.pop_front() {
-                rendered.push(join_render_job(handle)?);
-            }
+        while let Some(handle) = pending.pop_front() {
+            rendered.push(join_render_job(handle)?);
+        }
 
-            Ok(rendered)
-        },
-    )
+        Ok(rendered)
+    })
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
     Ok(DerivedBatchReport {

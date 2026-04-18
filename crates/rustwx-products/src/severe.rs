@@ -8,7 +8,9 @@ use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
     fetch_identity_from_cached_result_with_aliases,
 };
-use crate::runtime::{BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan};
+use crate::runtime::{
+    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
+};
 use crate::shared_context::{
     DomainSpec, Solar07PanelField, Solar07PanelHeader, Solar07PanelLayout,
     render_two_by_four_solar07_panel,
@@ -16,9 +18,7 @@ use crate::shared_context::{
 use rustwx_calc::{
     EcapeVolumeInputs, SupportedSevereFields, SurfaceInputs, compute_supported_severe_fields,
 };
-use rustwx_core::{
-    BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId,
-};
+use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
 use rustwx_models::LatestRun;
 use rustwx_render::Solar07Product;
 use serde::{Deserialize, Serialize};
@@ -72,6 +72,7 @@ pub fn run_severe_batch(
         request.model,
         &request.date_yyyymmdd,
         request.cycle_override_utc,
+        request.forecast_hour,
         request.source,
         request.surface_product_override.as_deref(),
         request.pressure_product_override.as_deref(),
@@ -101,11 +102,8 @@ pub fn run_severe_batch(
     // (~1.8M for HRRR) even when the user only wants a 300×300 midwest
     // panel — 20× wasted work. run_hrrr_batch_from_loaded already does
     // this; the per-model severe_batch needs the same shortcut.
-    let cropped = crate::gridded::crop_heavy_domain(
-        full_surface,
-        full_pressure,
-        request.domain.bounds,
-    )?;
+    let cropped =
+        crate::gridded::crop_heavy_domain(full_surface, full_pressure, request.domain.bounds)?;
     let owned_full_grid;
     let (surface, pressure, grid) = match cropped.as_ref() {
         Some(cropped) => (&cropped.surface, &cropped.pressure, cropped.grid.clone()),
@@ -149,21 +147,10 @@ pub fn run_severe_batch(
         .with_subtitle_line(
             "SCP stays a fixed-depth proxy here: muCAPE + 0-3 km SRH + 0-6 km shear. EHI 0-1 km uses sbCAPE + 0-1 km SRH. Effective-layer derivation is not wired yet.",
         );
-    render_two_by_four_solar07_panel(
-        &output_path,
-        &grid,
-        &projected,
-        &fields,
-        &header,
-        layout,
-    )?;
+    render_two_by_four_solar07_panel(&output_path, &grid, &projected, &fields, &header, layout)?;
     let render_ms = render_start.elapsed().as_millis();
     let output_identity = artifact_identity_from_path(&output_path)?;
-    let shared_timing = build_shared_timing_for_pair(
-        &loaded,
-        surface_planned,
-        pressure_planned,
-    )?;
+    let shared_timing = build_shared_timing_for_pair(&loaded, surface_planned, pressure_planned)?;
     let input_fetches = build_planned_input_fetches(&loaded);
 
     Ok(SevereBatchReport {
@@ -194,32 +181,34 @@ pub fn build_severe_execution_plan(
     pressure_override: Option<&str>,
 ) -> ExecutionPlan {
     let mut builder = ExecutionPlanBuilder::new(latest, forecast_hour);
-    let mut surface = BundleRequirement::new(CanonicalBundleDescriptor::SurfaceAnalysis, forecast_hour);
+    let mut surface =
+        BundleRequirement::new(CanonicalBundleDescriptor::SurfaceAnalysis, forecast_hour);
     if let Some(value) = surface_override {
         surface = surface.with_native_override(value.to_string());
     }
-    let mut pressure = BundleRequirement::new(
-        CanonicalBundleDescriptor::PressureAnalysis,
-        forecast_hour,
-    );
+    let mut pressure =
+        BundleRequirement::new(CanonicalBundleDescriptor::PressureAnalysis, forecast_hour);
     if let Some(value) = pressure_override {
         pressure = pressure.with_native_override(value.to_string());
     }
     builder.require_with_logical_family(
         &surface,
-        Some(default_logical_family(latest.model, CanonicalBundleDescriptor::SurfaceAnalysis)),
+        Some(default_logical_family(
+            latest.model,
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+        )),
     );
     builder.require_with_logical_family(
         &pressure,
-        Some(default_logical_family(latest.model, CanonicalBundleDescriptor::PressureAnalysis)),
+        Some(default_logical_family(
+            latest.model,
+            CanonicalBundleDescriptor::PressureAnalysis,
+        )),
     );
     builder.build()
 }
 
-fn default_logical_family(
-    model: ModelId,
-    bundle: CanonicalBundleDescriptor,
-) -> &'static str {
+fn default_logical_family(model: ModelId, bundle: CanonicalBundleDescriptor) -> &'static str {
     match (model, bundle) {
         (ModelId::Hrrr, CanonicalBundleDescriptor::SurfaceAnalysis) => "sfc",
         (ModelId::Hrrr, CanonicalBundleDescriptor::PressureAnalysis) => "prs",
@@ -246,7 +235,10 @@ pub(crate) fn build_shared_timing_for_pair(
         .fetched_for(pressure_planned)
         .ok_or("loader missing pressure fetch for severe report")?;
     let surface_decode = loaded
-        .surface_decode_for(CanonicalBundleDescriptor::SurfaceAnalysis, loaded.forecast_hour)
+        .surface_decode_for(
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+            loaded.forecast_hour,
+        )
         .ok_or("loader missing surface decode for severe report")?;
     let pressure_decode = loaded
         .pressure_decode_for(
@@ -264,9 +256,7 @@ pub(crate) fn build_shared_timing_for_pair(
         fetch_pressure_cache_hit: pressure_fetched.file.fetched.cache_hit,
         decode_surface_cache_hit: surface_decode.cache_hit,
         decode_pressure_cache_hit: pressure_decode.cache_hit,
-        surface_fetch: surface_fetched
-            .file
-            .runtime_info(&surface_planned.resolved),
+        surface_fetch: surface_fetched.file.runtime_info(&surface_planned.resolved),
         pressure_fetch: pressure_fetched
             .file
             .runtime_info(&pressure_planned.resolved),

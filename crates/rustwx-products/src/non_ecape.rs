@@ -1,25 +1,25 @@
 use crate::derived::{
-    plan_derived_recipes, run_hrrr_derived_batch_from_loaded, HrrrDerivedBatchReport,
-    HrrrDerivedBatchRequest,
+    HrrrDerivedBatchReport, HrrrDerivedBatchRequest, plan_derived_recipes,
+    run_hrrr_derived_batch_from_loaded,
 };
 use crate::direct::{
-    run_hrrr_direct_batch_from_loaded, HrrrDirectBatchReport, HrrrDirectBatchRequest,
+    HrrrDirectBatchReport, HrrrDirectBatchRequest, run_hrrr_direct_batch_from_loaded,
 };
-use crate::hrrr::{resolve_hrrr_run, DomainSpec};
+use crate::hrrr::{DomainSpec, resolve_hrrr_run};
 use crate::orchestrator::{lane, run_fanout3};
 use crate::planner::ExecutionPlanBuilder;
 use crate::publication::{
-    artifact_identity_from_path, default_run_manifest_path, finalize_and_publish_run_manifest,
-    publish_run_manifest_with_attempt, ArtifactPublicationState, PublishedArtifactRecord,
-    PublishedFetchIdentity, RunPublicationManifest,
+    ArtifactPublicationState, PublishedArtifactRecord, PublishedFetchIdentity,
+    RunPublicationManifest, artifact_identity_from_path, default_run_manifest_path,
+    finalize_and_publish_run_manifest, publish_run_manifest_with_attempt,
 };
 use crate::publication_provenance::capture_default_build_provenance;
 use crate::runtime::{BundleLoaderConfig, load_execution_plan};
 use crate::severe::build_severe_execution_plan;
 use crate::windowed::{
-    collect_windowed_input_fetches, run_hrrr_windowed_batch_with_context,
-    windowed_product_input_fetch_keys, HrrrWindowedBatchReport, HrrrWindowedBatchRequest,
-    HrrrWindowedProduct, HrrrWindowedRenderedProduct,
+    HrrrWindowedBatchReport, HrrrWindowedBatchRequest, HrrrWindowedProduct,
+    HrrrWindowedRenderedProduct, collect_windowed_input_fetches,
+    run_hrrr_windowed_batch_with_context, windowed_product_input_fetch_keys,
 };
 use rustwx_core::SourceId;
 use rustwx_models::plot_recipe;
@@ -103,6 +103,7 @@ pub fn run_hrrr_non_ecape_hour(
     let latest = resolve_hrrr_run(
         &request.date_yyyymmdd,
         request.cycle_override_utc,
+        request.forecast_hour,
         request.source,
     )?;
     let pinned_date = latest.cycle.date_yyyymmdd.clone();
@@ -130,7 +131,8 @@ pub fn run_hrrr_non_ecape_hour(
             use_cache: request.use_cache,
             recipe_slugs: normalized.direct_recipe_slugs.clone(),
         };
-        let generic_direct = crate::direct::DirectBatchRequest::from_hrrr_for_planner(&direct_request);
+        let generic_direct =
+            crate::direct::DirectBatchRequest::from_hrrr_for_planner(&direct_request);
         crate::direct::plan_direct_fetch_groups(&generic_direct)?
     };
     let derived_recipes = if normalized.derived_recipe_slugs.is_empty() {
@@ -148,17 +150,13 @@ pub fn run_hrrr_non_ecape_hour(
         let pair_plan = build_severe_execution_plan(&latest, request.forecast_hour, None, None);
         for bundle in &pair_plan.bundles {
             for alias in &bundle.aliases {
-                let mut requirement = rustwx_core::BundleRequirement::new(
-                    alias.bundle,
-                    bundle.id.forecast_hour,
-                );
+                let mut requirement =
+                    rustwx_core::BundleRequirement::new(alias.bundle, bundle.id.forecast_hour);
                 if let Some(ref over) = alias.native_override {
                     requirement = requirement.with_native_override(over.clone());
                 }
-                plan_builder.require_with_logical_family(
-                    &requirement,
-                    alias.logical_family.as_deref(),
-                );
+                plan_builder
+                    .require_with_logical_family(&requirement, alias.logical_family.as_deref());
             }
         }
     }
@@ -692,9 +690,7 @@ fn collect_input_fetches(
 
     if let Some(report) = windowed {
         for identity in collect_windowed_input_fetches(report) {
-            by_key
-                .entry(identity.fetch_key.clone())
-                .or_insert(identity);
+            by_key.entry(identity.fetch_key.clone()).or_insert(identity);
         }
     }
 
@@ -1170,11 +1166,13 @@ mod tests {
             .find(|artifact| artifact.artifact_key == "direct:500mb_height_winds")
             .unwrap();
         assert_eq!(direct_record.state, ArtifactPublicationState::Complete);
-        assert!(direct_record
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("planned_family=prs fetched_family=prs resolved_source=aws"));
+        assert!(
+            direct_record
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("planned_family=prs fetched_family=prs resolved_source=aws")
+        );
 
         let derived_record = manifest
             .artifacts
@@ -1182,11 +1180,11 @@ mod tests {
             .find(|artifact| artifact.artifact_key == "derived:sbcape")
             .unwrap();
         assert_eq!(derived_record.state, ArtifactPublicationState::Complete);
-        assert!(derived_record
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("shared_surface planned_family=sfc fetched_family=sfc resolved_source=aws"));
+        assert!(
+            derived_record.detail.as_deref().unwrap().contains(
+                "shared_surface planned_family=sfc fetched_family=sfc resolved_source=aws"
+            )
+        );
 
         let blocked_record = manifest
             .artifacts
