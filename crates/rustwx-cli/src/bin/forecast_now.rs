@@ -318,6 +318,12 @@ struct ModelCounts {
     outputs: usize,
 }
 
+#[derive(Debug, Clone)]
+struct PinnedRunRequest {
+    date_yyyymmdd: String,
+    cycle_override_utc: Option<u8>,
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let run_start = Instant::now();
@@ -394,7 +400,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // invalidates the fetch cache and does a full wrfsfc+wrfprs
             // re-download + re-decode — the HRRR midwest bench was taking
             // 30-40 min per model because of this.
-            let pinned_cycle: Option<u8> = args.cycle.or_else(|| {
+            let pinned_request = if let Some(cycle_override_utc) = args.cycle {
+                PinnedRunRequest {
+                    date_yyyymmdd: date.clone(),
+                    cycle_override_utc: Some(cycle_override_utc),
+                }
+            } else {
                 let required_products = forecast_now_required_products(model, &args);
                 let latest = if required_products.is_empty() {
                     rustwx_models::latest_available_run(model, Some(source), &date)
@@ -409,14 +420,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match latest {
                     Ok(run) => {
                         println!("[cycle] {model}: pinned to {:02}z ({})", run.cycle.hour_utc, run.cycle.date_yyyymmdd);
-                        Some(run.cycle.hour_utc)
+                        PinnedRunRequest {
+                            date_yyyymmdd: run.cycle.date_yyyymmdd,
+                            cycle_override_utc: Some(run.cycle.hour_utc),
+                        }
                     }
                     Err(err) => {
                         eprintln!("[cycle] {model}: latest-run resolve failed: {err}");
-                        None
+                        PinnedRunRequest {
+                            date_yyyymmdd: date.clone(),
+                            cycle_override_utc: None,
+                        }
                     }
                 }
-            });
+            };
 
             for &fh in &hours {
                 // HRRR has optimized unified runners that share the
@@ -433,8 +450,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // for those yet).
                 if matches!(model, ModelId::Hrrr) {
                     let hrrr_outcomes = run_hrrr_unified(
-                        &date,
-                        pinned_cycle,
+                        &pinned_request.date_yyyymmdd,
+                        pinned_request.cycle_override_utc,
                         fh,
                         source,
                         &domain,
@@ -451,21 +468,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 if !args.skip_severe {
                     let outcome = run_severe_lane(
-                        model, &date, pinned_cycle, fh, source, &domain, &args, counts,
+                        model,
+                        &pinned_request.date_yyyymmdd,
+                        pinned_request.cycle_override_utc,
+                        fh,
+                        source,
+                        &domain,
+                        &args,
+                        counts,
                     );
                     annotate_region(&mut outcomes, outcome, region);
                 }
                 if !args.skip_ecape {
                     let outcome = run_ecape_lane(
-                        model, &date, pinned_cycle, fh, source, &domain, &args, counts,
+                        model,
+                        &pinned_request.date_yyyymmdd,
+                        pinned_request.cycle_override_utc,
+                        fh,
+                        source,
+                        &domain,
+                        &args,
+                        counts,
                     );
                     annotate_region(&mut outcomes, outcome, region);
                 }
                 if !args.skip_direct {
                     let outcome = run_direct_lane(
                         model,
-                        &date,
-                        pinned_cycle,
+                        &pinned_request.date_yyyymmdd,
+                        pinned_request.cycle_override_utc,
                         fh,
                         source,
                         &domain,
@@ -478,8 +509,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if !args.skip_derived {
                     let outcome = run_derived_lane(
                         model,
-                        &date,
-                        pinned_cycle,
+                        &pinned_request.date_yyyymmdd,
+                        pinned_request.cycle_override_utc,
                         fh,
                         source,
                         &domain,
@@ -528,6 +559,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         summary_path.display()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PinnedRunRequest;
+
+    #[test]
+    fn pinned_request_uses_resolved_cycle_date() {
+        let pinned = PinnedRunRequest {
+            date_yyyymmdd: "20260417".to_string(),
+            cycle_override_utc: Some(12),
+        };
+        assert_eq!(pinned.date_yyyymmdd, "20260417");
+        assert_eq!(pinned.cycle_override_utc, Some(12));
+    }
 }
 
 fn parse_hours(spec: &str) -> Result<Vec<u16>, Box<dyn std::error::Error>> {

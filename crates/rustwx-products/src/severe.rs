@@ -91,8 +91,8 @@ pub fn run_severe_batch(
     )?;
 
     let (surface_planned, surface_decode, pressure_planned, pressure_decode) = loaded
-        .surface_pressure_pair()
-        .ok_or("severe planner missed surface or pressure bundle")?;
+        .require_surface_pressure_pair()
+        .map_err(|err| format!("severe surface/pressure pair unavailable: {err}"))?;
     let full_surface = &surface_decode.value;
     let full_pressure = &pressure_decode.value;
 

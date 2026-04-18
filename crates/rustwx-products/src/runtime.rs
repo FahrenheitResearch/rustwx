@@ -143,6 +143,66 @@ impl LoadedBundleSet {
         Some((surface, surface_decode, pressure, pressure_decode))
     }
 
+    pub fn require_surface_pressure_pair(
+        &self,
+    ) -> Result<
+        (
+            &PlannedBundle,
+            &CachedDecode<SurfaceFields>,
+            &PlannedBundle,
+            &CachedDecode<PressureFields>,
+        ),
+        String,
+    > {
+        if let Some(pair) = self.surface_pressure_pair() {
+            return Ok(pair);
+        }
+
+        let mut issues = Vec::new();
+        for bundle in [
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+            CanonicalBundleDescriptor::PressureAnalysis,
+        ] {
+            let label = match bundle {
+                CanonicalBundleDescriptor::SurfaceAnalysis => "surface",
+                CanonicalBundleDescriptor::PressureAnalysis => "pressure",
+                CanonicalBundleDescriptor::NativeAnalysis => "native",
+            };
+            match self.plan.bundle_for(bundle, self.forecast_hour) {
+                Some(planned) => {
+                    if let Some(reason) = self.bundle_failure(&planned.id) {
+                        issues.push(format!("{label} bundle failed: {reason}"));
+                    } else {
+                        let fetched = self.fetched_for(planned).is_some();
+                        let decoded = match bundle {
+                            CanonicalBundleDescriptor::SurfaceAnalysis => {
+                                self.surface_decodes.contains_key(&planned.id)
+                            }
+                            CanonicalBundleDescriptor::PressureAnalysis => {
+                                self.pressure_decodes.contains_key(&planned.id)
+                            }
+                            CanonicalBundleDescriptor::NativeAnalysis => false,
+                        };
+                        issues.push(format!(
+                            "{label} bundle missing decoded payload (fetched={fetched}, decoded={decoded}, fetch_key={})",
+                            planned.fetch_key().native_product
+                        ));
+                    }
+                }
+                None => issues.push(format!(
+                    "{label} bundle not planned for f{:03}",
+                    self.forecast_hour
+                )),
+            }
+        }
+
+        if issues.is_empty() {
+            Err("surface/pressure pair unavailable".to_string())
+        } else {
+            Err(issues.join("; "))
+        }
+    }
+
     pub fn surface_decode_for(
         &self,
         bundle: CanonicalBundleDescriptor,
@@ -217,9 +277,9 @@ pub fn load_execution_plan(
                         let cache_root = cache_root.clone();
                         let use_cache = use_cache;
                         let key_for_worker = key.clone();
-                        let handle = scope.spawn(move || {
-                            fetch_one(key_for_worker, &cache_root, use_cache)
-                        });
+                        let plan = &plan;
+                        let handle =
+                            scope.spawn(move || fetch_one(plan, key_for_worker, &cache_root, use_cache));
                         (key, handle)
                     })
                     .collect();
@@ -240,7 +300,7 @@ pub fn load_execution_plan(
                 .iter()
                 .cloned()
                 .map(|key| {
-                    let result = fetch_one(key.clone(), &cache_root, use_cache);
+                    let result = fetch_one(&plan, key.clone(), &cache_root, use_cache);
                     (key, result)
                 })
                 .collect()
@@ -371,7 +431,24 @@ pub fn load_execution_plan(
     })
 }
 
-fn build_fetch_request(key: &BundleFetchKey) -> Result<FetchRequest, RustwxError> {
+fn build_fetch_request(plan: &ExecutionPlan, key: &BundleFetchKey) -> Result<FetchRequest, RustwxError> {
+    let variable_patterns = plan
+        .bundles
+        .iter()
+        .filter(|bundle| bundle.fetch_key() == *key)
+        .flat_map(|bundle| {
+            crate::gridded::bundle_fetch_variable_patterns(
+                bundle.id.model,
+                bundle.id.bundle,
+                bundle.resolved.native_product.as_str(),
+            )
+        })
+        .fold(Vec::<String>::new(), |mut merged, pattern| {
+            if !merged.contains(&pattern) {
+                merged.push(pattern);
+            }
+            merged
+        });
     Ok(FetchRequest {
         request: ModelRunRequest::new(
             key.model,
@@ -380,7 +457,7 @@ fn build_fetch_request(key: &BundleFetchKey) -> Result<FetchRequest, RustwxError
             key.native_product.as_str(),
         )?,
         source_override: Some(key.source),
-        variable_patterns: Vec::new(),
+        variable_patterns,
     })
 }
 
@@ -388,11 +465,12 @@ fn build_fetch_request(key: &BundleFetchKey) -> Result<FetchRequest, RustwxError
 /// physical bytes. Returns a Send + Sync error so it composes with
 /// `std::thread::scope`.
 fn fetch_one(
+    plan: &ExecutionPlan,
     key: BundleFetchKey,
     cache_root: &Path,
     use_cache: bool,
 ) -> Result<FetchedBundleBytes, Box<dyn std::error::Error + Send + Sync>> {
-    let request = build_fetch_request(&key).map_err(|err| {
+    let request = build_fetch_request(plan, &key).map_err(|err| {
         Box::<dyn std::error::Error + Send + Sync>::from(err.to_string())
     })?;
     let start = Instant::now();
@@ -584,6 +662,48 @@ mod tests {
             .collect();
         assert!(products.contains(&"nat-na".to_string()));
         assert!(products.contains(&"prs-na".to_string()));
+    }
+
+    #[test]
+    fn rrfs_pair_fetch_requests_use_subset_patterns() {
+        let plan = build_single_pair_plan(
+            &LatestRun {
+                model: rustwx_core::ModelId::RrfsA,
+                cycle: CycleSpec::new("20260415", 18).unwrap(),
+                source: SourceId::Aws,
+            },
+            6,
+            None,
+            None,
+        );
+        let nat_key = plan
+            .fetch_keys()
+            .into_iter()
+            .find(|key| key.native_product == "nat-na")
+            .expect("rrfs plan includes nat-na");
+        let prs_key = plan
+            .fetch_keys()
+            .into_iter()
+            .find(|key| key.native_product == "prs-na")
+            .expect("rrfs plan includes prs-na");
+        let nat_request = build_fetch_request(&plan, &nat_key).expect("nat-na request builds");
+        let prs_request = build_fetch_request(&plan, &prs_key).expect("prs-na request builds");
+        assert!(nat_request
+            .variable_patterns
+            .contains(&"TMP:2 m above ground".to_string()));
+        assert!(nat_request
+            .variable_patterns
+            .contains(&"UGRD:10 m above ground".to_string()));
+        assert_eq!(
+            prs_request.variable_patterns,
+            vec![
+                "HGT".to_string(),
+                "TMP".to_string(),
+                "SPFH".to_string(),
+                "UGRD".to_string(),
+                "VGRD".to_string(),
+            ]
+        );
     }
 }
 

@@ -279,12 +279,24 @@ pub fn load_model_timestep_from_latest(
     let ((surface_file, fetch_surface_ms), (pressure_file, fetch_pressure_ms)) =
         if surface_bundle.native_product == pressure_bundle.native_product {
             let fetch_start = Instant::now();
-            let fetched = fetch_family_file(
+            let fetched = fetch_family_file_with_patterns(
                 model,
                 latest.cycle.clone(),
                 forecast_hour,
                 latest.source,
                 &surface_bundle,
+                merge_variable_patterns([
+                    bundle_fetch_variable_patterns(
+                        model,
+                        surface_bundle.bundle,
+                        &surface_bundle.native_product,
+                    ),
+                    bundle_fetch_variable_patterns(
+                        model,
+                        pressure_bundle.bundle,
+                        &pressure_bundle.native_product,
+                    ),
+                ]),
                 cache_root,
                 use_cache,
             )?;
@@ -703,10 +715,32 @@ pub(crate) fn fetch_family_file(
     cache_root: &Path,
     use_cache: bool,
 ) -> Result<FetchedModelFile, Box<dyn std::error::Error>> {
+    fetch_family_file_with_patterns(
+        model,
+        cycle,
+        forecast_hour,
+        source,
+        bundle,
+        bundle_fetch_variable_patterns(model, bundle.bundle, &bundle.native_product),
+        cache_root,
+        use_cache,
+    )
+}
+
+pub(crate) fn fetch_family_file_with_patterns(
+    model: ModelId,
+    cycle: CycleSpec,
+    forecast_hour: u16,
+    source: SourceId,
+    bundle: &ResolvedCanonicalBundleProduct,
+    variable_patterns: Vec<String>,
+    cache_root: &Path,
+    use_cache: bool,
+) -> Result<FetchedModelFile, Box<dyn std::error::Error>> {
     let request = FetchRequest {
         request: ModelRunRequest::new(model, cycle, forecast_hour, &bundle.native_product)?,
         source_override: Some(source),
-        variable_patterns: Vec::new(),
+        variable_patterns,
     };
     let fetched = fetch_bytes_with_cache(&request, cache_root, use_cache)?;
     Ok(FetchedModelFile {
@@ -714,6 +748,49 @@ pub(crate) fn fetch_family_file(
         bytes: fetched.result.bytes.clone(),
         fetched,
     })
+}
+
+pub(crate) fn bundle_fetch_variable_patterns(
+    model: ModelId,
+    bundle: CanonicalBundleDescriptor,
+    native_product: &str,
+) -> Vec<String> {
+    if model != ModelId::RrfsA {
+        return Vec::new();
+    }
+
+    match (bundle, native_product) {
+        (CanonicalBundleDescriptor::SurfaceAnalysis, "nat-na") => vec![
+            "PRES:surface",
+            "HGT:surface",
+            "TMP:2 m above ground",
+            "SPFH:2 m above ground",
+            "UGRD:10 m above ground",
+            "VGRD:10 m above ground",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+        (CanonicalBundleDescriptor::PressureAnalysis, "prs-na") => {
+            vec!["HGT", "TMP", "SPFH", "UGRD", "VGRD"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn merge_variable_patterns(pattern_groups: impl IntoIterator<Item = Vec<String>>) -> Vec<String> {
+    let mut merged = Vec::new();
+    for group in pattern_groups {
+        for pattern in group {
+            if !merged.contains(&pattern) {
+                merged.push(pattern);
+            }
+        }
+    }
+    merged
 }
 
 pub(crate) fn decode_cache_path(cache_root: &Path, fetch: &FetchRequest, name: &str) -> PathBuf {
@@ -1234,6 +1311,47 @@ mod tests {
         let (rrfs_surface, rrfs_pressure) = thermo_bundles(ModelId::RrfsA, None, None);
         assert_eq!(rrfs_surface.native_product, "nat-na");
         assert_eq!(rrfs_pressure.native_product, "prs-na");
+    }
+
+    #[test]
+    fn rrfs_thermo_bundle_fetch_patterns_use_idx_subsetting() {
+        assert_eq!(
+            bundle_fetch_variable_patterns(
+                ModelId::RrfsA,
+                CanonicalBundleDescriptor::SurfaceAnalysis,
+                "nat-na"
+            ),
+            vec![
+                "PRES:surface".to_string(),
+                "HGT:surface".to_string(),
+                "TMP:2 m above ground".to_string(),
+                "SPFH:2 m above ground".to_string(),
+                "UGRD:10 m above ground".to_string(),
+                "VGRD:10 m above ground".to_string(),
+            ]
+        );
+        assert_eq!(
+            bundle_fetch_variable_patterns(
+                ModelId::RrfsA,
+                CanonicalBundleDescriptor::PressureAnalysis,
+                "prs-na"
+            ),
+            vec![
+                "HGT".to_string(),
+                "TMP".to_string(),
+                "SPFH".to_string(),
+                "UGRD".to_string(),
+                "VGRD".to_string(),
+            ]
+        );
+        assert!(
+            bundle_fetch_variable_patterns(
+                ModelId::Hrrr,
+                CanonicalBundleDescriptor::SurfaceAnalysis,
+                "sfc"
+            )
+            .is_empty()
+        );
     }
 
     #[test]

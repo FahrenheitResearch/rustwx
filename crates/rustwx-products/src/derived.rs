@@ -722,8 +722,8 @@ fn run_derived_batch_from_loaded_bundles(
     let total_start = Instant::now();
 
     let (surface_planned, surface_decode, pressure_planned, pressure_decode) = loaded
-        .surface_pressure_pair()
-        .ok_or("derived planner missed surface or pressure bundle")?;
+        .require_surface_pressure_pair()
+        .map_err(|err| format!("derived surface/pressure pair unavailable: {err}"))?;
     let full_surface = &surface_decode.value;
     let full_pressure = &pressure_decode.value;
 
