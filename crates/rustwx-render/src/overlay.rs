@@ -1,4 +1,5 @@
 use crate::color::Rgba;
+use crate::presentation::{LineworkRole, PolygonRole};
 
 #[derive(Clone, Debug)]
 pub struct MapExtent {
@@ -40,6 +41,7 @@ pub struct ProjectedPolyline {
     pub points: Vec<(f64, f64)>,
     pub color: Rgba,
     pub width: u32,
+    pub role: LineworkRole,
 }
 
 /// A filled polygon in projected map coordinates. The first ring is the outer
@@ -49,6 +51,7 @@ pub struct ProjectedPolyline {
 pub struct ProjectedPolygon {
     pub rings: Vec<Vec<(f64, f64)>>,
     pub color: Rgba,
+    pub role: PolygonRole,
 }
 
 #[derive(Clone, Debug)]

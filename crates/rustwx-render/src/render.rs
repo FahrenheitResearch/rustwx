@@ -5,6 +5,7 @@ use crate::draw;
 use crate::overlay::{
     BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPolygon, ProjectedPolyline,
 };
+use crate::presentation::{ProductVisualMode, RenderPresentation, TitleAnchor};
 use crate::rasterize;
 use crate::text;
 use image::RgbaImage;
@@ -37,6 +38,7 @@ pub struct RenderOpts {
     pub projected_lines: Vec<ProjectedPolyline>,
     pub contours: Vec<ContourOverlay>,
     pub barbs: Vec<BarbOverlay>,
+    pub presentation: RenderPresentation,
 }
 
 impl Default for RenderOpts {
@@ -63,6 +65,7 @@ impl Default for RenderOpts {
             projected_lines: vec![],
             contours: vec![],
             barbs: vec![],
+            presentation: RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology),
         }
     }
 }
@@ -133,37 +136,53 @@ thread_local! {
 #[cfg(test)]
 static PROJECTED_PIXEL_CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-fn compute_layout(total_w: u32, total_h: u32, has_cbar: bool, has_title: bool) -> Layout {
-    // Match the WRF-Runner/cartopy figure layout closely.
-    let map_x = ((13.0 / 1100.0) * total_w as f64).round() as u32;
-    let map_y = if has_title {
-        ((74.0 / 850.0) * total_h as f64).round() as u32
+fn compute_layout(
+    total_w: u32,
+    total_h: u32,
+    has_cbar: bool,
+    has_title: bool,
+    presentation: RenderPresentation,
+) -> Layout {
+    let metrics = presentation.layout;
+    let map_x = metrics.margin_x.min(total_w.saturating_sub(1));
+    let title_h = if has_title { metrics.title_h } else { 0 };
+    let footer_h = if has_cbar {
+        metrics
+            .footer_h
+            .max(metrics.colorbar_h + metrics.colorbar_gap + 10)
     } else {
-        0
+        metrics.footer_h.min(18)
     };
-    let map_w = ((1073.0 / 1100.0) * total_w as f64).round() as u32;
-    let map_h = if has_cbar || has_title {
-        ((715.0 / 850.0) * total_h as f64).round() as u32
-    } else {
-        total_h
-    };
+    let map_y = title_h.min(total_h.saturating_sub(1));
+    let map_w = total_w.saturating_sub(map_x.saturating_mul(2)).max(1);
+    let map_h = total_h
+        .saturating_sub(map_y)
+        .saturating_sub(footer_h)
+        .max(1);
     let cbar_h = if has_cbar {
-        ((12.0 / 850.0) * total_h as f64).round().max(8.0) as u32
+        metrics.colorbar_h.max(8)
     } else {
         0
     };
     let cbar_x = if has_cbar {
-        ((88.0 / 1100.0) * total_w as f64).round() as u32
+        metrics.colorbar_margin_x.min(total_w.saturating_sub(1))
     } else {
         0
     };
     let cbar_w = if has_cbar {
-        ((919.0 / 1100.0) * total_w as f64).round() as u32
+        total_w.saturating_sub(cbar_x.saturating_mul(2)).max(
+            total_w
+                .saturating_sub(metrics.margin_x.saturating_mul(2))
+                .max(1),
+        )
     } else {
         0
     };
     let cbar_y = if has_cbar {
-        total_h.saturating_sub(((31.0 / 850.0) * total_h as f64).round() as u32)
+        total_h
+            .saturating_sub(metrics.colorbar_gap)
+            .saturating_sub(cbar_h)
+            .max(map_y + map_h)
     } else {
         0
     };
@@ -178,12 +197,34 @@ fn compute_layout(total_w: u32, total_h: u32, has_cbar: bool, has_title: bool) -
         cbar_w,
         cbar_h,
         title_y: 2,
-        subtitle_y: ((30.0 / 850.0) * total_h as f64).round() as u32,
+        subtitle_y: title_h.saturating_sub(18),
     }
 }
 
 pub fn map_frame_aspect_ratio(total_w: u32, total_h: u32, has_cbar: bool, has_title: bool) -> f64 {
-    let layout = compute_layout(total_w, total_h, has_cbar, has_title);
+    map_frame_aspect_ratio_for_mode(
+        ProductVisualMode::FilledMeteorology,
+        total_w,
+        total_h,
+        has_cbar,
+        has_title,
+    )
+}
+
+pub fn map_frame_aspect_ratio_for_mode(
+    mode: ProductVisualMode,
+    total_w: u32,
+    total_h: u32,
+    has_cbar: bool,
+    has_title: bool,
+) -> f64 {
+    let layout = compute_layout(
+        total_w,
+        total_h,
+        has_cbar,
+        has_title,
+        RenderPresentation::for_mode(mode),
+    );
     layout.map_w as f64 / (layout.map_h.max(1) as f64)
 }
 
@@ -276,10 +317,7 @@ fn project_ring_unclipped(
         .map(|&(x, y)| {
             let rx = (x - extent.x_min) / dx;
             let ry = 1.0 - (y - extent.y_min) / dy;
-            (
-                layout.map_x as f64 + rx * w,
-                layout.map_y as f64 + ry * h,
-            )
+            (layout.map_x as f64 + rx * w, layout.map_y as f64 + ry * h)
         })
         .collect()
 }
@@ -289,19 +327,14 @@ fn draw_projected_polygons(
     layout: &Layout,
     extent: &MapExtent,
     polygons: &[ProjectedPolygon],
+    presentation: RenderPresentation,
 ) {
     // Polygon rings are projected without clipping (clipping the ring geometry
     // would need polygon-polygon intersection); instead we clip the scanline
     // fill to the map panel so global polygons (world oceans, continents)
     // can't paint outside the map rectangle.
-    let map_right = layout
-        .map_x
-        .saturating_add(layout.map_w)
-        .saturating_sub(1) as i32;
-    let map_bottom = layout
-        .map_y
-        .saturating_add(layout.map_h)
-        .saturating_sub(1) as i32;
+    let map_right = layout.map_x.saturating_add(layout.map_w).saturating_sub(1) as i32;
+    let map_bottom = layout.map_y.saturating_add(layout.map_h).saturating_sub(1) as i32;
     let clip = Some((
         layout.map_x as i32,
         layout.map_y as i32,
@@ -313,12 +346,16 @@ fn draw_projected_polygons(
         if poly.rings.is_empty() {
             continue;
         }
+        let style = presentation.polygon_style(poly.role, poly.color);
+        if !style.visible {
+            continue;
+        }
         let rings: Vec<Vec<(f64, f64)>> = poly
             .rings
             .iter()
             .map(|ring| project_ring_unclipped(extent, ring, layout))
             .collect();
-        draw::fill_polygon(img, &rings, poly.color, clip);
+        draw::fill_polygon(img, &rings, style.color, clip);
     }
 }
 
@@ -327,21 +364,26 @@ fn draw_projected_lines(
     layout: &Layout,
     extent: &MapExtent,
     lines: &[ProjectedPolyline],
+    presentation: RenderPresentation,
 ) {
     for line in lines {
+        let style = presentation.linework_style(line.role, line.color, line.width);
+        if !style.visible {
+            continue;
+        }
         let mut current = Vec::with_capacity(line.points.len());
         for &(x, y) in &line.points {
             if let Some((px, py)) = extent.to_pixel(x, y, layout.map_w, layout.map_h) {
                 current.push((layout.map_x as f64 + px, layout.map_y as f64 + py));
             } else if current.len() >= 2 {
-                draw::draw_polyline(img, &current, line.color, line.width);
+                draw::draw_polyline(img, &current, style.color, style.width);
                 current.clear();
             } else {
                 current.clear();
             }
         }
         if current.len() >= 2 {
-            draw::draw_polyline(img, &current, line.color, line.width);
+            draw::draw_polyline(img, &current, style.color, style.width);
         }
     }
 }
@@ -783,15 +825,39 @@ fn draw_barbs(
 pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) -> RgbaImage {
     let has_title =
         opts.title.is_some() || opts.subtitle_left.is_some() || opts.subtitle_right.is_some();
-    let layout = compute_layout(opts.width, opts.height, opts.colorbar, has_title);
+    let layout = compute_layout(
+        opts.width,
+        opts.height,
+        opts.colorbar,
+        has_title,
+        opts.presentation,
+    );
 
-    let mut img = RgbaImage::from_pixel(opts.width, opts.height, opts.background.to_image_rgba());
+    let canvas_background = if opts.background == Rgba::WHITE {
+        opts.presentation.canvas_background
+    } else {
+        opts.background
+    };
+    let mut img = RgbaImage::from_pixel(opts.width, opts.height, canvas_background.to_image_rgba());
+    let map_right = layout.map_x.saturating_add(layout.map_w).min(img.width());
+    let map_bottom = layout.map_y.saturating_add(layout.map_h).min(img.height());
+    for py in layout.map_y..map_bottom {
+        for px in layout.map_x..map_right {
+            img.put_pixel(px, py, opts.presentation.map_background.to_image_rgba());
+        }
+    }
 
     // Paint filled basemap polygons (ocean, land, lakes) under the data. Done
     // in main-canvas pixel space so we don't have to squeeze polygons through
     // the map_img scratch buffer's rasterize path.
     if let Some(ref extent) = opts.map_extent {
-        draw_projected_polygons(&mut img, &layout, extent, &opts.projected_polygons);
+        draw_projected_polygons(
+            &mut img,
+            &layout,
+            extent,
+            &opts.projected_polygons,
+            opts.presentation,
+        );
     }
 
     let projected_pixels = match (&opts.projected_grid, &opts.map_extent) {
@@ -842,7 +908,13 @@ pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) ->
     }
 
     if let Some(ref extent) = opts.map_extent {
-        draw_projected_lines(&mut img, &layout, extent, &opts.projected_lines);
+        draw_projected_lines(
+            &mut img,
+            &layout,
+            extent,
+            &opts.projected_lines,
+            opts.presentation,
+        );
     }
     let projected_pixels_ref = projected_pixels.as_deref();
     for contour in &opts.contours {
@@ -863,10 +935,24 @@ pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) ->
     // Title is a muted near-black slate rather than pure black — reads as
     // editorial/quiet chrome instead of a hard headline. Subtitles shade even
     // lighter so the hierarchy (title > subtitle > attribution) is obvious.
-    let title_color = Rgba::new(30, 34, 44);
-    let subtitle_color = Rgba::new(96, 104, 118);
+    let title_color = opts.presentation.chrome.title_color;
+    let subtitle_color = opts.presentation.chrome.subtitle_color;
     if let Some(ref t) = opts.title {
-        text::draw_text_centered(&mut img, t, layout.title_y as i32, title_color, 1);
+        match opts.presentation.chrome.title_anchor {
+            TitleAnchor::Center => {
+                text::draw_text_centered(&mut img, t, layout.title_y as i32, title_color, 1);
+            }
+            TitleAnchor::Left => {
+                text::draw_text(
+                    &mut img,
+                    t,
+                    layout.map_x as i32,
+                    layout.title_y as i32,
+                    title_color,
+                    1,
+                );
+            }
+        }
     }
     if let Some(ref t) = opts.subtitle_left {
         text::draw_text(
@@ -904,8 +990,7 @@ pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) ->
     // without heavy rule lines. Only drawn when there is actual chrome
     // (title or colorbar); bare overlay-only renders stay chromeless so tests
     // that assert a fully transparent-input render is blank still pass.
-    if has_title || opts.colorbar {
-        let frame = Rgba::new(90, 96, 108);
+    if let Some(frame) = opts.presentation.chrome.frame_color {
         let map_right = layout.map_x + layout.map_w.saturating_sub(1);
         let map_bottom = layout.map_y + layout.map_h.saturating_sub(1);
         for px in layout.map_x..=map_right.min(img.width().saturating_sub(1)) {
@@ -926,6 +1011,25 @@ pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) ->
         }
     }
 
+    if let Some(domain_boundary) = opts.presentation.domain_boundary {
+        if domain_boundary.visible {
+            let map_right = layout.map_x + layout.map_w.saturating_sub(1);
+            let map_bottom = layout.map_y + layout.map_h.saturating_sub(1);
+            draw::draw_polyline(
+                &mut img,
+                &[
+                    (layout.map_x as f64, layout.map_y as f64),
+                    (map_right as f64, layout.map_y as f64),
+                    (map_right as f64, map_bottom as f64),
+                    (layout.map_x as f64, map_bottom as f64),
+                    (layout.map_x as f64, layout.map_y as f64),
+                ],
+                domain_boundary.color,
+                domain_boundary.width,
+            );
+        }
+    }
+
     if opts.colorbar {
         colorbar::draw_colorbar(
             &mut img,
@@ -934,6 +1038,7 @@ pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) ->
             layout.cbar_y,
             layout.cbar_w,
             layout.cbar_h,
+            opts.presentation.colorbar,
         );
         let ticks = pick_ticks(&opts.cmap.levels, opts.cbar_tick_step);
         let levels = &opts.cmap.levels;
@@ -942,19 +1047,19 @@ pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) ->
             let hi = levels[levels.len() - 1];
             let range = hi - lo;
             if range > 0.0 {
-                let tick_positions: Vec<f64> =
-                    ticks.iter().map(|t| (t - lo) / range).collect();
+                let tick_positions: Vec<f64> = ticks.iter().map(|t| (t - lo) / range).collect();
                 colorbar::draw_colorbar_ticks(
                     &mut img,
                     layout.cbar_x,
                     layout.cbar_y,
                     layout.cbar_w,
                     &tick_positions,
+                    opts.presentation.colorbar.tick_color,
                 );
                 // Labels sit above the tick marks; text is a muted near-black so
                 // it doesn't compete with the colorbar swatches.
                 let tick_y = layout.cbar_y.saturating_sub(14) as i32;
-                let label_color = Rgba::new(48, 54, 64);
+                let label_color = opts.presentation.colorbar.label_color;
                 for tick_val in &ticks {
                     let frac = (tick_val - lo) / range;
                     let px = layout.cbar_x as f64 + frac * layout.cbar_w as f64;
@@ -1036,6 +1141,7 @@ mod tests {
             projected_lines: Vec::new(),
             contours: Vec::new(),
             barbs: Vec::new(),
+            presentation: RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology),
         }
     }
 
@@ -1108,10 +1214,7 @@ mod tests {
             .unwrap()
             .to_rgba8();
         // NaN u/v means no barb glyphs are drawn.
-        let non_fill = image
-            .pixels()
-            .filter(|px| px.0 == [0, 0, 0, 255])
-            .count();
+        let non_fill = image.pixels().filter(|px| px.0 == [0, 0, 0, 255]).count();
         assert_eq!(non_fill, 0, "NaN barb vectors should produce no glyphs");
     }
 
@@ -1139,10 +1242,7 @@ mod tests {
         let image = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
             .unwrap()
             .to_rgba8();
-        let contour_pixels = image
-            .pixels()
-            .filter(|px| px.0 == [0, 0, 0, 255])
-            .count();
+        let contour_pixels = image.pixels().filter(|px| px.0 == [0, 0, 0, 255]).count();
         assert_eq!(
             contour_pixels, 0,
             "NaN contour data should produce no contour lines"

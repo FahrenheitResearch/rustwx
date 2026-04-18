@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 use shapefile::{Shape, ShapeReader};
 
 use crate::color::Rgba;
+use crate::presentation::{LineworkRole, PolygonRole};
 
 pub type LonLatLine = Vec<(f64, f64)>;
 
@@ -23,6 +24,7 @@ pub struct StyledLonLatLayer {
     pub lines: Vec<LonLatLine>,
     pub color: Rgba,
     pub width: u32,
+    pub role: LineworkRole,
 }
 
 /// A single closed polygon in lon/lat with optional holes. Outer ring first,
@@ -33,6 +35,7 @@ pub type LonLatPolygon = Vec<Vec<(f64, f64)>>;
 pub struct StyledLonLatPolygonLayer {
     pub polygons: Vec<LonLatPolygon>,
     pub color: Rgba,
+    pub role: PolygonRole,
 }
 
 pub fn cartopy_natural_earth_root() -> Option<PathBuf> {
@@ -125,8 +128,7 @@ pub fn load_polygons_from_shapefile(path: &Path) -> Result<Vec<LonLatPolygon>, s
             Shape::Polygon(polygon) => {
                 let mut rings_for_this_poly: Vec<Vec<(f64, f64)>> = Vec::new();
                 for ring in polygon.rings() {
-                    let pts: Vec<(f64, f64)> =
-                        ring.points().iter().map(|p| (p.x, p.y)).collect();
+                    let pts: Vec<(f64, f64)> = ring.points().iter().map(|p| (p.x, p.y)).collect();
                     if pts.len() >= 3 {
                         rings_for_this_poly.push(pts);
                     }
@@ -242,18 +244,21 @@ fn build_conus_polygons(style: BasemapStyle) -> Vec<StyledLonLatPolygonLayer> {
             out.push(StyledLonLatPolygonLayer {
                 polygons: ocean,
                 color: ocean_fill,
+                role: PolygonRole::Ocean,
             });
         }
         if !land.is_empty() {
             out.push(StyledLonLatPolygonLayer {
                 polygons: land,
                 color: land_fill,
+                role: PolygonRole::Land,
             });
         }
         if !lakes.is_empty() {
             out.push(StyledLonLatPolygonLayer {
                 polygons: lakes,
                 color: lakes_fill,
+                role: PolygonRole::Lake,
             });
         }
         return out;
@@ -297,12 +302,14 @@ fn build_conus_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
             lines: load_default_conus_features(),
             color: feature_colors(style).coast,
             width: BASEMAP_COAST_WIDTH,
+            role: LineworkRole::Coast,
         }];
     } else {
         return vec![StyledLonLatLayer {
             lines: load_default_conus_features(),
             color: feature_colors(style).coast,
             width: BASEMAP_COAST_WIDTH,
+            role: LineworkRole::Coast,
         }];
     };
 
@@ -328,6 +335,7 @@ fn build_conus_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
                 lines: counties,
                 color: colors.county,
                 width: widths.county,
+                role: LineworkRole::County,
             });
         }
     }
@@ -337,6 +345,7 @@ fn build_conus_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
             lines: state,
             color: colors.state,
             width: widths.state,
+            role: LineworkRole::State,
         });
     }
     if !nat.is_empty() {
@@ -344,6 +353,7 @@ fn build_conus_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
             lines: nat,
             color: colors.nat,
             width: widths.nat,
+            role: LineworkRole::International,
         });
     }
     if !coast.is_empty() {
@@ -351,6 +361,7 @@ fn build_conus_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
             lines: coast,
             color: colors.coast,
             width: widths.coast,
+            role: LineworkRole::Coast,
         });
     }
 
@@ -359,6 +370,7 @@ fn build_conus_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
             lines: load_default_conus_features(),
             color: colors.coast,
             width: widths.coast,
+            role: LineworkRole::Coast,
         }];
     }
 

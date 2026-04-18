@@ -7,48 +7,50 @@ mod error;
 mod features;
 mod overlay;
 mod panel;
+mod presentation;
 mod projected_map;
 mod projection;
 mod rasterize;
 mod render;
 mod request;
-mod text;
 pub mod solar07;
+mod text;
 
 pub use error::RustwxRenderError;
-pub use image::RgbaImage;
-pub use panel::{PanelGridLayout, PanelPadding, compose_panel_images, render_panel_grid};
-pub use projected_map::{ProjectedMap, build_projected_map};
 pub use features::{
-    BasemapStyle, StyledLonLatLayer, StyledLonLatPolygonLayer, load_styled_conus_features_for,
-    load_styled_conus_polygons_for,
+    load_styled_conus_features_for, load_styled_conus_polygons_for, BasemapStyle,
+    StyledLonLatLayer, StyledLonLatPolygonLayer,
 };
+pub use image::RgbaImage;
+pub use panel::{compose_panel_images, render_panel_grid, PanelGridLayout, PanelPadding};
+pub use presentation::{LineworkRole, PolygonRole, ProductVisualMode, RenderPresentation};
+pub use projected_map::{build_projected_map, ProjectedMap};
 pub use projection::LambertConformal;
+pub use render::{map_frame_aspect_ratio, map_frame_aspect_ratio_for_mode};
 pub use request::{
     Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, ExtendMode, Field2D,
     GridShape, LatLonGrid, MapRenderRequest, ProductKey, ProductMaturity, ProductSemanticFlag,
-    ProductSemantics, ProjectedDomain, ProjectedExtent, ProjectedLineOverlay,
-    ProjectedPolygonFill, WindBarbLayer, WindBarbStyle,
+    ProductSemantics, ProjectedDomain, ProjectedExtent, ProjectedLineOverlay, ProjectedPolygonFill,
+    WindBarbLayer, WindBarbStyle,
 };
-pub use render::map_frame_aspect_ratio;
 pub use rustwx_core::{
     Field2D as CoreField2D, GridShape as CoreGridShape, LatLonGrid as CoreLatLonGrid,
     ProductKey as CoreProductKey,
 };
 pub use solar07::{
-    DerivedProductStyle, DerivedScalePreset, ECAPE_SEVERE_PANEL_PRODUCTS,
-    SEVERE_CLASSIC_PANEL_PRODUCTS, Solar07Palette, Solar07Preset, Solar07Product, palette_scale,
+    palette_scale, DerivedProductStyle, DerivedScalePreset, Solar07Palette, Solar07Preset,
+    Solar07Product, ECAPE_SEVERE_PANEL_PRODUCTS, SEVERE_CLASSIC_PANEL_PRODUCTS,
 };
 
-use std::cell::RefCell;
-use std::path::Path;
-use std::sync::OnceLock;
 use crate::color::Rgba;
 use crate::colormap::{Extend, LeveledColormap};
 use crate::overlay::{
     BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPolygon, ProjectedPolyline,
 };
-use crate::render::{RenderOpts, render_to_image as native_render_to_image, render_to_png};
+use crate::render::{render_to_image as native_render_to_image, render_to_png, RenderOpts};
+use std::cell::RefCell;
+use std::path::Path;
+use std::sync::OnceLock;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RustRenderer;
@@ -196,6 +198,12 @@ fn with_render_state<T>(
 
     let shape = request.field.grid.shape;
     let overlay_only = request.is_overlay_only();
+    let visual_mode = if overlay_only {
+        ProductVisualMode::OverlayAnalysis
+    } else {
+        request.visual_mode
+    };
+    let presentation = RenderPresentation::for_mode(visual_mode);
     let cmap = if overlay_only {
         blank_fill_colormap()
     } else {
@@ -226,6 +234,7 @@ fn with_render_state<T>(
                 points: scratch.fill_point_buffer(&line.points),
                 color: line.color.into(),
                 width: line.width,
+                role: line.role,
             });
         }
 
@@ -239,6 +248,7 @@ fn with_render_state<T>(
             projected_polygons.push(ProjectedPolygon {
                 rings,
                 color: poly.color.into(),
+                role: poly.role,
             });
         }
 
@@ -249,7 +259,7 @@ fn with_render_state<T>(
                 ny: shape.ny,
                 nx: shape.nx,
                 levels: scratch.fill_f64_from_f64(&layer.levels),
-                color: layer.color.into(),
+                color: presentation.contour_color(layer.color.into()),
                 width: layer.width,
                 labels: layer.labels,
                 show_extrema: layer.show_extrema,
@@ -265,7 +275,7 @@ fn with_render_state<T>(
                 nx: shape.nx,
                 stride_x: layer.stride_x,
                 stride_y: layer.stride_y,
-                color: layer.color.into(),
+                color: presentation.barb_color(layer.color.into()),
                 width: layer.width,
                 length_px: layer.length_px,
             });
@@ -292,6 +302,7 @@ fn with_render_state<T>(
             projected_lines,
             contours,
             barbs,
+            presentation,
         };
 
         let result = render(&data, shape.ny, shape.nx, &opts);
@@ -321,7 +332,7 @@ fn blank_fill_colormap() -> LeveledColormap {
     static BLANK_FILL_COLORMAP: OnceLock<LeveledColormap> = OnceLock::new();
     BLANK_FILL_COLORMAP
         .get_or_init(|| {
-            LeveledColormap::from_palette(&[Rgba::WHITE], &[0.0, 1.0], Extend::Neither, None)
+            LeveledColormap::from_palette(&[Rgba::TRANSPARENT], &[0.0, 1.0], Extend::Neither, None)
         })
         .clone()
 }
@@ -415,13 +426,7 @@ impl From<ExtendMode> for Extend {
     }
 }
 
-pub fn draw_centered_text_line(
-    img: &mut RgbaImage,
-    text: &str,
-    y: i32,
-    color: Color,
-    scale: u32,
-) {
+pub fn draw_centered_text_line(img: &mut RgbaImage, text: &str, y: i32, color: Color, scale: u32) {
     text::draw_text_centered(img, text, y, color.into(), scale);
 }
 
@@ -476,6 +481,7 @@ mod tests {
             subtitle_left: Some("HRRR 2026-04-14 20Z F00".into()),
             subtitle_right: Some("rustwx-render".into()),
             cbar_tick_step: Some(500.0),
+            visual_mode: ProductVisualMode::FilledMeteorology,
             projected_domain: None,
             projected_polygons: Vec::new(),
             projected_lines: Vec::new(),
@@ -528,6 +534,7 @@ mod tests {
             subtitle_left: None,
             subtitle_right: None,
             cbar_tick_step: Some(500.0),
+            visual_mode: ProductVisualMode::FilledMeteorology,
             projected_domain: None,
             projected_polygons: Vec::new(),
             projected_lines: Vec::new(),

@@ -74,6 +74,7 @@ pub fn build_projected_map(
                     .collect(),
                 color: Color::rgba(layer.color.r, layer.color.g, layer.color.b, layer.color.a),
                 width: layer.width,
+                role: layer.role,
             });
         }
     }
@@ -100,7 +101,11 @@ pub fn build_projected_map(
                 .filter(|ring| ring_overlaps_bbox(ring, accept_bbox))
                 .collect();
             if !rings.is_empty() {
-                polygons.push(ProjectedPolygonFill { rings, color });
+                polygons.push(ProjectedPolygonFill {
+                    rings,
+                    color,
+                    role: layer.role,
+                });
             }
         }
     }

@@ -2,20 +2,20 @@ use grib_core::grib2::Grib2File;
 use image::DynamicImage;
 use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, CanonicalField, CycleSpec, FieldSelector,
-    ModelId, SelectedField2D, SourceId,
+    ModelId, SelectedField2D, SourceId, VerticalSelector,
 };
 use rustwx_io::{
     extract_fields_from_grib2_partial, load_cached_selected_field, store_cached_selected_field,
 };
 use rustwx_models::{
-    LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
-    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan,
+    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan, LatestRun,
+    ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
 };
 use rustwx_render::{
+    draw_centered_text_line, map_frame_aspect_ratio_for_mode, render_panel_grid, save_png,
+    solar07::{solar07_palette, Solar07Palette},
     Color, ColorScale, ContourLayer, DiscreteColorScale, ExtendMode, MapRenderRequest,
-    PanelGridLayout, PanelPadding, ProjectedDomain, ProjectedMap, WindBarbLayer,
-    draw_centered_text_line, map_frame_aspect_ratio, render_panel_grid, save_png,
-    solar07::{Solar07Palette, solar07_palette},
+    PanelGridLayout, PanelPadding, ProductVisualMode, ProjectedDomain, ProjectedMap, WindBarbLayer,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -27,11 +27,11 @@ use std::time::Instant;
 
 use crate::planner::{ExecutionPlan, ExecutionPlanBuilder};
 use crate::publication::{
-    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
-    fetch_identity_from_cached_result_with_aliases,
+    artifact_identity_from_path, fetch_identity_from_cached_result_with_aliases,
+    ArtifactContentIdentity, PublishedFetchIdentity,
 };
 use crate::runtime::{
-    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
+    load_execution_plan, BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet,
 };
 use crate::shared_context::{DomainSpec, ProjectedMapProvider};
 use crate::spec::direct_product_specs;
@@ -980,7 +980,17 @@ fn render_direct_recipe(
                 &filled.grid.lat_deg,
                 &filled.grid.lon_deg,
                 request.domain.bounds,
-                map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
+                map_frame_aspect_ratio_for_mode(
+                    visual_mode_for_direct_recipe(
+                        item.recipe,
+                        filled_selector,
+                        should_render_overlay_only(filled_selector, item.recipe.contours.is_some()),
+                    ),
+                    OUTPUT_WIDTH,
+                    OUTPUT_HEIGHT,
+                    true,
+                    true,
+                ),
             )?
         };
         let project_ms = project_start.elapsed().as_millis();
@@ -1053,7 +1063,13 @@ fn render_direct_composite_panel(
             &first_field.grid.lat_deg,
             &first_field.grid.lon_deg,
             request.domain.bounds,
-            map_frame_aspect_ratio(spec.panel_width, spec.panel_height, true, true),
+            map_frame_aspect_ratio_for_mode(
+                ProductVisualMode::PanelMember,
+                spec.panel_width,
+                spec.panel_height,
+                true,
+                true,
+            ),
         )?
     };
     let project_ms = project_start.elapsed().as_millis();
@@ -1079,6 +1095,7 @@ fn render_direct_composite_panel(
         )?;
         panel_request.width = spec.panel_width;
         panel_request.height = spec.panel_height;
+        panel_request.visual_mode = ProductVisualMode::PanelMember;
         panel_request.subtitle_left = None;
         panel_request.subtitle_right = None;
         panel_requests.push(panel_request);
@@ -1123,6 +1140,7 @@ fn build_render_request(
 ) -> Result<MapRenderRequest, Box<dyn std::error::Error>> {
     let filled_field = render_filled_field(recipe, filled, extracted)?;
     let overlay_only = should_render_overlay_only(filled.selector, recipe.contours.is_some());
+    let visual_mode = visual_mode_for_direct_recipe(recipe, filled.selector, overlay_only);
     let mut request = if overlay_only {
         let mut request = MapRenderRequest::contour_only(filled_field.clone().into());
         if let Some(layer) = contour_layer_for_values(filled.selector, &filled.values) {
@@ -1135,6 +1153,7 @@ fn build_render_request(
             scale_for_recipe(recipe, filled.selector),
         )
     };
+    request.visual_mode = visual_mode;
     request.title = Some(recipe.title.to_string());
     request.width = OUTPUT_WIDTH;
     request.height = OUTPUT_HEIGHT;
@@ -1154,6 +1173,34 @@ fn build_render_request(
     }
     request.wind_barbs = build_barb_layers(recipe, extracted, bounds, barb_stride_cache);
     Ok(request)
+}
+
+fn visual_mode_for_direct_recipe(
+    recipe: &PlotRecipe,
+    selector: FieldSelector,
+    overlay_only: bool,
+) -> ProductVisualMode {
+    if overlay_only {
+        return ProductVisualMode::OverlayAnalysis;
+    }
+
+    if matches!(recipe.style, RenderStyle::Solar07Height)
+        || matches!(selector.vertical, VerticalSelector::IsobaricHpa(_))
+    {
+        return ProductVisualMode::UpperAirAnalysis;
+    }
+
+    let slug = recipe.slug.to_ascii_lowercase();
+    if [
+        "cape", "cin", "stp", "scp", "ehi", "srh", "shear", "lapse", "uh", "helicity",
+    ]
+    .iter()
+    .any(|token| slug.contains(token))
+    {
+        return ProductVisualMode::SevereDiagnostic;
+    }
+
+    ProductVisualMode::FilledMeteorology
 }
 
 fn render_filled_field(
@@ -1697,16 +1744,12 @@ mod tests {
             groups[0].fetch_mode,
             PlotRecipeFetchMode::WholeFileStructuredExtract
         );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500))
-        );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700))
-        );
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500)));
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700)));
         assert!(groups[0].variable_patterns.is_empty());
     }
 
@@ -1853,18 +1896,14 @@ mod tests {
         let groups = group_direct_fetches(&request, &planned);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].product, "sfc");
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::entire_atmosphere(
-                    CanonicalField::LowCloudCover
-                ))
-        );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow))
-        );
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::entire_atmosphere(
+                CanonicalField::LowCloudCover
+            )));
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow)));
     }
 
     #[test]

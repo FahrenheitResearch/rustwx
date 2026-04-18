@@ -1,6 +1,6 @@
 use image::{GenericImage, Rgba, RgbaImage};
 
-use crate::{Color, MapRenderRequest, RustwxRenderError, render_image};
+use crate::{render_image, Color, MapRenderRequest, RustwxRenderError};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PanelPadding {
@@ -287,6 +287,7 @@ mod tests {
             points: vec![(0.0, 0.0), (2.0, 1.0)],
             color: Color::BLACK,
             width: 2,
+            role: crate::presentation::LineworkRole::Generic,
         }];
         request
     }

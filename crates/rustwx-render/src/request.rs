@@ -1,3 +1,4 @@
+use crate::presentation::{LineworkRole, PolygonRole, ProductVisualMode};
 use crate::RustwxRenderError;
 use rustwx_core as core;
 use serde::{Deserialize, Serialize};
@@ -298,6 +299,8 @@ pub struct ProjectedLineOverlay {
     pub points: Vec<(f64, f64)>,
     pub color: Color,
     pub width: u32,
+    #[serde(default)]
+    pub role: LineworkRole,
 }
 
 /// A filled polygon in projected map coordinates. First ring is the outer
@@ -306,6 +309,8 @@ pub struct ProjectedLineOverlay {
 pub struct ProjectedPolygonFill {
     pub rings: Vec<Vec<(f64, f64)>>,
     pub color: Color,
+    #[serde(default)]
+    pub role: PolygonRole,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -409,6 +414,8 @@ pub struct MapRenderRequest {
     pub subtitle_left: Option<String>,
     pub subtitle_right: Option<String>,
     pub cbar_tick_step: Option<f64>,
+    #[serde(default)]
+    pub visual_mode: ProductVisualMode,
     pub projected_domain: Option<ProjectedDomain>,
     /// Filled polygon basemap layers (ocean/land/lakes). Drawn BEFORE the
     /// data raster; ordering within the list is bottom-to-top.
@@ -434,6 +441,7 @@ impl MapRenderRequest {
             subtitle_left: None,
             subtitle_right: None,
             cbar_tick_step: None,
+            visual_mode: ProductVisualMode::FilledMeteorology,
             projected_domain: None,
             projected_polygons: Vec::new(),
             projected_lines: Vec::new(),
@@ -452,6 +460,7 @@ impl MapRenderRequest {
         request.title = Some(product.display_title().to_string());
         request.cbar_tick_step = product.default_tick_step();
         request.semantics = Some(product.semantics());
+        request.visual_mode = product.default_visual_mode();
         request.product_metadata = Some(
             core::ProductKeyMetadata::new(product.display_title())
                 .with_native_units(request.field.units.clone()),
@@ -474,6 +483,7 @@ impl MapRenderRequest {
         request.title = Some(product.display_title().to_string());
         request.cbar_tick_step = product.default_tick_step();
         request.semantics = Some(product.semantics());
+        request.visual_mode = product.default_visual_mode();
         request.product_metadata = Some(
             core::ProductKeyMetadata::new(product.display_title())
                 .with_category("derived")
@@ -504,7 +514,13 @@ impl MapRenderRequest {
     pub fn contour_only(field: Field2D) -> Self {
         let mut request = Self::new(field, ColorScale::Discrete(blank_fill_scale()));
         request.colorbar = false;
+        request.visual_mode = ProductVisualMode::OverlayAnalysis;
         request
+    }
+
+    pub fn with_visual_mode(mut self, visual_mode: ProductVisualMode) -> Self {
+        self.visual_mode = visual_mode;
+        self
     }
 
     pub fn with_semantics(mut self, semantics: ProductSemantics) -> Self {
@@ -610,7 +626,7 @@ fn ensure_same_grid(
 fn blank_fill_scale() -> DiscreteColorScale {
     DiscreteColorScale {
         levels: vec![0.0, 1.0],
-        colors: vec![Color::WHITE],
+        colors: vec![Color::TRANSPARENT],
         extend: ExtendMode::Neither,
         mask_below: None,
     }
@@ -620,7 +636,7 @@ fn is_blank_fill_scale(scale: &ColorScale) -> bool {
     match scale {
         ColorScale::Discrete(scale) => {
             scale.levels == [0.0, 1.0]
-                && scale.colors == [Color::WHITE]
+                && scale.colors == [Color::TRANSPARENT]
                 && scale.extend == ExtendMode::Neither
                 && scale.mask_below.is_none()
         }
@@ -763,8 +779,13 @@ mod tests {
 
         assert!(!request.colorbar);
         assert!(request.is_overlay_only());
+        assert_eq!(request.visual_mode, ProductVisualMode::OverlayAnalysis);
         assert!(matches!(request.scale, ColorScale::Discrete(_)));
         assert_eq!(request.field.values, sample_render_field().values);
+        match request.scale {
+            ColorScale::Discrete(scale) => assert_eq!(scale.colors, vec![Color::TRANSPARENT]),
+            _ => panic!("expected discrete blank fill scale"),
+        }
     }
 
     #[test]

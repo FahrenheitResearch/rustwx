@@ -1,10 +1,11 @@
 use image::DynamicImage;
 use rustwx_core::{Field2D, LatLonGrid, ProductKey};
-use rustwx_render::{
-    Color, MapRenderRequest, PanelGridLayout, PanelPadding, ProjectedDomain,
-    Solar07Product, draw_centered_text_line, map_frame_aspect_ratio, render_panel_grid,
-};
 pub use rustwx_render::ProjectedMap;
+use rustwx_render::{
+    draw_centered_text_line, map_frame_aspect_ratio_for_mode, render_panel_grid, Color,
+    MapRenderRequest, PanelGridLayout, PanelPadding, ProductVisualMode, ProjectedDomain,
+    Solar07Product,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -121,7 +122,13 @@ impl Default for Solar07PanelLayout {
 
 impl Solar07PanelLayout {
     pub fn target_aspect_ratio(self) -> f64 {
-        map_frame_aspect_ratio(self.panel_width, self.panel_height, true, true)
+        map_frame_aspect_ratio_for_mode(
+            ProductVisualMode::PanelMember,
+            self.panel_width,
+            self.panel_height,
+            true,
+            true,
+        )
     }
 }
 
@@ -154,6 +161,7 @@ pub fn render_two_by_four_solar07_panel(
         let mut request = MapRenderRequest::for_core_solar07_product(field, field_spec.product);
         request.width = layout.panel_width;
         request.height = layout.panel_height;
+        request.visual_mode = ProductVisualMode::PanelMember;
         if let Some(title) = &field_spec.title_override {
             request.title = Some(title.clone());
         }

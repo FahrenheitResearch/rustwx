@@ -1,3 +1,4 @@
+use crate::presentation::ProductVisualMode;
 use crate::request::{Color, DiscreteColorScale, ExtendMode, ProductSemantics};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,6 +286,10 @@ impl Solar07Product {
         }
     }
 
+    pub fn default_visual_mode(self) -> ProductVisualMode {
+        ProductVisualMode::SevereDiagnostic
+    }
+
     pub fn is_experimental(self) -> bool {
         matches!(
             self,
@@ -368,6 +373,20 @@ impl DerivedProductStyle {
             | Self::TemperatureAdvection850mb
             | Self::BulkShear01km
             | Self::BulkShear06km => ProductSemantics::operational(),
+        }
+    }
+
+    pub fn default_visual_mode(self) -> ProductVisualMode {
+        match self {
+            Self::TemperatureAdvection700mb | Self::TemperatureAdvection850mb => {
+                ProductVisualMode::UpperAirAnalysis
+            }
+            Self::ApparentTemperature | Self::HeatIndex | Self::WindChill => {
+                ProductVisualMode::FilledMeteorology
+            }
+            Self::LiftedIndex | Self::BulkShear01km | Self::BulkShear06km => {
+                ProductVisualMode::SevereDiagnostic
+            }
         }
     }
 }

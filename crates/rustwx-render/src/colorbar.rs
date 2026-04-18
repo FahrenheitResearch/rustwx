@@ -1,5 +1,6 @@
 use crate::color::Rgba;
 use crate::colormap::LeveledColormap;
+use crate::presentation::ColorbarPresentation;
 use image::RgbaImage;
 
 /// Thin cool-gray frame for the colorbar — reads as a subtle divider rather
@@ -34,6 +35,7 @@ pub fn draw_colorbar(
     y: u32,
     width: u32,
     height: u32,
+    presentation: ColorbarPresentation,
 ) {
     let n_intervals = if cmap.levels.len() > 1 {
         cmap.levels.len() - 1
@@ -60,7 +62,12 @@ pub fn draw_colorbar(
 
     // Hairline separators between swatches — light, partial alpha so they
     // only suggest boundaries instead of chopping the bar into stripes.
-    let divider = COLORBAR_DIVIDER.to_image_rgba();
+    let divider_color = if presentation.divider_color == Rgba::TRANSPARENT {
+        COLORBAR_DIVIDER
+    } else {
+        presentation.divider_color
+    };
+    let divider = divider_color.to_image_rgba();
     for i in 1..n_intervals {
         let tick_x = x + (i as u32 * width / n_intervals as u32);
         if tick_x < img.width() {
@@ -68,12 +75,12 @@ pub fn draw_colorbar(
                 // Alpha-composite onto the existing swatch so the divider
                 // takes on a paler version of the underlying color.
                 let dst = img.get_pixel(tick_x, py).0;
-                let a = COLORBAR_DIVIDER.a as f64 / 255.0;
+                let a = divider_color.a as f64 / 255.0;
                 let inv = 1.0 - a;
                 let blended = image::Rgba([
-                    (COLORBAR_DIVIDER.r as f64 * a + dst[0] as f64 * inv).round() as u8,
-                    (COLORBAR_DIVIDER.g as f64 * a + dst[1] as f64 * inv).round() as u8,
-                    (COLORBAR_DIVIDER.b as f64 * a + dst[2] as f64 * inv).round() as u8,
+                    (divider_color.r as f64 * a + dst[0] as f64 * inv).round() as u8,
+                    (divider_color.g as f64 * a + dst[1] as f64 * inv).round() as u8,
+                    (divider_color.b as f64 * a + dst[2] as f64 * inv).round() as u8,
                     255,
                 ]);
                 img.put_pixel(tick_x, py, blended);
@@ -83,7 +90,12 @@ pub fn draw_colorbar(
     let _ = divider;
 
     // Thin cool-gray outer frame — one pixel, muted slate instead of solid black.
-    let frame = COLORBAR_FRAME.to_image_rgba();
+    let frame = if presentation.frame_color == Rgba::TRANSPARENT {
+        COLORBAR_FRAME
+    } else {
+        presentation.frame_color
+    }
+    .to_image_rgba();
     for px in x..x_end {
         img.put_pixel(px, y, frame);
         if y_end > 0 {
@@ -106,8 +118,14 @@ pub fn draw_colorbar_ticks(
     cbar_y: u32,
     cbar_width: u32,
     positions: &[f64],
+    tick_color: Rgba,
 ) {
-    let frame = COLORBAR_FRAME.to_image_rgba();
+    let frame = if tick_color == Rgba::TRANSPARENT {
+        COLORBAR_FRAME
+    } else {
+        tick_color
+    }
+    .to_image_rgba();
     if cbar_y < 4 {
         return;
     }

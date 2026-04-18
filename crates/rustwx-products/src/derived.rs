@@ -1,19 +1,18 @@
 use rustwx_calc::{
-    CalcError, EcapeVolumeInputs, FixedStpInputs, GridShape as CalcGridShape, SurfaceInputs,
-    TemperatureAdvectionInputs, VolumeShape, WindGridInputs, compute_2m_apparent_temperature,
-    compute_ehi_01km, compute_ehi_03km, compute_lapse_rate_0_3km, compute_lapse_rate_700_500,
-    compute_lifted_index, compute_mlcape_cin, compute_mucape_cin, compute_sbcape_cin,
-    compute_shear_01km, compute_shear_06km, compute_srh_01km, compute_srh_03km, compute_stp_fixed,
-    compute_surface_thermo,
+    compute_2m_apparent_temperature, compute_ehi_01km, compute_ehi_03km, compute_lapse_rate_0_3km,
+    compute_lapse_rate_700_500, compute_lifted_index, compute_mlcape_cin, compute_mucape_cin,
+    compute_sbcape_cin, compute_shear_01km, compute_shear_06km, compute_srh_01km, compute_srh_03km,
+    compute_stp_fixed, compute_surface_thermo, CalcError, EcapeVolumeInputs, FixedStpInputs,
+    GridShape as CalcGridShape, SurfaceInputs, TemperatureAdvectionInputs, VolumeShape,
+    WindGridInputs,
 };
 use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId,
 };
 use rustwx_render::{
-    Color, DerivedProductStyle, ExtendMode, MapRenderRequest, ProjectedDomain, ProjectedExtent,
-    ProjectedMap, Solar07Palette, Solar07Product, WindBarbLayer,
-    build_projected_map as build_projected_map_from_latlon,
-    map_frame_aspect_ratio, save_png,
+    build_projected_map as build_projected_map_from_latlon, map_frame_aspect_ratio, save_png,
+    Color, DerivedProductStyle, ExtendMode, MapRenderRequest, ProductVisualMode, ProjectedDomain,
+    ProjectedExtent, ProjectedMap, Solar07Palette, Solar07Product, WindBarbLayer,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -24,22 +23,22 @@ use std::thread;
 use std::time::Instant;
 
 use crate::gridded::{
-    PressureFields as GenericPressureFields, SharedTiming as GenericSharedTiming,
-    SurfaceFields as GenericSurfaceFields, broadcast_levels_pa, resolve_thermo_pair_run,
-};
-use crate::publication::{
-    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
+    broadcast_levels_pa, resolve_thermo_pair_run, PressureFields as GenericPressureFields,
+    SharedTiming as GenericSharedTiming, SurfaceFields as GenericSurfaceFields,
 };
 use crate::planner::{ExecutionPlanBuilder, PlannedBundle};
-use crate::runtime::{BundleLoaderConfig, LoadedBundleSet, load_execution_plan};
+use crate::publication::{
+    artifact_identity_from_path, ArtifactContentIdentity, PublishedFetchIdentity,
+};
+use crate::runtime::{load_execution_plan, BundleLoaderConfig, LoadedBundleSet};
 use crate::severe::{
     build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
 };
 use crate::shared_context::DomainSpec;
 use crate::thermo_native::{
-    NativeDerivedComparisonStats, NativeRoute, NativeSemantics, NativeThermoCandidate,
-    NativeThermoRecipe, ThermoPathMode, compare_native_vs_derived, crop_native_field,
-    extract_native_thermo_field, native_candidate, should_prefer_native_exact,
+    compare_native_vs_derived, crop_native_field, extract_native_thermo_field, native_candidate,
+    should_prefer_native_exact, NativeDerivedComparisonStats, NativeRoute, NativeSemantics,
+    NativeThermoCandidate, NativeThermoRecipe, ThermoPathMode,
 };
 use rustwx_models::{
     latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
@@ -547,6 +546,18 @@ impl DerivedRecipe {
             Self::TemperatureAdvection850mb => "850 mb Temperature Advection",
         }
     }
+
+    fn visual_mode(self) -> ProductVisualMode {
+        match self {
+            Self::ThetaE2m10mWinds
+            | Self::TemperatureAdvection700mb
+            | Self::TemperatureAdvection850mb => ProductVisualMode::UpperAirAnalysis,
+            Self::ApparentTemperature2m | Self::HeatIndex2m | Self::WindChill2m => {
+                ProductVisualMode::FilledMeteorology
+            }
+            _ => ProductVisualMode::SevereDiagnostic,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -831,8 +842,8 @@ fn run_derived_batch_from_loaded_bundles(
     let mut native_thermo_artifacts = Vec::<NativeThermoArtifactReport>::new();
 
     for route in &native_routes {
-        let native_planned =
-            find_loaded_native_bundle(loaded, route.candidate.fetch_product).ok_or_else(|| {
+        let native_planned = find_loaded_native_bundle(loaded, route.candidate.fetch_product)
+            .ok_or_else(|| {
                 format!(
                     "native thermo planner missed fetch for '{}' ({})",
                     route.recipe.slug(),
@@ -846,12 +857,12 @@ fn run_derived_batch_from_loaded_bundles(
         let native_field =
             extract_native_thermo_field(request.model, route.native_recipe, &fetched.file.bytes)?
                 .ok_or_else(|| {
-                    format!(
-                        "native thermo field '{}' not found in {}",
-                        route.recipe.slug(),
-                        route.candidate.fetch_product
-                    )
-                })?;
+                format!(
+                    "native thermo field '{}' not found in {}",
+                    route.recipe.slug(),
+                    route.candidate.fetch_product
+                )
+            })?;
         let native_field = crop_native_field(&native_field, request.domain.bounds)?;
         native_extract_ms += extract_start.elapsed().as_millis();
 
@@ -1005,8 +1016,8 @@ fn run_derived_batch_from_loaded_bundles(
                     recipe.slug()
                 ));
                 let lane_fetch_keys = input_fetch_keys.clone();
-                pending.push_back(
-                    scope.spawn(move || -> Result<DerivedRenderedRecipe, io::Error> {
+                pending.push_back(scope.spawn(
+                    move || -> Result<DerivedRenderedRecipe, io::Error> {
                         let render_start = Instant::now();
                         let render_artifact = build_render_artifact(
                             recipe,
@@ -1023,8 +1034,8 @@ fn run_derived_batch_from_loaded_bundles(
                         save_png(&render_artifact.request, &output_path)
                             .map_err(thread_render_error)?;
                         let render_ms = render_start.elapsed().as_millis();
-                        let content_identity =
-                            artifact_identity_from_path(&output_path).map_err(thread_render_error)?;
+                        let content_identity = artifact_identity_from_path(&output_path)
+                            .map_err(thread_render_error)?;
                         Ok(DerivedRenderedRecipe {
                             recipe_slug: render_artifact.recipe_slug,
                             title: render_artifact.title,
@@ -1036,8 +1047,8 @@ fn run_derived_batch_from_loaded_bundles(
                                 total_ms: render_ms,
                             },
                         })
-                    }),
-                );
+                    },
+                ));
 
                 if pending.len() >= render_parallelism {
                     rendered.push(join_render_job(pending.pop_front().unwrap())?);
@@ -1131,14 +1142,10 @@ fn find_loaded_native_bundle<'a>(
     loaded: &'a LoadedBundleSet,
     fetch_product: &str,
 ) -> Option<&'a PlannedBundle> {
-    loaded
-        .plan
-        .bundles
-        .iter()
-        .find(|bundle| {
-            bundle.id.bundle == CanonicalBundleDescriptor::NativeAnalysis
-                && bundle.fetch_key().native_product == fetch_product
-        })
+    loaded.plan.bundles.iter().find(|bundle| {
+        bundle.id.bundle == CanonicalBundleDescriptor::NativeAnalysis
+            && bundle.fetch_key().native_product == fetch_product
+    })
 }
 
 fn derived_values_for_recipe<'a>(
@@ -1210,12 +1217,13 @@ fn build_native_render_artifact(
                 "recipe '{}' does not support native thermo rendering",
                 recipe.slug()
             )
-            .into())
+            .into());
         }
     };
 
     request.width = OUTPUT_WIDTH;
     request.height = OUTPUT_HEIGHT;
+    request.visual_mode = recipe.visual_mode();
     request.title = Some(recipe.title().to_string());
     request.subtitle_left = Some(format!(
         "{} {}Z F{:03}  {}",
@@ -1306,8 +1314,9 @@ pub(crate) fn plan_native_thermo_routes(
     let mut native_routes = Vec::new();
 
     for &recipe in recipes {
-        let candidate = native_recipe_for_derived(recipe)
-            .and_then(|native_recipe| native_candidate(model, native_recipe).map(|candidate| (native_recipe, candidate)));
+        let candidate = native_recipe_for_derived(recipe).and_then(|native_recipe| {
+            native_candidate(model, native_recipe).map(|candidate| (native_recipe, candidate))
+        });
         let compare_native_vs_derived =
             matches!(mode, ThermoPathMode::CompareNativeVsDerived) && candidate.is_some();
         let main_route = match mode {
@@ -1413,7 +1422,10 @@ fn resolve_derived_run(
         .map_err(Into::into);
     }
 
-    let required_refs = required_products.iter().map(String::as_str).collect::<Vec<_>>();
+    let required_refs = required_products
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
     latest_available_run_for_products_at_forecast_hour(
         request.model,
         Some(request.source),
@@ -1442,8 +1454,7 @@ fn build_derived_execution_plan(
         );
         for bundle in &pair_plan.bundles {
             for alias in &bundle.aliases {
-                let mut requirement =
-                    BundleRequirement::new(alias.bundle, bundle.id.forecast_hour);
+                let mut requirement = BundleRequirement::new(alias.bundle, bundle.id.forecast_hour);
                 if let Some(ref over) = alias.native_override {
                     requirement = requirement.with_native_override(over.clone());
                 }
@@ -2175,7 +2186,8 @@ fn solar07_request(
     product: Solar07Product,
 ) -> Result<(Field2D, MapRenderRequest), Box<dyn std::error::Error>> {
     let field = core_field(recipe, units, grid, values)?;
-    let request = MapRenderRequest::for_core_solar07_product(field.clone(), product);
+    let request = MapRenderRequest::for_core_solar07_product(field.clone(), product)
+        .with_visual_mode(recipe.visual_mode());
     Ok((field, request))
 }
 
@@ -2190,7 +2202,8 @@ fn solar07_lapse_request(
         Solar07Palette::LapseRate,
         range_step(4.0, 10.5, 0.5),
         ExtendMode::Both,
-    );
+    )
+    .with_visual_mode(recipe.visual_mode());
     request.cbar_tick_step = Some(0.5);
     Ok((field, request))
 }
@@ -2207,7 +2220,8 @@ fn palette_request(
 ) -> Result<(Field2D, MapRenderRequest), Box<dyn std::error::Error>> {
     let field = core_field(recipe, units, grid, values)?;
     let mut request =
-        MapRenderRequest::for_palette_fill(field.clone().into(), palette, levels, extend);
+        MapRenderRequest::for_palette_fill(field.clone().into(), palette, levels, extend)
+            .with_visual_mode(recipe.visual_mode());
     request.cbar_tick_step = tick_step;
     Ok((field, request))
 }
@@ -2220,7 +2234,8 @@ fn derived_style_request(
     style: DerivedProductStyle,
 ) -> Result<(Field2D, MapRenderRequest), Box<dyn std::error::Error>> {
     let field = core_field(recipe, units, grid, values)?;
-    let request = MapRenderRequest::for_derived_product(field.clone().into(), style);
+    let request = MapRenderRequest::for_derived_product(field.clone().into(), style)
+        .with_visual_mode(recipe.visual_mode());
     Ok((field, request))
 }
 
@@ -2567,9 +2582,12 @@ mod tests {
 
     #[test]
     fn prefer_native_exact_keeps_unvalidated_gfs_candidates_derived() {
-        let (compute, native) =
-            plan_native_thermo_routes(ModelId::Gfs, &[DerivedRecipe::Sbcape], ThermoPathMode::PreferNativeExact)
-                .unwrap();
+        let (compute, native) = plan_native_thermo_routes(
+            ModelId::Gfs,
+            &[DerivedRecipe::Sbcape],
+            ThermoPathMode::PreferNativeExact,
+        )
+        .unwrap();
         assert_eq!(compute, vec![DerivedRecipe::Sbcape]);
         assert!(native.is_empty());
     }

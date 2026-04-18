@@ -9,18 +9,19 @@ mod region;
 use clap::Parser;
 use grib_core::grib2::Grib2File;
 use region::RegionPreset;
+use rustwx_core::VerticalSelector;
 use rustwx_core::{CanonicalField, CycleSpec, FieldSelector, ModelId, ModelRunRequest, SourceId};
 use rustwx_io::{
-    FetchRequest, extract_field_from_grib2, fetch_bytes, fetch_bytes_with_cache,
-    load_cached_selected_field, store_cached_selected_field,
+    extract_field_from_grib2, fetch_bytes, fetch_bytes_with_cache, load_cached_selected_field,
+    store_cached_selected_field, FetchRequest,
 };
-use rustwx_models::{ModelError, PlotRecipe, plot_recipe, plot_recipe_fetch_plan};
+use rustwx_models::{plot_recipe, plot_recipe_fetch_plan, ModelError, PlotRecipe};
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_render::{
-    Color, ColorScale, ContourLayer, DiscreteColorScale, ExtendMode, MapRenderRequest,
-    ProjectedDomain, ProjectedMap, WindBarbLayer,
-    build_projected_map as build_projected_map_from_latlon, map_frame_aspect_ratio, save_png,
-    solar07::Solar07Palette, solar07::solar07_palette,
+    build_projected_map as build_projected_map_from_latlon, map_frame_aspect_ratio_for_mode,
+    save_png, solar07::solar07_palette, solar07::Solar07Palette, Color, ColorScale, ContourLayer,
+    DiscreteColorScale, ExtendMode, MapRenderRequest, ProductVisualMode, ProjectedDomain,
+    ProjectedMap, WindBarbLayer,
 };
 use serde_json::json;
 
@@ -163,11 +164,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let extract_ms = extract_start.elapsed().as_millis();
 
     let project_start = Instant::now();
+    let overlay_only = should_render_overlay_only(filled.selector, recipe.contours.is_some());
     let projected = build_projected_map(
         &filled.grid.lat_deg,
         &filled.grid.lon_deg,
         args.region,
-        map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
+        map_frame_aspect_ratio_for_mode(
+            visual_mode_for_recipe(recipe, filled.selector, overlay_only),
+            OUTPUT_WIDTH,
+            OUTPUT_HEIGHT,
+            true,
+            true,
+        ),
     )?;
     let project_ms = project_start.elapsed().as_millis();
 
@@ -250,10 +258,16 @@ fn build_render_request(
     region: RegionPreset,
 ) -> MapRenderRequest {
     let filled_field = render_filled_field(recipe, filled, extracted);
-    let mut request = MapRenderRequest::new(
-        filled_field.into(),
-        scale_for_recipe(recipe, filled.selector),
-    );
+    let overlay_only = should_render_overlay_only(filled.selector, recipe.contours.is_some());
+    let mut request = if overlay_only {
+        MapRenderRequest::contour_only(filled_field.into())
+    } else {
+        MapRenderRequest::new(
+            filled_field.into(),
+            scale_for_recipe(recipe, filled.selector),
+        )
+    };
+    request.visual_mode = visual_mode_for_recipe(recipe, filled.selector, overlay_only);
     request.title = Some(recipe.title.to_string());
     request.width = OUTPUT_WIDTH;
     request.height = OUTPUT_HEIGHT;
@@ -267,6 +281,31 @@ fn build_render_request(
     request.contours = build_contour_layers(recipe, extracted);
     request.wind_barbs = build_barb_layers(recipe, extracted, region);
     request
+}
+
+fn visual_mode_for_recipe(
+    recipe: &PlotRecipe,
+    selector: FieldSelector,
+    overlay_only: bool,
+) -> ProductVisualMode {
+    if overlay_only {
+        return ProductVisualMode::OverlayAnalysis;
+    }
+    if matches!(recipe.style, rustwx_models::RenderStyle::Solar07Height)
+        || matches!(selector.vertical, VerticalSelector::IsobaricHpa(_))
+    {
+        return ProductVisualMode::UpperAirAnalysis;
+    }
+    let slug = recipe.slug.to_ascii_lowercase();
+    if [
+        "cape", "cin", "stp", "scp", "ehi", "srh", "shear", "lapse", "uh", "helicity",
+    ]
+    .iter()
+    .any(|token| slug.contains(token))
+    {
+        return ProductVisualMode::SevereDiagnostic;
+    }
+    ProductVisualMode::FilledMeteorology
 }
 
 fn fetch_recipe_inputs(
@@ -349,6 +388,13 @@ fn derived_height_winds_fill(
         values,
     )
     .ok()
+}
+
+fn should_render_overlay_only(selector: FieldSelector, has_contours: bool) -> bool {
+    matches!(
+        selector.field,
+        CanonicalField::GeopotentialHeight | CanonicalField::PressureReducedToMeanSeaLevel
+    ) && !has_contours
 }
 
 fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> ColorScale {
