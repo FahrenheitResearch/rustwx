@@ -19,8 +19,8 @@ use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_render::{
     Color, ColorScale, ContourLayer, DiscreteColorScale, ExtendMode, MapRenderRequest,
     ProjectedDomain, ProjectedMap, WindBarbLayer,
-    build_projected_map as build_projected_map_from_latlon,
-    map_frame_aspect_ratio, save_png, solar07::Solar07Palette, solar07::solar07_palette,
+    build_projected_map as build_projected_map_from_latlon, map_frame_aspect_ratio, save_png,
+    solar07::Solar07Palette, solar07::solar07_palette,
 };
 use serde_json::json;
 
@@ -249,7 +249,7 @@ fn build_render_request(
     projected: ProjectedMap,
     region: RegionPreset,
 ) -> MapRenderRequest {
-    let filled_field = convert_filled_field(recipe, filled);
+    let filled_field = render_filled_field(recipe, filled, extracted);
     let mut request = MapRenderRequest::new(
         filled_field.into(),
         scale_for_recipe(recipe, filled.selector),
@@ -302,6 +302,55 @@ fn convert_filled_field(
     core
 }
 
+fn render_filled_field(
+    recipe: &PlotRecipe,
+    field: &rustwx_core::SelectedField2D,
+    extracted: &HashMap<FieldSelector, rustwx_core::SelectedField2D>,
+) -> rustwx_core::Field2D {
+    derived_height_winds_fill(recipe, field, extracted)
+        .unwrap_or_else(|| convert_filled_field(recipe, field))
+}
+
+fn derived_height_winds_fill(
+    recipe: &PlotRecipe,
+    field: &rustwx_core::SelectedField2D,
+    extracted: &HashMap<FieldSelector, rustwx_core::SelectedField2D>,
+) -> Option<rustwx_core::Field2D> {
+    if recipe.style != rustwx_models::RenderStyle::Solar07Height
+        || field.selector.field != CanonicalField::GeopotentialHeight
+    {
+        return None;
+    }
+
+    let (Some(u_spec), Some(v_spec)) = (&recipe.barbs_u, &recipe.barbs_v) else {
+        return None;
+    };
+    let (Some(u_selector), Some(v_selector)) = (u_spec.selector, v_spec.selector) else {
+        return None;
+    };
+    let (Some(u), Some(v)) = (extracted.get(&u_selector), extracted.get(&v_selector)) else {
+        return None;
+    };
+
+    let values: Vec<f32> = u
+        .values
+        .iter()
+        .zip(&v.values)
+        .map(|(u_value, v_value)| {
+            let speed_ms = ((*u_value as f64).powi(2) + (*v_value as f64).powi(2)).sqrt();
+            (speed_ms * 1.943_844_5) as f32
+        })
+        .collect();
+
+    rustwx_core::Field2D::new(
+        rustwx_core::ProductKey::named(format!("{}_wind_speed", recipe.slug)),
+        "kt",
+        u.grid.clone(),
+        values,
+    )
+    .ok()
+}
+
 fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> ColorScale {
     let discrete = match recipe.style {
         rustwx_models::RenderStyle::Solar07Temperature => {
@@ -341,6 +390,19 @@ fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> Colo
             extend: ExtendMode::Both,
             mask_below: None,
         },
+        rustwx_models::RenderStyle::Solar07Height => DiscreteColorScale {
+            levels: match filled_selector.vertical {
+                rustwx_core::VerticalSelector::IsobaricHpa(200)
+                | rustwx_core::VerticalSelector::IsobaricHpa(300) => range_step(50.0, 170.0, 5.0),
+                rustwx_core::VerticalSelector::IsobaricHpa(500) => range_step(20.0, 150.0, 5.0),
+                rustwx_core::VerticalSelector::IsobaricHpa(700) => range_step(10.0, 90.0, 5.0),
+                rustwx_core::VerticalSelector::IsobaricHpa(850) => range_step(10.0, 70.0, 5.0),
+                _ => range_step(10.0, 120.0, 5.0),
+            },
+            colors: solar07_palette(Solar07Palette::Winds),
+            extend: ExtendMode::Both,
+            mask_below: None,
+        },
         _ => DiscreteColorScale {
             levels: range_step(-50.0, 5.0, 1.0),
             colors: solar07_palette(Solar07Palette::Temperature),
@@ -373,8 +435,20 @@ fn build_contour_layers(
     let (levels, color, width, labels) = match selector {
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
+            vertical: rustwx_core::VerticalSelector::IsobaricHpa(200),
+        } => (range_step(1020.0, 1290.0, 6.0), Color::BLACK, 1, true),
+        FieldSelector {
+            field: CanonicalField::GeopotentialHeight,
+            vertical: rustwx_core::VerticalSelector::IsobaricHpa(300),
+        } => (range_step(780.0, 1020.0, 6.0), Color::BLACK, 1, true),
+        FieldSelector {
+            field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(500),
         } => (range_step(450.0, 650.0, 3.0), Color::BLACK, 1, true),
+        FieldSelector {
+            field: CanonicalField::GeopotentialHeight,
+            vertical: rustwx_core::VerticalSelector::IsobaricHpa(700),
+        } => (range_step(180.0, 360.0, 3.0), Color::BLACK, 1, true),
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(850),
@@ -439,12 +513,7 @@ fn build_projected_map(
     region: RegionPreset,
     target_ratio: f64,
 ) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
-    build_projected_map_from_latlon(
-        lat_deg,
-        lon_deg,
-        region.bounds(),
-        target_ratio,
-    )
+    build_projected_map_from_latlon(lat_deg, lon_deg, region.bounds(), target_ratio)
 }
 
 fn range_step(start: f64, stop: f64, step: f64) -> Vec<f64> {

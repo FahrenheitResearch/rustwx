@@ -869,7 +869,10 @@ fn range_step(start: f64, stop: f64, step: f64) -> Vec<f64> {
     values
 }
 
-fn visible_grid_span(grid: &rustwx_core::LatLonGrid, bounds: (f64, f64, f64, f64)) -> (usize, usize) {
+fn visible_grid_span(
+    grid: &rustwx_core::LatLonGrid,
+    bounds: (f64, f64, f64, f64),
+) -> (usize, usize) {
     let mut min_i = usize::MAX;
     let mut max_i = 0usize;
     let mut min_j = usize::MAX;
@@ -1118,7 +1121,7 @@ fn build_render_request(
     bounds: (f64, f64, f64, f64),
     barb_stride_cache: &SharedBarbStrideCache,
 ) -> Result<MapRenderRequest, Box<dyn std::error::Error>> {
-    let filled_field = convert_filled_field(recipe, filled);
+    let filled_field = render_filled_field(recipe, filled, extracted)?;
     let overlay_only = should_render_overlay_only(filled.selector, recipe.contours.is_some());
     let mut request = if overlay_only {
         let mut request = MapRenderRequest::contour_only(filled_field.clone().into());
@@ -1151,6 +1154,57 @@ fn build_render_request(
     }
     request.wind_barbs = build_barb_layers(recipe, extracted, bounds, barb_stride_cache);
     Ok(request)
+}
+
+fn render_filled_field(
+    recipe: &PlotRecipe,
+    field: &SelectedField2D,
+    extracted: &HashMap<FieldSelector, SelectedField2D>,
+) -> Result<rustwx_core::Field2D, Box<dyn std::error::Error>> {
+    if let Some(wind_speed) = derived_height_winds_fill(recipe, field, extracted)? {
+        return Ok(wind_speed);
+    }
+    Ok(convert_filled_field(recipe, field))
+}
+
+fn derived_height_winds_fill(
+    recipe: &PlotRecipe,
+    field: &SelectedField2D,
+    extracted: &HashMap<FieldSelector, SelectedField2D>,
+) -> Result<Option<rustwx_core::Field2D>, Box<dyn std::error::Error>> {
+    if recipe.style != RenderStyle::Solar07Height
+        || field.selector.field != CanonicalField::GeopotentialHeight
+    {
+        return Ok(None);
+    }
+
+    let (Some(u_spec), Some(v_spec)) = (&recipe.barbs_u, &recipe.barbs_v) else {
+        return Ok(None);
+    };
+    let (Some(u_selector), Some(v_selector)) = (u_spec.selector, v_spec.selector) else {
+        return Ok(None);
+    };
+    let (Some(u), Some(v)) = (extracted.get(&u_selector), extracted.get(&v_selector)) else {
+        return Ok(None);
+    };
+
+    let values: Vec<f32> = u
+        .values
+        .iter()
+        .zip(&v.values)
+        .map(|(u_value, v_value)| {
+            let speed_ms = ((*u_value as f64).powi(2) + (*v_value as f64).powi(2)).sqrt();
+            (speed_ms * 1.943_844_5) as f32
+        })
+        .collect();
+
+    let field = rustwx_core::Field2D::new(
+        rustwx_core::ProductKey::named(format!("{}_wind_speed", recipe.slug)),
+        "kt",
+        u.grid.clone(),
+        values,
+    )?;
+    Ok(Some(field))
 }
 
 fn convert_filled_field(recipe: &PlotRecipe, field: &SelectedField2D) -> rustwx_core::Field2D {
@@ -1249,6 +1303,19 @@ fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> Colo
         },
         RenderStyle::Solar07Pressure => DiscreteColorScale {
             levels: range_step(960.0, 1045.0, 2.0),
+            colors: solar07_palette(Solar07Palette::Winds),
+            extend: ExtendMode::Both,
+            mask_below: None,
+        },
+        RenderStyle::Solar07Height => DiscreteColorScale {
+            levels: match filled_selector.vertical {
+                rustwx_core::VerticalSelector::IsobaricHpa(200)
+                | rustwx_core::VerticalSelector::IsobaricHpa(300) => range_step(50.0, 170.0, 5.0),
+                rustwx_core::VerticalSelector::IsobaricHpa(500) => range_step(20.0, 150.0, 5.0),
+                rustwx_core::VerticalSelector::IsobaricHpa(700) => range_step(10.0, 90.0, 5.0),
+                rustwx_core::VerticalSelector::IsobaricHpa(850) => range_step(10.0, 70.0, 5.0),
+                _ => range_step(10.0, 120.0, 5.0),
+            },
             colors: solar07_palette(Solar07Palette::Winds),
             extend: ExtendMode::Both,
             mask_below: None,
@@ -1916,5 +1983,41 @@ mod tests {
             FieldSelector::surface(CanonicalField::Visibility),
             false
         ));
+    }
+
+    #[test]
+    fn height_winds_fill_uses_derived_wind_speed_in_knots() {
+        let recipe = plot_recipe("500mb_height_winds").unwrap();
+        let filled = sample_selected_field(
+            FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500),
+            "gpm",
+            vec![540.0, 543.0, 546.0, 549.0],
+        );
+        let u = sample_selected_field(
+            FieldSelector::isobaric(CanonicalField::UWind, 500),
+            "m/s",
+            vec![10.0, 0.0, 3.0, 4.0],
+        );
+        let v = sample_selected_field(
+            FieldSelector::isobaric(CanonicalField::VWind, 500),
+            "m/s",
+            vec![0.0, 10.0, 4.0, 3.0],
+        );
+        let mut extracted = HashMap::new();
+        extracted.insert(filled.selector, filled.clone());
+        extracted.insert(u.selector, u);
+        extracted.insert(v.selector, v);
+
+        let render_field = render_filled_field(recipe, &filled, &extracted).unwrap();
+
+        assert_eq!(render_field.units, "kt");
+        assert_eq!(
+            render_field.product.as_named(),
+            Some("500mb_height_winds_wind_speed")
+        );
+        assert!((render_field.values[0] - 19.438_445).abs() < 0.01);
+        assert!((render_field.values[1] - 19.438_445).abs() < 0.01);
+        assert!((render_field.values[2] - 9.719_223).abs() < 0.01);
+        assert!((render_field.values[3] - 9.719_223).abs() < 0.01);
     }
 }
