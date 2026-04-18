@@ -22,7 +22,7 @@ use std::time::Instant;
 use crate::direct::build_projected_map as build_projected_map_from_latlon;
 use crate::gridded::{
     PressureFields as GenericPressureFields, SharedTiming as GenericSharedTiming,
-    SurfaceFields as GenericSurfaceFields, broadcast_levels_pa, resolve_model_run,
+    SurfaceFields as GenericSurfaceFields, broadcast_levels_pa, resolve_thermo_pair_run,
 };
 use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
@@ -675,11 +675,13 @@ pub fn run_derived_batch(
     request: &DerivedBatchRequest,
 ) -> Result<DerivedBatchReport, Box<dyn std::error::Error>> {
     let recipes = plan_derived_recipes(&request.recipe_slugs)?;
-    let latest = resolve_model_run(
+    let latest = resolve_thermo_pair_run(
         request.model,
         &request.date_yyyymmdd,
         request.cycle_override_utc,
         request.source,
+        request.surface_product_override.as_deref(),
+        request.pressure_product_override.as_deref(),
     )?;
     // Derived consumes the same surface+pressure pair as severe/ECAPE,
     // so it shares the same execution-plan builder. The planner dedupes

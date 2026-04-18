@@ -12,6 +12,7 @@ use rustwx_core::{
 use rustwx_io::{CachedFetchResult, FetchRequest, artifact_cache_dir, fetch_bytes_with_cache};
 use rustwx_models::{
     LatestRun, ResolvedCanonicalBundleProduct, latest_available_run,
+    latest_available_run_for_products,
     resolve_canonical_bundle_product,
 };
 use serde::{Deserialize, Serialize};
@@ -163,6 +164,37 @@ pub fn resolve_model_run(
             source,
         }),
         None => Ok(latest_available_run(model, Some(source), date)?),
+    }
+}
+
+pub fn resolve_thermo_pair_run(
+    model: ModelId,
+    date: &str,
+    cycle_override: Option<u8>,
+    source: SourceId,
+    surface_product_override: Option<&str>,
+    pressure_product_override: Option<&str>,
+) -> Result<LatestRun, Box<dyn std::error::Error>> {
+    match cycle_override {
+        Some(hour) => Ok(LatestRun {
+            model,
+            cycle: CycleSpec::new(date, hour)?,
+            source,
+        }),
+        None => {
+            let (surface_bundle, pressure_bundle) =
+                thermo_bundles(model, surface_product_override, pressure_product_override);
+            let required_products = [
+                surface_bundle.native_product.as_str(),
+                pressure_bundle.native_product.as_str(),
+            ];
+            Ok(latest_available_run_for_products(
+                model,
+                Some(source),
+                date,
+                &required_products,
+            )?)
+        }
     }
 }
 

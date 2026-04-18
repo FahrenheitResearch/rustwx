@@ -1,7 +1,7 @@
 use crate::direct::build_projected_map;
 use crate::gridded::{
     PreparedHeavyVolume, PressureFields, SharedTiming, SurfaceFields, prepare_heavy_volume,
-    resolve_model_run,
+    resolve_thermo_pair_run,
 };
 use crate::planner::{BundleFetchKey, ExecutionPlan, ExecutionPlanBuilder, PlannedBundle};
 use crate::publication::{
@@ -68,11 +68,13 @@ pub fn run_severe_batch(
     }
 
     let total_start = Instant::now();
-    let latest = resolve_model_run(
+    let latest = resolve_thermo_pair_run(
         request.model,
         &request.date_yyyymmdd,
         request.cycle_override_utc,
         request.source,
+        request.surface_product_override.as_deref(),
+        request.pressure_product_override.as_deref(),
     )?;
     let plan = build_severe_execution_plan(
         &latest,

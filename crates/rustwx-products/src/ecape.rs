@@ -1,6 +1,6 @@
 use crate::direct::build_projected_map;
 use crate::gridded::{
-    PressureFields, SharedTiming, SurfaceFields, prepare_heavy_volume, resolve_model_run,
+    PressureFields, SharedTiming, SurfaceFields, prepare_heavy_volume, resolve_thermo_pair_run,
 };
 use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
@@ -68,11 +68,13 @@ pub fn run_ecape_batch(
     }
 
     let total_start = Instant::now();
-    let latest = resolve_model_run(
+    let latest = resolve_thermo_pair_run(
         request.model,
         &request.date_yyyymmdd,
         request.cycle_override_utc,
         request.source,
+        request.surface_product_override.as_deref(),
+        request.pressure_product_override.as_deref(),
     )?;
     // ECAPE consumes the same surface+pressure pair as the severe panel,
     // so we reuse the same execution-plan builder; the planner dedupes if

@@ -1887,10 +1887,45 @@ pub fn latest_available_run(
     })
 }
 
+pub fn latest_available_run_for_products(
+    model: ModelId,
+    source: Option<SourceId>,
+    date_yyyymmdd: &str,
+    products: &[&str],
+) -> Result<LatestRun, ModelError> {
+    let agent = build_agent();
+    latest_available_run_for_products_with_probe(
+        model,
+        source,
+        date_yyyymmdd,
+        products,
+        |resolved| availability_probe_ok(&agent, resolved),
+    )
+}
+
 fn latest_available_run_with_probe<F>(
     model: ModelId,
     source: Option<SourceId>,
     date_yyyymmdd: &str,
+    probe_available: F,
+) -> Result<LatestRun, ModelError>
+where
+    F: FnMut(&ResolvedUrl) -> bool,
+{
+    latest_available_run_for_products_with_probe(
+        model,
+        source,
+        date_yyyymmdd,
+        &[model_summary(model).default_product],
+        probe_available,
+    )
+}
+
+fn latest_available_run_for_products_with_probe<F>(
+    model: ModelId,
+    source: Option<SourceId>,
+    date_yyyymmdd: &str,
+    products: &[&str],
     mut probe_available: F,
 ) -> Result<LatestRun, ModelError>
 where
@@ -1906,6 +1941,17 @@ where
     if allowed_sources.is_empty() {
         return Err(ModelError::NoAvailableRun { model });
     }
+    let required_products = if products.is_empty() {
+        vec![summary.default_product]
+    } else {
+        let mut deduped = Vec::new();
+        for product in products {
+            if !deduped.iter().any(|seen| seen == product) {
+                deduped.push(*product);
+            }
+        }
+        deduped
+    };
 
     // Walk today, then (if nothing on today) yesterday. During the publishing
     // window between two cycles the newest cycle may not be available yet,
@@ -1919,17 +1965,27 @@ where
                 Ok(cycle) => cycle,
                 Err(_) => continue,
             };
-            let request = ModelRunRequest::new(model, cycle.clone(), 0, summary.default_product)?;
-            let available = resolve_urls(&request)?
-                .into_iter()
-                .filter(|resolved| allowed_sources.contains(&resolved.source))
-                .find(|resolved| probe_available(resolved));
+            let available_source = allowed_sources.iter().copied().find(|candidate_source| {
+                required_products.iter().all(|product| {
+                    let request = match ModelRunRequest::new(model, cycle.clone(), 0, *product) {
+                        Ok(request) => request,
+                        Err(_) => return false,
+                    };
+                    resolve_urls(&request)
+                        .map(|resolved_urls| {
+                            resolved_urls.into_iter().any(|resolved| {
+                                resolved.source == *candidate_source && probe_available(&resolved)
+                            })
+                        })
+                        .unwrap_or(false)
+                })
+            });
 
-            if let Some(resolved) = available {
+            if let Some(source) = available_source {
                 return Ok(LatestRun {
                     model,
                     cycle,
-                    source: resolved.source,
+                    source,
                 });
             }
         }
@@ -3076,6 +3132,27 @@ mod tests {
 
         assert_eq!(latest.cycle.date_yyyymmdd, "20260414");
         assert_eq!(latest.cycle.hour_utc, 6);
+    }
+
+    #[test]
+    fn latest_available_run_for_products_requires_all_products_on_same_cycle() {
+        let latest = latest_available_run_for_products_with_probe(
+            ModelId::RrfsA,
+            Some(SourceId::Aws),
+            "20260417",
+            &["prs-conus", "nat-na", "prs-na"],
+            |resolved| {
+                let url = resolved.availability_probe_url();
+                url.contains("20260417/22/")
+                    || (url.contains("20260417/23/")
+                        && url.contains("prslev.3km.f000.conus"))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(latest.cycle.date_yyyymmdd, "20260417");
+        assert_eq!(latest.cycle.hour_utc, 22);
+        assert_eq!(latest.source, SourceId::Aws);
     }
 
     #[test]

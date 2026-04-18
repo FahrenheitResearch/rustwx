@@ -169,6 +169,21 @@ fn default_derived_recipes() -> Vec<String> {
     .collect()
 }
 
+fn forecast_now_required_products(model: ModelId, args: &Args) -> Vec<&'static str> {
+    if !matches!(model, ModelId::RrfsA) {
+        return Vec::new();
+    }
+    let mut products = Vec::new();
+    if !args.skip_direct {
+        products.push("prs-conus");
+    }
+    if !args.skip_severe || !args.skip_ecape || !args.skip_derived {
+        products.push("nat-na");
+        products.push("prs-na");
+    }
+    products
+}
+
 #[derive(Debug, Clone, Copy, Serialize)]
 enum Lane {
     Severe,
@@ -361,7 +376,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // re-download + re-decode — the HRRR midwest bench was taking
             // 30-40 min per model because of this.
             let pinned_cycle: Option<u8> = args.cycle.or_else(|| {
-                match rustwx_models::latest_available_run(model, Some(source), &date) {
+                let required_products = forecast_now_required_products(model, &args);
+                let latest = if required_products.is_empty() {
+                    rustwx_models::latest_available_run(model, Some(source), &date)
+                } else {
+                    rustwx_models::latest_available_run_for_products(
+                        model,
+                        Some(source),
+                        &date,
+                        &required_products,
+                    )
+                };
+                match latest {
                     Ok(run) => {
                         println!("[cycle] {model}: pinned to {:02}z ({})", run.cycle.hour_utc, run.cycle.date_yyyymmdd);
                         Some(run.cycle.hour_utc)
