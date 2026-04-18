@@ -286,6 +286,14 @@ fn model_supported_recipe_lists(model: ModelId) -> (Vec<String>, Vec<String>) {
     (direct, derived)
 }
 
+fn filter_recipes_for_model(requested: &[String], supported: &[String]) -> Vec<String> {
+    requested
+        .iter()
+        .filter(|slug| supported.iter().any(|candidate| candidate == *slug))
+        .cloned()
+        .collect()
+}
+
 #[derive(Debug, Serialize)]
 struct RunSummary {
     started_utc: String,
@@ -365,7 +373,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (direct_for_model, derived_for_model) = if args.all_supported {
                 model_supported_recipe_lists(model)
             } else {
-                (direct_recipes.clone(), derived_recipes.clone())
+                let (supported_direct, supported_derived) = model_supported_recipe_lists(model);
+                let direct_for_model = if args.direct_recipes.is_some() {
+                    direct_recipes.clone()
+                } else {
+                    filter_recipes_for_model(&direct_recipes, &supported_direct)
+                };
+                let derived_for_model = if args.derived_recipes.is_some() {
+                    derived_recipes.clone()
+                } else {
+                    filter_recipes_for_model(&derived_recipes, &supported_derived)
+                };
+                (direct_for_model, derived_for_model)
             };
 
             // Pin the cycle ONCE per model so severe/ECAPE/direct/derived
