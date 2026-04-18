@@ -15,6 +15,7 @@ pub mod runtime;
 pub mod severe;
 pub mod shared_context;
 pub mod spec;
+pub mod thermo_native;
 pub mod windowed;
 pub mod windowed_decoder;
 

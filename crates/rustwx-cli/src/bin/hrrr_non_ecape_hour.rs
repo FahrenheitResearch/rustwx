@@ -12,6 +12,7 @@ use rustwx_products::publication::{
     atomic_write_json, canonical_run_slug, publish_failure_manifest,
 };
 use rustwx_products::shared_context::DomainSpec;
+use rustwx_products::thermo_native::ThermoPathMode;
 use rustwx_products::windowed::HrrrWindowedProduct;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -82,6 +83,27 @@ struct Args {
         help = "Disable caches for an honest cold-run ingest benchmark"
     )]
     no_cache: bool,
+    #[arg(long, value_enum, default_value_t = ThermoPathArg::PreferNativeExact)]
+    thermo_path: ThermoPathArg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ThermoPathArg {
+    CanonicalDerived,
+    PreferNativeExact,
+    CompareNativeVsDerived,
+    NativeOnly,
+}
+
+impl From<ThermoPathArg> for ThermoPathMode {
+    fn from(value: ThermoPathArg) -> Self {
+        match value {
+            ThermoPathArg::CanonicalDerived => Self::CanonicalDerived,
+            ThermoPathArg::PreferNativeExact => Self::PreferNativeExact,
+            ThermoPathArg::CompareNativeVsDerived => Self::CompareNativeVsDerived,
+            ThermoPathArg::NativeOnly => Self::NativeOnly,
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -136,6 +158,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         direct_recipe_slugs: args.direct_recipes.clone(),
         derived_recipe_slugs: args.derived_recipes.clone(),
         windowed_products: args.windowed_products.iter().copied().map(Into::into).collect(),
+        thermo_path_mode: args.thermo_path.into(),
     };
     let report = run_hrrr_non_ecape_hour(&request)?;
     let report_path = args.out_dir.join(format!(

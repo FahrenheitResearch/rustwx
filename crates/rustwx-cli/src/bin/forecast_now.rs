@@ -24,7 +24,7 @@ use std::time::Instant;
 #[path = "../region.rs"]
 mod region;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use region::RegionPreset;
 use rustwx_core::{ModelId, SourceId};
 use rustwx_models::model_summary;
@@ -36,6 +36,7 @@ use rustwx_products::hrrr::{HrrrBatchProduct, HrrrBatchRequest, run_hrrr_batch};
 use rustwx_products::non_ecape::{HrrrNonEcapeHourRequest, run_hrrr_non_ecape_hour};
 use rustwx_products::severe::{SevereBatchRequest, run_severe_batch};
 use rustwx_products::shared_context::DomainSpec;
+use rustwx_products::thermo_native::ThermoPathMode;
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -112,6 +113,29 @@ struct Args {
     /// for benchmark runs ("every product of every model").
     #[arg(long, default_value_t = false)]
     all_supported: bool,
+
+    /// Thermodynamic routing mode for the derived lane.
+    #[arg(long, value_enum, default_value_t = ThermoPathArg::PreferNativeExact)]
+    thermo_path: ThermoPathArg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ThermoPathArg {
+    CanonicalDerived,
+    PreferNativeExact,
+    CompareNativeVsDerived,
+    NativeOnly,
+}
+
+impl From<ThermoPathArg> for ThermoPathMode {
+    fn from(value: ThermoPathArg) -> Self {
+        match value {
+            ThermoPathArg::CanonicalDerived => Self::CanonicalDerived,
+            ThermoPathArg::PreferNativeExact => Self::PreferNativeExact,
+            ThermoPathArg::CompareNativeVsDerived => Self::CompareNativeVsDerived,
+            ThermoPathArg::NativeOnly => Self::NativeOnly,
+        }
+    }
 }
 
 fn default_direct_recipes() -> Vec<String> {
@@ -931,6 +955,7 @@ fn run_derived_lane(
         recipe_slugs: recipes.to_vec(),
         surface_product_override: None,
         pressure_product_override: None,
+        thermo_path_mode: args.thermo_path.into(),
     };
     let slug = Lane::Derived.slug();
     match run_derived_batch(&request) {
@@ -1097,6 +1122,7 @@ fn run_hrrr_unified(
                 Vec::new()
             },
             windowed_products: Vec::new(),
+            thermo_path_mode: args.thermo_path.into(),
         };
         match run_hrrr_non_ecape_hour(&request) {
             Ok(report) => {

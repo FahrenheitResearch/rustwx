@@ -4,7 +4,7 @@ use std::path::PathBuf;
 #[path = "../region.rs"]
 mod region;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use region::RegionPreset;
 use rustwx_core::{ModelId, SourceId};
 use rustwx_models::model_summary;
@@ -12,6 +12,7 @@ use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::derived::{
     DerivedBatchRequest, run_derived_batch, supported_derived_recipe_slugs,
 };
+use rustwx_products::thermo_native::ThermoPathMode;
 use rustwx_products::publication::{
     ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
     canonical_run_slug, finalize_and_publish_run_manifest, publish_failure_manifest,
@@ -50,6 +51,27 @@ struct Args {
     cache_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_cache: bool,
+    #[arg(long, value_enum, default_value_t = ThermoPathArg::PreferNativeExact)]
+    thermo_path: ThermoPathArg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ThermoPathArg {
+    CanonicalDerived,
+    PreferNativeExact,
+    CompareNativeVsDerived,
+    NativeOnly,
+}
+
+impl From<ThermoPathArg> for ThermoPathMode {
+    fn from(value: ThermoPathArg) -> Self {
+        match value {
+            ThermoPathArg::CanonicalDerived => Self::CanonicalDerived,
+            ThermoPathArg::PreferNativeExact => Self::PreferNativeExact,
+            ThermoPathArg::CompareNativeVsDerived => Self::CompareNativeVsDerived,
+            ThermoPathArg::NativeOnly => Self::NativeOnly,
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -118,6 +140,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         recipe_slugs: recipes,
         surface_product_override: args.surface_product.clone(),
         pressure_product_override: args.pressure_product.clone(),
+        thermo_path_mode: args.thermo_path.into(),
     };
     let report = run_derived_batch(&request)?;
 

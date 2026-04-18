@@ -1,7 +1,8 @@
 use crate::derived::{
     HrrrDerivedBatchReport, HrrrDerivedBatchRequest, plan_derived_recipes,
-    run_hrrr_derived_batch_from_loaded,
+    plan_native_thermo_routes, run_hrrr_derived_batch_from_loaded,
 };
+use crate::thermo_native::ThermoPathMode;
 use crate::direct::{
     HrrrDirectBatchReport, HrrrDirectBatchRequest, run_hrrr_direct_batch_from_loaded,
 };
@@ -21,7 +22,7 @@ use crate::windowed::{
     HrrrWindowedRenderedProduct, collect_windowed_input_fetches,
     run_hrrr_windowed_batch_with_context, windowed_product_input_fetch_keys,
 };
-use rustwx_core::SourceId;
+use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
 use rustwx_models::plot_recipe;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -42,6 +43,8 @@ pub struct HrrrNonEcapeHourRequest {
     pub direct_recipe_slugs: Vec<String>,
     pub derived_recipe_slugs: Vec<String>,
     pub windowed_products: Vec<HrrrWindowedProduct>,
+    #[serde(default)]
+    pub thermo_path_mode: ThermoPathMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,11 +143,16 @@ pub fn run_hrrr_non_ecape_hour(
     } else {
         plan_derived_recipes(&normalized.derived_recipe_slugs)?
     };
+    let (derived_compute_recipes, derived_native_routes) = if derived_recipes.is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        plan_native_thermo_routes(ModelId::Hrrr, &derived_recipes, request.thermo_path_mode)?
+    };
 
     // Combine derived (surface+pressure pair) and direct (per-group
     // NativeAnalysis) requirements into one execution plan.
     let mut plan_builder = ExecutionPlanBuilder::new(&latest, request.forecast_hour);
-    if !derived_recipes.is_empty() {
+    if !derived_compute_recipes.is_empty() {
         // Reuse the severe/ECAPE pair builder; planner dedupes when
         // direct requirements collapse onto the same sfc/prs fetches.
         let pair_plan = build_severe_execution_plan(&latest, request.forecast_hour, None, None);
@@ -158,6 +166,18 @@ pub fn run_hrrr_non_ecape_hour(
                 plan_builder
                     .require_with_logical_family(&requirement, alias.logical_family.as_deref());
             }
+        }
+    }
+    let mut native_products = std::collections::BTreeSet::<String>::new();
+    for route in &derived_native_routes {
+        if native_products.insert(route.candidate.fetch_product.to_string()) {
+            let requirement =
+                BundleRequirement::new(CanonicalBundleDescriptor::NativeAnalysis, request.forecast_hour)
+                    .with_native_override(route.candidate.fetch_product);
+            plan_builder.require_with_logical_family(
+                &requirement,
+                Some(&format!("thermo-native:{}", route.candidate.fetch_product)),
+            );
         }
     }
     for group in &direct_groups {
@@ -228,6 +248,7 @@ pub fn run_hrrr_non_ecape_hour(
                 cache_root: request.cache_root.clone(),
                 use_cache: request.use_cache,
                 recipe_slugs: normalized.derived_recipe_slugs.clone(),
+                thermo_path_mode: request.thermo_path_mode,
             },
             derived_recipes.clone(),
         )
@@ -557,18 +578,28 @@ fn apply_derived_manifest_updates(
         return;
     };
     for recipe in &report.recipes {
+        let detail = if let Some(fetch_decode) = &report.shared_timing.fetch_decode {
+            format!(
+                "shared_surface planned_family={} fetched_family={} resolved_source={}; shared_pressure planned_family={} fetched_family={} resolved_source={}",
+                fetch_decode.surface_fetch.planned_product,
+                fetch_decode.surface_fetch.fetched_product,
+                fetch_decode.surface_fetch.resolved_source,
+                fetch_decode.pressure_fetch.planned_product,
+                fetch_decode.pressure_fetch.fetched_product,
+                fetch_decode.pressure_fetch.resolved_source
+            )
+        } else {
+            format!(
+                "native_thermo_only thermo_path={:?} native_extract_ms={} native_compare_ms={}",
+                report.thermo_path_mode,
+                report.shared_timing.native_extract_ms,
+                report.shared_timing.native_compare_ms
+            )
+        };
         manifest.update_artifact_state(
             &derived_artifact_key(&recipe.recipe_slug),
             ArtifactPublicationState::Complete,
-            Some(format!(
-                "shared_surface planned_family={} fetched_family={} resolved_source={}; shared_pressure planned_family={} fetched_family={} resolved_source={}",
-                report.shared_timing.fetch_decode.surface_fetch.planned_product,
-                report.shared_timing.fetch_decode.surface_fetch.fetched_product,
-                report.shared_timing.fetch_decode.surface_fetch.resolved_source,
-                report.shared_timing.fetch_decode.pressure_fetch.planned_product,
-                report.shared_timing.fetch_decode.pressure_fetch.fetched_product,
-                report.shared_timing.fetch_decode.pressure_fetch.resolved_source
-            )),
+            Some(detail),
         );
         manifest.update_artifact_identity(
             &derived_artifact_key(&recipe.recipe_slug),
@@ -753,6 +784,7 @@ mod tests {
             direct_recipe_slugs: Vec::new(),
             derived_recipe_slugs: Vec::new(),
             windowed_products: Vec::new(),
+            thermo_path_mode: ThermoPathMode::PreferNativeExact,
         }
     }
 
@@ -851,7 +883,7 @@ mod tests {
             domain: domain(),
             input_fetches: Vec::new(),
             shared_timing: HrrrDerivedSharedTiming {
-                fetch_decode: crate::gridded::SharedTiming {
+                fetch_decode: Some(crate::gridded::SharedTiming {
                     fetch_surface_ms: 0,
                     fetch_pressure_ms: 0,
                     decode_surface_ms: 0,
@@ -880,9 +912,11 @@ mod tests {
                         resolved_source: SourceId::Aws,
                         resolved_url: "https://example.test/hrrr.t12z.wrfprsf06.grib2".into(),
                     },
-                },
+                }),
                 compute_ms: 4,
                 project_ms: 5,
+                native_extract_ms: 0,
+                native_compare_ms: 0,
             },
             recipes: vec![HrrrDerivedRenderedRecipe {
                 recipe_slug: "sbcape".into(),
@@ -895,6 +929,8 @@ mod tests {
                     total_ms: 6,
                 },
             }],
+            thermo_path_mode: ThermoPathMode::PreferNativeExact,
+            native_thermo_artifacts: Vec::new(),
             total_ms: 11,
         };
         let windowed = HrrrWindowedBatchReport {
@@ -1037,7 +1073,7 @@ mod tests {
             domain: domain(),
             input_fetches: Vec::new(),
             shared_timing: HrrrDerivedSharedTiming {
-                fetch_decode: crate::gridded::SharedTiming {
+                fetch_decode: Some(crate::gridded::SharedTiming {
                     fetch_surface_ms: 0,
                     fetch_pressure_ms: 0,
                     decode_surface_ms: 0,
@@ -1066,9 +1102,11 @@ mod tests {
                         resolved_source: SourceId::Aws,
                         resolved_url: "https://example.test/hrrr.t12z.wrfprsf06.grib2".into(),
                     },
-                },
+                }),
                 compute_ms: 1,
                 project_ms: 1,
+                native_extract_ms: 0,
+                native_compare_ms: 0,
             },
             recipes: vec![HrrrDerivedRenderedRecipe {
                 recipe_slug: "sbcape".into(),
@@ -1083,6 +1121,8 @@ mod tests {
                     total_ms: 1,
                 },
             }],
+            thermo_path_mode: ThermoPathMode::PreferNativeExact,
+            native_thermo_artifacts: Vec::new(),
             total_ms: 5,
         };
         let windowed = HrrrWindowedBatchReport {
