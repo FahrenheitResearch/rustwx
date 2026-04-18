@@ -5,15 +5,12 @@
 //! Local to the render crates — no product/planner code imported.
 use rustwx_render::{
     Color, ColorScale, ContourStyle, DiscreteColorScale, ExtendMode, Field2D, GridShape,
-    LatLonGrid, MapRenderRequest, ProductKey, ProjectedDomain, ProjectedExtent,
+    LatLonGrid, LambertConformal, MapRenderRequest, ProductKey, ProjectedDomain, ProjectedExtent,
     ProjectedLineOverlay, ProjectedPolygonFill, save_png,
-};
-use std::path::PathBuf;
-use wrf_render::features::{
     load_styled_conus_features_for, load_styled_conus_polygons_for, BasemapStyle,
     StyledLonLatLayer, StyledLonLatPolygonLayer,
 };
-use wrf_render::projection::LambertConformal;
+use std::path::PathBuf;
 
 // CONUS-centered Lambert Conformal Conic — matches HRRR-ish defaults.
 const TRUE_LAT_1: f64 = 33.0;
@@ -121,7 +118,7 @@ fn main() {
             BasemapStyle::White => "SBECAPE — white basemap (NWS-style)".to_string(),
         });
         request.subtitle_left = Some("Synthetic field · Lambert Conformal CONUS".to_string());
-        request.subtitle_right = Some("rustwx-render / wrf-render".to_string());
+        request.subtitle_right = Some("rustwx-render native engine".to_string());
         request.cbar_tick_step = Some(500.0);
         request.projected_domain = Some(ProjectedDomain {
             x: proj_x.clone(),

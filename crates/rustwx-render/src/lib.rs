@@ -1,17 +1,36 @@
+mod color;
+mod colorbar;
+mod colormap;
+mod colormaps;
+mod draw;
 mod error;
+mod features;
+mod overlay;
 mod panel;
+mod projected_map;
+mod projection;
+mod rasterize;
+mod render;
 mod request;
+mod text;
 pub mod solar07;
 
 pub use error::RustwxRenderError;
 pub use image::RgbaImage;
 pub use panel::{PanelGridLayout, PanelPadding, compose_panel_images, render_panel_grid};
+pub use projected_map::{ProjectedMap, build_projected_map};
+pub use features::{
+    BasemapStyle, StyledLonLatLayer, StyledLonLatPolygonLayer, load_styled_conus_features_for,
+    load_styled_conus_polygons_for,
+};
+pub use projection::LambertConformal;
 pub use request::{
     Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, ExtendMode, Field2D,
     GridShape, LatLonGrid, MapRenderRequest, ProductKey, ProductMaturity, ProductSemanticFlag,
     ProductSemantics, ProjectedDomain, ProjectedExtent, ProjectedLineOverlay,
     ProjectedPolygonFill, WindBarbLayer, WindBarbStyle,
 };
+pub use render::map_frame_aspect_ratio;
 pub use rustwx_core::{
     Field2D as CoreField2D, GridShape as CoreGridShape, LatLonGrid as CoreLatLonGrid,
     ProductKey as CoreProductKey,
@@ -24,11 +43,12 @@ pub use solar07::{
 use std::cell::RefCell;
 use std::path::Path;
 use std::sync::OnceLock;
-use wrf_render::{
-    BarbOverlay, ContourOverlay, Extend, LeveledColormap, MapExtent, ProjectedGrid,
-    ProjectedPolygon, ProjectedPolyline, RenderOpts, Rgba, render_to_image as wrf_render_to_image,
-    render_to_png,
+use crate::color::Rgba;
+use crate::colormap::{Extend, LeveledColormap};
+use crate::overlay::{
+    BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPolygon, ProjectedPolyline,
 };
+use crate::render::{RenderOpts, render_to_image as native_render_to_image, render_to_png};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RustRenderer;
@@ -135,7 +155,7 @@ impl RustRenderer {
 
     pub fn render_image(self, request: &MapRenderRequest) -> Result<RgbaImage, RustwxRenderError> {
         with_render_state(request, |data, ny, nx, opts| {
-            Ok(wrf_render_to_image(data, ny, nx, opts))
+            Ok(native_render_to_image(data, ny, nx, opts))
         })
     }
 
@@ -393,6 +413,16 @@ impl From<ExtendMode> for Extend {
             ExtendMode::Both => Self::Both,
         }
     }
+}
+
+pub fn draw_centered_text_line(
+    img: &mut RgbaImage,
+    text: &str,
+    y: i32,
+    color: Color,
+    scale: u32,
+) {
+    text::draw_text_centered(img, text, y, color.into(), scale);
 }
 
 #[cfg(test)]

@@ -73,7 +73,6 @@ const VENDORED_DEPENDENCY_DIRS: &[(&str, &str)] = &[
     ("wx-math", "vendor/wx-math"),
     ("wx-radar", "vendor/wx-radar"),
     ("grib-core", "vendor/grib-core"),
-    ("wrf-render", "vendor/wrf-render"),
     ("sharprs", "vendor/sharprs"),
 ];
 

@@ -794,7 +794,7 @@ fn windowed_parallelism(source: SourceId, job_count: usize) -> usize {
         return 1;
     }
     thread::available_parallelism()
-        .map(|parallelism| parallelism.get())
+        .map(|parallelism| (parallelism.get() / 2).max(1))
         .unwrap_or(1)
         .min(job_count.max(1))
 }

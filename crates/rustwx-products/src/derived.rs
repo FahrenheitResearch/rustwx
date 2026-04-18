@@ -11,7 +11,9 @@ use rustwx_core::{
 };
 use rustwx_render::{
     Color, DerivedProductStyle, ExtendMode, MapRenderRequest, ProjectedDomain, ProjectedExtent,
-    Solar07Palette, Solar07Product, WindBarbLayer, save_png,
+    ProjectedMap, Solar07Palette, Solar07Product, WindBarbLayer,
+    build_projected_map as build_projected_map_from_latlon,
+    map_frame_aspect_ratio, save_png,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -21,7 +23,6 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Instant;
 
-use crate::direct::build_projected_map as build_projected_map_from_latlon;
 use crate::gridded::{
     PressureFields as GenericPressureFields, SharedTiming as GenericSharedTiming,
     SurfaceFields as GenericSurfaceFields, broadcast_levels_pa, resolve_thermo_pair_run,
@@ -34,7 +35,7 @@ use crate::runtime::{BundleLoaderConfig, LoadedBundleSet, load_execution_plan};
 use crate::severe::{
     build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
 };
-use crate::shared_context::{DomainSpec, ProjectedMap};
+use crate::shared_context::DomainSpec;
 use crate::thermo_native::{
     NativeDerivedComparisonStats, NativeRoute, NativeSemantics, NativeThermoCandidate,
     NativeThermoRecipe, ThermoPathMode, compare_native_vs_derived, crop_native_field,
@@ -802,7 +803,7 @@ fn run_derived_batch_from_loaded_bundles(
             &derived_grid.lat_deg,
             &derived_grid.lon_deg,
             request.domain.bounds,
-            wrf_render::render::map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
+            map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
         )?;
         project_ms += project_start.elapsed().as_millis();
 
@@ -860,7 +861,7 @@ fn run_derived_batch_from_loaded_bundles(
                 &native_field.grid.lat_deg,
                 &native_field.grid.lon_deg,
                 request.domain.bounds,
-                wrf_render::render::map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
+                map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
             )?;
             project_ms += project_start.elapsed().as_millis();
             grid = Some(native_field.grid.clone());
@@ -2367,7 +2368,7 @@ fn normalize_slug(value: &str) -> String {
 
 fn png_render_parallelism(job_count: usize) -> usize {
     thread::available_parallelism()
-        .map(|parallelism| parallelism.get())
+        .map(|parallelism| (parallelism.get() / 2).max(1))
         .unwrap_or(1)
         .min(job_count.max(1))
 }

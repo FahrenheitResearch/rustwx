@@ -17,4 +17,3 @@ rustwx-io = { path = "../rustwx-io" }
 rustwx-models = { path = "../rustwx-models" }
 rustwx-render = { path = "../rustwx-render" }
 grib-core = { path = "../../vendor/grib-core" }
-wrf-render = { path = "../../vendor/wrf-render" }

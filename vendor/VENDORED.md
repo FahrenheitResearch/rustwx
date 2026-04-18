@@ -18,10 +18,6 @@ Imported upstreams in this migration pass:
   Upstream commit: `82922534c02a888e773c50463b5a49d535606276`
   License: `MIT`
   Preserved file: [vendor/ecape-rs/LICENSE](/abs/path/C:/Users/drew/rustwx/vendor/ecape-rs/LICENSE)
-- `wrf-render`
-  Source repo: `C:\Users\drew\wrf-rust-plots`
-  Upstream commit: `92adbca655c295a7abde47c6c2590f21bd29ba83`
-  License metadata in vendored manifest: `MIT`
 - `sharprs`
   Source repo: `C:\Users\drew\sharprs`
   Upstream commit: `16cf0757304eb690d0208c304e32a4676178f00a`

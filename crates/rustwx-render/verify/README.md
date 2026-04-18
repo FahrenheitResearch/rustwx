@@ -2,7 +2,7 @@
 
 `rustwx-render-verify` is a small standalone verification crate for render behavior.
 
-It is not a normal workspace member. It exists so rendering behavior can be tested in isolation against `wrf-render` without pulling the whole `rustwx` workspace into every check.
+It is not a normal workspace member. It exists so rendering behavior can be tested in isolation against the shipped `rustwx-render` crate without pulling the whole `rustwx` workspace into every check.
 
 ## What it covers
 
@@ -14,7 +14,7 @@ It is not a normal workspace member. It exists so rendering behavior can be test
 ## Current limits
 
 - this is a narrow verification harness, not the production render API
-- it intentionally duplicates a subset of `rustwx-render`
+- it is intentionally minimal and just re-exports `rustwx-render`
 
 ## Minimal example
 

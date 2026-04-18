@@ -13,7 +13,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 #[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
 #[cfg(test)]
 use std::sync::Mutex;
 
@@ -127,7 +127,9 @@ thread_local! {
 }
 
 #[cfg(test)]
-static PROJECTED_PIXEL_CACHE_MISSES: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    static PROJECTED_PIXEL_CACHE_MISSES: Cell<usize> = const { Cell::new(0) };
+}
 #[cfg(test)]
 static PROJECTED_PIXEL_CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -390,7 +392,7 @@ fn projected_grid_to_pixels_cached(
             Arc::clone(&pixels),
         ));
         #[cfg(test)]
-        PROJECTED_PIXEL_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+        PROJECTED_PIXEL_CACHE_MISSES.with(|count| count.set(count.get() + 1));
         pixels
     })
 }
@@ -981,12 +983,12 @@ fn reset_projected_pixel_cache_for_tests() {
     PROJECTED_PIXEL_CACHE.with(|cache_cell| {
         *cache_cell.borrow_mut() = None;
     });
-    PROJECTED_PIXEL_CACHE_MISSES.store(0, Ordering::Relaxed);
+    PROJECTED_PIXEL_CACHE_MISSES.with(|count| count.set(0));
 }
 
 #[cfg(test)]
 fn projected_pixel_cache_miss_count_for_tests() -> usize {
-    PROJECTED_PIXEL_CACHE_MISSES.load(Ordering::Relaxed)
+    PROJECTED_PIXEL_CACHE_MISSES.with(Cell::get)
 }
 
 #[cfg(test)]

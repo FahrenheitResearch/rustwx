@@ -2,7 +2,7 @@
 
 `rustwx-render` is the Rust map-rendering crate for `rustwx`.
 
-It wraps the local `wrf-render` engine with `rustwx`-level request types, Solar07 palettes, contour layers, barb layers, and panel helpers.
+It owns the `rustwx` map-rendering engine directly: request types, Solar07 palettes, contour layers, barb layers, basemap helpers, projection prep, and panel helpers all live in this crate.
 
 ## What is implemented
 
@@ -31,7 +31,6 @@ It wraps the local `wrf-render` engine with `rustwx`-level request types, Solar0
 
 ## Current limits
 
-- no built-in model projection pipeline
 - no animation/GIF orchestration yet
 - no fetch/decode logic here by design
 - overlay builders require matching grids; this crate does not remap fields

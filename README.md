@@ -45,7 +45,7 @@ Current design constraints:
 | `rustwx-io` | probing, byte-range fetch, selector-backed GRIB extraction, field cache | usable |
 | `rustwx-prep` | preprocessing helpers, currently WRF-style lake masking/interpolation | narrow but real |
 | `rustwx-calc` | ECAPE, CAPE/CIN, severe wrapper APIs over `metrust` | usable, still growing |
-| `rustwx-render` | Rust PNG map renderer wrapper over `wrf-render` | usable |
+| `rustwx-render` | Rust PNG map renderer owned directly inside `rustwx` | usable |
 | `rustwx-sounding` | sounding bridge and rendering over `sharprs` | usable |
 | `rustwx-cli` | CLI and proof binaries | usable |
 | `rustwx-python` | thin optional Python bindings | minimal |

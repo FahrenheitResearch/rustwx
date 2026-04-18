@@ -7,8 +7,4 @@ publish = false
 [workspace]
 
 [dependencies]
-image = { version = "0.25", default-features = false, features = ["png"] }
-serde = { version = "1", features = ["derive"] }
-thiserror = "2"
-rustwx-core = { path = "../../rustwx-core" }
-wrf-render = { path = "../../../vendor/wrf-render" }
+rustwx-render = { path = ".." }

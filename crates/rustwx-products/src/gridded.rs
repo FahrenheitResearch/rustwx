@@ -14,10 +14,10 @@ use rustwx_models::{
     LatestRun, ResolvedCanonicalBundleProduct, latest_available_run_at_forecast_hour,
     latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
 };
+use rustwx_render::map_frame_aspect_ratio;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use wrf_render::render::map_frame_aspect_ratio;
 
 const GEOPOTENTIAL_M2S2_TO_M: f64 = 1.0 / 9.806_65;
 

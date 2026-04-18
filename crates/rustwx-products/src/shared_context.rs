@@ -1,15 +1,14 @@
 use image::DynamicImage;
 use rustwx_core::{Field2D, LatLonGrid, ProductKey};
 use rustwx_render::{
-    MapRenderRequest, PanelGridLayout, PanelPadding, ProjectedDomain, ProjectedExtent,
-    ProjectedLineOverlay, ProjectedPolygonFill, Solar07Product, render_panel_grid,
+    Color, MapRenderRequest, PanelGridLayout, PanelPadding, ProjectedDomain,
+    Solar07Product, draw_centered_text_line, map_frame_aspect_ratio, render_panel_grid,
 };
+pub use rustwx_render::ProjectedMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use wrf_render::render::map_frame_aspect_ratio;
-use wrf_render::text;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DomainSpec {
@@ -24,17 +23,6 @@ impl DomainSpec {
             bounds,
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct ProjectedMap {
-    pub projected_x: Vec<f64>,
-    pub projected_y: Vec<f64>,
-    pub extent: ProjectedExtent,
-    pub lines: Vec<ProjectedLineOverlay>,
-    /// Filled basemap polygons (ocean → land → lakes). Drawn under the data
-    /// raster so every product render gets a proper land/ocean substrate.
-    pub polygons: Vec<ProjectedPolygonFill>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -180,15 +168,9 @@ pub fn render_two_by_four_solar07_panel(
     }
 
     let mut canvas = render_panel_grid(&grid_layout, &requests)?;
-    text::draw_text_centered(&mut canvas, &header.title, 10, wrf_render::Rgba::BLACK, 2);
+    draw_centered_text_line(&mut canvas, &header.title, 10, Color::BLACK, 2);
     for (idx, line) in header.subtitle_lines.iter().enumerate() {
-        text::draw_text_centered(
-            &mut canvas,
-            line,
-            35 + (idx as i32 * 20),
-            wrf_render::Rgba::BLACK,
-            1,
-        );
+        draw_centered_text_line(&mut canvas, line, 35 + (idx as i32 * 20), Color::BLACK, 1);
     }
 
     if let Some(parent) = output_path.parent() {
@@ -201,7 +183,7 @@ pub fn render_two_by_four_solar07_panel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustwx_render::Solar07Product;
+    use rustwx_render::{ProjectedExtent, ProjectedLineOverlay, ProjectedPolygonFill};
 
     #[test]
     fn projected_context_tracks_sizes() {
@@ -219,8 +201,8 @@ mod tests {
                     y_min: 0.0,
                     y_max: 1.0,
                 },
-                lines: Vec::new(),
-                polygons: Vec::new(),
+                lines: Vec::<ProjectedLineOverlay>::new(),
+                polygons: Vec::<ProjectedPolygonFill>::new(),
             },
         );
         assert!(context.contains_size(700, 520));

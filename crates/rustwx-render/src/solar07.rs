@@ -529,7 +529,7 @@ impl DerivedScalePreset {
 }
 
 pub fn solar07_palette(palette: Solar07Palette) -> Vec<Color> {
-    use wrf_render::colormaps;
+    use crate::colormaps;
 
     let colors = match palette {
         Solar07Palette::Cape => colormaps::cape(),
@@ -570,7 +570,7 @@ pub fn palette_scale(
     }
 }
 
-fn advection_palette() -> Vec<wrf_render::Rgba> {
+fn advection_palette() -> Vec<crate::color::Rgba> {
     const ADVECTION_HEX: [&str; 9] = [
         "#0b3c5d", "#328cc1", "#74b3ce", "#d9ecf2", "#f7f7f7", "#f3d9ca", "#e39b7b", "#c75d43",
         "#8f2d1f",
@@ -582,12 +582,12 @@ fn advection_palette() -> Vec<wrf_render::Rgba> {
         .collect::<Vec<_>>()
 }
 
-fn rgba_from_hex(value: &str) -> wrf_render::Rgba {
+fn rgba_from_hex(value: &str) -> crate::color::Rgba {
     let trimmed = value.trim_start_matches('#');
     let red = u8::from_str_radix(&trimmed[0..2], 16).expect("valid red component");
     let green = u8::from_str_radix(&trimmed[2..4], 16).expect("valid green component");
     let blue = u8::from_str_radix(&trimmed[4..6], 16).expect("valid blue component");
-    wrf_render::Rgba {
+    crate::color::Rgba {
         r: red,
         g: green,
         b: blue,

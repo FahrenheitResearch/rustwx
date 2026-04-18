@@ -16,7 +16,6 @@ exclude = [
     "vendor/grib-core",
     "vendor/metrust",
     "vendor/sharprs",
-    "vendor/wrf-render",
     "vendor/wx-core",
     "vendor/wx-field",
     "vendor/wx-math",

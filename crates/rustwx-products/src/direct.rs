@@ -13,8 +13,8 @@ use rustwx_models::{
 };
 use rustwx_render::{
     Color, ColorScale, ContourLayer, DiscreteColorScale, ExtendMode, MapRenderRequest,
-    PanelGridLayout, PanelPadding, ProjectedDomain, ProjectedExtent, ProjectedLineOverlay,
-    ProjectedPolygonFill, WindBarbLayer, render_panel_grid, save_png,
+    PanelGridLayout, PanelPadding, ProjectedDomain, ProjectedMap, WindBarbLayer,
+    draw_centered_text_line, map_frame_aspect_ratio, render_panel_grid, save_png,
     solar07::{Solar07Palette, solar07_palette},
 };
 use serde::{Deserialize, Serialize};
@@ -24,11 +24,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
-use wrf_render::features::{load_styled_conus_features, load_styled_conus_polygons};
-use wrf_render::overlay::MapExtent;
-use wrf_render::projection::LambertConformal;
-use wrf_render::render::map_frame_aspect_ratio;
-use wrf_render::text;
 
 use crate::planner::{ExecutionPlan, ExecutionPlanBuilder};
 use crate::publication::{
@@ -38,7 +33,7 @@ use crate::publication::{
 use crate::runtime::{
     BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
 };
-use crate::shared_context::{DomainSpec, ProjectedMap, ProjectedMapProvider};
+use crate::shared_context::{DomainSpec, ProjectedMapProvider};
 use crate::spec::direct_product_specs;
 
 const OUTPUT_WIDTH: u32 = 1200;
@@ -859,9 +854,46 @@ fn render_worker_count(recipe_count: usize) -> usize {
     }
 
     thread::available_parallelism()
-        .map(|count| count.get())
+        .map(|count| (count.get() / 2).max(1))
         .unwrap_or(1)
         .min(recipe_count)
+}
+
+fn range_step(start: f64, stop: f64, step: f64) -> Vec<f64> {
+    let mut values = Vec::new();
+    let mut current = start;
+    while current < stop - step * 1.0e-9 {
+        values.push(current);
+        current += step;
+    }
+    values
+}
+
+fn visible_grid_span(grid: &rustwx_core::LatLonGrid, bounds: (f64, f64, f64, f64)) -> (usize, usize) {
+    let mut min_i = usize::MAX;
+    let mut max_i = 0usize;
+    let mut min_j = usize::MAX;
+    let mut max_j = 0usize;
+
+    for j in 0..grid.shape.ny {
+        for i in 0..grid.shape.nx {
+            let idx = j * grid.shape.nx + i;
+            let lat = grid.lat_deg[idx] as f64;
+            let lon = grid.lon_deg[idx] as f64;
+            if lon >= bounds.0 && lon <= bounds.1 && lat >= bounds.2 && lat <= bounds.3 {
+                min_i = min_i.min(i);
+                max_i = max_i.max(i);
+                min_j = min_j.min(j);
+                max_j = max_j.max(j);
+            }
+        }
+    }
+
+    if min_i == usize::MAX || min_j == usize::MAX {
+        return (grid.shape.nx.max(1), grid.shape.ny.max(1));
+    }
+
+    (max_i - min_i + 1, max_j - min_j + 1)
 }
 
 fn composite_panel_spec(slug: &str) -> Option<CompositePanelSpec> {
@@ -1056,8 +1088,8 @@ fn render_direct_composite_panel(
                 ..Default::default()
             });
     let mut canvas = render_panel_grid(&layout, &panel_requests)?;
-    text::draw_text_centered(&mut canvas, recipe.title, 10, wrf_render::Rgba::BLACK, 2);
-    text::draw_text_centered(
+    draw_centered_text_line(&mut canvas, recipe.title, 10, Color::BLACK, 2);
+    draw_centered_text_line(
         &mut canvas,
         &format!(
             "{} {}Z F{:03}  {} | source: {}",
@@ -1068,7 +1100,7 @@ fn render_direct_composite_panel(
             latest.source
         ),
         35,
-        wrf_render::Rgba::BLACK,
+        Color::BLACK,
         1,
     );
     if let Some(parent) = output_path.parent() {
@@ -1438,175 +1470,7 @@ fn cached_barb_strides(
     *cache.entry(key).or_insert(strides)
 }
 
-pub fn build_projected_map(
-    lat_deg: &[f32],
-    lon_deg: &[f32],
-    bounds: (f64, f64, f64, f64),
-    target_ratio: f64,
-) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
-    let proj = LambertConformal::new(33.0, 45.0, -97.0, 39.0);
-    let mut projected_x = Vec::with_capacity(lat_deg.len());
-    let mut projected_y = Vec::with_capacity(lat_deg.len());
-    let mut full_min_x = f64::INFINITY;
-    let mut full_max_x = f64::NEG_INFINITY;
-    let mut full_min_y = f64::INFINITY;
-    let mut full_max_y = f64::NEG_INFINITY;
-    let mut min_x = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-
-    for (&lat, &lon) in lat_deg.iter().zip(lon_deg.iter()) {
-        let lat = lat as f64;
-        let lon = lon as f64;
-        let (x, y) = proj.project(lat, lon);
-        projected_x.push(x);
-        projected_y.push(y);
-        if x.is_finite() && y.is_finite() {
-            full_min_x = full_min_x.min(x);
-            full_max_x = full_max_x.max(x);
-            full_min_y = full_min_y.min(y);
-            full_max_y = full_max_y.max(y);
-        }
-        if lon >= bounds.0 && lon <= bounds.1 && lat >= bounds.2 && lat <= bounds.3 {
-            min_x = min_x.min(x);
-            max_x = max_x.max(x);
-            min_y = min_y.min(y);
-            max_y = max_y.max(y);
-        }
-    }
-
-    if !min_x.is_finite() || !max_x.is_finite() || !min_y.is_finite() || !max_y.is_finite() {
-        min_x = full_min_x;
-        max_x = full_max_x;
-        min_y = full_min_y;
-        max_y = full_max_y;
-    }
-
-    if !min_x.is_finite() || !max_x.is_finite() || !min_y.is_finite() || !max_y.is_finite() {
-        return Err("projected extent produced no finite coordinates".into());
-    }
-
-    let extent = MapExtent::from_bounds(min_x, max_x, min_y, max_y, target_ratio);
-    let mut lines = Vec::new();
-    for layer in load_styled_conus_features() {
-        for line in layer.lines {
-            lines.push(ProjectedLineOverlay {
-                points: line
-                    .into_iter()
-                    .map(|(lon, lat)| proj.project(lat, lon))
-                    .collect(),
-                color: Color::rgba(layer.color.r, layer.color.g, layer.color.b, layer.color.a),
-                width: layer.width,
-            });
-        }
-    }
-
-    // Project the filled basemap polygons (ocean → land → lakes) once per
-    // map, filtered by bbox-overlap so global rings that can't possibly be
-    // visible (e.g. Southern Ocean rings when the frame is CONUS) are dropped
-    // before they reach the scanline fill. The render-side clip keeps any
-    // survivors inside the map panel.
-    let pad_x = 0.50 * (extent.x_max - extent.x_min);
-    let pad_y = 0.50 * (extent.y_max - extent.y_min);
-    let accept_bbox = (
-        extent.x_min - pad_x,
-        extent.x_max + pad_x,
-        extent.y_min - pad_y,
-        extent.y_max + pad_y,
-    );
-    let mut polygons: Vec<ProjectedPolygonFill> = Vec::new();
-    for layer in load_styled_conus_polygons() {
-        let color = Color::rgba(layer.color.r, layer.color.g, layer.color.b, layer.color.a);
-        for polygon in layer.polygons {
-            let rings: Vec<Vec<(f64, f64)>> = polygon
-                .into_iter()
-                .map(|ring| {
-                    ring.into_iter()
-                        .map(|(lon, lat)| proj.project(lat, lon))
-                        .collect::<Vec<(f64, f64)>>()
-                })
-                .filter(|ring| ring_overlaps_bbox(ring, accept_bbox))
-                .collect();
-            if !rings.is_empty() {
-                polygons.push(ProjectedPolygonFill { rings, color });
-            }
-        }
-    }
-
-    Ok(ProjectedMap {
-        projected_x,
-        projected_y,
-        extent: ProjectedExtent {
-            x_min: extent.x_min,
-            x_max: extent.x_max,
-            y_min: extent.y_min,
-            y_max: extent.y_max,
-        },
-        lines,
-        polygons,
-    })
-}
-
-fn ring_overlaps_bbox(ring: &[(f64, f64)], bbox: (f64, f64, f64, f64)) -> bool {
-    let (mut rx_min, mut rx_max) = (f64::INFINITY, f64::NEG_INFINITY);
-    let (mut ry_min, mut ry_max) = (f64::INFINITY, f64::NEG_INFINITY);
-    for &(x, y) in ring {
-        if x < rx_min {
-            rx_min = x;
-        }
-        if x > rx_max {
-            rx_max = x;
-        }
-        if y < ry_min {
-            ry_min = y;
-        }
-        if y > ry_max {
-            ry_max = y;
-        }
-    }
-    !(rx_max < bbox.0 || rx_min > bbox.1 || ry_max < bbox.2 || ry_min > bbox.3)
-}
-
-fn range_step(start: f64, stop: f64, step: f64) -> Vec<f64> {
-    let mut values = Vec::new();
-    let mut current = start;
-    while current < stop - step * 1.0e-9 {
-        values.push(current);
-        current += step;
-    }
-    values
-}
-
-fn visible_grid_span(
-    grid: &rustwx_core::LatLonGrid,
-    bounds: (f64, f64, f64, f64),
-) -> (usize, usize) {
-    let mut min_i = usize::MAX;
-    let mut max_i = 0usize;
-    let mut min_j = usize::MAX;
-    let mut max_j = 0usize;
-
-    for j in 0..grid.shape.ny {
-        for i in 0..grid.shape.nx {
-            let idx = j * grid.shape.nx + i;
-            let lat = grid.lat_deg[idx] as f64;
-            let lon = grid.lon_deg[idx] as f64;
-            if lon >= bounds.0 && lon <= bounds.1 && lat >= bounds.2 && lat <= bounds.3 {
-                min_i = min_i.min(i);
-                max_i = max_i.max(i);
-                min_j = min_j.min(j);
-                max_j = max_j.max(j);
-            }
-        }
-    }
-
-    if min_i == usize::MAX || min_j == usize::MAX {
-        return (grid.shape.nx.max(1), grid.shape.ny.max(1));
-    }
-
-    (max_i - min_i + 1, max_j - min_j + 1)
-}
+pub use rustwx_render::build_projected_map;
 
 #[cfg(test)]
 mod tests {

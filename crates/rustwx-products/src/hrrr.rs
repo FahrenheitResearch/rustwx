@@ -500,7 +500,7 @@ pub fn severe_panel_fields_from_supported(fields: SupportedSevereFields) -> Vec<
 
 fn png_render_parallelism(job_count: usize) -> usize {
     thread::available_parallelism()
-        .map(|parallelism| parallelism.get())
+        .map(|parallelism| (parallelism.get() / 2).max(1))
         .unwrap_or(1)
         .min(job_count.max(1))
 }
