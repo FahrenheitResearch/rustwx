@@ -84,6 +84,8 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         cache_root: cache_root.clone(),
         use_cache: !args.no_cache,
         recipe_slugs: args.recipes.clone(),
+        output_width: 1200,
+        output_height: 900,
     };
     let report = run_hrrr_direct_batch(&request)?;
 

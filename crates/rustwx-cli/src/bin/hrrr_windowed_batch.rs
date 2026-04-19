@@ -121,6 +121,8 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         cache_root,
         use_cache: !args.no_cache,
         products: args.products.iter().copied().map(Into::into).collect(),
+        output_width: 1200,
+        output_height: 900,
     };
     let report = run_hrrr_windowed_batch(&request)?;
     let report_path = args.out_dir.join(format!(

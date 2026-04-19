@@ -13,14 +13,13 @@ const COLORBAR_FRAME: Rgba = Rgba {
     a: 255,
 };
 
-/// Hairline separator between adjacent color swatches. Near-transparent so it
-/// only hints at the boundary — the user still sees swatches-as-blocks, not a
-/// striped grid.
+/// Separator between adjacent color swatches. Dark enough to keep dense bars
+/// visibly discrete instead of reading like a smooth gradient.
 const COLORBAR_DIVIDER: Rgba = Rgba {
-    r: 255,
-    g: 255,
-    b: 255,
-    a: 70,
+    r: 36,
+    g: 40,
+    b: 48,
+    a: 190,
 };
 
 /// Draw a horizontal colorbar onto an existing image.
@@ -37,18 +36,29 @@ pub fn draw_colorbar(
     height: u32,
     presentation: ColorbarPresentation,
 ) {
-    let n_intervals = if cmap.levels.len() > 1 {
-        cmap.levels.len() - 1
+    let legend_levels = if cmap.legend_levels.len() > 1 {
+        &cmap.legend_levels
+    } else {
+        &cmap.levels
+    };
+    let legend_colors = if !cmap.legend_colors.is_empty() {
+        &cmap.legend_colors
+    } else {
+        &cmap.colors
+    };
+
+    let n_intervals = if legend_levels.len() > 1 {
+        legend_levels.len() - 1
     } else {
         return;
     };
 
     for px in x..x.saturating_add(width).min(img.width()) {
-        let rel = (px - x) as f64 / width as f64;
+        let rel = (px - x) as f64 / width.max(1) as f64;
         let interval = (rel * n_intervals as f64) as usize;
         let interval = interval.min(n_intervals - 1);
-        let color = if interval < cmap.colors.len() {
-            cmap.colors[interval]
+        let color = if interval < legend_colors.len() {
+            legend_colors[interval]
         } else {
             Rgba::TRANSPARENT
         };
@@ -67,13 +77,12 @@ pub fn draw_colorbar(
     } else {
         presentation.divider_color
     };
-    let divider = divider_color.to_image_rgba();
     for i in 1..n_intervals {
         let tick_x = x + (i as u32 * width / n_intervals as u32);
         if tick_x < img.width() {
             for py in (y + 1)..y_end.saturating_sub(1) {
-                // Alpha-composite onto the existing swatch so the divider
-                // takes on a paler version of the underlying color.
+                // Alpha-composite onto the existing swatch so dense bars keep
+                // visible bin edges without turning into a full black grid.
                 let dst = img.get_pixel(tick_x, py).0;
                 let a = divider_color.a as f64 / 255.0;
                 let inv = 1.0 - a;
@@ -87,7 +96,6 @@ pub fn draw_colorbar(
             }
         }
     }
-    let _ = divider;
 
     // Thin cool-gray outer frame — one pixel, muted slate instead of solid black.
     let frame = if presentation.frame_color == Rgba::TRANSPARENT {

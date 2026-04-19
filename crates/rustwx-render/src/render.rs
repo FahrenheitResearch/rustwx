@@ -74,6 +74,8 @@ impl Default for RenderOpts {
             cmap: LeveledColormap {
                 levels: vec![],
                 colors: vec![],
+                legend_levels: vec![],
+                legend_colors: vec![],
                 under_color: None,
                 over_color: None,
                 mask_below: None,

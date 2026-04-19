@@ -137,6 +137,8 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         surface_product_override: args.surface_product.clone(),
         pressure_product_override: args.pressure_product.clone(),
         source_mode: args.source_mode.into(),
+        output_width: 1200,
+        output_height: 900,
     };
     let report = run_derived_batch(&request)?;
 

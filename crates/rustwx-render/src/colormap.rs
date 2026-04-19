@@ -1,4 +1,36 @@
-use crate::color::Rgba;
+use crate::color::{Rgba, lerp_rgba};
+
+const PALETTE_RESOLUTION_MULTIPLIER: usize = 4;
+const LEVEL_RESOLUTION_MULTIPLIER: usize = 4;
+
+fn densify_palette(palette: &[Rgba]) -> Vec<Rgba> {
+    if palette.len() <= 1 {
+        return palette.to_vec();
+    }
+    let dense_len = (palette.len() - 1) * PALETTE_RESOLUTION_MULTIPLIER + 1;
+    lerp_rgba(palette, dense_len)
+}
+
+fn densify_levels(levels: &[f64]) -> Vec<f64> {
+    if levels.len() < 2 || levels.len() <= 4 {
+        return levels.to_vec();
+    }
+
+    let mut dense = Vec::with_capacity((levels.len() - 1) * LEVEL_RESOLUTION_MULTIPLIER + 1);
+    dense.push(levels[0]);
+    for window in levels.windows(2) {
+        let lo = window[0];
+        let hi = window[1];
+        let step = (hi - lo) / LEVEL_RESOLUTION_MULTIPLIER as f64;
+        if !step.is_finite() || step <= 0.0 {
+            continue;
+        }
+        for i in 1..=LEVEL_RESOLUTION_MULTIPLIER {
+            dense.push(lo + step * i as f64);
+        }
+    }
+    dense
+}
 
 /// How to handle values outside the level range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,6 +50,8 @@ pub enum Extend {
 pub struct LeveledColormap {
     pub levels: Vec<f64>,
     pub colors: Vec<Rgba>,
+    pub legend_levels: Vec<f64>,
+    pub legend_colors: Vec<Rgba>,
     pub under_color: Option<Rgba>,
     pub over_color: Option<Rgba>,
     pub mask_below: Option<f64>,
@@ -68,20 +102,29 @@ impl LeveledColormap {
         extend: Extend,
         mask_below: Option<f64>,
     ) -> Self {
-        let n_intervals = if levels.len() > 1 {
-            levels.len() - 1
+        let dense_levels = densify_levels(levels);
+        let legend_levels = levels.to_vec();
+        let n_intervals = if dense_levels.len() > 1 {
+            dense_levels.len() - 1
         } else {
             0
         };
         if n_intervals == 0 || palette.is_empty() {
             return Self {
-                levels: levels.to_vec(),
+                levels: dense_levels,
                 colors: vec![],
+                legend_levels,
+                legend_colors: vec![],
                 under_color: None,
                 over_color: None,
                 mask_below,
             };
         }
+
+        // Densify the editorial palette so interval sampling has finer
+        // color resolution than the raw anchor list. This keeps the
+        // same overall ramp but reduces visible banding.
+        let dense_palette = densify_palette(palette);
 
         // Sample the full palette for the actual contour intervals.
         let sampled: Vec<Rgba> = (0..n_intervals)
@@ -91,11 +134,29 @@ impl LeveledColormap {
                 } else {
                     i as f64 / (n_intervals - 1) as f64
                 };
-                let idx_f = t * (palette.len() - 1) as f64;
-                let idx = (idx_f.round() as usize).min(palette.len() - 1);
-                palette[idx]
+                let idx_f = t * (dense_palette.len() - 1) as f64;
+                let idx = (idx_f.round() as usize).min(dense_palette.len() - 1);
+                dense_palette[idx]
             })
             .collect();
+
+        let legend_interval_count = levels.len().saturating_sub(1);
+        let legend_colors: Vec<Rgba> = if legend_interval_count == 0 {
+            vec![]
+        } else {
+            (0..legend_interval_count)
+                .map(|i| {
+                    let t = if legend_interval_count <= 1 {
+                        0.5
+                    } else {
+                        i as f64 / (legend_interval_count - 1) as f64
+                    };
+                    let idx_f = t * (dense_palette.len() - 1) as f64;
+                    let idx = (idx_f.round() as usize).min(dense_palette.len() - 1);
+                    dense_palette[idx]
+                })
+                .collect()
+        };
 
         let under_color = match extend {
             Extend::Min | Extend::Both => sampled.first().copied(),
@@ -107,11 +168,68 @@ impl LeveledColormap {
         };
 
         Self {
-            levels: levels.to_vec(),
+            levels: dense_levels,
             colors: sampled,
+            legend_levels,
+            legend_colors,
             under_color,
             over_color,
             mask_below,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        LEVEL_RESOLUTION_MULTIPLIER, LeveledColormap, densify_levels, densify_palette,
+    };
+    use crate::color::Rgba;
+
+    #[test]
+    fn palette_densification_increases_internal_resolution_fourfold() {
+        let palette = vec![Rgba::new(0, 0, 0), Rgba::new(255, 255, 255)];
+        let dense = densify_palette(&palette);
+        assert_eq!(dense.len(), 9);
+        assert_eq!(dense.first().copied(), Some(Rgba::new(0, 0, 0)));
+        assert_eq!(dense.last().copied(), Some(Rgba::new(255, 255, 255)));
+    }
+
+    #[test]
+    fn from_palette_uses_interpolated_midtones_not_just_anchor_colors() {
+        let palette = vec![Rgba::new(0, 0, 0), Rgba::new(255, 255, 255)];
+        let levels = vec![0.0, 1.0, 2.0];
+        let cmap = LeveledColormap::from_palette(
+            &palette,
+            &levels,
+            super::Extend::Neither,
+            None,
+        );
+        assert_eq!(cmap.colors.len(), 2);
+        assert_eq!(cmap.colors[0], Rgba::new(0, 0, 0));
+        assert_eq!(cmap.colors[1], Rgba::new(255, 255, 255));
+
+        let more_levels = vec![0.0, 1.0, 2.0, 3.0, 4.0];
+        let smoother = LeveledColormap::from_palette(
+            &palette,
+            &more_levels,
+            super::Extend::Neither,
+            None,
+        );
+        assert_eq!(smoother.colors.len(), 4);
+        assert!(smoother.colors[1].r > 0 && smoother.colors[1].r < 255);
+        assert!(smoother.colors[2].r > 0 && smoother.colors[2].r < 255);
+    }
+
+    #[test]
+    fn level_densification_increases_visible_fill_intervals() {
+        let levels = vec![0.0, 10.0, 20.0];
+        assert_eq!(densify_levels(&levels), levels);
+
+        let more_levels = vec![0.0, 10.0, 20.0, 30.0, 40.0];
+        let dense = densify_levels(&more_levels);
+        assert_eq!(dense.first().copied(), Some(0.0));
+        assert_eq!(dense.last().copied(), Some(40.0));
+        assert_eq!(dense.len(), (more_levels.len() - 1) * LEVEL_RESOLUTION_MULTIPLIER + 1);
     }
 }

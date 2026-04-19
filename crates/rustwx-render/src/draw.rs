@@ -96,6 +96,50 @@ fn rfpart(x: f64) -> f64 {
     1.0 - fpart(x)
 }
 
+fn scale_alpha(color: Rgba, factor: f64) -> Rgba {
+    let alpha = ((color.a as f64) * factor.clamp(0.0, 1.0)).round() as u8;
+    Rgba { a: alpha, ..color }
+}
+
+fn draw_offset_aa_stroke(
+    img: &mut RgbaImage,
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+    color: Rgba,
+    offset: f64,
+    alpha_scale: f64,
+) {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-6 {
+        blend_pixel(img, x0.round() as i32, y0.round() as i32, scale_alpha(color, alpha_scale));
+        return;
+    }
+
+    let perp_x = -dy / len;
+    let perp_y = dx / len;
+    let stroke = scale_alpha(color, alpha_scale);
+    draw_line_aa(
+        img,
+        x0 - perp_x * offset,
+        y0 - perp_y * offset,
+        x1 - perp_x * offset,
+        y1 - perp_y * offset,
+        stroke,
+    );
+    draw_line_aa(
+        img,
+        x0 + perp_x * offset,
+        y0 + perp_y * offset,
+        x1 + perp_x * offset,
+        y1 + perp_y * offset,
+        stroke,
+    );
+}
+
 pub fn draw_line_aa(
     img: &mut RgbaImage,
     mut x0: f64,
@@ -174,73 +218,21 @@ pub fn draw_line_aa_width(
     width: u32,
 ) {
     match width {
-        0 | 1 => draw_line_aa(img, x0, y0, x1, y1, color),
+        0 | 1 => {
+            draw_line_aa(img, x0, y0, x1, y1, color);
+            draw_offset_aa_stroke(img, x0, y0, x1, y1, color, 0.35, 0.28);
+            draw_offset_aa_stroke(img, x0, y0, x1, y1, color, 0.75, 0.12);
+        }
         2 => {
-            let dx = x1 - x0;
-            let dy = y1 - y0;
-            let len = (dx * dx + dy * dy).sqrt();
-            if len < 1e-6 {
-                draw_disc(img, x0.round() as i32, y0.round() as i32, 1, color);
-                return;
-            }
-
-            let perp_x = -dy / len;
-            let perp_y = dx / len;
-            let offset = 0.35;
-            let alpha = ((color.a as f64) * 0.72).round() as u8;
-            let stroke = Rgba { a: alpha, ..color };
-            draw_line_aa(
-                img,
-                x0 - perp_x * offset,
-                y0 - perp_y * offset,
-                x1 - perp_x * offset,
-                y1 - perp_y * offset,
-                stroke,
-            );
-            draw_line_aa(
-                img,
-                x0 + perp_x * offset,
-                y0 + perp_y * offset,
-                x1 + perp_x * offset,
-                y1 + perp_y * offset,
-                stroke,
-            );
+            draw_offset_aa_stroke(img, x0, y0, x1, y1, color, 0.35, 0.78);
+            draw_offset_aa_stroke(img, x0, y0, x1, y1, color, 0.85, 0.24);
+            draw_offset_aa_stroke(img, x0, y0, x1, y1, color, 1.25, 0.10);
         }
         3 => {
-            let dx = x1 - x0;
-            let dy = y1 - y0;
-            let len = (dx * dx + dy * dy).sqrt();
-            if len < 1e-6 {
-                draw_disc(img, x0.round() as i32, y0.round() as i32, 1, color);
-                return;
-            }
-
-            let perp_x = -dy / len;
-            let perp_y = dx / len;
-            let outer_offset = 0.7;
-            let outer_alpha = ((color.a as f64) * 0.72).round() as u8;
-            let outer_stroke = Rgba {
-                a: outer_alpha,
-                ..color
-            };
-
             draw_line_aa(img, x0, y0, x1, y1, color);
-            draw_line_aa(
-                img,
-                x0 - perp_x * outer_offset,
-                y0 - perp_y * outer_offset,
-                x1 - perp_x * outer_offset,
-                y1 - perp_y * outer_offset,
-                outer_stroke,
-            );
-            draw_line_aa(
-                img,
-                x0 + perp_x * outer_offset,
-                y0 + perp_y * outer_offset,
-                x1 + perp_x * outer_offset,
-                y1 + perp_y * outer_offset,
-                outer_stroke,
-            );
+            draw_offset_aa_stroke(img, x0, y0, x1, y1, color, 0.7, 0.74);
+            draw_offset_aa_stroke(img, x0, y0, x1, y1, color, 1.25, 0.24);
+            draw_offset_aa_stroke(img, x0, y0, x1, y1, color, 1.8, 0.10);
         }
         _ => draw_line(img, x0, y0, x1, y1, color, width),
     }

@@ -50,6 +50,14 @@ const OUTPUT_WIDTH: u32 = 1200;
 const OUTPUT_HEIGHT: u32 = 900;
 const KNOTS_PER_MS: f64 = 1.943_844_5;
 
+fn default_output_width() -> u32 {
+    OUTPUT_WIDTH
+}
+
+fn default_output_height() -> u32 {
+    OUTPUT_HEIGHT
+}
+
 trait SurfaceFieldSet {
     fn lat(&self) -> &[f64];
     fn lon(&self) -> &[f64];
@@ -305,6 +313,10 @@ pub struct DerivedBatchRequest {
     pub pressure_product_override: Option<String>,
     #[serde(default)]
     pub source_mode: ProductSourceMode,
+    #[serde(default = "default_output_width")]
+    pub output_width: u32,
+    #[serde(default = "default_output_height")]
+    pub output_height: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -320,6 +332,10 @@ pub struct HrrrDerivedBatchRequest {
     pub recipe_slugs: Vec<String>,
     #[serde(default)]
     pub source_mode: ProductSourceMode,
+    #[serde(default = "default_output_width")]
+    pub output_width: u32,
+    #[serde(default = "default_output_height")]
+    pub output_height: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -743,6 +759,8 @@ impl DerivedBatchRequest {
             surface_product_override: None,
             pressure_product_override: None,
             source_mode: request.source_mode,
+            output_width: request.output_width,
+            output_height: request.output_height,
         }
     }
 }
@@ -843,11 +861,11 @@ fn run_derived_batch_from_loaded_bundles(
 
         let project_start = Instant::now();
         let derived_projected = build_projected_map_from_latlon(
-            &derived_grid.lat_deg,
-            &derived_grid.lon_deg,
-            request.domain.bounds,
-            map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
-        )?;
+                &derived_grid.lat_deg,
+                &derived_grid.lon_deg,
+                request.domain.bounds,
+                map_frame_aspect_ratio(request.output_width, request.output_height, true, true),
+            )?;
         project_ms += project_start.elapsed().as_millis();
 
         let compute_start = Instant::now();
@@ -904,7 +922,7 @@ fn run_derived_batch_from_loaded_bundles(
                 &native_field.grid.lat_deg,
                 &native_field.grid.lon_deg,
                 request.domain.bounds,
-                map_frame_aspect_ratio(OUTPUT_WIDTH, OUTPUT_HEIGHT, true, true),
+                map_frame_aspect_ratio(request.output_width, request.output_height, true, true),
             )?;
             project_ms += project_start.elapsed().as_millis();
             grid = Some(native_field.grid.clone());
@@ -931,6 +949,8 @@ fn run_derived_batch_from_loaded_bundles(
             forecast_hour,
             source,
             model,
+            request.output_width,
+            request.output_height,
             native_field.values.clone(),
         )?;
         let save_timing = save_png_profile(&render_artifact.request, &output_path)?;
@@ -1010,6 +1030,8 @@ fn run_derived_batch_from_loaded_bundles(
                             forecast_hour,
                             source,
                             model,
+                            request.output_width,
+                            request.output_height,
                             computed,
                         )
                         .map_err(thread_render_error)?;
@@ -1201,6 +1223,8 @@ fn build_native_render_artifact(
     forecast_hour: u16,
     source: SourceId,
     model: ModelId,
+    output_width: u32,
+    output_height: u32,
     values: Vec<f64>,
 ) -> Result<HrrrDerivedLiveArtifact, Box<dyn std::error::Error>> {
     let (field, mut request) = match recipe {
@@ -1242,8 +1266,8 @@ fn build_native_render_artifact(
         }
     };
 
-    request.width = OUTPUT_WIDTH;
-    request.height = OUTPUT_HEIGHT;
+    request.width = output_width;
+    request.height = output_height;
     request.visual_mode = recipe.visual_mode();
     request.title = Some(recipe.title().to_string());
     request.subtitle_left = Some(format!(
@@ -1294,6 +1318,8 @@ pub fn build_hrrr_live_derived_artifact(
         forecast_hour,
         source,
         ModelId::Hrrr,
+        OUTPUT_WIDTH,
+        OUTPUT_HEIGHT,
         &computed,
     )
 }
@@ -1867,6 +1893,8 @@ fn build_render_artifact(
     forecast_hour: u16,
     source: SourceId,
     model: ModelId,
+    output_width: u32,
+    output_height: u32,
     computed: &DerivedComputedFields,
 ) -> Result<HrrrDerivedLiveArtifact, Box<dyn std::error::Error>> {
     let (field, mut request) = match recipe {
@@ -2090,8 +2118,8 @@ fn build_render_artifact(
         )?,
     };
 
-    request.width = OUTPUT_WIDTH;
-    request.height = OUTPUT_HEIGHT;
+    request.width = output_width;
+    request.height = output_height;
     request.title = Some(recipe.title().to_string());
     request.subtitle_left = Some(format!(
         "{} {}Z F{:03}  {}",
@@ -2675,6 +2703,8 @@ mod tests {
             surface_product_override: None,
             pressure_product_override: None,
             source_mode: ProductSourceMode::Fastest,
+            output_width: OUTPUT_WIDTH,
+            output_height: OUTPUT_HEIGHT,
         };
         let planned = plan_native_thermo_routes(
             request.model,

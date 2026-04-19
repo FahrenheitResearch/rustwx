@@ -31,6 +31,14 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
 
+fn default_output_width() -> u32 {
+    1200
+}
+
+fn default_output_height() -> u32 {
+    900
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HrrrNonEcapeHourRequest {
     pub date_yyyymmdd: String,
@@ -46,6 +54,10 @@ pub struct HrrrNonEcapeHourRequest {
     pub direct_recipe_slugs: Vec<String>,
     pub derived_recipe_slugs: Vec<String>,
     pub windowed_products: Vec<HrrrWindowedProduct>,
+    #[serde(default = "default_output_width")]
+    pub output_width: u32,
+    #[serde(default = "default_output_height")]
+    pub output_height: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +148,8 @@ pub fn run_hrrr_non_ecape_hour(
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
             recipe_slugs: normalized.direct_recipe_slugs.clone(),
+            output_width: request.output_width,
+            output_height: request.output_height,
         };
         let generic_direct =
             crate::direct::DirectBatchRequest::from_hrrr_for_planner(&direct_request);
@@ -249,6 +263,8 @@ pub fn run_hrrr_non_ecape_hour(
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
             recipe_slugs: normalized.direct_recipe_slugs.clone(),
+            output_width: request.output_width,
+            output_height: request.output_height,
         });
 
     let derived_request = (!normalized.derived_recipe_slugs.is_empty()).then(|| {
@@ -264,6 +280,8 @@ pub fn run_hrrr_non_ecape_hour(
                 use_cache: request.use_cache,
                 recipe_slugs: normalized.derived_recipe_slugs.clone(),
                 source_mode: request.source_mode,
+                output_width: request.output_width,
+                output_height: request.output_height,
             },
             derived_recipes.clone(),
         )
@@ -281,6 +299,8 @@ pub fn run_hrrr_non_ecape_hour(
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
             products: normalized.windowed_products.clone(),
+            output_width: request.output_width,
+            output_height: request.output_height,
         });
 
     let lane_result = run_fanout3(
@@ -818,6 +838,8 @@ mod tests {
             direct_recipe_slugs: Vec::new(),
             derived_recipe_slugs: Vec::new(),
             windowed_products: Vec::new(),
+            output_width: 1200,
+            output_height: 900,
         }
     }
 

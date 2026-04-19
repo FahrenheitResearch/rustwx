@@ -16,9 +16,11 @@
 //! - Writes PNGs and a single summary JSON. The summary lists every
 //!   attempted (model, fh, lane) with outcome + reason.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 use std::time::Instant;
 
 #[path = "../region.rs"]
@@ -38,7 +40,6 @@ use rustwx_products::severe::{SevereBatchRequest, run_severe_batch};
 use rustwx_products::shared_context::DomainSpec;
 use rustwx_products::source::ProductSourceMode;
 use serde::Serialize;
-use std::collections::HashMap;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -84,6 +85,24 @@ struct Args {
     /// Disable caching (forces re-fetch).
     #[arg(long, default_value_t = false)]
     no_cache: bool,
+
+    /// Number of outer forecast jobs to run concurrently. A job is one
+    /// independent (region, model, forecast_hour) execution bundle.
+    #[arg(long, default_value_t = 1)]
+    job_concurrency: usize,
+
+    /// Inner render thread cap used by the product runners. When set, this
+    /// writes `RUSTWX_RENDER_THREADS` once before any worker threads start.
+    #[arg(long)]
+    render_threads: Option<usize>,
+
+    /// Output image width for direct/native/non-ECAPE renders.
+    #[arg(long, default_value_t = 1200)]
+    width: u32,
+
+    /// Output image height for direct/native/non-ECAPE renders.
+    #[arg(long, default_value_t = 900)]
+    height: u32,
 
     /// Skip direct lane.
     #[arg(long, default_value_t = false)]
@@ -245,15 +264,6 @@ struct LaneOutcome {
     blockers: Vec<String>,
 }
 
-fn annotate_region(
-    outcomes: &mut Vec<LaneOutcome>,
-    mut outcome: LaneOutcome,
-    region: RegionPreset,
-) {
-    outcome.region = region.slug().to_string();
-    outcomes.push(outcome);
-}
-
 fn lane_outcome_from_pinned(
     pinned: &PinnedRunRequest,
     model: ModelId,
@@ -279,6 +289,91 @@ fn lane_outcome_from_pinned(
         error,
         outputs,
         blockers,
+    }
+}
+
+fn merge_counts(dst: &mut ModelCounts, src: &ModelCounts) {
+    dst.succeeded += src.succeeded;
+    dst.failed += src.failed;
+    dst.blocked_recipes += src.blocked_recipes;
+    dst.outputs += src.outputs;
+}
+
+fn run_forecast_job(job: ForecastJob, config: &ExecConfig) -> ForecastJobResult {
+    let mut counts = ModelCounts::default();
+    let mut outcomes = Vec::new();
+
+    if matches!(job.model, ModelId::Hrrr) {
+        let mut hrrr_outcomes = run_hrrr_unified(
+            &job.pinned,
+            job.forecast_hour,
+            &job.domain,
+            config,
+            &job.direct_recipes,
+            &job.derived_recipes,
+            &mut counts,
+        );
+        for outcome in &mut hrrr_outcomes {
+            outcome.region = job.region_slug.clone();
+        }
+        outcomes.extend(hrrr_outcomes);
+    } else {
+        if !config.skip_severe {
+            let mut outcome = run_severe_lane(
+                job.model,
+                &job.pinned,
+                job.forecast_hour,
+                &job.domain,
+                config,
+                &mut counts,
+            );
+            outcome.region = job.region_slug.clone();
+            outcomes.push(outcome);
+        }
+        if !config.skip_ecape {
+            let mut outcome = run_ecape_lane(
+                job.model,
+                &job.pinned,
+                job.forecast_hour,
+                &job.domain,
+                config,
+                &mut counts,
+            );
+            outcome.region = job.region_slug.clone();
+            outcomes.push(outcome);
+        }
+        if !config.skip_direct {
+            let mut outcome = run_direct_lane(
+                job.model,
+                &job.pinned,
+                job.forecast_hour,
+                &job.domain,
+                config,
+                &job.direct_recipes,
+                &mut counts,
+            );
+            outcome.region = job.region_slug.clone();
+            outcomes.push(outcome);
+        }
+        if !config.skip_derived {
+            let mut outcome = run_derived_lane(
+                job.model,
+                &job.pinned,
+                job.forecast_hour,
+                &job.domain,
+                config,
+                &job.derived_recipes,
+                &mut counts,
+            );
+            outcome.region = job.region_slug.clone();
+            outcomes.push(outcome);
+        }
+    }
+
+    ForecastJobResult {
+        model_key: format!("{}:{}", job.region_slug, job.model),
+        counts,
+        outcomes,
     }
 }
 
@@ -382,6 +477,38 @@ struct PinnedRunRequest {
     resolution: PinResolution,
 }
 
+#[derive(Debug, Clone)]
+struct ExecConfig {
+    out_dir: PathBuf,
+    cache_dir: PathBuf,
+    no_cache: bool,
+    skip_severe: bool,
+    skip_ecape: bool,
+    skip_direct: bool,
+    skip_derived: bool,
+    source_mode: ProductSourceMode,
+    output_width: u32,
+    output_height: u32,
+}
+
+#[derive(Debug, Clone)]
+struct ForecastJob {
+    region_slug: String,
+    domain: DomainSpec,
+    model: ModelId,
+    forecast_hour: u16,
+    pinned: PinnedRunRequest,
+    direct_recipes: Vec<String>,
+    derived_recipes: Vec<String>,
+}
+
+#[derive(Debug)]
+struct ForecastJobResult {
+    model_key: String,
+    counts: ModelCounts,
+    outcomes: Vec<LaneOutcome>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum PinResolution {
@@ -422,6 +549,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !args.no_cache {
         ensure_dir(&args.cache_dir)?;
     }
+    if let Some(render_threads) = args.render_threads.filter(|&value| value > 0) {
+        // Set once before any worker threads start so the inner runners can
+        // pick up a fixed render-thread budget.
+        unsafe {
+            std::env::set_var("RUSTWX_RENDER_THREADS", render_threads.to_string());
+        }
+    }
 
     let (direct_recipes, derived_recipes) = if args.all_supported {
         all_supported_recipe_lists()
@@ -437,12 +571,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!(
-        "[forecast-now] date={date} regions={:?} hours={:?} models={:?} direct={} derived={}",
+        "[forecast-now] date={date} regions={:?} hours={:?} models={:?} direct={} derived={} size={}x{} job_concurrency={} render_threads={:?}",
         args.regions.iter().map(|r| r.slug()).collect::<Vec<_>>(),
         hours,
         args.models,
         direct_recipes.len(),
         derived_recipes.len(),
+        args.width,
+        args.height,
+        args.job_concurrency,
+        args.render_threads,
     );
 
     let pin_forecast_hour = hours.iter().copied().max().unwrap_or(0);
@@ -501,23 +639,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         pinned_runs_by_model.insert(model.to_string(), pinned_request);
     }
 
-    let mut outcomes = Vec::<LaneOutcome>::new();
-    let mut counts_by_model: BTreeMap<String, ModelCounts> = BTreeMap::new();
+    let config = ExecConfig {
+        out_dir: args.out_dir.clone(),
+        cache_dir: args.cache_dir.clone(),
+        no_cache: args.no_cache,
+        skip_severe: args.skip_severe,
+        skip_ecape: args.skip_ecape,
+        skip_direct: args.skip_direct,
+        skip_derived: args.skip_derived,
+        source_mode: args.source_mode.into(),
+        output_width: args.width,
+        output_height: args.height,
+    };
 
+    let mut jobs = Vec::<ForecastJob>::new();
     for &region in &args.regions {
         let domain = DomainSpec::new(region.slug(), region.bounds());
         println!("\n=== region: {} ===", region.slug());
         for &model in &args.models {
-            let counts = counts_by_model
-                .entry(format!("{}:{}", region.slug(), model))
-                .or_default();
             let pinned_request = pinned_runs_by_model
                 .get(&model.to_string())
                 .expect("model pin should be computed before execution");
 
-            // Per-model recipe selection for --all-supported so derived
-            // doesn't abort on a slug that's Supported in the catalog's
-            // rollup but Blocked for this specific model.
             let (direct_for_model, derived_for_model) = if args.all_supported {
                 model_supported_recipe_lists(model)
             } else {
@@ -535,73 +678,82 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (direct_for_model, derived_for_model)
             };
 
-            // Pinning now happens once per model before any region work,
-            // then every region/hour/lane reuses that resolved run.
             for &fh in &hours {
-                // HRRR has optimized unified runners that share the
-                // planner-loaded surface+pressure bundle and the
-                // prepare_heavy_volume pass across severe+ECAPE, and
-                // share a single bundle load across direct+derived.
-                // Falling back to the generic per-lane runners for HRRR
-                // forces 4 separate bundle loads and 3 redundant
-                // prepare_heavy_volume passes, which is the original
-                // "full CONUS HRRR used to run in ~60s, now takes
-                // minutes" regression. For HRRR we call the unified
-                // runners; for GFS/ECMWF/RRFS-A we still use the
-                // generic per-lane runners (no unified runner exists
-                // for those yet).
-                if matches!(model, ModelId::Hrrr) {
-                    let hrrr_outcomes = run_hrrr_unified(
-                        pinned_request,
-                        fh,
-                        &domain,
-                        &args,
-                        &direct_for_model,
-                        &derived_for_model,
-                        counts,
-                    );
-                    for outcome in hrrr_outcomes {
-                        annotate_region(&mut outcomes, outcome, region);
-                    }
-                    continue;
-                }
-
-                if !args.skip_severe {
-                    let outcome =
-                        run_severe_lane(model, pinned_request, fh, &domain, &args, counts);
-                    annotate_region(&mut outcomes, outcome, region);
-                }
-                if !args.skip_ecape {
-                    let outcome = run_ecape_lane(model, pinned_request, fh, &domain, &args, counts);
-                    annotate_region(&mut outcomes, outcome, region);
-                }
-                if !args.skip_direct {
-                    let outcome = run_direct_lane(
-                        model,
-                        pinned_request,
-                        fh,
-                        &domain,
-                        &args,
-                        &direct_for_model,
-                        counts,
-                    );
-                    annotate_region(&mut outcomes, outcome, region);
-                }
-                if !args.skip_derived {
-                    let outcome = run_derived_lane(
-                        model,
-                        pinned_request,
-                        fh,
-                        &domain,
-                        &args,
-                        &derived_for_model,
-                        counts,
-                    );
-                    annotate_region(&mut outcomes, outcome, region);
-                }
+                jobs.push(ForecastJob {
+                    region_slug: region.slug().to_string(),
+                    domain: domain.clone(),
+                    model,
+                    forecast_hour: fh,
+                    pinned: pinned_request.clone(),
+                    direct_recipes: direct_for_model.clone(),
+                    derived_recipes: derived_for_model.clone(),
+                });
             }
         }
     }
+
+    let mut outcomes = Vec::<LaneOutcome>::new();
+    let mut counts_by_model: BTreeMap<String, ModelCounts> = BTreeMap::new();
+    let job_count = jobs.len();
+    let worker_count = args.job_concurrency.max(1).min(job_count.max(1));
+    if worker_count <= 1 || job_count <= 1 {
+        for job in jobs {
+            let result = run_forecast_job(job, &config);
+            merge_counts(
+                counts_by_model.entry(result.model_key).or_default(),
+                &result.counts,
+            );
+            outcomes.extend(result.outcomes);
+        }
+    } else {
+        let queue = Arc::new(Mutex::new(VecDeque::from(jobs)));
+        let config = Arc::new(config);
+        let (tx, rx) = mpsc::channel::<ForecastJobResult>();
+        let mut handles = Vec::with_capacity(worker_count);
+
+        for _ in 0..worker_count {
+            let queue = Arc::clone(&queue);
+            let config = Arc::clone(&config);
+            let tx = tx.clone();
+            handles.push(thread::spawn(move || {
+                loop {
+                    let job = {
+                        let mut queue = queue.lock().expect("forecast job queue poisoned");
+                        queue.pop_front()
+                    };
+                    let Some(job) = job else {
+                        break;
+                    };
+                    let result = run_forecast_job(job, &config);
+                    if tx.send(result).is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
+        drop(tx);
+
+        for result in rx {
+            merge_counts(
+                counts_by_model.entry(result.model_key).or_default(),
+                &result.counts,
+            );
+            outcomes.extend(result.outcomes);
+        }
+
+        for handle in handles {
+            handle
+                .join()
+                .map_err(|_| std::io::Error::other("forecast_now worker thread panicked"))?;
+        }
+    }
+    outcomes.sort_by(|a, b| {
+        a.region
+            .cmp(&b.region)
+            .then_with(|| a.model.to_string().cmp(&b.model.to_string()))
+            .then_with(|| a.forecast_hour.cmp(&b.forecast_hour))
+            .then_with(|| a.lane.cmp(&b.lane))
+    });
 
     let finished_utc = utc_timestamp();
     let wall_clock_ms = run_start.elapsed().as_millis();
@@ -735,7 +887,7 @@ fn run_severe_lane(
     pinned: &PinnedRunRequest,
     fh: u16,
     domain: &DomainSpec,
-    args: &Args,
+    config: &ExecConfig,
     counts: &mut ModelCounts,
 ) -> LaneOutcome {
     let start = Instant::now();
@@ -746,9 +898,9 @@ fn run_severe_lane(
         forecast_hour: fh,
         source: pinned.source,
         domain: domain.clone(),
-        out_dir: args.out_dir.clone(),
-        cache_root: args.cache_dir.clone(),
-        use_cache: !args.no_cache,
+        out_dir: config.out_dir.clone(),
+        cache_root: config.cache_dir.clone(),
+        use_cache: !config.no_cache,
         surface_product_override: None,
         pressure_product_override: None,
     };
@@ -794,7 +946,7 @@ fn run_ecape_lane(
     pinned: &PinnedRunRequest,
     fh: u16,
     domain: &DomainSpec,
-    args: &Args,
+    config: &ExecConfig,
     counts: &mut ModelCounts,
 ) -> LaneOutcome {
     let start = Instant::now();
@@ -805,9 +957,9 @@ fn run_ecape_lane(
         forecast_hour: fh,
         source: pinned.source,
         domain: domain.clone(),
-        out_dir: args.out_dir.clone(),
-        cache_root: args.cache_dir.clone(),
-        use_cache: !args.no_cache,
+        out_dir: config.out_dir.clone(),
+        cache_root: config.cache_dir.clone(),
+        use_cache: !config.no_cache,
         surface_product_override: None,
         pressure_product_override: None,
     };
@@ -853,7 +1005,7 @@ fn run_direct_lane(
     pinned: &PinnedRunRequest,
     fh: u16,
     domain: &DomainSpec,
-    args: &Args,
+    config: &ExecConfig,
     recipes: &[String],
     counts: &mut ModelCounts,
 ) -> LaneOutcome {
@@ -865,11 +1017,13 @@ fn run_direct_lane(
         forecast_hour: fh,
         source: pinned.source,
         domain: domain.clone(),
-        out_dir: args.out_dir.clone(),
-        cache_root: args.cache_dir.clone(),
-        use_cache: !args.no_cache,
+        out_dir: config.out_dir.clone(),
+        cache_root: config.cache_dir.clone(),
+        use_cache: !config.no_cache,
         recipe_slugs: recipes.to_vec(),
         product_overrides: HashMap::new(),
+        output_width: config.output_width,
+        output_height: config.output_height,
     };
     let slug = Lane::Direct.slug();
     match run_direct_batch(&request) {
@@ -933,7 +1087,7 @@ fn run_derived_lane(
     pinned: &PinnedRunRequest,
     fh: u16,
     domain: &DomainSpec,
-    args: &Args,
+    config: &ExecConfig,
     recipes: &[String],
     counts: &mut ModelCounts,
 ) -> LaneOutcome {
@@ -945,13 +1099,15 @@ fn run_derived_lane(
         forecast_hour: fh,
         source: pinned.source,
         domain: domain.clone(),
-        out_dir: args.out_dir.clone(),
-        cache_root: args.cache_dir.clone(),
-        use_cache: !args.no_cache,
+        out_dir: config.out_dir.clone(),
+        cache_root: config.cache_dir.clone(),
+        use_cache: !config.no_cache,
         recipe_slugs: recipes.to_vec(),
         surface_product_override: None,
         pressure_product_override: None,
-        source_mode: args.source_mode.into(),
+        source_mode: config.source_mode,
+        output_width: config.output_width,
+        output_height: config.output_height,
     };
     let slug = Lane::Derived.slug();
     match run_derived_batch(&request) {
@@ -1027,7 +1183,7 @@ fn run_hrrr_unified(
     pinned: &PinnedRunRequest,
     fh: u16,
     domain: &DomainSpec,
-    args: &Args,
+    config: &ExecConfig,
     direct_recipes: &[String],
     derived_recipes: &[String],
     counts: &mut ModelCounts,
@@ -1036,10 +1192,10 @@ fn run_hrrr_unified(
 
     // severe + ECAPE via run_hrrr_batch (shared bundle + shared heavy volume)
     let mut products = Vec::<HrrrBatchProduct>::new();
-    if !args.skip_severe {
+    if !config.skip_severe {
         products.push(HrrrBatchProduct::SevereProofPanel);
     }
-    if !args.skip_ecape {
+    if !config.skip_ecape {
         products.push(HrrrBatchProduct::Ecape8Panel);
     }
     if !products.is_empty() {
@@ -1050,14 +1206,14 @@ fn run_hrrr_unified(
             forecast_hour: fh,
             source: pinned.source,
             domain: domain.clone(),
-            out_dir: args.out_dir.clone(),
-            cache_root: args.cache_dir.clone(),
-            use_cache: !args.no_cache,
+            out_dir: config.out_dir.clone(),
+            cache_root: config.cache_dir.clone(),
+            use_cache: !config.no_cache,
             products,
         };
-        let slug = if !args.skip_severe && !args.skip_ecape {
+        let slug = if !config.skip_severe && !config.skip_ecape {
             "hrrr_batch_severe_ecape"
-        } else if !args.skip_severe {
+        } else if !config.skip_severe {
             "hrrr_batch_severe"
         } else {
             "hrrr_batch_ecape"
@@ -1108,8 +1264,8 @@ fn run_hrrr_unified(
     }
 
     // direct + derived via run_hrrr_non_ecape_hour (shared bundle load)
-    let want_direct = !args.skip_direct && !direct_recipes.is_empty();
-    let want_derived = !args.skip_derived && !derived_recipes.is_empty();
+    let want_direct = !config.skip_direct && !direct_recipes.is_empty();
+    let want_derived = !config.skip_derived && !derived_recipes.is_empty();
     if want_direct || want_derived {
         let start = Instant::now();
         let request = HrrrNonEcapeHourRequest {
@@ -1118,9 +1274,9 @@ fn run_hrrr_unified(
             forecast_hour: fh,
             source: pinned.source,
             domain: domain.clone(),
-            out_dir: args.out_dir.clone(),
-            cache_root: args.cache_dir.clone(),
-            use_cache: !args.no_cache,
+            out_dir: config.out_dir.clone(),
+            cache_root: config.cache_dir.clone(),
+            use_cache: !config.no_cache,
             direct_recipe_slugs: if want_direct {
                 direct_recipes.to_vec()
             } else {
@@ -1132,7 +1288,9 @@ fn run_hrrr_unified(
                 Vec::new()
             },
             windowed_products: Vec::new(),
-            source_mode: args.source_mode.into(),
+            source_mode: config.source_mode,
+            output_width: config.output_width,
+            output_height: config.output_height,
         };
         match run_hrrr_non_ecape_hour(&request) {
             Ok(report) => {

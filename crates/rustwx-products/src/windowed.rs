@@ -26,6 +26,14 @@ use std::time::Instant;
 const OUTPUT_WIDTH: u32 = 1200;
 const OUTPUT_HEIGHT: u32 = 900;
 
+fn default_output_width() -> u32 {
+    OUTPUT_WIDTH
+}
+
+fn default_output_height() -> u32 {
+    OUTPUT_HEIGHT
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HrrrWindowedProduct {
     Qpf1h,
@@ -84,6 +92,10 @@ pub struct HrrrWindowedBatchRequest {
     pub cache_root: PathBuf,
     pub use_cache: bool,
     pub products: Vec<HrrrWindowedProduct>,
+    #[serde(default = "default_output_width")]
+    pub output_width: u32,
+    #[serde(default = "default_output_height")]
+    pub output_height: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,11 +212,11 @@ fn prepare_windowed_geometry_context(
     let projected_maps = crate::gridded::build_projected_maps_for_sizes(
         &geometry.surface_decode.value,
         request.domain.bounds,
-        &[(OUTPUT_WIDTH, OUTPUT_HEIGHT)],
+        &[(request.output_width, request.output_height)],
     )?;
     let project_ms = project_start.elapsed().as_millis();
     let projected = projected_maps
-        .projected_map(OUTPUT_WIDTH, OUTPUT_HEIGHT)
+        .projected_map(request.output_width, request.output_height)
         .cloned()
         .ok_or("missing projected map for windowed batch")?;
 
@@ -444,8 +456,8 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
                             computed.scale.clone(),
                         )
                     };
-                    render_request.width = OUTPUT_WIDTH;
-                    render_request.height = OUTPUT_HEIGHT;
+                    render_request.width = request.output_width;
+                    render_request.height = request.output_height;
                     render_request.title = Some(computed.title.clone());
                     render_request.subtitle_left = Some(format!(
                         "{} {}Z F{:03}  {}",

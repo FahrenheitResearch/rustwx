@@ -49,6 +49,14 @@ const PRECIPITATION_TYPE_COMPONENT_SLUGS: &[&str] = &[
     "categorical_snow",
 ];
 
+fn default_output_width() -> u32 {
+    OUTPUT_WIDTH
+}
+
+fn default_output_height() -> u32 {
+    OUTPUT_HEIGHT
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectBatchRequest {
     pub model: ModelId,
@@ -62,6 +70,10 @@ pub struct DirectBatchRequest {
     pub use_cache: bool,
     pub recipe_slugs: Vec<String>,
     pub product_overrides: HashMap<String, String>,
+    #[serde(default = "default_output_width")]
+    pub output_width: u32,
+    #[serde(default = "default_output_height")]
+    pub output_height: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +87,10 @@ pub struct HrrrDirectBatchRequest {
     pub cache_root: PathBuf,
     pub use_cache: bool,
     pub recipe_slugs: Vec<String>,
+    #[serde(default = "default_output_width")]
+    pub output_width: u32,
+    #[serde(default = "default_output_height")]
+    pub output_height: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,6 +228,21 @@ struct CompositePanelSpec {
     component_slugs: &'static [&'static str],
 }
 
+impl CompositePanelSpec {
+    fn scaled_for_request(self, request: &DirectBatchRequest) -> Self {
+        let scale_x = request.output_width as f64 / OUTPUT_WIDTH as f64;
+        let scale_y = request.output_height as f64 / OUTPUT_HEIGHT as f64;
+        Self {
+            rows: self.rows,
+            columns: self.columns,
+            panel_width: ((self.panel_width as f64) * scale_x).round().max(1.0) as u32,
+            panel_height: ((self.panel_height as f64) * scale_y).round().max(1.0) as u32,
+            top_padding: ((self.top_padding as f64) * scale_y).round().max(1.0) as u32,
+            component_slugs: self.component_slugs,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct BarbStrideCacheKey {
     u_selector: FieldSelector,
@@ -235,6 +266,8 @@ impl DirectBatchRequest {
             use_cache: request.use_cache,
             recipe_slugs: request.recipe_slugs.clone(),
             product_overrides: HashMap::new(),
+            output_width: request.output_width,
+            output_height: request.output_height,
         }
     }
 
@@ -967,7 +1000,7 @@ fn render_direct_recipe(
         if let Some(spec) = composite_panel_spec(item.recipe.slug) {
         render_direct_composite_panel(
             item.recipe,
-            spec,
+            spec.scaled_for_request(request),
             request,
             latest,
             extracted,
@@ -986,8 +1019,10 @@ fn render_direct_recipe(
             .ok_or_else(|| format!("missing filled selector {:?}", filled_selector))?;
 
         let project_start = Instant::now();
-        let projected = if let Some(projected) =
-            shared_context.and_then(|ctx| ctx.projected_map(OUTPUT_WIDTH, OUTPUT_HEIGHT).cloned())
+        let projected = if let Some(projected) = shared_context.and_then(|ctx| {
+            ctx.projected_map(request.output_width, request.output_height)
+                .cloned()
+        })
         {
             projected
         } else {
@@ -1001,8 +1036,8 @@ fn render_direct_recipe(
                         filled_selector,
                         should_render_overlay_only(filled_selector, item.recipe.contours.is_some()),
                     ),
-                    OUTPUT_WIDTH,
-                    OUTPUT_HEIGHT,
+                    request.output_width,
+                    request.output_height,
                     true,
                     true,
                 ),
@@ -1017,6 +1052,8 @@ fn render_direct_recipe(
             extracted,
             projected,
             request.domain.bounds,
+            request.output_width,
+            request.output_height,
             barb_stride_cache,
         )?;
         let request_build_ms = request_build_start.elapsed().as_millis();
@@ -1135,6 +1172,8 @@ fn render_direct_composite_panel(
             extracted,
             projected.clone(),
             request.domain.bounds,
+            spec.panel_width,
+            spec.panel_height,
             barb_stride_cache,
         )?;
         panel_request.width = spec.panel_width;
@@ -1196,6 +1235,8 @@ fn build_render_request(
     extracted: &HashMap<FieldSelector, SelectedField2D>,
     projected: ProjectedMap,
     bounds: (f64, f64, f64, f64),
+    output_width: u32,
+    output_height: u32,
     barb_stride_cache: &SharedBarbStrideCache,
 ) -> Result<MapRenderRequest, Box<dyn std::error::Error>> {
     let filled_field = render_filled_field(recipe, filled, extracted)?;
@@ -1215,8 +1256,8 @@ fn build_render_request(
     };
     request.visual_mode = visual_mode;
     request.title = Some(recipe.title.to_string());
-    request.width = OUTPUT_WIDTH;
-    request.height = OUTPUT_HEIGHT;
+    request.width = output_width;
+    request.height = output_height;
     request.projected_domain = Some(ProjectedDomain {
         x: projected.projected_x,
         y: projected.projected_y,
@@ -1721,6 +1762,8 @@ mod tests {
             use_cache: false,
             recipe_slugs: Vec::new(),
             product_overrides: HashMap::new(),
+            output_width: OUTPUT_WIDTH,
+            output_height: OUTPUT_HEIGHT,
         }
     }
 

@@ -119,6 +119,8 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         use_cache: !args.no_cache,
         recipe_slugs: recipes,
         product_overrides: parse_product_overrides(&args.product_overrides)?,
+        output_width: 1200,
+        output_height: 900,
     };
     let report = run_direct_batch(&request)?;
 
