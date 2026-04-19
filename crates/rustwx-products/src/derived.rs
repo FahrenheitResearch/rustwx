@@ -10,10 +10,11 @@ use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId,
 };
 use rustwx_render::{
-    Color, DerivedProductStyle, ExtendMode, MapRenderRequest, ProductVisualMode, ProjectedDomain,
-    ProjectedExtent, ProjectedMap, RenderImageTiming, RenderStateTiming, Solar07Palette,
-    Solar07Product, WindBarbLayer, build_projected_map as build_projected_map_from_latlon,
-    map_frame_aspect_ratio, save_png_profile,
+    Color, DerivedProductStyle, DomainFrame, ExtendMode, MapRenderRequest, ProductVisualMode,
+    ProjectedDomain, ProjectedExtent, ProjectedMap, RenderImageTiming, RenderStateTiming,
+    Solar07Palette, Solar07Product, WindBarbLayer,
+    build_projected_map as build_projected_map_from_latlon, map_frame_aspect_ratio,
+    save_png_profile,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -1288,6 +1289,8 @@ fn build_native_render_artifact(
 
     request.width = output_width;
     request.height = output_height;
+    request.supersample_factor = 2;
+    request.domain_frame = Some(DomainFrame::model_data_default());
     request.visual_mode = recipe.visual_mode();
     request.title = Some(recipe.title().to_string());
     request.subtitle_left = Some(format!(
@@ -2140,6 +2143,8 @@ fn build_render_artifact(
 
     request.width = output_width;
     request.height = output_height;
+    request.supersample_factor = 2;
+    request.domain_frame = Some(DomainFrame::model_data_default());
     request.title = Some(recipe.title().to_string());
     request.subtitle_left = Some(format!(
         "{} {}Z F{:03}  {}",

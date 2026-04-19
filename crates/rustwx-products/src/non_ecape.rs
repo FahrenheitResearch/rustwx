@@ -61,6 +61,27 @@ pub struct HrrrNonEcapeHourRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HrrrNonEcapeMultiDomainRequest {
+    pub date_yyyymmdd: String,
+    pub cycle_override_utc: Option<u8>,
+    pub forecast_hour: u16,
+    pub source: SourceId,
+    pub domains: Vec<DomainSpec>,
+    pub out_dir: PathBuf,
+    pub cache_root: PathBuf,
+    pub use_cache: bool,
+    #[serde(default)]
+    pub source_mode: ProductSourceMode,
+    pub direct_recipe_slugs: Vec<String>,
+    pub derived_recipe_slugs: Vec<String>,
+    pub windowed_products: Vec<HrrrWindowedProduct>,
+    #[serde(default = "default_output_width")]
+    pub output_width: u32,
+    #[serde(default = "default_output_height")]
+    pub output_height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HrrrNonEcapeHourRequestedProducts {
     pub direct_recipe_slugs: Vec<String>,
     pub derived_recipe_slugs: Vec<String>,
@@ -106,10 +127,121 @@ pub struct HrrrNonEcapeHourReport {
     pub total_ms: u128,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HrrrNonEcapeDomainReport {
+    pub domain: DomainSpec,
+    pub publication_manifest_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_manifest_path: Option<PathBuf>,
+    pub summary: HrrrNonEcapeHourSummary,
+    pub direct: Option<HrrrDirectBatchReport>,
+    pub derived: Option<HrrrDerivedBatchReport>,
+    pub windowed: Option<HrrrWindowedBatchReport>,
+    pub total_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HrrrNonEcapeMultiDomainReport {
+    pub date_yyyymmdd: String,
+    pub cycle_utc: u8,
+    pub forecast_hour: u16,
+    pub source: SourceId,
+    pub out_dir: PathBuf,
+    pub cache_root: PathBuf,
+    pub use_cache: bool,
+    #[serde(default)]
+    pub source_mode: ProductSourceMode,
+    pub requested: HrrrNonEcapeHourRequestedProducts,
+    pub domains: Vec<HrrrNonEcapeDomainReport>,
+    pub total_ms: u128,
+}
+
+struct PreparedNonEcapeHour {
+    normalized: HrrrNonEcapeHourRequestedProducts,
+    latest: rustwx_models::LatestRun,
+    derived_recipes: Vec<crate::derived::DerivedRecipe>,
+    loaded: Option<crate::runtime::LoadedBundleSet>,
+}
+
 pub fn run_hrrr_non_ecape_hour(
     request: &HrrrNonEcapeHourRequest,
 ) -> Result<HrrrNonEcapeHourReport, Box<dyn std::error::Error>> {
-    let normalized = normalize_requested_products(request);
+    let multi_request = HrrrNonEcapeMultiDomainRequest {
+        date_yyyymmdd: request.date_yyyymmdd.clone(),
+        cycle_override_utc: request.cycle_override_utc,
+        forecast_hour: request.forecast_hour,
+        source: request.source,
+        domains: vec![request.domain.clone()],
+        out_dir: request.out_dir.clone(),
+        cache_root: request.cache_root.clone(),
+        use_cache: request.use_cache,
+        source_mode: request.source_mode,
+        direct_recipe_slugs: request.direct_recipe_slugs.clone(),
+        derived_recipe_slugs: request.derived_recipe_slugs.clone(),
+        windowed_products: request.windowed_products.clone(),
+        output_width: request.output_width,
+        output_height: request.output_height,
+    };
+    let report = run_hrrr_non_ecape_hour_multi_domain(&multi_request)?;
+    let domain_report = report
+        .domains
+        .into_iter()
+        .next()
+        .ok_or("multi-domain runner returned no domain reports for single-domain request")?;
+    Ok(HrrrNonEcapeHourReport {
+        date_yyyymmdd: report.date_yyyymmdd,
+        cycle_utc: report.cycle_utc,
+        forecast_hour: report.forecast_hour,
+        source: report.source,
+        domain: domain_report.domain,
+        out_dir: report.out_dir,
+        cache_root: report.cache_root,
+        use_cache: report.use_cache,
+        source_mode: report.source_mode,
+        publication_manifest_path: domain_report.publication_manifest_path,
+        attempt_manifest_path: domain_report.attempt_manifest_path,
+        requested: report.requested,
+        summary: domain_report.summary,
+        direct: domain_report.direct,
+        derived: domain_report.derived,
+        windowed: domain_report.windowed,
+        total_ms: domain_report.total_ms,
+    })
+}
+
+pub fn run_hrrr_non_ecape_hour_multi_domain(
+    request: &HrrrNonEcapeMultiDomainRequest,
+) -> Result<HrrrNonEcapeMultiDomainReport, Box<dyn std::error::Error>> {
+    validate_requested_domains(&request.domains)?;
+    let total_start = Instant::now();
+    let prepared = prepare_non_ecape_hour(request)?;
+    let mut domain_reports = Vec::with_capacity(request.domains.len());
+    for domain in &request.domains {
+        domain_reports.push(run_prepared_non_ecape_domain(request, &prepared, domain)?);
+    }
+    Ok(HrrrNonEcapeMultiDomainReport {
+        date_yyyymmdd: prepared.latest.cycle.date_yyyymmdd.clone(),
+        cycle_utc: prepared.latest.cycle.hour_utc,
+        forecast_hour: request.forecast_hour,
+        source: prepared.latest.source,
+        out_dir: request.out_dir.clone(),
+        cache_root: request.cache_root.clone(),
+        use_cache: request.use_cache,
+        source_mode: request.source_mode,
+        requested: prepared.normalized.clone(),
+        domains: domain_reports,
+        total_ms: total_start.elapsed().as_millis(),
+    })
+}
+
+fn prepare_non_ecape_hour(
+    request: &HrrrNonEcapeMultiDomainRequest,
+) -> Result<PreparedNonEcapeHour, Box<dyn std::error::Error>> {
+    let normalized = normalize_requested_products_from_parts(
+        &request.direct_recipe_slugs,
+        &request.derived_recipe_slugs,
+        &request.windowed_products,
+    );
     validate_requested_work(&normalized)?;
 
     fs::create_dir_all(&request.out_dir)?;
@@ -117,7 +249,6 @@ pub fn run_hrrr_non_ecape_hour(
         fs::create_dir_all(&request.cache_root)?;
     }
 
-    let total_start = Instant::now();
     let latest = resolve_hrrr_run(
         &request.date_yyyymmdd,
         request.cycle_override_utc,
@@ -127,23 +258,21 @@ pub fn run_hrrr_non_ecape_hour(
     let pinned_date = latest.cycle.date_yyyymmdd.clone();
     let pinned_cycle = Some(latest.cycle.hour_utc);
     let pinned_source = latest.source;
-    let pinned_cycle_utc = latest.cycle.hour_utc;
+    let planning_domain = request
+        .domains
+        .first()
+        .cloned()
+        .ok_or("multi-domain HRRR hour runner needs at least one domain")?;
 
-    // Build a single planner-level execution plan that covers every
-    // bundle every requested lane needs at this hour. Direct and derived
-    // (including severe/ECAPE-style surface+pressure pairs) all flow
-    // through the loader once; the planner dedupes when direct's
-    // `nat`-planned recipes route onto the same `sfc` fetch the derived
-    // surface lane already needs.
     let direct_groups = if normalized.direct_recipe_slugs.is_empty() {
         Vec::new()
     } else {
         let direct_request = HrrrDirectBatchRequest {
-            date_yyyymmdd: pinned_date.clone(),
+            date_yyyymmdd: pinned_date,
             cycle_override_utc: pinned_cycle,
             forecast_hour: request.forecast_hour,
             source: pinned_source,
-            domain: request.domain.clone(),
+            domain: planning_domain,
             out_dir: request.out_dir.clone(),
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
@@ -170,16 +299,12 @@ pub fn run_hrrr_non_ecape_hour(
         )?)
     };
 
-    // Combine derived (surface+pressure pair) and direct (per-group
-    // NativeAnalysis) requirements into one execution plan.
     let mut plan_builder = ExecutionPlanBuilder::new(&latest, request.forecast_hour);
     if derived_routes
         .as_ref()
         .map(|routes| !routes.compute_recipes.is_empty())
         .unwrap_or(false)
     {
-        // Reuse the severe/ECAPE pair builder; planner dedupes when
-        // direct requirements collapse onto the same sfc/prs fetches.
         let pair_plan = build_severe_execution_plan(&latest, request.forecast_hour, None, None);
         for bundle in &pair_plan.bundles {
             for alias in &bundle.aliases {
@@ -220,8 +345,9 @@ pub fn run_hrrr_non_ecape_hour(
         }
     }
     let plan = plan_builder.build();
-    let needs_load = !plan.bundles.is_empty();
-    let loaded = if needs_load {
+    let loaded = if plan.bundles.is_empty() {
+        None
+    } else {
         Some(load_execution_plan(
             plan,
             &BundleLoaderConfig {
@@ -229,76 +355,94 @@ pub fn run_hrrr_non_ecape_hour(
                 use_cache: request.use_cache,
             },
         )?)
-    } else {
-        None
     };
-    let loaded_ref = loaded.as_ref();
 
+    Ok(PreparedNonEcapeHour {
+        normalized,
+        latest,
+        derived_recipes,
+        loaded,
+    })
+}
+
+fn run_prepared_non_ecape_domain(
+    request: &HrrrNonEcapeMultiDomainRequest,
+    prepared: &PreparedNonEcapeHour,
+    domain: &DomainSpec,
+) -> Result<HrrrNonEcapeDomainReport, Box<dyn std::error::Error>> {
+    let total_start = Instant::now();
+    let domain_out_dir = request.out_dir.join(&domain.slug);
+    fs::create_dir_all(&domain_out_dir)?;
+    let pinned_date = prepared.latest.cycle.date_yyyymmdd.clone();
+    let pinned_cycle = Some(prepared.latest.cycle.hour_utc);
+    let pinned_source = prepared.latest.source;
+    let pinned_cycle_utc = prepared.latest.cycle.hour_utc;
     let run_slug = format!(
         "rustwx_hrrr_{}_{}z_f{:03}_{}_non_ecape_hour",
-        pinned_date, pinned_cycle_utc, request.forecast_hour, request.domain.slug
+        pinned_date, pinned_cycle_utc, request.forecast_hour, domain.slug
     );
-    let manifest_path = default_run_manifest_path(&request.out_dir, &run_slug);
+    let manifest_path = default_run_manifest_path(&domain_out_dir, &run_slug);
     let mut manifest = build_run_manifest(
-        &normalized,
-        &request.out_dir,
+        &prepared.normalized,
+        &domain_out_dir,
         &run_slug,
         &pinned_date,
         pinned_cycle_utc,
         request.forecast_hour,
-        &request.domain.slug,
+        &domain.slug,
     );
     manifest.build_provenance = Some(capture_default_build_provenance());
     manifest.mark_running();
     crate::publication::publish_run_manifest(&manifest_path, &manifest)?;
 
+    let loaded_ref = prepared.loaded.as_ref();
     let direct_request =
-        (!normalized.direct_recipe_slugs.is_empty()).then(|| HrrrDirectBatchRequest {
+        (!prepared.normalized.direct_recipe_slugs.is_empty()).then(|| HrrrDirectBatchRequest {
             date_yyyymmdd: pinned_date.clone(),
             cycle_override_utc: pinned_cycle,
             forecast_hour: request.forecast_hour,
             source: pinned_source,
-            domain: request.domain.clone(),
-            out_dir: request.out_dir.clone(),
+            domain: domain.clone(),
+            out_dir: domain_out_dir.clone(),
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
-            recipe_slugs: normalized.direct_recipe_slugs.clone(),
+            recipe_slugs: prepared.normalized.direct_recipe_slugs.clone(),
             output_width: request.output_width,
             output_height: request.output_height,
         });
 
-    let derived_request = (!normalized.derived_recipe_slugs.is_empty()).then(|| {
+    let derived_request = (!prepared.normalized.derived_recipe_slugs.is_empty()).then(|| {
         (
             HrrrDerivedBatchRequest {
                 date_yyyymmdd: pinned_date.clone(),
                 cycle_override_utc: pinned_cycle,
                 forecast_hour: request.forecast_hour,
                 source: pinned_source,
-                domain: request.domain.clone(),
-                out_dir: request.out_dir.clone(),
+                domain: domain.clone(),
+                out_dir: domain_out_dir.clone(),
                 cache_root: request.cache_root.clone(),
                 use_cache: request.use_cache,
-                recipe_slugs: normalized.derived_recipe_slugs.clone(),
+                recipe_slugs: prepared.normalized.derived_recipe_slugs.clone(),
                 source_mode: request.source_mode,
                 output_width: request.output_width,
                 output_height: request.output_height,
             },
-            derived_recipes.clone(),
+            prepared.derived_recipes.clone(),
         )
     });
-    let derived_latest = latest.clone();
+    let derived_latest = prepared.latest.clone();
 
     let windowed_request =
-        (!normalized.windowed_products.is_empty()).then(|| HrrrWindowedBatchRequest {
+        (!prepared.normalized.windowed_products.is_empty()).then(|| HrrrWindowedBatchRequest {
             date_yyyymmdd: pinned_date.clone(),
             cycle_override_utc: pinned_cycle,
             forecast_hour: request.forecast_hour,
             source: pinned_source,
-            domain: request.domain.clone(),
-            out_dir: request.out_dir.clone(),
+            domain: domain.clone(),
+            out_dir: domain_out_dir.clone(),
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
-            products: normalized.windowed_products.clone(),
+            products: prepared.normalized.windowed_products.clone(),
             output_width: request.output_width,
             output_height: request.output_height,
         });
@@ -323,14 +467,7 @@ pub fn run_hrrr_non_ecape_hour(
             })
         }),
         windowed_request.as_ref().map(|lane_request| {
-            // Windowed builds its own planner execution plan across
-            // contributing hours and loads it through load_execution_plan,
-            // so the lane itself is planner-driven. What's missing here
-            // is cross-lane dedupe: windowed's plan is separate from the
-            // direct+derived plan we just built, so a same-hour wrfsfc
-            // fetch that both sides need is fetched twice. Unifying the
-            // two plans is the next step for true cross-lane dedupe.
-            let windowed_latest = latest.clone();
+            let windowed_latest = prepared.latest.clone();
             lane("windowed", move || {
                 run_hrrr_windowed_batch_with_context(lane_request, &windowed_latest)
             })
@@ -341,11 +478,9 @@ pub fn run_hrrr_non_ecape_hour(
         Ok(reports) => reports,
         Err(err) => {
             manifest.mark_failed(err.to_string());
-            // On hard failure still publish both canonical and
-            // attempt-stamped manifests so the failing run is auditable.
             let _ = publish_run_manifest_with_attempt(
                 &manifest_path,
-                &request.out_dir,
+                &domain_out_dir,
                 &run_slug,
                 &manifest,
             );
@@ -359,20 +494,12 @@ pub fn run_hrrr_non_ecape_hour(
     apply_derived_manifest_updates(&mut manifest, &derived);
     apply_windowed_manifest_updates(&mut manifest, &windowed);
     let (canonical_manifest_path, attempt_manifest_path) =
-        finalize_and_publish_run_manifest(&mut manifest, &request.out_dir, &run_slug)?;
-    Ok(HrrrNonEcapeHourReport {
-        date_yyyymmdd: pinned_date,
-        cycle_utc: latest.cycle.hour_utc,
-        forecast_hour: request.forecast_hour,
-        source: pinned_source,
-        domain: request.domain.clone(),
-        out_dir: request.out_dir.clone(),
-        cache_root: request.cache_root.clone(),
-        use_cache: request.use_cache,
-        source_mode: request.source_mode,
+        finalize_and_publish_run_manifest(&mut manifest, &domain_out_dir, &run_slug)?;
+
+    Ok(HrrrNonEcapeDomainReport {
+        domain: domain.clone(),
         publication_manifest_path: canonical_manifest_path,
         attempt_manifest_path: Some(attempt_manifest_path),
-        requested: normalized,
         summary,
         direct,
         derived,
@@ -396,29 +523,55 @@ fn validate_requested_work(
     Ok(())
 }
 
+fn validate_requested_domains(domains: &[DomainSpec]) -> Result<(), Box<dyn std::error::Error>> {
+    if domains.is_empty() {
+        return Err("multi-domain HRRR hour runner needs at least one domain".into());
+    }
+    let mut seen = HashSet::<&str>::new();
+    for domain in domains {
+        if !seen.insert(domain.slug.as_str()) {
+            return Err(format!("duplicate multi-domain slug '{}'", domain.slug).into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn normalize_requested_products(
     request: &HrrrNonEcapeHourRequest,
 ) -> HrrrNonEcapeHourRequestedProducts {
-    let mut direct_recipe_slugs = Vec::new();
-    let mut windowed_products = request.windowed_products.clone();
+    normalize_requested_products_from_parts(
+        &request.direct_recipe_slugs,
+        &request.derived_recipe_slugs,
+        &request.windowed_products,
+    )
+}
 
-    for slug in &request.direct_recipe_slugs {
+fn normalize_requested_products_from_parts(
+    direct_recipe_slugs: &[String],
+    derived_recipe_slugs: &[String],
+    windowed_products: &[HrrrWindowedProduct],
+) -> HrrrNonEcapeHourRequestedProducts {
+    let mut normalized_direct_recipe_slugs = Vec::new();
+    let mut normalized_windowed_products = windowed_products.to_vec();
+
+    for slug in direct_recipe_slugs {
         let normalized_slug = plot_recipe(slug)
             .map(|recipe| recipe.slug)
             .unwrap_or(slug.as_str());
         if normalized_slug == "1h_qpf" {
-            if !windowed_products.contains(&HrrrWindowedProduct::Qpf1h) {
-                windowed_products.push(HrrrWindowedProduct::Qpf1h);
+            if !normalized_windowed_products.contains(&HrrrWindowedProduct::Qpf1h) {
+                normalized_windowed_products.push(HrrrWindowedProduct::Qpf1h);
             }
             continue;
         }
-        direct_recipe_slugs.push(slug.clone());
+        normalized_direct_recipe_slugs.push(slug.clone());
     }
 
     HrrrNonEcapeHourRequestedProducts {
-        direct_recipe_slugs,
-        derived_recipe_slugs: request.derived_recipe_slugs.clone(),
-        windowed_products,
+        direct_recipe_slugs: normalized_direct_recipe_slugs,
+        derived_recipe_slugs: derived_recipe_slugs.to_vec(),
+        windowed_products: normalized_windowed_products,
     }
 }
 
@@ -841,6 +994,12 @@ mod tests {
             output_width: 1200,
             output_height: 900,
         }
+    }
+
+    #[test]
+    fn duplicate_multi_domain_slugs_are_rejected() {
+        let err = validate_requested_domains(&[domain(), domain()]).unwrap_err();
+        assert!(err.to_string().contains("duplicate multi-domain slug"));
     }
 
     fn windowed_fetch_identity(
