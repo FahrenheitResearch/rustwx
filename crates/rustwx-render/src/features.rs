@@ -314,16 +314,18 @@ fn build_conus_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     };
 
     let coast_path = root.join(format!("ne_{tag}_coastline.shp"));
+    let lakes_path = root.join(format!("ne_{tag}_lakes.shp"));
     let nat_path = root.join(format!("ne_{tag}_admin_0_boundary_lines_land.shp"));
     let state_path = root.join(format!("ne_{tag}_admin_1_states_provinces_lines.shp"));
 
     let coast = load_lines_from_shapefile(&coast_path).unwrap_or_default();
+    let lakes = load_lines_from_shapefile(&lakes_path).unwrap_or_default();
     let nat = load_lines_from_shapefile(&nat_path).unwrap_or_default();
     let state = load_lines_from_shapefile(&state_path).unwrap_or_default();
 
     let colors = feature_colors(style);
     let widths = feature_widths(style);
-    let mut layers = Vec::with_capacity(6);
+    let mut layers = Vec::with_capacity(7);
 
     // Counties come first (weakest) so everything else paints on top. Only
     // drawn for the White (NWS) style — the filled beige basemap would look
@@ -364,6 +366,14 @@ fn build_conus_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
             role: LineworkRole::Coast,
         });
     }
+    if !lakes.is_empty() {
+        layers.push(StyledLonLatLayer {
+            lines: lakes,
+            color: colors.lake,
+            width: widths.lake,
+            role: LineworkRole::Lake,
+        });
+    }
 
     if layers.is_empty() {
         return vec![StyledLonLatLayer {
@@ -379,6 +389,7 @@ fn build_conus_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
 
 struct FeatureColors {
     coast: Rgba,
+    lake: Rgba,
     nat: Rgba,
     state: Rgba,
     county: Rgba,
@@ -386,6 +397,7 @@ struct FeatureColors {
 
 struct FeatureWidths {
     coast: u32,
+    lake: u32,
     nat: u32,
     state: u32,
     county: u32,
@@ -395,12 +407,14 @@ fn feature_colors(style: BasemapStyle) -> FeatureColors {
     match style {
         BasemapStyle::Filled => FeatureColors {
             coast: BASEMAP_COAST_CORE,
+            lake: Rgba::with_alpha(118, 136, 154, 220),
             nat: BASEMAP_NAT_CORE,
             state: BASEMAP_STATE_CORE,
             county: BASEMAP_STATE_CORE, // unused in Filled
         },
         BasemapStyle::White => FeatureColors {
             coast: WHITE_COAST_CORE,
+            lake: Rgba::new(124, 138, 152),
             nat: WHITE_NAT_CORE,
             state: WHITE_STATE_CORE,
             county: WHITE_COUNTY_CORE,
@@ -412,12 +426,14 @@ fn feature_widths(style: BasemapStyle) -> FeatureWidths {
     match style {
         BasemapStyle::Filled => FeatureWidths {
             coast: BASEMAP_COAST_WIDTH,
+            lake: 1,
             nat: BASEMAP_NAT_WIDTH,
             state: BASEMAP_STATE_WIDTH,
             county: 1,
         },
         BasemapStyle::White => FeatureWidths {
             coast: 2,
+            lake: 1,
             nat: 2,
             state: 2,
             county: 1,

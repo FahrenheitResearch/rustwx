@@ -22,6 +22,7 @@ impl Default for ProductVisualMode {
 #[serde(rename_all = "snake_case")]
 pub enum LineworkRole {
     Coast,
+    Lake,
     International,
     State,
     County,
@@ -221,6 +222,7 @@ impl RenderPresentation {
         let (color, width, visible) = match self.mode {
             ProductVisualMode::OverlayAnalysis => match role {
                 LineworkRole::Coast => (Rgba::new(86, 96, 108), 1, true),
+                LineworkRole::Lake => (Rgba::new(110, 128, 148), 1, true),
                 LineworkRole::International => (Rgba::new(74, 82, 94), 1, true),
                 LineworkRole::State => (Rgba::new(118, 128, 140), 1, true),
                 LineworkRole::County => (Rgba::with_alpha(142, 151, 162, 150), 1, true),
@@ -228,6 +230,7 @@ impl RenderPresentation {
             },
             ProductVisualMode::UpperAirAnalysis => match role {
                 LineworkRole::Coast => (Rgba::new(86, 94, 104), 1, true),
+                LineworkRole::Lake => (Rgba::new(112, 130, 148), 1, true),
                 LineworkRole::International => (Rgba::new(68, 76, 86), 1, true),
                 LineworkRole::State => (Rgba::new(116, 124, 134), 1, true),
                 LineworkRole::County => (Rgba::with_alpha(150, 158, 168, 90), 1, true),
@@ -235,6 +238,7 @@ impl RenderPresentation {
             },
             ProductVisualMode::SevereDiagnostic => match role {
                 LineworkRole::Coast => (Rgba::new(94, 103, 111), 1, true),
+                LineworkRole::Lake => (Rgba::new(118, 132, 146), 1, true),
                 LineworkRole::International => (Rgba::new(72, 80, 88), 1, true),
                 LineworkRole::State => (Rgba::new(82, 89, 98), 1, true),
                 LineworkRole::County => (Rgba::with_alpha(126, 134, 143, 175), 1, true),
@@ -242,6 +246,7 @@ impl RenderPresentation {
             },
             ProductVisualMode::PanelMember | ProductVisualMode::ComparisonPanel => match role {
                 LineworkRole::Coast => (Rgba::new(104, 112, 122), 1, true),
+                LineworkRole::Lake => (Rgba::new(124, 138, 152), 1, true),
                 LineworkRole::International => (Rgba::new(92, 100, 110), 1, true),
                 LineworkRole::State => (Rgba::new(132, 140, 150), 1, true),
                 LineworkRole::County => (Rgba::with_alpha(150, 158, 168, 70), 1, true),
@@ -249,6 +254,7 @@ impl RenderPresentation {
             },
             ProductVisualMode::FilledMeteorology => match role {
                 LineworkRole::Coast => (Rgba::with_alpha(84, 92, 104, 190), 1, true),
+                LineworkRole::Lake => (Rgba::with_alpha(118, 136, 154, 220), 1, true),
                 LineworkRole::International => (Rgba::with_alpha(72, 80, 92, 210), 1, true),
                 LineworkRole::State => (Rgba::with_alpha(88, 96, 108, 185), 1, true),
                 LineworkRole::County => (Rgba::with_alpha(140, 148, 160, 70), 1, false),
@@ -290,6 +296,25 @@ impl RenderPresentation {
             }
             ProductVisualMode::FilledMeteorology => requested,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filled_meteorology_keeps_lake_linework_visible() {
+        let style =
+            RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology).linework_style(
+                LineworkRole::Lake,
+                Rgba::BLACK,
+                3,
+            );
+
+        assert!(style.visible);
+        assert_eq!(style.width, 1);
+        assert_eq!(style.color, Rgba::with_alpha(118, 136, 154, 220));
     }
 }
 

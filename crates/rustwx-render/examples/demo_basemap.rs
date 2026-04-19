@@ -196,7 +196,11 @@ fn project_polygons(
             if rings.is_empty() {
                 continue;
             }
-            out.push(ProjectedPolygonFill { rings, color });
+            out.push(ProjectedPolygonFill {
+                rings,
+                color,
+                role: layer.role,
+            });
         }
     }
     out
@@ -248,6 +252,7 @@ fn project_lines(
                             points: std::mem::take(&mut current),
                             color,
                             width: layer.width,
+                            role: layer.role,
                         });
                     } else {
                         current.clear();
@@ -261,6 +266,7 @@ fn project_lines(
                     points: current,
                     color,
                     width: layer.width,
+                    role: layer.role,
                 });
             }
         }
