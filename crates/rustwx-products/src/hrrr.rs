@@ -1,7 +1,6 @@
 use crate::gridded::{
     PreparedHeavyVolume as GenericPreparedHeavyVolume, PressureFields as GenericPressureFields,
-    SurfaceFields as GenericSurfaceFields, crop_heavy_domain,
-    prepare_heavy_volume as prepare_generic_heavy_volume,
+    SurfaceFields as GenericSurfaceFields, prepare_heavy_volume as prepare_generic_heavy_volume,
 };
 use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
@@ -190,17 +189,35 @@ pub(crate) fn run_hrrr_batch_from_loaded(
         .ok_or("HRRR batch planner missed surface or pressure bundle")?;
     let surface_full = &surface_decode.value;
     let pressure_full = &pressure_decode.value;
-    let cropped_heavy_domain =
-        crop_heavy_domain(surface_full, pressure_full, request.domain.bounds)?;
+    let unique_products = dedupe_products(&request.products);
+    let crop_target_ratio = unique_products
+        .iter()
+        .map(|product| product.layout().target_aspect_ratio())
+        .reduce(f64::max)
+        .unwrap_or(1.0);
     let owned_full_grid;
+    let base_grid = surface_full.core_grid()?;
+    let full_projected_for_crop = crate::direct::build_projected_map(
+        &base_grid.lat_deg,
+        &base_grid.lon_deg,
+        request.domain.bounds,
+        crop_target_ratio,
+    )?;
+    let cropped_heavy_domain = crate::gridded::crop_heavy_domain_for_projected_extent(
+        surface_full,
+        pressure_full,
+        &full_projected_for_crop.projected_x,
+        &full_projected_for_crop.projected_y,
+        &full_projected_for_crop.extent,
+        2,
+    )?;
     let (surface, pressure, grid) = match cropped_heavy_domain.as_ref() {
         Some(cropped) => (&cropped.surface, &cropped.pressure, &cropped.grid),
         None => {
-            owned_full_grid = surface_full.core_grid()?;
+            owned_full_grid = base_grid;
             (surface_full, pressure_full, &owned_full_grid)
         }
     };
-    let unique_products = dedupe_products(&request.products);
     let render_parallelism = self::png_render_parallelism(unique_products.len());
     let mut projected_maps = HashMap::<(u32, u32, u32), ProjectedMap>::new();
     let mut project_timings = Vec::with_capacity(unique_products.len());

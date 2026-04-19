@@ -1,19 +1,19 @@
 use rustwx_calc::{
-    compute_2m_apparent_temperature, compute_ehi_01km, compute_ehi_03km, compute_lapse_rate_0_3km,
-    compute_lapse_rate_700_500, compute_lifted_index, compute_mlcape_cin, compute_mucape_cin,
-    compute_sbcape_cin, compute_shear_01km, compute_shear_06km, compute_srh_01km, compute_srh_03km,
-    compute_stp_fixed, compute_surface_thermo, CalcError, EcapeVolumeInputs, FixedStpInputs,
-    GridShape as CalcGridShape, SurfaceInputs, TemperatureAdvectionInputs, VolumeShape,
-    WindGridInputs,
+    CalcError, EcapeVolumeInputs, FixedStpInputs, GridShape as CalcGridShape, SurfaceInputs,
+    TemperatureAdvectionInputs, VolumeShape, WindGridInputs, compute_2m_apparent_temperature,
+    compute_ehi_01km, compute_ehi_03km, compute_lapse_rate_0_3km, compute_lapse_rate_700_500,
+    compute_lifted_index, compute_mlcape_cin, compute_mucape_cin, compute_sbcape_cin,
+    compute_shear_01km, compute_shear_06km, compute_srh_01km, compute_srh_03km, compute_stp_fixed,
+    compute_surface_thermo,
 };
 use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId,
 };
 use rustwx_render::{
-    build_projected_map as build_projected_map_from_latlon, map_frame_aspect_ratio,
-    save_png_profile, Color, DerivedProductStyle, ExtendMode, MapRenderRequest,
-    ProductVisualMode, ProjectedDomain, ProjectedExtent, ProjectedMap, RenderImageTiming,
-    RenderStateTiming, Solar07Palette, Solar07Product, WindBarbLayer,
+    Color, DerivedProductStyle, ExtendMode, MapRenderRequest, ProductVisualMode, ProjectedDomain,
+    ProjectedExtent, ProjectedMap, RenderImageTiming, RenderStateTiming, Solar07Palette,
+    Solar07Product, WindBarbLayer, build_projected_map as build_projected_map_from_latlon,
+    map_frame_aspect_ratio, save_png_profile,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -24,22 +24,22 @@ use std::thread;
 use std::time::Instant;
 
 use crate::gridded::{
-    broadcast_levels_pa, resolve_thermo_pair_run, PressureFields as GenericPressureFields,
-    SharedTiming as GenericSharedTiming, SurfaceFields as GenericSurfaceFields,
+    PressureFields as GenericPressureFields, SharedTiming as GenericSharedTiming,
+    SurfaceFields as GenericSurfaceFields, broadcast_levels_pa, resolve_thermo_pair_run,
 };
 use crate::planner::{ExecutionPlanBuilder, PlannedBundle};
 use crate::publication::{
-    artifact_identity_from_path, ArtifactContentIdentity, PublishedFetchIdentity,
+    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
 };
-use crate::runtime::{load_execution_plan, BundleLoaderConfig, LoadedBundleSet};
+use crate::runtime::{BundleLoaderConfig, LoadedBundleSet, load_execution_plan};
 use crate::severe::{
     build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
 };
 use crate::shared_context::DomainSpec;
 use crate::source::{ProductSourceMode, ProductSourceRoute};
 use crate::thermo_native::{
-    crop_native_field, extract_native_thermo_field, native_candidate, NativeSemantics,
-    NativeThermoCandidate, NativeThermoRecipe,
+    NativeSemantics, NativeThermoCandidate, NativeThermoRecipe, crop_native_field,
+    extract_native_thermo_field, native_candidate,
 };
 use rustwx_models::{
     latest_available_run_at_forecast_hour, latest_available_run_for_products_at_forecast_hour,
@@ -787,7 +787,11 @@ pub fn run_derived_batch(
         &planned_routes.native_routes,
     )?;
     if planned_routes.output_recipes.is_empty() {
-        return Ok(empty_derived_report(request, &latest, planned_routes.blockers));
+        return Ok(empty_derived_report(
+            request,
+            &latest,
+            planned_routes.blockers,
+        ));
     }
     let plan = build_derived_execution_plan(
         &latest,
@@ -848,28 +852,42 @@ fn run_derived_batch_from_loaded_bundles(
             .map_err(|err| format!("derived surface/pressure pair unavailable: {err}"))?;
         let full_surface = &surface_decode.value;
         let full_pressure = &pressure_decode.value;
-        let cropped =
-            crate::gridded::crop_heavy_domain(full_surface, full_pressure, request.domain.bounds)?;
-        let owned_full_grid;
+        let owned_full_grid = full_surface.core_grid()?;
+        let project_start = Instant::now();
+        let full_projected = build_projected_map_from_latlon(
+            &owned_full_grid.lat_deg,
+            &owned_full_grid.lon_deg,
+            request.domain.bounds,
+            map_frame_aspect_ratio(request.output_width, request.output_height, true, true),
+        )?;
+        let cropped = crate::gridded::crop_heavy_domain_for_projected_extent(
+            full_surface,
+            full_pressure,
+            &full_projected.projected_x,
+            &full_projected.projected_y,
+            &full_projected.extent,
+            2,
+        )?;
         let (surface, pressure, derived_grid) = match cropped.as_ref() {
             Some(cropped) => (&cropped.surface, &cropped.pressure, cropped.grid.clone()),
-            None => {
-                owned_full_grid = full_surface.core_grid()?;
-                (full_surface, full_pressure, owned_full_grid)
-            }
+            None => (full_surface, full_pressure, owned_full_grid.clone()),
         };
 
-        let project_start = Instant::now();
-        let derived_projected = build_projected_map_from_latlon(
+        let derived_projected = if cropped.is_some() {
+            build_projected_map_from_latlon(
                 &derived_grid.lat_deg,
                 &derived_grid.lon_deg,
                 request.domain.bounds,
                 map_frame_aspect_ratio(request.output_width, request.output_height, true, true),
-            )?;
+            )?
+        } else {
+            full_projected
+        };
         project_ms += project_start.elapsed().as_millis();
 
         let compute_start = Instant::now();
-        computed = compute_derived_fields_generic(surface, pressure, &planned_routes.compute_recipes)?;
+        computed =
+            compute_derived_fields_generic(surface, pressure, &planned_routes.compute_recipes)?;
         compute_ms += compute_start.elapsed().as_millis();
         fetch_decode = Some(build_shared_timing_for_pair(
             loaded,
@@ -1044,10 +1062,12 @@ fn run_derived_batch_from_loaded_bundles(
                             recipe_slug: render_artifact.recipe_slug,
                             title: render_artifact.title,
                             source_route: derived_compute_source_route(recipe, request.source_mode)
-                                .ok_or_else(|| io::Error::other(format!(
-                                    "missing compute source route for '{}'",
-                                    recipe.slug()
-                                )))?,
+                                .ok_or_else(|| {
+                                    io::Error::other(format!(
+                                        "missing compute source route for '{}'",
+                                        recipe.slug()
+                                    ))
+                                })?,
                             output_path,
                             content_identity,
                             input_fetch_keys: lane_fetch_keys,
@@ -2632,12 +2652,8 @@ mod tests {
     #[test]
     fn fastest_mode_uses_native_exact_and_blocks_non_fast_recipes() {
         let recipes = vec![DerivedRecipe::Sbcape, DerivedRecipe::BulkShear06km];
-        let planned = plan_native_thermo_routes(
-            ModelId::Hrrr,
-            &recipes,
-            ProductSourceMode::Fastest,
-        )
-        .unwrap();
+        let planned =
+            plan_native_thermo_routes(ModelId::Hrrr, &recipes, ProductSourceMode::Fastest).unwrap();
         assert_eq!(planned.output_recipes, vec![DerivedRecipe::Sbcape]);
         assert!(planned.compute_recipes.is_empty());
         assert_eq!(planned.native_routes.len(), 1);
@@ -2682,9 +2698,11 @@ mod tests {
         assert!(planned.output_recipes.is_empty());
         assert!(planned.native_routes.is_empty());
         assert_eq!(planned.blockers.len(), 1);
-        assert!(planned.blockers[0]
-            .reason
-            .contains("will not fall back to canonical-derived compute"));
+        assert!(
+            planned.blockers[0]
+                .reason
+                .contains("will not fall back to canonical-derived compute")
+        );
     }
 
     #[test]
@@ -2706,15 +2724,13 @@ mod tests {
             output_width: OUTPUT_WIDTH,
             output_height: OUTPUT_HEIGHT,
         };
-        let planned = plan_native_thermo_routes(
-            request.model,
-            &[DerivedRecipe::Sbcape],
-            request.source_mode,
-        )
-        .unwrap();
+        let planned =
+            plan_native_thermo_routes(request.model, &[DerivedRecipe::Sbcape], request.source_mode)
+                .unwrap();
 
         let latest =
-            resolve_derived_run(&request, &planned.compute_recipes, &planned.native_routes).unwrap();
+            resolve_derived_run(&request, &planned.compute_recipes, &planned.native_routes)
+                .unwrap();
 
         assert_eq!(latest.model, ModelId::Hrrr);
         assert_eq!(latest.cycle.date_yyyymmdd, "20260418");

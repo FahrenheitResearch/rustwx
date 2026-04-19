@@ -80,132 +80,60 @@ pub fn draw_line(img: &mut RgbaImage, x0: f64, y0: f64, x1: f64, y1: f64, color:
     }
 }
 
-fn ipart(x: f64) -> i32 {
-    x.floor() as i32
+fn distance_to_segment(px: f64, py: f64, x0: f64, y0: f64, x1: f64, y1: f64) -> f64 {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq <= 1e-12 {
+        let ox = px - x0;
+        let oy = py - y0;
+        return (ox * ox + oy * oy).sqrt();
+    }
+
+    let t = (((px - x0) * dx + (py - y0) * dy) / len_sq).clamp(0.0, 1.0);
+    let proj_x = x0 + t * dx;
+    let proj_y = y0 + t * dy;
+    let ox = px - proj_x;
+    let oy = py - proj_y;
+    (ox * ox + oy * oy).sqrt()
 }
 
-fn roundi(x: f64) -> i32 {
-    (x + 0.5).floor() as i32
+fn stroke_coverage(distance: f64, width: u32) -> f64 {
+    let half_width = width.max(1) as f64 * 0.5;
+    (half_width + 0.5 - distance).clamp(0.0, 1.0)
 }
 
-fn fpart(x: f64) -> f64 {
-    x - x.floor()
-}
-
-fn rfpart(x: f64) -> f64 {
-    1.0 - fpart(x)
-}
-
-fn scale_alpha(color: Rgba, factor: f64) -> Rgba {
-    let alpha = ((color.a as f64) * factor.clamp(0.0, 1.0)).round() as u8;
-    Rgba { a: alpha, ..color }
-}
-
-fn draw_offset_aa_stroke(
+fn draw_line_aa_kernel(
     img: &mut RgbaImage,
     x0: f64,
     y0: f64,
     x1: f64,
     y1: f64,
     color: Rgba,
-    offset: f64,
-    alpha_scale: f64,
-) {
-    let dx = x1 - x0;
-    let dy = y1 - y0;
-    let len = (dx * dx + dy * dy).sqrt();
-    if len < 1e-6 {
-        blend_pixel(img, x0.round() as i32, y0.round() as i32, scale_alpha(color, alpha_scale));
-        return;
-    }
-
-    let perp_x = -dy / len;
-    let perp_y = dx / len;
-    let stroke = scale_alpha(color, alpha_scale);
-    draw_line_aa(
-        img,
-        x0 - perp_x * offset,
-        y0 - perp_y * offset,
-        x1 - perp_x * offset,
-        y1 - perp_y * offset,
-        stroke,
-    );
-    draw_line_aa(
-        img,
-        x0 + perp_x * offset,
-        y0 + perp_y * offset,
-        x1 + perp_x * offset,
-        y1 + perp_y * offset,
-        stroke,
-    );
-}
-
-pub fn draw_line_aa(
-    img: &mut RgbaImage,
-    mut x0: f64,
-    mut y0: f64,
-    mut x1: f64,
-    mut y1: f64,
-    color: Rgba,
+    width: u32,
 ) {
     if !x0.is_finite() || !y0.is_finite() || !x1.is_finite() || !y1.is_finite() {
         return;
     }
 
-    if (x1 - x0).abs() < 1e-6 && (y1 - y0).abs() < 1e-6 {
-        blend_pixel(img, x0.round() as i32, y0.round() as i32, color);
-        return;
-    }
+    let radius = width.max(1) as f64 * 0.5 + 1.0;
+    let min_x = (x0.min(x1) - radius).floor() as i32;
+    let max_x = (x0.max(x1) + radius).ceil() as i32;
+    let min_y = (y0.min(y1) - radius).floor() as i32;
+    let max_y = (y0.max(y1) + radius).ceil() as i32;
 
-    let steep = (y1 - y0).abs() > (x1 - x0).abs();
-    if steep {
-        std::mem::swap(&mut x0, &mut y0);
-        std::mem::swap(&mut x1, &mut y1);
-    }
-    if x0 > x1 {
-        std::mem::swap(&mut x0, &mut x1);
-        std::mem::swap(&mut y0, &mut y1);
-    }
-
-    let dx = x1 - x0;
-    let dy = y1 - y0;
-    if dx.abs() < 1e-6 {
-        draw_line(img, x0, y0, x1, y1, color, 1);
-        return;
-    }
-    let gradient = dy / dx;
-
-    let plot = |img: &mut RgbaImage, steep: bool, x: i32, y: i32, alpha: f64| {
-        if steep {
-            blend_pixel_coverage(img, y, x, color, alpha);
-        } else {
-            blend_pixel_coverage(img, x, y, color, alpha);
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let px = x as f64 + 0.5;
+            let py = y as f64 + 0.5;
+            let coverage = stroke_coverage(distance_to_segment(px, py, x0, y0, x1, y1), width);
+            blend_pixel_coverage(img, x, y, color, coverage);
         }
-    };
-
-    let xend = roundi(x0) as f64;
-    let yend = y0 + gradient * (xend - x0);
-    let xgap = rfpart(x0 + 0.5);
-    let xpxl1 = xend as i32;
-    let ypxl1 = ipart(yend);
-    plot(img, steep, xpxl1, ypxl1, rfpart(yend) * xgap);
-    plot(img, steep, xpxl1, ypxl1 + 1, fpart(yend) * xgap);
-    let mut intery = yend + gradient;
-
-    let xend = roundi(x1) as f64;
-    let yend = y1 + gradient * (xend - x1);
-    let xgap = fpart(x1 + 0.5);
-    let xpxl2 = xend as i32;
-    let ypxl2 = ipart(yend);
-    plot(img, steep, xpxl2, ypxl2, rfpart(yend) * xgap);
-    plot(img, steep, xpxl2, ypxl2 + 1, fpart(yend) * xgap);
-
-    for x in (xpxl1 + 1)..xpxl2 {
-        let y = ipart(intery);
-        plot(img, steep, x, y, rfpart(intery));
-        plot(img, steep, x, y + 1, fpart(intery));
-        intery += gradient;
     }
+}
+
+pub fn draw_line_aa(img: &mut RgbaImage, x0: f64, y0: f64, x1: f64, y1: f64, color: Rgba) {
+    draw_line_aa_kernel(img, x0, y0, x1, y1, color, 1);
 }
 
 pub fn draw_line_aa_width(
@@ -217,25 +145,7 @@ pub fn draw_line_aa_width(
     color: Rgba,
     width: u32,
 ) {
-    match width {
-        0 | 1 => {
-            draw_line_aa(img, x0, y0, x1, y1, color);
-            draw_offset_aa_stroke(img, x0, y0, x1, y1, color, 0.35, 0.28);
-            draw_offset_aa_stroke(img, x0, y0, x1, y1, color, 0.75, 0.12);
-        }
-        2 => {
-            draw_offset_aa_stroke(img, x0, y0, x1, y1, color, 0.35, 0.78);
-            draw_offset_aa_stroke(img, x0, y0, x1, y1, color, 0.85, 0.24);
-            draw_offset_aa_stroke(img, x0, y0, x1, y1, color, 1.25, 0.10);
-        }
-        3 => {
-            draw_line_aa(img, x0, y0, x1, y1, color);
-            draw_offset_aa_stroke(img, x0, y0, x1, y1, color, 0.7, 0.74);
-            draw_offset_aa_stroke(img, x0, y0, x1, y1, color, 1.25, 0.24);
-            draw_offset_aa_stroke(img, x0, y0, x1, y1, color, 1.8, 0.10);
-        }
-        _ => draw_line(img, x0, y0, x1, y1, color, width),
-    }
+    draw_line_aa_kernel(img, x0, y0, x1, y1, color, width.max(1));
 }
 
 pub fn draw_polyline(img: &mut RgbaImage, points: &[(f64, f64)], color: Rgba, width: u32) {
@@ -285,12 +195,7 @@ pub fn fill_polygon(
     let img_w = img.width() as i32;
     let img_h = img.height() as i32;
     let (cx0, cy0, cx1, cy1) = match clip {
-        Some((x0, y0, x1, y1)) => (
-            x0.max(0),
-            y0.max(0),
-            x1.min(img_w - 1),
-            y1.min(img_h - 1),
-        ),
+        Some((x0, y0, x1, y1)) => (x0.max(0), y0.max(0), x1.min(img_w - 1), y1.min(img_h - 1)),
         None => (0, 0, img_w - 1, img_h - 1),
     };
     if cx1 < cx0 || cy1 < cy0 {
@@ -419,7 +324,7 @@ pub fn draw_wind_barb(
 
     let tail_x = x_tip + tail_dx * shaft_len;
     let tail_y = y_tip + tail_dy * shaft_len;
-    draw_line(img, tail_x, tail_y, x_tip, y_tip, color, width);
+    draw_line_aa_width(img, tail_x, tail_y, x_tip, y_tip, color, width);
 
     let mut remaining = ((speed + 2.5) / 5.0).floor() as i32 * 5;
     let mut offset = shaft_len;
@@ -506,6 +411,40 @@ mod tests {
 
         assert!(blended_neighbor_found);
     }
+
+    #[test]
+    fn wide_anti_aliased_line_blends_neighbor_pixels() {
+        let mut img = RgbaImage::from_pixel(16, 16, image::Rgba([255, 255, 255, 255]));
+        draw_line_aa_width(&mut img, 2.0, 3.0, 13.0, 10.0, Rgba::BLACK, 6);
+
+        let mut blended_neighbor_found = false;
+        for pixel in img.pixels() {
+            let rgb = &pixel.0[..3];
+            if *rgb != [255, 255, 255] && *rgb != [0, 0, 0] {
+                blended_neighbor_found = true;
+                break;
+            }
+        }
+
+        assert!(blended_neighbor_found);
+    }
+
+    #[test]
+    fn wind_barb_blends_neighbor_pixels() {
+        let mut img = RgbaImage::from_pixel(48, 48, image::Rgba([255, 255, 255, 255]));
+        draw_wind_barb(&mut img, 24.0, 24.0, 20.0, -10.0, Rgba::BLACK, 16.0, 2);
+
+        let mut blended_neighbor_found = false;
+        for pixel in img.pixels() {
+            let rgb = &pixel.0[..3];
+            if *rgb != [255, 255, 255] && *rgb != [0, 0, 0] {
+                blended_neighbor_found = true;
+                break;
+            }
+        }
+
+        assert!(blended_neighbor_found);
+    }
 }
 
 fn draw_barb_segment(
@@ -526,7 +465,7 @@ fn draw_barb_segment(
     let base_y = y_tip + tail_dy * offset;
     let feather_x = base_x + perp_dx * height + tail_dx * along_tail;
     let feather_y = base_y + perp_dy * height + tail_dy * along_tail;
-    draw_line(img, base_x, base_y, feather_x, feather_y, color, width);
+    draw_line_aa_width(img, base_x, base_y, feather_x, feather_y, color, width);
 }
 
 fn draw_barb_flag(
@@ -549,7 +488,7 @@ fn draw_barb_flag(
     let flag_tip_y = base_y + perp_dy * height - tail_dy * (width_along * 0.5);
     let flag_tail_x = base_x - tail_dx * width_along;
     let flag_tail_y = base_y - tail_dy * width_along;
-    draw_line(
+    draw_line_aa_width(
         img,
         base_x,
         base_y,
@@ -558,7 +497,7 @@ fn draw_barb_flag(
         color,
         width + 1,
     );
-    draw_line(
+    draw_line_aa_width(
         img,
         flag_tip_x,
         flag_tip_y,
@@ -567,7 +506,7 @@ fn draw_barb_flag(
         color,
         width + 1,
     );
-    draw_line(
+    draw_line_aa_width(
         img,
         flag_tail_x,
         flag_tail_y,

@@ -96,34 +96,47 @@ pub fn run_severe_batch(
         .map_err(|err| format!("severe surface/pressure pair unavailable: {err}"))?;
     let full_surface = &surface_decode.value;
     let full_pressure = &pressure_decode.value;
+    let layout = Solar07PanelLayout {
+        top_padding: 86,
+        ..Default::default()
+    };
+    let owned_full_grid = full_surface.core_grid()?;
+    let project_start = Instant::now();
+    let full_projected = build_projected_map(
+        &owned_full_grid.lat_deg,
+        &owned_full_grid.lon_deg,
+        request.domain.bounds,
+        layout.target_aspect_ratio(),
+    )?;
 
     // Crop surface+pressure to the requested domain BEFORE parcel-ascent
     // compute. Without this severe_batch runs CAPE on every CONUS cell
     // (~1.8M for HRRR) even when the user only wants a 300×300 midwest
     // panel — 20× wasted work. run_hrrr_batch_from_loaded already does
     // this; the per-model severe_batch needs the same shortcut.
-    let cropped =
-        crate::gridded::crop_heavy_domain(full_surface, full_pressure, request.domain.bounds)?;
-    let owned_full_grid;
+    let cropped = crate::gridded::crop_heavy_domain_for_projected_extent(
+        full_surface,
+        full_pressure,
+        &full_projected.projected_x,
+        &full_projected.projected_y,
+        &full_projected.extent,
+        2,
+    )?;
     let (surface, pressure, grid) = match cropped.as_ref() {
         Some(cropped) => (&cropped.surface, &cropped.pressure, cropped.grid.clone()),
-        None => {
-            owned_full_grid = full_surface.core_grid()?;
-            (full_surface, full_pressure, owned_full_grid)
-        }
+        None => (full_surface, full_pressure, owned_full_grid),
     };
 
-    let layout = Solar07PanelLayout {
-        top_padding: 86,
-        ..Default::default()
+    let projected = if cropped.is_some() {
+        build_projected_map(
+            &grid.lat_deg,
+            &grid.lon_deg,
+            request.domain.bounds,
+            layout.target_aspect_ratio(),
+        )?
+    } else {
+        full_projected
     };
-    let project_start = Instant::now();
-    let projected = build_projected_map(
-        &grid.lat_deg,
-        &grid.lon_deg,
-        request.domain.bounds,
-        layout.target_aspect_ratio(),
-    )?;
     let project_ms = project_start.elapsed().as_millis();
 
     let compute_start = Instant::now();

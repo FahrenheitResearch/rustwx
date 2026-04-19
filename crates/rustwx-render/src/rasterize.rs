@@ -96,6 +96,43 @@ pub fn rasterize_projected_grid(
     img
 }
 
+/// Rasterize projected grid coverage independent of fill values or colormap
+/// alpha so frame calculations track the valid mesh footprint, not the weather
+/// blob currently painted into it.
+pub fn rasterize_projected_coverage_mask(
+    ny: usize,
+    nx: usize,
+    pixel_points: &[Option<(f64, f64)>],
+    img_w: u32,
+    img_h: u32,
+) -> RgbaImage {
+    let mut img = RgbaImage::new(img_w, img_h);
+
+    if ny < 2 || nx < 2 || pixel_points.len() != ny * nx {
+        return img;
+    }
+
+    for j in 0..(ny - 1) {
+        for i in 0..(nx - 1) {
+            let idx = |jj: usize, ii: usize| jj * nx + ii;
+            let p00 = pixel_points[idx(j, i)];
+            let p10 = pixel_points[idx(j, i + 1)];
+            let p01 = pixel_points[idx(j + 1, i)];
+            let p11 = pixel_points[idx(j + 1, i + 1)];
+
+            let (p00, p10, p01, p11) = match (p00, p10, p01, p11) {
+                (Some(a), Some(b), Some(c), Some(d)) => (a, b, c, d),
+                _ => continue,
+            };
+
+            rasterize_mask_triangle(&mut img, p00, p10, p11);
+            rasterize_mask_triangle(&mut img, p00, p11, p01);
+        }
+    }
+
+    img
+}
+
 fn bilinear(v00: f64, v10: f64, v01: f64, v11: f64, fx: f64, fy: f64) -> f64 {
     if v00.is_finite() && v10.is_finite() && v01.is_finite() && v11.is_finite() {
         let south = v00 * (1.0 - fx) + v10 * fx;
@@ -166,6 +203,48 @@ fn rasterize_triangle(
             if color.0[3] > 0 {
                 img.put_pixel(px as u32, py as u32, color);
             }
+        }
+    }
+}
+
+fn rasterize_mask_triangle(img: &mut RgbaImage, p0: (f64, f64), p1: (f64, f64), p2: (f64, f64)) {
+    let min_x = p0.0.min(p1.0).min(p2.0).floor().max(0.0) as i32;
+    let max_x =
+        p0.0.max(p1.0)
+            .max(p2.0)
+            .ceil()
+            .min(img.width() as f64 - 1.0) as i32;
+    let min_y = p0.1.min(p1.1).min(p2.1).floor().max(0.0) as i32;
+    let max_y =
+        p0.1.max(p1.1)
+            .max(p2.1)
+            .ceil()
+            .min(img.height() as f64 - 1.0) as i32;
+
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
+
+    let area = edge_fn(p0, p1, p2);
+    if area.abs() < 1e-9 {
+        return;
+    }
+
+    let inv_area = 1.0 / area;
+    let opaque = image::Rgba([255, 255, 255, 255]);
+
+    for py in min_y..=max_y {
+        for px in min_x..=max_x {
+            let p = (px as f64 + 0.5, py as f64 + 0.5);
+            let w0 = edge_fn(p1, p2, p) * inv_area;
+            let w1 = edge_fn(p2, p0, p) * inv_area;
+            let w2 = edge_fn(p0, p1, p) * inv_area;
+
+            if w0 < -1e-6 || w1 < -1e-6 || w2 < -1e-6 {
+                continue;
+            }
+
+            img.put_pixel(px as u32, py as u32, opaque);
         }
     }
 }

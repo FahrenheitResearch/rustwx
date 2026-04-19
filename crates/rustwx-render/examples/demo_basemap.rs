@@ -4,11 +4,11 @@
 //!
 //! Local to the render crates — no product/planner code imported.
 use rustwx_render::{
-    Color, ColorScale, ContourStyle, DiscreteColorScale, ExtendMode, Field2D, GridShape,
-    LatLonGrid, LambertConformal, MapRenderRequest, ProductKey, ProjectedDomain, ProjectedExtent,
-    ProjectedLineOverlay, ProjectedPolygonFill, save_png,
-    load_styled_conus_features_for, load_styled_conus_polygons_for, BasemapStyle,
-    StyledLonLatLayer, StyledLonLatPolygonLayer,
+    BasemapStyle, Color, ColorScale, ContourStyle, DiscreteColorScale, DomainFrame, ExtendMode,
+    Field2D, GridShape, LambertConformal, LatLonGrid, MapRenderRequest, ProductKey,
+    ProjectedDomain, ProjectedExtent, ProjectedLineOverlay, ProjectedPolygonFill,
+    StyledLonLatLayer, StyledLonLatPolygonLayer, load_styled_conus_features_for,
+    load_styled_conus_polygons_for, save_png,
 };
 use std::path::PathBuf;
 
@@ -71,10 +71,10 @@ fn main() {
             let dx = (approx_lon - -97.0) / 8.0;
             let dy = (approx_lat - 36.0) / 5.0;
             let blob = (-((dx * dx) + (dy * dy))).exp() * 4200.0;
-            let tongue =
-                (-(((approx_lon - -89.0) / 6.0).powi(2) + ((approx_lat - 32.5) / 3.0).powi(2)))
-                    .exp()
-                    * 3000.0;
+            let tongue = (-(((approx_lon - -89.0) / 6.0).powi(2)
+                + ((approx_lat - 32.5) / 3.0).powi(2)))
+            .exp()
+                * 3000.0;
             let cape = (blob + tongue).max(0.0);
             values.push(cape as f32);
 
@@ -120,6 +120,7 @@ fn main() {
         request.subtitle_left = Some("Synthetic field · Lambert Conformal CONUS".to_string());
         request.subtitle_right = Some("rustwx-render native engine".to_string());
         request.cbar_tick_step = Some(500.0);
+        request.domain_frame = Some(DomainFrame::model_data_default());
         request.projected_domain = Some(ProjectedDomain {
             x: proj_x.clone(),
             y: proj_y.clone(),

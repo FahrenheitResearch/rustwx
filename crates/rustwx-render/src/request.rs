@@ -1,6 +1,6 @@
-use crate::presentation::{LineworkRole, PolygonRole, ProductVisualMode};
-use crate::colormap::{LegendControls, RenderDensity};
 use crate::RustwxRenderError;
+use crate::colormap::{LegendControls, RenderDensity};
+use crate::presentation::{LineworkRole, PolygonRole, ProductVisualMode};
 use rustwx_core as core;
 use serde::{Deserialize, Serialize};
 
@@ -127,6 +127,29 @@ impl Color {
 
     pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self { r, g, b, a }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomainFrame {
+    pub inset_px: u32,
+    pub outline_color: Color,
+    pub outline_width: u32,
+    pub clear_outside: bool,
+    pub legend_follows_frame: bool,
+    pub chrome_follows_frame: bool,
+}
+
+impl DomainFrame {
+    pub fn model_data_default() -> Self {
+        Self {
+            inset_px: 5,
+            outline_color: Color::BLACK,
+            outline_width: 3,
+            clear_outside: true,
+            legend_follows_frame: true,
+            chrome_follows_frame: true,
+        }
     }
 }
 
@@ -444,8 +467,12 @@ pub struct MapRenderRequest {
     pub legend: LegendControls,
     #[serde(default)]
     pub chrome_scale: ChromeScale,
+    #[serde(default = "default_supersample_factor")]
+    pub supersample_factor: u32,
     #[serde(default)]
     pub visual_mode: ProductVisualMode,
+    #[serde(default)]
+    pub domain_frame: Option<DomainFrame>,
     pub projected_domain: Option<ProjectedDomain>,
     /// Filled polygon basemap layers (ocean/land/lakes). Drawn BEFORE the
     /// data raster; ordering within the list is bottom-to-top.
@@ -455,6 +482,10 @@ pub struct MapRenderRequest {
     pub contours: Vec<ContourLayer>,
     pub wind_barbs: Vec<WindBarbLayer>,
     pub semantics: Option<ProductSemantics>,
+}
+
+const fn default_supersample_factor() -> u32 {
+    1
 }
 
 impl MapRenderRequest {
@@ -474,7 +505,9 @@ impl MapRenderRequest {
             render_density: RenderDensity::default(),
             legend: LegendControls::default(),
             chrome_scale: ChromeScale::default(),
+            supersample_factor: default_supersample_factor(),
             visual_mode: ProductVisualMode::FilledMeteorology,
+            domain_frame: None,
             projected_domain: None,
             projected_polygons: Vec::new(),
             projected_lines: Vec::new(),

@@ -18,31 +18,31 @@ mod text;
 
 pub use error::RustwxRenderError;
 pub use features::{
-    load_styled_conus_features_for, load_styled_conus_polygons_for, BasemapStyle,
-    StyledLonLatLayer, StyledLonLatPolygonLayer,
+    BasemapStyle, StyledLonLatLayer, StyledLonLatPolygonLayer, load_styled_conus_features_for,
+    load_styled_conus_polygons_for,
 };
 pub use image::RgbaImage;
-pub use panel::{compose_panel_images, render_panel_grid, PanelGridLayout, PanelPadding};
+pub use panel::{PanelGridLayout, PanelPadding, compose_panel_images, render_panel_grid};
 pub use presentation::{LineworkRole, PolygonRole, ProductVisualMode, RenderPresentation};
-pub use projected_map::{build_projected_map, ProjectedMap};
+pub use projected_map::{ProjectedMap, build_projected_map};
 pub use projection::LambertConformal;
 pub use render::{
-    map_frame_aspect_ratio, map_frame_aspect_ratio_for_mode, render_to_image_profile,
-    render_to_png_profile as profile_render_to_png, RenderImageTiming, RenderPngTiming,
+    RenderImageTiming, RenderPngTiming, map_frame_aspect_ratio, map_frame_aspect_ratio_for_mode,
+    render_to_image_profile, render_to_png_profile as profile_render_to_png,
 };
 pub use request::{
-    ChromeScale, Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, ExtendMode,
-    Field2D, GridShape, LatLonGrid, MapRenderRequest, ProductKey, ProductMaturity,
-    ProductSemanticFlag, ProductSemantics, ProjectedDomain, ProjectedExtent,
-    ProjectedLineOverlay, ProjectedPolygonFill, WindBarbLayer, WindBarbStyle,
+    ChromeScale, Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, DomainFrame,
+    ExtendMode, Field2D, GridShape, LatLonGrid, MapRenderRequest, ProductKey, ProductMaturity,
+    ProductSemanticFlag, ProductSemantics, ProjectedDomain, ProjectedExtent, ProjectedLineOverlay,
+    ProjectedPolygonFill, WindBarbLayer, WindBarbStyle,
 };
 pub use rustwx_core::{
     Field2D as CoreField2D, GridShape as CoreGridShape, LatLonGrid as CoreLatLonGrid,
     ProductKey as CoreProductKey,
 };
 pub use solar07::{
-    palette_scale, DerivedProductStyle, DerivedScalePreset, Solar07Palette, Solar07Preset,
-    Solar07Product, ECAPE_SEVERE_PANEL_PRODUCTS, SEVERE_CLASSIC_PANEL_PRODUCTS,
+    DerivedProductStyle, DerivedScalePreset, ECAPE_SEVERE_PANEL_PRODUCTS,
+    SEVERE_CLASSIC_PANEL_PRODUCTS, Solar07Palette, Solar07Preset, Solar07Product, palette_scale,
 };
 
 use crate::color::Rgba;
@@ -54,7 +54,7 @@ use crate::overlay::{
     BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPolygon, ProjectedPolyline,
 };
 use crate::render::{
-    render_to_image as native_render_to_image, render_to_png, render_to_png_profile, RenderOpts,
+    RenderOpts, render_to_image as native_render_to_image, render_to_png, render_to_png_profile,
 };
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -263,7 +263,12 @@ fn with_render_state<T>(
 
 fn with_render_state_profile<T>(
     request: &MapRenderRequest,
-    render: impl FnOnce(&[f64], usize, usize, &RenderOpts) -> Result<(T, RenderPngTiming), RustwxRenderError>,
+    render: impl FnOnce(
+        &[f64],
+        usize,
+        usize,
+        &RenderOpts,
+    ) -> Result<(T, RenderPngTiming), RustwxRenderError>,
 ) -> Result<(T, RenderStateTiming, RenderPngTiming), RustwxRenderError> {
     let total_start = Instant::now();
     let validate_start = Instant::now();
@@ -385,6 +390,8 @@ fn with_render_state_profile<T>(
             cbar_tick_step: request.cbar_tick_step,
             colorbar_mode: request.legend.mode,
             chrome_scale: request.chrome_scale,
+            supersample_factor: request.supersample_factor.max(1),
+            domain_frame: request.domain_frame,
             map_extent: projected_domain.map(|domain| MapExtent {
                 x_min: domain.extent.x_min,
                 x_max: domain.extent.x_max,
@@ -590,7 +597,9 @@ mod tests {
             render_density: RenderDensity::default(),
             legend: LegendControls::default(),
             chrome_scale: ChromeScale::default(),
+            supersample_factor: 1,
             visual_mode: ProductVisualMode::FilledMeteorology,
+            domain_frame: None,
             projected_domain: None,
             projected_polygons: Vec::new(),
             projected_lines: Vec::new(),
@@ -646,7 +655,9 @@ mod tests {
             render_density: RenderDensity::default(),
             legend: LegendControls::default(),
             chrome_scale: ChromeScale::default(),
+            supersample_factor: 1,
             visual_mode: ProductVisualMode::FilledMeteorology,
+            domain_frame: None,
             projected_domain: None,
             projected_polygons: Vec::new(),
             projected_lines: Vec::new(),

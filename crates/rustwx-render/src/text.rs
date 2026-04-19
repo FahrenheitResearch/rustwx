@@ -1,7 +1,7 @@
 use crate::color::Rgba;
 use font8x8::UnicodeFonts;
 use image::RgbaImage;
-use rusttype::{point, Font, Scale};
+use rusttype::{Font, Scale, point};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -24,10 +24,14 @@ pub fn draw_text(img: &mut RgbaImage, text: &str, x: i32, y: i32, color: Rgba, s
     draw_text_inner(img, text, x, y, color, scale, FontKind::Regular);
 }
 
+pub fn draw_text_bold(img: &mut RgbaImage, text: &str, x: i32, y: i32, color: Rgba, scale: u32) {
+    draw_text_inner(img, text, x, y, color, scale, FontKind::Bold);
+}
+
 pub fn draw_text_centered(img: &mut RgbaImage, text: &str, y: i32, color: Rgba, scale: u32) {
     let w = text_width_bold(text, scale);
     let x = ((img.width() as i32) - w as i32) / 2;
-    draw_text_inner(img, text, x, y, color, scale, FontKind::Bold);
+    draw_text_bold(img, text, x, y, color, scale);
 }
 
 pub fn draw_text_right(

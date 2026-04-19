@@ -11,6 +11,7 @@ default-run = "rustwx-cli"
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
 grib-core = { path = "../../vendor/grib-core" }
 rustwx-calc = { path = "../rustwx-calc" }
 rustwx-core = { path = "../rustwx-core" }

@@ -1,8 +1,8 @@
 use crate::color::{Rgba, lerp_rgba};
 use serde::{Deserialize, Serialize};
 
-const PALETTE_RESOLUTION_MULTIPLIER: usize = 4;
-const LEVEL_RESOLUTION_MULTIPLIER: usize = 4;
+const PALETTE_RESOLUTION_MULTIPLIER: usize = 8;
+const LEVEL_RESOLUTION_MULTIPLIER: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LevelDensity {
@@ -90,9 +90,7 @@ fn densify_palette_with_multiplier(palette: &[Rgba], multiplier: usize) -> Vec<R
 }
 
 fn densify_levels_with_density(levels: &[f64], density: LevelDensity) -> Vec<f64> {
-    if levels.len() < 2
-        || density.multiplier <= 1
-        || levels.len() < density.min_source_level_count
+    if levels.len() < 2 || density.multiplier <= 1 || levels.len() < density.min_source_level_count
     {
         return levels.to_vec();
     }
@@ -296,16 +294,20 @@ impl LeveledColormap {
 #[cfg(test)]
 mod tests {
     use super::{
-        ColormapBuildOptions, LEVEL_RESOLUTION_MULTIPLIER, LeveledColormap, LevelDensity,
-        densify_levels_with_density, densify_palette_with_multiplier,
+        ColormapBuildOptions, LEVEL_RESOLUTION_MULTIPLIER, LevelDensity, LeveledColormap,
+        PALETTE_RESOLUTION_MULTIPLIER, densify_levels_with_density,
+        densify_palette_with_multiplier,
     };
     use crate::color::Rgba;
 
     #[test]
-    fn palette_densification_increases_internal_resolution_fourfold() {
+    fn palette_densification_increases_internal_resolution_eightfold() {
         let palette = vec![Rgba::new(0, 0, 0), Rgba::new(255, 255, 255)];
-        let dense = densify_palette_with_multiplier(&palette, 4);
-        assert_eq!(dense.len(), (palette.len() - 1) * 4 + 1);
+        let dense = densify_palette_with_multiplier(&palette, PALETTE_RESOLUTION_MULTIPLIER);
+        assert_eq!(
+            dense.len(),
+            (palette.len() - 1) * PALETTE_RESOLUTION_MULTIPLIER + 1
+        );
         assert_eq!(dense.first().copied(), Some(Rgba::new(0, 0, 0)));
         assert_eq!(dense.last().copied(), Some(Rgba::new(255, 255, 255)));
     }
@@ -314,12 +316,7 @@ mod tests {
     fn from_palette_uses_interpolated_midtones_not_just_anchor_colors() {
         let palette = vec![Rgba::new(0, 0, 0), Rgba::new(255, 255, 255)];
         let levels = vec![0.0, 1.0, 2.0];
-        let cmap = LeveledColormap::from_palette(
-            &palette,
-            &levels,
-            super::Extend::Neither,
-            None,
-        );
+        let cmap = LeveledColormap::from_palette(&palette, &levels, super::Extend::Neither, None);
         assert_eq!(cmap.colors.len(), 2);
         assert_eq!(cmap.colors[0], Rgba::new(0, 0, 0));
         assert_eq!(cmap.colors[1], Rgba::new(255, 255, 255));
@@ -333,7 +330,7 @@ mod tests {
             ColormapBuildOptions {
                 render_density: super::RenderDensity {
                     fill: LevelDensity::default(),
-                    palette_multiplier: 4,
+                    palette_multiplier: PALETTE_RESOLUTION_MULTIPLIER,
                 },
                 legend: super::LegendControls::default(),
             },
@@ -355,7 +352,10 @@ mod tests {
         let dense = densify_levels_with_density(&more_levels, LevelDensity::fill_default());
         assert_eq!(dense.first().copied(), Some(0.0));
         assert_eq!(dense.last().copied(), Some(40.0));
-        assert_eq!(dense.len(), (more_levels.len() - 1) * LEVEL_RESOLUTION_MULTIPLIER + 1);
+        assert_eq!(
+            dense.len(),
+            (more_levels.len() - 1) * LEVEL_RESOLUTION_MULTIPLIER + 1
+        );
     }
 
     #[test]

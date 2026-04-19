@@ -99,28 +99,41 @@ pub fn run_ecape_batch(
         .map_err(|err| format!("ECAPE surface/pressure pair unavailable: {err}"))?;
     let full_surface = &surface_decode.value;
     let full_pressure = &pressure_decode.value;
+    let owned_full_grid = full_surface.core_grid()?;
+    let project_start = Instant::now();
+    let full_projected = build_projected_map(
+        &owned_full_grid.lat_deg,
+        &owned_full_grid.lon_deg,
+        request.domain.bounds,
+        Solar07PanelLayout::default().target_aspect_ratio(),
+    )?;
 
     // Same rationale as severe_batch: crop before compute so ECAPE's
     // per-cell parcel ascent runs on ~300×300 midwest cells instead of
     // ~1800×1000 CONUS.
-    let cropped =
-        crate::gridded::crop_heavy_domain(full_surface, full_pressure, request.domain.bounds)?;
-    let owned_full_grid;
+    let cropped = crate::gridded::crop_heavy_domain_for_projected_extent(
+        full_surface,
+        full_pressure,
+        &full_projected.projected_x,
+        &full_projected.projected_y,
+        &full_projected.extent,
+        2,
+    )?;
     let (surface, pressure, grid) = match cropped.as_ref() {
         Some(cropped) => (&cropped.surface, &cropped.pressure, cropped.grid.clone()),
-        None => {
-            owned_full_grid = full_surface.core_grid()?;
-            (full_surface, full_pressure, owned_full_grid)
-        }
+        None => (full_surface, full_pressure, owned_full_grid),
     };
 
-    let project_start = Instant::now();
-    let projected = build_projected_map(
-        &grid.lat_deg,
-        &grid.lon_deg,
-        request.domain.bounds,
-        Solar07PanelLayout::default().target_aspect_ratio(),
-    )?;
+    let projected = if cropped.is_some() {
+        build_projected_map(
+            &grid.lat_deg,
+            &grid.lon_deg,
+            request.domain.bounds,
+            Solar07PanelLayout::default().target_aspect_ratio(),
+        )?
+    } else {
+        full_projected
+    };
     let project_ms = project_start.elapsed().as_millis();
 
     let compute_start = Instant::now();

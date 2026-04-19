@@ -6,10 +6,11 @@ use crate::overlay::{
     BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPolygon, ProjectedPolyline,
 };
 use crate::presentation::{ProductVisualMode, RenderPresentation, TitleAnchor};
-use crate::request::ChromeScale;
 use crate::rasterize;
+use crate::request::{ChromeScale, DomainFrame};
 use crate::text;
 use image::RgbaImage;
+use image::imageops::{FilterType, resize};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::io::Cursor;
@@ -22,6 +23,7 @@ use std::cell::Cell;
 use std::sync::Mutex;
 
 /// Full render configuration.
+#[derive(Clone)]
 pub struct RenderOpts {
     pub width: u32,
     pub height: u32,
@@ -34,6 +36,8 @@ pub struct RenderOpts {
     pub cbar_tick_step: Option<f64>,
     pub colorbar_mode: crate::colormap::LegendMode,
     pub chrome_scale: ChromeScale,
+    pub supersample_factor: u32,
+    pub domain_frame: Option<DomainFrame>,
     pub map_extent: Option<MapExtent>,
     pub projected_grid: Option<ProjectedGrid>,
     /// Filled polygons (lat/lon-derived). Drawn BEFORE the data raster so the
@@ -59,6 +63,7 @@ pub struct RenderImageTiming {
     pub barb_ms: u128,
     pub chrome_ms: u128,
     pub colorbar_ms: u128,
+    pub postprocess_ms: u128,
     pub total_ms: u128,
 }
 
@@ -91,6 +96,8 @@ impl Default for RenderOpts {
             cbar_tick_step: None,
             colorbar_mode: crate::colormap::LegendMode::Stepped,
             chrome_scale: ChromeScale::default(),
+            supersample_factor: 1,
+            domain_frame: None,
             map_extent: None,
             projected_grid: None,
             projected_polygons: vec![],
@@ -115,6 +122,30 @@ struct Layout {
     subtitle_y: u32,
     text_scale: u32,
     label_gap: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LocalRect {
+    min_x: u32,
+    max_x: u32,
+    min_y: u32,
+    max_y: u32,
+}
+
+impl LocalRect {
+    fn from_bounds(bounds: (u32, u32, u32, u32)) -> Self {
+        let (min_x, max_x, min_y, max_y) = bounds;
+        Self {
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+        }
+    }
+
+    fn width(self) -> u32 {
+        self.max_x.saturating_sub(self.min_x).saturating_add(1)
+    }
 }
 
 #[derive(Clone)]
@@ -201,12 +232,16 @@ fn compute_layout(
         0
     };
     let cbar_x = if has_cbar {
-        map_x.saturating_add(metrics.colorbar_margin_x).min(total_w.saturating_sub(1))
+        map_x
+            .saturating_add(metrics.colorbar_margin_x)
+            .min(total_w.saturating_sub(1))
     } else {
         0
     };
     let cbar_w = if has_cbar {
-        map_w.saturating_sub(metrics.colorbar_margin_x.saturating_mul(2)).max(1)
+        map_w
+            .saturating_sub(metrics.colorbar_margin_x.saturating_mul(2))
+            .max(1)
     } else {
         0
     };
@@ -405,20 +440,8 @@ fn draw_projected_polygons(
     extent: &MapExtent,
     polygons: &[ProjectedPolygon],
     presentation: RenderPresentation,
+    clip_rect: Option<(i32, i32, i32, i32)>,
 ) {
-    // Polygon rings are projected without clipping (clipping the ring geometry
-    // would need polygon-polygon intersection); instead we clip the scanline
-    // fill to the map panel so global polygons (world oceans, continents)
-    // can't paint outside the map rectangle.
-    let map_right = layout.map_x.saturating_add(layout.map_w).saturating_sub(1) as i32;
-    let map_bottom = layout.map_y.saturating_add(layout.map_h).saturating_sub(1) as i32;
-    let clip = Some((
-        layout.map_x as i32,
-        layout.map_y as i32,
-        map_right,
-        map_bottom,
-    ));
-
     for poly in polygons {
         if poly.rings.is_empty() {
             continue;
@@ -432,7 +455,7 @@ fn draw_projected_polygons(
             .iter()
             .map(|ring| project_ring_unclipped(extent, ring, layout))
             .collect();
-        draw::fill_polygon(img, &rings, style.color, clip);
+        draw::fill_polygon(img, &rings, style.color, clip_rect);
     }
 }
 
@@ -442,21 +465,42 @@ fn draw_projected_lines(
     extent: &MapExtent,
     lines: &[ProjectedPolyline],
     presentation: RenderPresentation,
+    clip_mask: Option<&RgbaImage>,
 ) {
     for line in lines {
         let style = presentation.linework_style(line.role, line.color, line.width);
         if !style.visible {
             continue;
         }
-        let mut current = Vec::with_capacity(line.points.len());
+        let mut current: Vec<(f64, f64)> = Vec::with_capacity(line.points.len());
+        let mut previous_local: Option<(f64, f64)> = None;
         for &(x, y) in &line.points {
             if let Some((px, py)) = extent.to_pixel(x, y, layout.map_w, layout.map_h) {
-                current.push((layout.map_x as f64 + px, layout.map_y as f64 + py));
+                let visible = clip_mask
+                    .map(|mask| {
+                        previous_local
+                            .map(|(prev_x, prev_y)| {
+                                segment_intersects_mask(mask, prev_x, prev_y, px, py)
+                            })
+                            .unwrap_or_else(|| mask_contains_local_pixel(mask, px, py))
+                    })
+                    .unwrap_or(true);
+                if visible {
+                    current.push((layout.map_x as f64 + px, layout.map_y as f64 + py));
+                } else if current.len() >= 2 {
+                    draw::draw_polyline_aa(img, &current, style.color, style.width);
+                    current.clear();
+                } else {
+                    current.clear();
+                }
+                previous_local = Some((px, py));
             } else if current.len() >= 2 {
                 draw::draw_polyline_aa(img, &current, style.color, style.width);
                 current.clear();
+                previous_local = None;
             } else {
                 current.clear();
+                previous_local = None;
             }
         }
         if current.len() >= 2 {
@@ -665,33 +709,30 @@ fn raster_alpha_bounds(map_img: &RgbaImage) -> Option<(u32, u32, u32, u32)> {
     }
 }
 
-fn inset_rect(
-    bounds: (u32, u32, u32, u32),
-    inset: u32,
-) -> Option<(u32, u32, u32, u32)> {
-    let (min_x, max_x, min_y, max_y) = bounds;
+fn inset_rect(bounds: LocalRect, inset: u32) -> Option<LocalRect> {
+    let LocalRect {
+        min_x,
+        max_x,
+        min_y,
+        max_y,
+    } = bounds;
     if max_x <= min_x.saturating_add(inset.saturating_mul(2))
         || max_y <= min_y.saturating_add(inset.saturating_mul(2))
     {
         return None;
     }
-    Some((
-        min_x + inset,
-        max_x - inset,
-        min_y + inset,
-        max_y - inset,
-    ))
+    Some(LocalRect {
+        min_x: min_x + inset,
+        max_x: max_x - inset,
+        min_y: min_y + inset,
+        max_y: max_y - inset,
+    })
 }
 
-fn build_rect_clip_mask(
-    map_w: u32,
-    map_h: u32,
-    rect: (u32, u32, u32, u32),
-) -> RgbaImage {
-    let (min_x, max_x, min_y, max_y) = rect;
+fn build_rect_clip_mask(map_w: u32, map_h: u32, rect: LocalRect) -> RgbaImage {
     let mut mask = RgbaImage::new(map_w, map_h);
-    for py in min_y..=max_y.min(map_h.saturating_sub(1)) {
-        for px in min_x..=max_x.min(map_w.saturating_sub(1)) {
+    for py in rect.min_y..=rect.max_y.min(map_h.saturating_sub(1)) {
+        for px in rect.min_x..=rect.max_x.min(map_w.saturating_sub(1)) {
             mask.put_pixel(px, py, Rgba::WHITE.to_image_rgba());
         }
     }
@@ -701,23 +742,217 @@ fn build_rect_clip_mask(
 fn draw_local_rect_outline(
     img: &mut RgbaImage,
     layout: &Layout,
-    rect: (u32, u32, u32, u32),
+    rect: LocalRect,
     color: Rgba,
     width: u32,
 ) {
-    let (min_x, max_x, min_y, max_y) = rect;
     draw::draw_polyline_aa(
         img,
         &[
-            (layout.map_x as f64 + min_x as f64, layout.map_y as f64 + min_y as f64),
-            (layout.map_x as f64 + max_x as f64, layout.map_y as f64 + min_y as f64),
-            (layout.map_x as f64 + max_x as f64, layout.map_y as f64 + max_y as f64),
-            (layout.map_x as f64 + min_x as f64, layout.map_y as f64 + max_y as f64),
-            (layout.map_x as f64 + min_x as f64, layout.map_y as f64 + min_y as f64),
+            (
+                layout.map_x as f64 + rect.min_x as f64,
+                layout.map_y as f64 + rect.min_y as f64,
+            ),
+            (
+                layout.map_x as f64 + rect.max_x as f64,
+                layout.map_y as f64 + rect.min_y as f64,
+            ),
+            (
+                layout.map_x as f64 + rect.max_x as f64,
+                layout.map_y as f64 + rect.max_y as f64,
+            ),
+            (
+                layout.map_x as f64 + rect.min_x as f64,
+                layout.map_y as f64 + rect.max_y as f64,
+            ),
+            (
+                layout.map_x as f64 + rect.min_x as f64,
+                layout.map_y as f64 + rect.min_y as f64,
+            ),
         ],
         color,
         width,
     );
+}
+
+fn covered(mask: &RgbaImage, x: u32, y: u32) -> bool {
+    mask.get_pixel(x, y).0[3] > 0
+}
+
+fn first_covered_y(mask: &RgbaImage, x: u32, y0: u32, y1: u32) -> Option<u32> {
+    (y0..=y1).find(|&y| covered(mask, x, y))
+}
+
+fn last_covered_y(mask: &RgbaImage, x: u32, y0: u32, y1: u32) -> Option<u32> {
+    (y0..=y1).rev().find(|&y| covered(mask, x, y))
+}
+
+fn first_covered_x(mask: &RgbaImage, y: u32, x0: u32, x1: u32) -> Option<u32> {
+    (x0..=x1).find(|&x| covered(mask, x, y))
+}
+
+fn last_covered_x(mask: &RgbaImage, y: u32, x0: u32, x1: u32) -> Option<u32> {
+    (x0..=x1).rev().find(|&x| covered(mask, x, y))
+}
+
+fn row_coverage_count(mask: &RgbaImage, y: u32, x0: u32, x1: u32) -> u32 {
+    (x0..=x1).filter(|&x| covered(mask, x, y)).count() as u32
+}
+
+fn col_coverage_count(mask: &RgbaImage, x: u32, y0: u32, y1: u32) -> u32 {
+    (y0..=y1).filter(|&y| covered(mask, x, y)).count() as u32
+}
+
+fn inner_rect_from_coverage(mask: &RgbaImage, inset: u32) -> Option<LocalRect> {
+    let (bx0, bx1, by0, by1) = raster_alpha_bounds(mask)?;
+    let mut rect = LocalRect::from_bounds((bx0, bx1, by0, by1));
+    const EDGE_COVERAGE_NUM: u32 = 9;
+    const EDGE_COVERAGE_DEN: u32 = 10;
+
+    for _ in 0..3 {
+        let width = rect.width();
+        let min_row_coverage = ((width * EDGE_COVERAGE_NUM) / EDGE_COVERAGE_DEN).max(1);
+        let top = (rect.min_y..=rect.max_y)
+            .find(|&y| row_coverage_count(mask, y, rect.min_x, rect.max_x) >= min_row_coverage)?;
+        let bottom = (rect.min_y..=rect.max_y)
+            .rev()
+            .find(|&y| row_coverage_count(mask, y, rect.min_x, rect.max_x) >= min_row_coverage)?;
+        rect.min_y = top;
+        rect.max_y = bottom;
+        if rect.min_y >= rect.max_y {
+            return None;
+        }
+
+        let height = rect.max_y.saturating_sub(rect.min_y).saturating_add(1);
+        let min_col_coverage = ((height * EDGE_COVERAGE_NUM) / EDGE_COVERAGE_DEN).max(1);
+        let left = (rect.min_x..=rect.max_x)
+            .find(|&x| col_coverage_count(mask, x, rect.min_y, rect.max_y) >= min_col_coverage)?;
+        let right = (rect.min_x..=rect.max_x)
+            .rev()
+            .find(|&x| col_coverage_count(mask, x, rect.min_y, rect.max_y) >= min_col_coverage)?;
+        rect.min_x = left;
+        rect.max_x = right;
+        if rect.min_x >= rect.max_x {
+            return None;
+        }
+    }
+
+    inset_rect(rect, inset)
+}
+
+fn compute_projected_domain_frame_rect(
+    frame: DomainFrame,
+    grid: &ProjectedGrid,
+    pixel_points: &[Option<(f64, f64)>],
+    map_w: u32,
+    map_h: u32,
+) -> Option<LocalRect> {
+    let mask =
+        rasterize::rasterize_projected_coverage_mask(grid.ny, grid.nx, pixel_points, map_w, map_h);
+    inner_rect_from_coverage(&mask, frame.inset_px)
+}
+
+fn scale_render_opts_for_supersample(opts: &RenderOpts, factor: u32) -> RenderOpts {
+    let factor = factor.max(1);
+    let mut scaled = opts.clone();
+    scaled.width = scaled.width.saturating_mul(factor);
+    scaled.height = scaled.height.saturating_mul(factor);
+    if let Some(frame) = scaled.domain_frame.as_mut() {
+        frame.inset_px = frame.inset_px.saturating_mul(factor);
+        frame.outline_width = frame.outline_width.max(1).saturating_mul(factor);
+    }
+    match &mut scaled.chrome_scale {
+        ChromeScale::Fixed(scale) => *scale *= factor as f32,
+        ChromeScale::Auto { .. } => {}
+    }
+    for line in &mut scaled.projected_lines {
+        line.width = line.width.max(1).saturating_mul(factor);
+    }
+    for contour in &mut scaled.contours {
+        contour.width = contour.width.max(1).saturating_mul(factor);
+    }
+    for barb in &mut scaled.barbs {
+        barb.width = barb.width.max(1).saturating_mul(factor);
+        barb.length_px *= factor as f64;
+    }
+    scaled.supersample_factor = 1;
+    scaled
+}
+
+fn clear_map_outside_local_rect(
+    img: &mut RgbaImage,
+    layout: &Layout,
+    rect: LocalRect,
+    clear_color: Rgba,
+) {
+    let x0 = layout.map_x + rect.min_x;
+    let x1 = layout.map_x + rect.max_x;
+    let y0 = layout.map_y + rect.min_y;
+    let y1 = layout.map_y + rect.max_y;
+
+    let clear = clear_color.to_image_rgba();
+    let map_right = layout.map_x.saturating_add(layout.map_w).min(img.width());
+    let map_bottom = layout.map_y.saturating_add(layout.map_h).min(img.height());
+
+    for py in layout.map_y..map_bottom {
+        for px in layout.map_x..map_right {
+            if px < x0 || px > x1 || py < y0 || py > y1 {
+                img.put_pixel(px, py, clear);
+            }
+        }
+    }
+}
+
+fn chrome_anchor_bounds(
+    layout: &Layout,
+    frame: Option<DomainFrame>,
+    frame_rect: Option<LocalRect>,
+) -> (u32, u32, u32) {
+    if matches!(frame, Some(frame) if frame.chrome_follows_frame) {
+        if let Some(rect) = frame_rect {
+            let left = layout.map_x + rect.min_x;
+            let right = layout.map_x + rect.max_x;
+            let center = left + right.saturating_sub(left) / 2;
+            return (left, right, center);
+        }
+    }
+
+    let left = layout.map_x;
+    let right = layout.map_x + layout.map_w;
+    let center = left + right.saturating_sub(left) / 2;
+    (left, right, center)
+}
+
+fn colorbar_anchor_rect(
+    layout: &Layout,
+    frame: Option<DomainFrame>,
+    frame_rect: Option<LocalRect>,
+) -> (u32, u32, u32) {
+    let mut cbar_x = layout.cbar_x;
+    let mut cbar_y = layout.cbar_y;
+    let mut cbar_w = layout.cbar_w;
+
+    if matches!(frame, Some(frame) if frame.legend_follows_frame) {
+        if let Some(rect) = frame_rect {
+            let domain_left = layout.map_x + rect.min_x;
+            let domain_right = layout.map_x + rect.max_x;
+            let domain_bottom = layout.map_y + rect.max_y;
+            let baseline_margin = layout.cbar_x.saturating_sub(layout.map_x);
+            let margin = baseline_margin.min(rect.width().saturating_sub(1) / 4);
+
+            cbar_x = domain_left.saturating_add(margin);
+            cbar_w = domain_right
+                .saturating_sub(domain_left)
+                .saturating_sub(margin.saturating_mul(2))
+                .max(1);
+            cbar_y = domain_bottom
+                .saturating_add(layout.label_gap)
+                .saturating_add(8)
+                .min(layout.cbar_y);
+        }
+    }
+
+    (cbar_x, cbar_y, cbar_w)
 }
 
 fn extent_bits(extent: &MapExtent) -> [u64; 4] {
@@ -819,7 +1054,13 @@ fn contour_cell_corners(
         Some((
             grid_to_pixel(i as f64, j as f64, overlay.nx, overlay.ny, layout),
             grid_to_pixel((i + 1) as f64, j as f64, overlay.nx, overlay.ny, layout),
-            grid_to_pixel((i + 1) as f64, (j + 1) as f64, overlay.nx, overlay.ny, layout),
+            grid_to_pixel(
+                (i + 1) as f64,
+                (j + 1) as f64,
+                overlay.nx,
+                overlay.ny,
+                layout,
+            ),
             grid_to_pixel(i as f64, (j + 1) as f64, overlay.nx, overlay.ny, layout),
         ))
     }
@@ -858,11 +1099,7 @@ fn contour_cell_intersections(
     emit_interp_point(&mut pts, &mut count, p2, p3, level);
     emit_interp_point(&mut pts, &mut count, p3, p0, level);
 
-    if count >= 2 {
-        Some((pts, count))
-    } else {
-        None
-    }
+    if count >= 2 { Some((pts, count)) } else { None }
 }
 
 fn maybe_draw_contour_label(
@@ -1374,7 +1611,7 @@ fn draw_barbs(
     }
 }
 
-pub fn render_to_image_profile(
+fn render_to_image_profile_inner(
     data: &[f64],
     ny: usize,
     nx: usize,
@@ -1394,6 +1631,49 @@ pub fn render_to_image_profile(
     );
     let layout_ms = layout_start.elapsed().as_millis();
 
+    let projected_pixel_start = Instant::now();
+    let projected_pixels = match (&opts.projected_grid, &opts.map_extent) {
+        (Some(grid), Some(extent)) if grid.nx == nx && grid.ny == ny => {
+            Some(projected_grid_to_pixels_cached(grid, extent, &layout))
+        }
+        _ => None,
+    };
+    let projected_pixel_ms = projected_pixel_start.elapsed().as_millis();
+    let domain_frame_rect = match (
+        opts.domain_frame,
+        opts.projected_grid.as_ref(),
+        projected_pixels.as_deref(),
+    ) {
+        (Some(frame), Some(grid), Some(pixel_points)) => compute_projected_domain_frame_rect(
+            frame,
+            grid,
+            pixel_points,
+            layout.map_w,
+            layout.map_h,
+        ),
+        _ => None,
+    };
+    let polygon_clip_rect = domain_frame_rect
+        .filter(|_| matches!(opts.domain_frame, Some(frame) if frame.clear_outside))
+        .map(|rect| {
+            (
+                (layout.map_x + rect.min_x) as i32,
+                (layout.map_y + rect.min_y) as i32,
+                (layout.map_x + rect.max_x) as i32,
+                (layout.map_y + rect.max_y) as i32,
+            )
+        })
+        .unwrap_or_else(|| {
+            let map_right = layout.map_x.saturating_add(layout.map_w).saturating_sub(1) as i32;
+            let map_bottom = layout.map_y.saturating_add(layout.map_h).saturating_sub(1) as i32;
+            (
+                layout.map_x as i32,
+                layout.map_y as i32,
+                map_right,
+                map_bottom,
+            )
+        });
+
     let background_start = Instant::now();
     let canvas_background = if opts.background == Rgba::WHITE {
         opts.presentation.canvas_background
@@ -1401,11 +1681,26 @@ pub fn render_to_image_profile(
         opts.background
     };
     let mut img = RgbaImage::from_pixel(opts.width, opts.height, canvas_background.to_image_rgba());
-    let map_right = layout.map_x.saturating_add(layout.map_w).min(img.width());
-    let map_bottom = layout.map_y.saturating_add(layout.map_h).min(img.height());
-    for py in layout.map_y..map_bottom {
-        for px in layout.map_x..map_right {
-            img.put_pixel(px, py, opts.presentation.map_background.to_image_rgba());
+    if matches!(opts.domain_frame, Some(frame) if frame.clear_outside)
+        && domain_frame_rect.is_some()
+    {
+        let rect = domain_frame_rect.expect("checked is_some above");
+        for py in rect.min_y..=rect.max_y.min(layout.map_h.saturating_sub(1)) {
+            for px in rect.min_x..=rect.max_x.min(layout.map_w.saturating_sub(1)) {
+                img.put_pixel(
+                    layout.map_x + px,
+                    layout.map_y + py,
+                    opts.presentation.map_background.to_image_rgba(),
+                );
+            }
+        }
+    } else {
+        let map_right = layout.map_x.saturating_add(layout.map_w).min(img.width());
+        let map_bottom = layout.map_y.saturating_add(layout.map_h).min(img.height());
+        for py in layout.map_y..map_bottom {
+            for px in layout.map_x..map_right {
+                img.put_pixel(px, py, opts.presentation.map_background.to_image_rgba());
+            }
         }
     }
     let background_ms = background_start.elapsed().as_millis();
@@ -1421,18 +1716,10 @@ pub fn render_to_image_profile(
             extent,
             &opts.projected_polygons,
             opts.presentation,
+            Some(polygon_clip_rect),
         );
     }
     let polygon_fill_ms = polygon_start.elapsed().as_millis();
-
-    let projected_pixel_start = Instant::now();
-    let projected_pixels = match (&opts.projected_grid, &opts.map_extent) {
-        (Some(grid), Some(extent)) if grid.nx == nx && grid.ny == ny => {
-            Some(projected_grid_to_pixels_cached(grid, extent, &layout))
-        }
-        _ => None,
-    };
-    let projected_pixel_ms = projected_pixel_start.elapsed().as_millis();
     let rasterize_start = Instant::now();
     let map_img = if let Some(ref pixel_points) = projected_pixels {
         rasterize::rasterize_projected_grid(
@@ -1449,15 +1736,21 @@ pub fn render_to_image_profile(
     };
     let rasterize_ms = rasterize_start.elapsed().as_millis();
 
-    let domain_clip_rect = opts.presentation.domain_boundary.and_then(|domain_boundary| {
-        if !domain_boundary.visible {
-            return None;
-        }
-        let inset = domain_boundary.width.saturating_add(3);
-        raster_alpha_bounds(&map_img).and_then(|bounds| inset_rect(bounds, inset))
+    let domain_clip_rect = domain_frame_rect.or_else(|| {
+        opts.presentation
+            .domain_boundary
+            .and_then(|domain_boundary| {
+                if !domain_boundary.visible {
+                    return None;
+                }
+                let inset = domain_boundary.width.saturating_add(3);
+                raster_alpha_bounds(&map_img)
+                    .map(LocalRect::from_bounds)
+                    .and_then(|bounds| inset_rect(bounds, inset))
+            })
     });
-    let domain_clip_mask = domain_clip_rect
-        .map(|rect| build_rect_clip_mask(layout.map_w, layout.map_h, rect));
+    let domain_clip_mask =
+        domain_clip_rect.map(|rect| build_rect_clip_mask(layout.map_w, layout.map_h, rect));
 
     let raster_blit_start = Instant::now();
     for py in 0..layout.map_h {
@@ -1501,6 +1794,7 @@ pub fn render_to_image_profile(
             extent,
             &opts.projected_lines,
             opts.presentation,
+            domain_clip_mask.as_ref(),
         );
     }
     let linework_ms = linework_start.elapsed().as_millis();
@@ -1536,28 +1830,51 @@ pub fn render_to_image_profile(
     }
     let barb_ms = barb_start.elapsed().as_millis();
 
+    if let (Some(frame), Some(rect)) = (opts.domain_frame, domain_frame_rect) {
+        if frame.clear_outside {
+            clear_map_outside_local_rect(&mut img, &layout, rect, canvas_background);
+        }
+    }
+
     // Title is a muted near-black slate rather than pure black — reads as
     // editorial/quiet chrome instead of a hard headline. Subtitles shade even
     // lighter so the hierarchy (title > subtitle > attribution) is obvious.
     let chrome_start = Instant::now();
+    let (chrome_left, chrome_right, chrome_center) =
+        chrome_anchor_bounds(&layout, opts.domain_frame, domain_frame_rect);
     let title_color = opts.presentation.chrome.title_color;
     let subtitle_color = opts.presentation.chrome.subtitle_color;
     if let Some(ref t) = opts.title {
         match opts.presentation.chrome.title_anchor {
             TitleAnchor::Center => {
-                text::draw_text_centered(
-                    &mut img,
-                    t,
-                    layout.title_y as i32,
-                    title_color,
-                    layout.text_scale,
-                );
+                if matches!(opts.domain_frame, Some(frame) if frame.chrome_follows_frame)
+                    && domain_frame_rect.is_some()
+                {
+                    let title_w = text::text_width_bold(t, layout.text_scale) as i32;
+                    let title_x = chrome_center as i32 - title_w / 2;
+                    text::draw_text_bold(
+                        &mut img,
+                        t,
+                        title_x,
+                        layout.title_y as i32,
+                        title_color,
+                        layout.text_scale,
+                    );
+                } else {
+                    text::draw_text_centered(
+                        &mut img,
+                        t,
+                        layout.title_y as i32,
+                        title_color,
+                        layout.text_scale,
+                    );
+                }
             }
             TitleAnchor::Left => {
                 text::draw_text(
                     &mut img,
                     t,
-                    layout.map_x as i32,
+                    chrome_left as i32,
                     layout.title_y as i32,
                     title_color,
                     layout.text_scale,
@@ -1569,7 +1886,7 @@ pub fn render_to_image_profile(
         text::draw_text(
             &mut img,
             t,
-            layout.map_x as i32,
+            chrome_left as i32,
             layout.subtitle_y as i32,
             subtitle_color,
             layout.text_scale,
@@ -1579,7 +1896,7 @@ pub fn render_to_image_profile(
         text::draw_text_right(
             &mut img,
             t,
-            (layout.map_x + layout.map_w) as i32,
+            chrome_right as i32,
             layout.subtitle_y as i32,
             subtitle_color,
             layout.text_scale,
@@ -1622,9 +1939,21 @@ pub fn render_to_image_profile(
         }
     }
 
+    if let Some(frame) = opts.domain_frame {
+        if let Some(rect) = domain_frame_rect {
+            draw_local_rect_outline(
+                &mut img,
+                &layout,
+                rect,
+                frame.outline_color.into(),
+                frame.outline_width,
+            );
+        }
+    }
+
     if let Some(domain_boundary) = opts.presentation.domain_boundary {
         if domain_boundary.visible {
-            if let Some(rect) = domain_clip_rect {
+            if let Some(rect) = domain_clip_rect.filter(|_| domain_frame_rect.is_none()) {
                 draw_local_rect_outline(
                     &mut img,
                     &layout,
@@ -1645,21 +1974,21 @@ pub fn render_to_image_profile(
                     _ => false,
                 };
                 if !drew_grid_boundary {
-                let map_right = layout.map_x + layout.map_w.saturating_sub(1);
-                let map_bottom = layout.map_y + layout.map_h.saturating_sub(1);
-                draw::draw_polyline_aa(
-                    &mut img,
-                    &[
-                        (layout.map_x as f64, layout.map_y as f64),
-                        (map_right as f64, layout.map_y as f64),
-                        (map_right as f64, map_bottom as f64),
-                        (layout.map_x as f64, map_bottom as f64),
-                        (layout.map_x as f64, layout.map_y as f64),
-                    ],
-                    domain_boundary.color,
-                    domain_boundary.width,
-                );
-            }
+                    let map_right = layout.map_x + layout.map_w.saturating_sub(1);
+                    let map_bottom = layout.map_y + layout.map_h.saturating_sub(1);
+                    draw::draw_polyline_aa(
+                        &mut img,
+                        &[
+                            (layout.map_x as f64, layout.map_y as f64),
+                            (map_right as f64, layout.map_y as f64),
+                            (map_right as f64, map_bottom as f64),
+                            (layout.map_x as f64, map_bottom as f64),
+                            (layout.map_x as f64, layout.map_y as f64),
+                        ],
+                        domain_boundary.color,
+                        domain_boundary.width,
+                    );
+                }
             }
         }
     }
@@ -1667,12 +1996,14 @@ pub fn render_to_image_profile(
 
     let colorbar_start = Instant::now();
     if opts.colorbar {
+        let (cbar_x, cbar_y, cbar_w) =
+            colorbar_anchor_rect(&layout, opts.domain_frame, domain_frame_rect);
         colorbar::draw_colorbar(
             &mut img,
             &opts.cmap,
-            layout.cbar_x,
-            layout.cbar_y,
-            layout.cbar_w,
+            cbar_x,
+            cbar_y,
+            cbar_w,
             layout.cbar_h,
             opts.colorbar_mode,
             opts.presentation.colorbar,
@@ -1687,32 +2018,25 @@ pub fn render_to_image_profile(
                 let tick_positions: Vec<f64> = ticks.iter().map(|t| (t - lo) / range).collect();
                 colorbar::draw_colorbar_ticks(
                     &mut img,
-                    layout.cbar_x,
-                    layout.cbar_y,
-                    layout.cbar_w,
+                    cbar_x,
+                    cbar_y,
+                    cbar_w,
                     &tick_positions,
                     opts.presentation.colorbar.tick_color,
                 );
                 // Labels sit above the tick marks; text is a muted near-black so
                 // it doesn't compete with the colorbar swatches.
-                let tick_y = layout.cbar_y.saturating_sub(layout.label_gap) as i32;
+                let tick_y = cbar_y.saturating_sub(layout.label_gap) as i32;
                 let label_color = opts.presentation.colorbar.label_color;
                 for tick_val in &ticks {
                     let frac = (tick_val - lo) / range;
-                    let px = layout.cbar_x as f64 + frac * layout.cbar_w as f64;
+                    let px = cbar_x as f64 + frac * cbar_w as f64;
                     let label = text::format_tick(*tick_val);
                     let lw = text::text_width(&label, layout.text_scale) as i32;
                     let centered_lx = (px as i32) - (lw / 2);
                     let max_lx = (img.width() as i32).saturating_sub(lw);
                     let lx = centered_lx.clamp(0, max_lx.max(0));
-                    text::draw_text(
-                        &mut img,
-                        &label,
-                        lx,
-                        tick_y,
-                        label_color,
-                        layout.text_scale,
-                    );
+                    text::draw_text(&mut img, &label, lx, tick_y, label_color, layout.text_scale);
                 }
             }
         }
@@ -1731,10 +2055,32 @@ pub fn render_to_image_profile(
         barb_ms,
         chrome_ms,
         colorbar_ms,
+        postprocess_ms: 0,
         total_ms: total_start.elapsed().as_millis(),
     };
 
     (img, timing)
+}
+
+pub fn render_to_image_profile(
+    data: &[f64],
+    ny: usize,
+    nx: usize,
+    opts: &RenderOpts,
+) -> (RgbaImage, RenderImageTiming) {
+    let factor = opts.supersample_factor.max(1);
+    if factor == 1 {
+        return render_to_image_profile_inner(data, ny, nx, opts);
+    }
+
+    let total_start = Instant::now();
+    let scaled_opts = scale_render_opts_for_supersample(opts, factor);
+    let (hires, mut timing) = render_to_image_profile_inner(data, ny, nx, &scaled_opts);
+    let postprocess_start = Instant::now();
+    let image = resize(&hires, opts.width, opts.height, FilterType::Lanczos3);
+    timing.postprocess_ms = postprocess_start.elapsed().as_millis();
+    timing.total_ms = total_start.elapsed().as_millis();
+    (image, timing)
 }
 
 pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) -> RgbaImage {
@@ -1793,6 +2139,15 @@ mod tests {
         )
     }
 
+    fn sample_masked_cmap() -> LeveledColormap {
+        LeveledColormap::from_palette(
+            &[Rgba::new(0, 0, 255), Rgba::new(255, 0, 0)],
+            &[10.0, 20.0, 30.0],
+            Extend::Neither,
+            Some(10.0),
+        )
+    }
+
     fn sample_projected_grid() -> ProjectedGrid {
         ProjectedGrid {
             x: vec![0.0, 1.0, 0.0, 1.0],
@@ -1815,6 +2170,8 @@ mod tests {
             cbar_tick_step: None,
             colorbar_mode: crate::colormap::LegendMode::Stepped,
             chrome_scale: ChromeScale::default(),
+            supersample_factor: 1,
+            domain_frame: None,
             map_extent: Some(MapExtent {
                 x_min: 0.0,
                 x_max: 1.0,
@@ -1849,6 +2206,110 @@ mod tests {
 
     fn blank_test_image() -> RgbaImage {
         RgbaImage::from_pixel(80, 80, Rgba::WHITE.to_image_rgba())
+    }
+
+    fn sample_domain_frame(outline_color: crate::request::Color) -> DomainFrame {
+        DomainFrame {
+            inset_px: 5,
+            outline_color,
+            outline_width: 2,
+            clear_outside: true,
+            legend_follows_frame: true,
+            chrome_follows_frame: true,
+        }
+    }
+
+    #[test]
+    fn supersample_scaling_expands_overlay_dimensions() {
+        let mut opts = sample_projected_opts();
+        opts.projected_lines = vec![ProjectedPolyline {
+            points: vec![(0.0, 0.0), (1.0, 1.0)],
+            color: Rgba::BLACK,
+            width: 2,
+            role: crate::presentation::LineworkRole::Generic,
+        }];
+        opts.contours = vec![ContourOverlay {
+            data: vec![500.0, 504.0, 508.0, 512.0],
+            ny: 2,
+            nx: 2,
+            levels: vec![504.0],
+            color: Rgba::BLACK,
+            width: 1,
+            labels: false,
+            show_extrema: false,
+        }];
+        opts.barbs = vec![BarbOverlay {
+            u: vec![10.0, 10.0, 10.0, 10.0],
+            v: vec![0.0, 0.0, 0.0, 0.0],
+            ny: 2,
+            nx: 2,
+            stride_x: 1,
+            stride_y: 1,
+            color: Rgba::BLACK,
+            width: 1,
+            length_px: 18.0,
+        }];
+        opts.domain_frame = Some(sample_domain_frame(crate::request::Color::BLACK));
+
+        let scaled = scale_render_opts_for_supersample(&opts, 2);
+        assert_eq!(scaled.width, opts.width * 2);
+        assert_eq!(scaled.height, opts.height * 2);
+        assert_eq!(scaled.projected_lines[0].width, 4);
+        assert_eq!(scaled.contours[0].width, 2);
+        assert_eq!(scaled.barbs[0].width, 2);
+        assert_eq!(scaled.barbs[0].length_px, 36.0);
+        assert_eq!(scaled.domain_frame.unwrap().outline_width, 4);
+        assert_eq!(scaled.supersample_factor, 1);
+    }
+
+    #[test]
+    fn render_to_image_supersample_preserves_requested_dimensions() {
+        let mut opts = sample_projected_opts();
+        opts.supersample_factor = 2;
+        let data = vec![10.0, 20.0, 30.0, 25.0];
+        let (image, timing) = render_to_image_profile(&data, 2, 2, &opts);
+        assert_eq!(image.width(), opts.width);
+        assert_eq!(image.height(), opts.height);
+        assert!(timing.postprocess_ms <= timing.total_ms);
+    }
+
+    fn slanted_projected_fixture() -> (Layout, ProjectedGrid, Arc<[Option<(f64, f64)>]>, LocalRect)
+    {
+        let layout = compute_layout(
+            320,
+            240,
+            true,
+            true,
+            RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology),
+            ChromeScale::default(),
+        );
+        let nx = 6usize;
+        let ny = 6usize;
+        let grid = ProjectedGrid {
+            x: vec![0.0; nx * ny],
+            y: vec![0.0; nx * ny],
+            ny,
+            nx,
+        };
+        let mut pixel_points = Vec::with_capacity(nx * ny);
+        for j in 0..ny {
+            for i in 0..nx {
+                pixel_points.push(Some((
+                    36.0 + i as f64 * 20.0 + j as f64 * 5.0,
+                    16.0 + j as f64 * 16.0,
+                )));
+            }
+        }
+        let pixel_points: Arc<[Option<(f64, f64)>]> = pixel_points.into();
+        let rect = compute_projected_domain_frame_rect(
+            sample_domain_frame(crate::request::Color::BLACK),
+            &grid,
+            pixel_points.as_ref(),
+            layout.map_w,
+            layout.map_h,
+        )
+        .expect("slanted test grid should produce a frame rect");
+        (layout, grid, pixel_points, rect)
     }
 
     #[test]
@@ -1896,6 +2357,83 @@ mod tests {
     }
 
     #[test]
+    fn domain_frame_uses_projected_coverage_when_fill_is_fully_masked() {
+        let mut opts = sample_projected_opts();
+        opts.cmap = sample_masked_cmap();
+        opts.title = None;
+        opts.domain_frame = Some(sample_domain_frame(crate::request::Color::rgba(
+            250, 10, 10, 255,
+        )));
+
+        let data = [0.0f64; 4];
+        let image = render_to_image(&data, 2, 2, &opts);
+        let outline_pixels = image
+            .pixels()
+            .filter(|px| px.0[0] > 180 && px.0[1] < 120 && px.0[2] < 120)
+            .count();
+
+        assert!(
+            outline_pixels > 0,
+            "domain frame should still render from projected coverage even when fill alpha is empty"
+        );
+    }
+
+    #[test]
+    fn domain_frame_clears_map_outside_rect() {
+        let (layout, _, _, rect) = slanted_projected_fixture();
+        let presentation = RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology);
+        let mut img =
+            RgbaImage::from_pixel(320, 240, presentation.canvas_background.to_image_rgba());
+
+        for py in layout.map_y..layout.map_y + layout.map_h {
+            for px in layout.map_x..layout.map_x + layout.map_w {
+                img.put_pixel(px, py, presentation.map_background.to_image_rgba());
+            }
+        }
+
+        let outside_x = layout.map_x + rect.min_x.saturating_sub(1);
+        let outside_y = layout.map_y + rect.min_y;
+        let inside_x = layout.map_x + rect.min_x + 1;
+        let inside_y = layout.map_y + rect.min_y + 1;
+        img.put_pixel(outside_x, outside_y, Rgba::BLACK.to_image_rgba());
+
+        clear_map_outside_local_rect(&mut img, &layout, rect, presentation.canvas_background);
+
+        assert_eq!(
+            img.get_pixel(outside_x, outside_y).0,
+            presentation.canvas_background.to_image_rgba().0
+        );
+        assert_eq!(
+            img.get_pixel(inside_x, inside_y).0,
+            presentation.map_background.to_image_rgba().0
+        );
+    }
+
+    #[test]
+    fn domain_frame_moves_colorbar_under_frame() {
+        let (layout, _, _, rect) = slanted_projected_fixture();
+        let frame = sample_domain_frame(crate::request::Color::BLACK);
+
+        let (_, cbar_y, _) = colorbar_anchor_rect(&layout, Some(frame), Some(rect));
+
+        assert!(cbar_y < layout.cbar_y);
+    }
+
+    #[test]
+    fn domain_frame_text_anchors_to_rect() {
+        let (layout, _, _, rect) = slanted_projected_fixture();
+        let frame = sample_domain_frame(crate::request::Color::BLACK);
+
+        let (left, right, center) = chrome_anchor_bounds(&layout, Some(frame), Some(rect));
+
+        assert_eq!(left, layout.map_x + rect.min_x);
+        assert_eq!(right, layout.map_x + rect.max_x);
+        assert_eq!(center, left + right.saturating_sub(left) / 2);
+        assert_ne!(left, layout.map_x);
+        assert_ne!(right, layout.map_x + layout.map_w);
+    }
+
+    #[test]
     fn bucketed_contours_match_legacy_when_projected_corner_is_missing() {
         let layout = contour_test_layout();
         let overlay = ContourOverlay {
@@ -1908,7 +2446,12 @@ mod tests {
             labels: false,
             show_extrema: false,
         };
-        let pixel_points = vec![Some((0.0, 0.0)), None, Some((64.0, 64.0)), Some((0.0, 64.0))];
+        let pixel_points = vec![
+            Some((0.0, 0.0)),
+            None,
+            Some((64.0, 64.0)),
+            Some((0.0, 64.0)),
+        ];
 
         let mut legacy = blank_test_image();
         let mut bucketed = blank_test_image();
@@ -1985,7 +2528,10 @@ mod tests {
         );
 
         assert!(cmap.levels.len() > cmap.legend_levels.len());
-        assert_eq!(colorbar_levels_for_ticks(&cmap), cmap.legend_levels.as_slice());
+        assert_eq!(
+            colorbar_levels_for_ticks(&cmap),
+            cmap.legend_levels.as_slice()
+        );
     }
 
     #[test]

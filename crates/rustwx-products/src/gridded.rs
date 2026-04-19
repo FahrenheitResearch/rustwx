@@ -14,7 +14,7 @@ use rustwx_models::{
     LatestRun, ResolvedCanonicalBundleProduct, latest_available_run_at_forecast_hour,
     latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
 };
-use rustwx_render::map_frame_aspect_ratio;
+use rustwx_render::{ProjectedExtent, map_frame_aspect_ratio};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -554,6 +554,29 @@ pub fn crop_heavy_domain(
     }))
 }
 
+pub fn crop_heavy_domain_for_projected_extent(
+    surface: &SurfaceFields,
+    pressure: &PressureFields,
+    projected_x: &[f64],
+    projected_y: &[f64],
+    extent: &ProjectedExtent,
+    pad_cells: usize,
+) -> Result<Option<CroppedHeavyDomain>, Box<dyn std::error::Error>> {
+    let Some(crop) =
+        crop_rect_for_projected_extent(surface, projected_x, projected_y, extent, pad_cells)?
+    else {
+        return Ok(None);
+    };
+    let cropped_surface = crop_surface_fields(surface, crop);
+    let cropped_pressure = crop_pressure_fields(pressure, surface.nx, surface.ny, crop)?;
+    let grid = cropped_surface.core_grid()?;
+    Ok(Some(CroppedHeavyDomain {
+        surface: cropped_surface,
+        pressure: cropped_pressure,
+        grid,
+    }))
+}
+
 fn crop_rect_for_bounds(
     surface: &SurfaceFields,
     bounds: (f64, f64, f64, f64),
@@ -589,6 +612,63 @@ fn crop_rect_for_bounds(
         x_end: max_x + 1,
         y_start: min_y,
         y_end: max_y + 1,
+    };
+
+    if crop.x_start == 0
+        && crop.x_end == surface.nx
+        && crop.y_start == 0
+        && crop.y_end == surface.ny
+    {
+        Ok(None)
+    } else {
+        Ok(Some(crop))
+    }
+}
+
+fn crop_rect_for_projected_extent(
+    surface: &SurfaceFields,
+    projected_x: &[f64],
+    projected_y: &[f64],
+    extent: &ProjectedExtent,
+    pad_cells: usize,
+) -> Result<Option<GridCrop>, Box<dyn std::error::Error>> {
+    let expected_len = surface.nx * surface.ny;
+    if projected_x.len() != expected_len || projected_y.len() != expected_len {
+        return Err("projected crop inputs did not match surface grid size".into());
+    }
+
+    let mut min_x = surface.nx;
+    let mut max_x = 0usize;
+    let mut min_y = surface.ny;
+    let mut max_y = 0usize;
+    let mut found = false;
+
+    for y in 0..surface.ny {
+        let row_offset = y * surface.nx;
+        for x in 0..surface.nx {
+            let idx = row_offset + x;
+            let px = projected_x[idx];
+            let py = projected_y[idx];
+            if px >= extent.x_min && px <= extent.x_max && py >= extent.y_min && py <= extent.y_max
+            {
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+                found = true;
+            }
+        }
+    }
+
+    if !found {
+        return Err("requested projected crop produced an empty heavy-compute domain".into());
+    }
+
+    let crop = GridCrop {
+        x_start: min_x.saturating_sub(pad_cells),
+        x_end: (max_x + 1 + pad_cells).min(surface.nx),
+        y_start: min_y.saturating_sub(pad_cells),
+        y_end: (max_y + 1 + pad_cells).min(surface.ny),
     };
 
     if crop.x_start == 0
@@ -1389,5 +1469,61 @@ mod tests {
         let rh = mixing_ratio_from_relative_humidity(1000.0, 298.15, 65.0);
         assert!(dewpoint > 0.0);
         assert!(rh > 0.0);
+    }
+
+    #[test]
+    fn projected_crop_uses_projected_extent_with_padding() {
+        let nx = 4usize;
+        let ny = 4usize;
+        let len = nx * ny;
+        let surface = SurfaceFields {
+            lat: vec![35.0; len],
+            lon: vec![-97.0; len],
+            nx,
+            ny,
+            psfc_pa: vec![100000.0; len],
+            orog_m: vec![300.0; len],
+            orog_is_proxy: false,
+            t2_k: vec![295.0; len],
+            q2_kgkg: vec![0.012; len],
+            u10_ms: vec![10.0; len],
+            v10_ms: vec![5.0; len],
+        };
+        let pressure = PressureFields {
+            pressure_levels_hpa: vec![1000.0],
+            temperature_c_3d: vec![20.0; len],
+            qvapor_kgkg_3d: vec![0.010; len],
+            u_ms_3d: vec![10.0; len],
+            v_ms_3d: vec![5.0; len],
+            gh_m_3d: vec![1500.0; len],
+        };
+        let projected_x = vec![
+            0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 2.0, 3.0,
+        ];
+        let projected_y = vec![
+            0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 3.0,
+        ];
+        let extent = ProjectedExtent {
+            x_min: 1.0,
+            x_max: 1.0,
+            y_min: 1.0,
+            y_max: 1.0,
+        };
+
+        let cropped = crop_heavy_domain_for_projected_extent(
+            &surface,
+            &pressure,
+            &projected_x,
+            &projected_y,
+            &extent,
+            1,
+        )
+        .expect("crop should succeed")
+        .expect("crop should reduce to a padded subset");
+
+        assert_eq!(cropped.surface.nx, 3);
+        assert_eq!(cropped.surface.ny, 3);
+        assert_eq!(cropped.grid.shape.nx, 3);
+        assert_eq!(cropped.grid.shape.ny, 3);
     }
 }
