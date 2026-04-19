@@ -9,9 +9,11 @@ use crate::presentation::{ProductVisualMode, RenderPresentation, TitleAnchor};
 use crate::rasterize;
 use crate::text;
 use image::RgbaImage;
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::io::Cursor;
 use std::sync::Arc;
+use std::time::Instant;
 
 #[cfg(test)]
 use std::cell::Cell;
@@ -39,6 +41,29 @@ pub struct RenderOpts {
     pub contours: Vec<ContourOverlay>,
     pub barbs: Vec<BarbOverlay>,
     pub presentation: RenderPresentation,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RenderImageTiming {
+    pub layout_ms: u128,
+    pub background_ms: u128,
+    pub polygon_fill_ms: u128,
+    pub projected_pixel_ms: u128,
+    pub rasterize_ms: u128,
+    pub raster_blit_ms: u128,
+    pub linework_ms: u128,
+    pub contour_ms: u128,
+    pub barb_ms: u128,
+    pub chrome_ms: u128,
+    pub colorbar_ms: u128,
+    pub total_ms: u128,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RenderPngTiming {
+    pub image_timing: RenderImageTiming,
+    pub png_encode_ms: u128,
+    pub total_ms: u128,
 }
 
 impl Default for RenderOpts {
@@ -165,16 +190,12 @@ fn compute_layout(
         0
     };
     let cbar_x = if has_cbar {
-        metrics.colorbar_margin_x.min(total_w.saturating_sub(1))
+        map_x
     } else {
         0
     };
     let cbar_w = if has_cbar {
-        total_w.saturating_sub(cbar_x.saturating_mul(2)).max(
-            total_w
-                .saturating_sub(metrics.margin_x.saturating_mul(2))
-                .max(1),
-        )
+        map_w
     } else {
         0
     };
@@ -376,14 +397,14 @@ fn draw_projected_lines(
             if let Some((px, py)) = extent.to_pixel(x, y, layout.map_w, layout.map_h) {
                 current.push((layout.map_x as f64 + px, layout.map_y as f64 + py));
             } else if current.len() >= 2 {
-                draw::draw_polyline(img, &current, style.color, style.width);
+                draw::draw_polyline_aa(img, &current, style.color, style.width);
                 current.clear();
             } else {
                 current.clear();
             }
         }
         if current.len() >= 2 {
-            draw::draw_polyline(img, &current, style.color, style.width);
+            draw::draw_polyline_aa(img, &current, style.color, style.width);
         }
     }
 }
@@ -439,6 +460,210 @@ fn projected_grid_to_pixels_cached(
     })
 }
 
+fn draw_projected_grid_boundary(
+    img: &mut RgbaImage,
+    layout: &Layout,
+    grid: &ProjectedGrid,
+    pixel_points: &[Option<(f64, f64)>],
+    color: Rgba,
+    width: u32,
+) -> bool {
+    if grid.nx < 2 || grid.ny < 2 || pixel_points.len() != grid.nx * grid.ny {
+        return false;
+    }
+
+    let idx = |j: usize, i: usize| j * grid.nx + i;
+    let mut boundary = Vec::with_capacity((grid.nx + grid.ny) * 2 + 1);
+    let mut visible_min_x = f64::INFINITY;
+    let mut visible_max_x = f64::NEG_INFINITY;
+    let mut visible_min_y = f64::INFINITY;
+    let mut visible_max_y = f64::NEG_INFINITY;
+
+    for &(px, py) in pixel_points.iter().flatten() {
+        let x = layout.map_x as f64 + px;
+        let y = layout.map_y as f64 + py;
+        visible_min_x = visible_min_x.min(x);
+        visible_max_x = visible_max_x.max(x);
+        visible_min_y = visible_min_y.min(y);
+        visible_max_y = visible_max_y.max(y);
+    }
+
+    for i in 0..grid.nx {
+        let Some((px, py)) = pixel_points[idx(0, i)] else {
+            return draw_visible_projected_grid_bounds(
+                img,
+                visible_min_x,
+                visible_max_x,
+                visible_min_y,
+                visible_max_y,
+                color,
+                width,
+            );
+        };
+        boundary.push((layout.map_x as f64 + px, layout.map_y as f64 + py));
+    }
+    for j in 1..grid.ny {
+        let Some((px, py)) = pixel_points[idx(j, grid.nx - 1)] else {
+            return draw_visible_projected_grid_bounds(
+                img,
+                visible_min_x,
+                visible_max_x,
+                visible_min_y,
+                visible_max_y,
+                color,
+                width,
+            );
+        };
+        boundary.push((layout.map_x as f64 + px, layout.map_y as f64 + py));
+    }
+    for i in (0..grid.nx.saturating_sub(1)).rev() {
+        let Some((px, py)) = pixel_points[idx(grid.ny - 1, i)] else {
+            return draw_visible_projected_grid_bounds(
+                img,
+                visible_min_x,
+                visible_max_x,
+                visible_min_y,
+                visible_max_y,
+                color,
+                width,
+            );
+        };
+        boundary.push((layout.map_x as f64 + px, layout.map_y as f64 + py));
+    }
+    for j in (1..grid.ny.saturating_sub(1)).rev() {
+        let Some((px, py)) = pixel_points[idx(j, 0)] else {
+            return draw_visible_projected_grid_bounds(
+                img,
+                visible_min_x,
+                visible_max_x,
+                visible_min_y,
+                visible_max_y,
+                color,
+                width,
+            );
+        };
+        boundary.push((layout.map_x as f64 + px, layout.map_y as f64 + py));
+    }
+
+    if let Some(first) = boundary.first().copied() {
+        boundary.push(first);
+    }
+
+    if boundary.len() >= 2 {
+        draw::draw_polyline_aa(img, &boundary, color, width);
+        true
+    } else {
+        false
+    }
+}
+
+fn draw_visible_projected_grid_bounds(
+    img: &mut RgbaImage,
+    min_x: f64,
+    max_x: f64,
+    min_y: f64,
+    max_y: f64,
+    color: Rgba,
+    width: u32,
+) -> bool {
+    if !min_x.is_finite() || !max_x.is_finite() || !min_y.is_finite() || !max_y.is_finite() {
+        return false;
+    }
+    draw::draw_polyline_aa(
+        img,
+        &[
+            (min_x, min_y),
+            (max_x, min_y),
+            (max_x, max_y),
+            (min_x, max_y),
+            (min_x, min_y),
+        ],
+        color,
+        width,
+    );
+    true
+}
+
+fn raster_alpha_bounds(map_img: &RgbaImage) -> Option<(u32, u32, u32, u32)> {
+    const OUTLINE_ALPHA_THRESHOLD: u8 = 128;
+    let mut min_x: Option<u32> = None;
+    let mut max_x: Option<u32> = None;
+    let mut min_y: Option<u32> = None;
+    let mut max_y: Option<u32> = None;
+
+    for py in 0..map_img.height() {
+        for px in 0..map_img.width() {
+            if map_img.get_pixel(px, py).0[3] < OUTLINE_ALPHA_THRESHOLD {
+                continue;
+            }
+            min_x = Some(min_x.map_or(px, |v| v.min(px)));
+            max_x = Some(max_x.map_or(px, |v| v.max(px)));
+            min_y = Some(min_y.map_or(py, |v| v.min(py)));
+            max_y = Some(max_y.map_or(py, |v| v.max(py)));
+        }
+    }
+
+    match (min_x, max_x, min_y, max_y) {
+        (Some(min_x), Some(max_x), Some(min_y), Some(max_y)) => Some((min_x, max_x, min_y, max_y)),
+        _ => None,
+    }
+}
+
+fn inset_rect(
+    bounds: (u32, u32, u32, u32),
+    inset: u32,
+) -> Option<(u32, u32, u32, u32)> {
+    let (min_x, max_x, min_y, max_y) = bounds;
+    if max_x <= min_x.saturating_add(inset.saturating_mul(2))
+        || max_y <= min_y.saturating_add(inset.saturating_mul(2))
+    {
+        return None;
+    }
+    Some((
+        min_x + inset,
+        max_x - inset,
+        min_y + inset,
+        max_y - inset,
+    ))
+}
+
+fn build_rect_clip_mask(
+    map_w: u32,
+    map_h: u32,
+    rect: (u32, u32, u32, u32),
+) -> RgbaImage {
+    let (min_x, max_x, min_y, max_y) = rect;
+    let mut mask = RgbaImage::new(map_w, map_h);
+    for py in min_y..=max_y.min(map_h.saturating_sub(1)) {
+        for px in min_x..=max_x.min(map_w.saturating_sub(1)) {
+            mask.put_pixel(px, py, Rgba::WHITE.to_image_rgba());
+        }
+    }
+    mask
+}
+
+fn draw_local_rect_outline(
+    img: &mut RgbaImage,
+    layout: &Layout,
+    rect: (u32, u32, u32, u32),
+    color: Rgba,
+    width: u32,
+) {
+    let (min_x, max_x, min_y, max_y) = rect;
+    draw::draw_polyline_aa(
+        img,
+        &[
+            (layout.map_x as f64 + min_x as f64, layout.map_y as f64 + min_y as f64),
+            (layout.map_x as f64 + max_x as f64, layout.map_y as f64 + min_y as f64),
+            (layout.map_x as f64 + max_x as f64, layout.map_y as f64 + max_y as f64),
+            (layout.map_x as f64 + min_x as f64, layout.map_y as f64 + max_y as f64),
+            (layout.map_x as f64 + min_x as f64, layout.map_y as f64 + min_y as f64),
+        ],
+        color,
+        width,
+    );
+}
+
 fn extent_bits(extent: &MapExtent) -> [u64; 4] {
     [
         extent.x_min.to_bits(),
@@ -466,6 +691,364 @@ fn interp_point(a: (f64, f64, f64), b: (f64, f64, f64), level: f64) -> Option<(f
     Some((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t))
 }
 
+fn levels_are_sorted_finite(levels: &[f64]) -> bool {
+    levels.iter().all(|value| value.is_finite()) && levels.windows(2).all(|w| w[0] <= w[1])
+}
+
+fn lower_bound(levels: &[f64], target: f64) -> usize {
+    let mut lo = 0usize;
+    let mut hi = levels.len();
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if levels[mid] < target {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+fn upper_bound(levels: &[f64], target: f64) -> usize {
+    let mut lo = 0usize;
+    let mut hi = levels.len();
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if levels[mid] <= target {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+fn finite_minmax_4(v0: f64, v1: f64, v2: f64, v3: f64) -> Option<(f64, f64)> {
+    let mut min_v = f64::INFINITY;
+    let mut max_v = f64::NEG_INFINITY;
+    let mut finite_count = 0usize;
+    for value in [v0, v1, v2, v3] {
+        if value.is_finite() {
+            min_v = min_v.min(value);
+            max_v = max_v.max(value);
+            finite_count += 1;
+        }
+    }
+    if finite_count >= 2 {
+        Some((min_v, max_v))
+    } else {
+        None
+    }
+}
+
+fn contour_cell_corners(
+    layout: &Layout,
+    overlay: &ContourOverlay,
+    pixel_points: Option<&[Option<(f64, f64)>]>,
+    base: usize,
+) -> Option<((f64, f64), (f64, f64), (f64, f64), (f64, f64))> {
+    if let Some(points) = pixel_points {
+        match (
+            points[base],
+            points[base + 1],
+            points[base + overlay.nx + 1],
+            points[base + overlay.nx],
+        ) {
+            (Some(a), Some(b), Some(c), Some(d)) => Some((a, b, c, d)),
+            _ => None,
+        }
+    } else {
+        let i = base % overlay.nx;
+        let j = base / overlay.nx;
+        Some((
+            grid_to_pixel(i as f64, j as f64, overlay.nx, overlay.ny, layout),
+            grid_to_pixel((i + 1) as f64, j as f64, overlay.nx, overlay.ny, layout),
+            grid_to_pixel((i + 1) as f64, (j + 1) as f64, overlay.nx, overlay.ny, layout),
+            grid_to_pixel(i as f64, (j + 1) as f64, overlay.nx, overlay.ny, layout),
+        ))
+    }
+}
+
+fn emit_interp_point(
+    pts: &mut [(f64, f64); 4],
+    count: &mut usize,
+    a: (f64, f64, f64),
+    b: (f64, f64, f64),
+    level: f64,
+) {
+    if let Some(point) = interp_point(a, b, level) {
+        pts[*count] = point;
+        *count += 1;
+    }
+}
+
+fn contour_cell_intersections(
+    layout: &Layout,
+    overlay: &ContourOverlay,
+    pixel_points: Option<&[Option<(f64, f64)>]>,
+    base: usize,
+    level: f64,
+) -> Option<([(f64, f64); 4], usize)> {
+    let (c0, c1, c2, c3) = contour_cell_corners(layout, overlay, pixel_points, base)?;
+    let p0 = (c0.0, c0.1, overlay.data[base]);
+    let p1 = (c1.0, c1.1, overlay.data[base + 1]);
+    let p2 = (c2.0, c2.1, overlay.data[base + overlay.nx + 1]);
+    let p3 = (c3.0, c3.1, overlay.data[base + overlay.nx]);
+
+    let mut pts = [(0.0, 0.0); 4];
+    let mut count = 0usize;
+    emit_interp_point(&mut pts, &mut count, p0, p1, level);
+    emit_interp_point(&mut pts, &mut count, p1, p2, level);
+    emit_interp_point(&mut pts, &mut count, p2, p3, level);
+    emit_interp_point(&mut pts, &mut count, p3, p0, level);
+
+    if count >= 2 {
+        Some((pts, count))
+    } else {
+        None
+    }
+}
+
+fn maybe_draw_contour_label(
+    img: &mut RgbaImage,
+    layout: &Layout,
+    overlay: &ContourOverlay,
+    level: f64,
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+    label_drawn: &mut bool,
+) {
+    if *label_drawn || (x1 - x0).abs() + (y1 - y0).abs() <= 18.0 {
+        return;
+    }
+
+    let label = text::format_tick(level);
+    let tx =
+        (layout.map_x as f64 + (x0 + x1) * 0.5) as i32 - text::text_width(&label, 1) as i32 / 2;
+    let ty = (layout.map_y as f64 + (y0 + y1) * 0.5) as i32 - 4;
+    text::draw_text(img, &label, tx, ty, overlay.color, 1);
+    *label_drawn = true;
+}
+
+fn draw_contour_segments_unmasked(
+    img: &mut RgbaImage,
+    layout: &Layout,
+    overlay: &ContourOverlay,
+    level: f64,
+    pts: &[(f64, f64); 4],
+    count: usize,
+    label_drawn: &mut bool,
+) {
+    let segments: &[(usize, usize)] = if count == 4 {
+        &[(0, 1), (2, 3)]
+    } else {
+        &[(0, 1)]
+    };
+
+    for &(a, b) in segments {
+        let (x0, y0) = pts[a];
+        let (x1, y1) = pts[b];
+        draw::draw_line_aa_width(
+            img,
+            layout.map_x as f64 + x0,
+            layout.map_y as f64 + y0,
+            layout.map_x as f64 + x1,
+            layout.map_y as f64 + y1,
+            overlay.color,
+            overlay.width,
+        );
+        maybe_draw_contour_label(img, layout, overlay, level, x0, y0, x1, y1, label_drawn);
+    }
+}
+
+fn draw_contour_segments_masked(
+    img: &mut RgbaImage,
+    layout: &Layout,
+    overlay: &ContourOverlay,
+    level: f64,
+    pts: &[(f64, f64); 4],
+    count: usize,
+    mask: &RgbaImage,
+    label_drawn: &mut bool,
+) {
+    let segments: &[(usize, usize)] = if count == 4 {
+        &[(0, 1), (2, 3)]
+    } else {
+        &[(0, 1)]
+    };
+
+    for &(a, b) in segments {
+        let (x0, y0) = pts[a];
+        let (x1, y1) = pts[b];
+        if !segment_intersects_mask(mask, x0, y0, x1, y1) {
+            continue;
+        }
+        draw::draw_line_aa_width(
+            img,
+            layout.map_x as f64 + x0,
+            layout.map_y as f64 + y0,
+            layout.map_x as f64 + x1,
+            layout.map_y as f64 + y1,
+            overlay.color,
+            overlay.width,
+        );
+        maybe_draw_contour_label(img, layout, overlay, level, x0, y0, x1, y1, label_drawn);
+    }
+}
+
+fn build_contour_buckets(
+    overlay: &ContourOverlay,
+    pixel_points: Option<&[Option<(f64, f64)>]>,
+) -> Vec<Vec<u32>> {
+    let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); overlay.levels.len()];
+    if overlay.levels.is_empty() {
+        return buckets;
+    }
+
+    for j in 0..(overlay.ny - 1) {
+        let row_base = j * overlay.nx;
+        for i in 0..(overlay.nx - 1) {
+            let base = row_base + i;
+            if let Some(points) = pixel_points {
+                if !matches!(
+                    (
+                        points[base],
+                        points[base + 1],
+                        points[base + overlay.nx + 1],
+                        points[base + overlay.nx]
+                    ),
+                    (Some(_), Some(_), Some(_), Some(_))
+                ) {
+                    continue;
+                }
+            }
+
+            let Some((min_v, max_v)) = finite_minmax_4(
+                overlay.data[base],
+                overlay.data[base + 1],
+                overlay.data[base + overlay.nx + 1],
+                overlay.data[base + overlay.nx],
+            ) else {
+                continue;
+            };
+
+            let lo = lower_bound(&overlay.levels, min_v);
+            let hi = upper_bound(&overlay.levels, max_v);
+            if lo >= hi {
+                continue;
+            }
+
+            let cell_id = base as u32;
+            for bucket in &mut buckets[lo..hi] {
+                bucket.push(cell_id);
+            }
+        }
+    }
+
+    buckets
+}
+
+fn draw_contours_bucketed(
+    img: &mut RgbaImage,
+    layout: &Layout,
+    overlay: &ContourOverlay,
+    pixel_points: Option<&[Option<(f64, f64)>]>,
+    clip_mask: Option<&RgbaImage>,
+) {
+    let buckets = build_contour_buckets(overlay, pixel_points);
+
+    if let Some(mask) = clip_mask {
+        for (level_index, &level) in overlay.levels.iter().enumerate() {
+            let mut label_drawn = !overlay.labels;
+            for &base in &buckets[level_index] {
+                let Some((pts, count)) =
+                    contour_cell_intersections(layout, overlay, pixel_points, base as usize, level)
+                else {
+                    continue;
+                };
+                draw_contour_segments_masked(
+                    img,
+                    layout,
+                    overlay,
+                    level,
+                    &pts,
+                    count,
+                    mask,
+                    &mut label_drawn,
+                );
+            }
+        }
+    } else {
+        for (level_index, &level) in overlay.levels.iter().enumerate() {
+            let mut label_drawn = !overlay.labels;
+            for &base in &buckets[level_index] {
+                let Some((pts, count)) =
+                    contour_cell_intersections(layout, overlay, pixel_points, base as usize, level)
+                else {
+                    continue;
+                };
+                draw_contour_segments_unmasked(
+                    img,
+                    layout,
+                    overlay,
+                    level,
+                    &pts,
+                    count,
+                    &mut label_drawn,
+                );
+            }
+        }
+    }
+}
+
+fn draw_contours_legacy(
+    img: &mut RgbaImage,
+    layout: &Layout,
+    overlay: &ContourOverlay,
+    pixel_points: Option<&[Option<(f64, f64)>]>,
+    clip_mask: Option<&RgbaImage>,
+) {
+    for &level in &overlay.levels {
+        let mut label_drawn = !overlay.labels;
+        for j in 0..(overlay.ny - 1) {
+            let row_base = j * overlay.nx;
+            for i in 0..(overlay.nx - 1) {
+                let base = row_base + i;
+                let Some((pts, count)) =
+                    contour_cell_intersections(layout, overlay, pixel_points, base, level)
+                else {
+                    continue;
+                };
+
+                if let Some(mask) = clip_mask {
+                    draw_contour_segments_masked(
+                        img,
+                        layout,
+                        overlay,
+                        level,
+                        &pts,
+                        count,
+                        mask,
+                        &mut label_drawn,
+                    );
+                } else {
+                    draw_contour_segments_unmasked(
+                        img,
+                        layout,
+                        overlay,
+                        level,
+                        &pts,
+                        count,
+                        &mut label_drawn,
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn draw_contours(
     img: &mut RgbaImage,
     layout: &Layout,
@@ -477,97 +1060,10 @@ fn draw_contours(
         return;
     }
 
-    for &level in &overlay.levels {
-        let mut label_drawn = !overlay.labels;
-        for j in 0..(overlay.ny - 1) {
-            for i in 0..(overlay.nx - 1) {
-                let idx = |jj: usize, ii: usize| jj * overlay.nx + ii;
-                let corners = if let Some(points) = pixel_points {
-                    match (
-                        points[idx(j, i)],
-                        points[idx(j, i + 1)],
-                        points[idx(j + 1, i + 1)],
-                        points[idx(j + 1, i)],
-                    ) {
-                        (Some(a), Some(b), Some(c), Some(d)) => Some((a, b, c, d)),
-                        _ => None,
-                    }
-                } else {
-                    Some((
-                        grid_to_pixel(i as f64, j as f64, overlay.nx, overlay.ny, layout),
-                        grid_to_pixel((i + 1) as f64, j as f64, overlay.nx, overlay.ny, layout),
-                        grid_to_pixel(
-                            (i + 1) as f64,
-                            (j + 1) as f64,
-                            overlay.nx,
-                            overlay.ny,
-                            layout,
-                        ),
-                        grid_to_pixel(i as f64, (j + 1) as f64, overlay.nx, overlay.ny, layout),
-                    ))
-                };
-                let Some((c0, c1, c2, c3)) = corners else {
-                    continue;
-                };
-
-                let p0 = (c0.0, c0.1, overlay.data[idx(j, i)]);
-                let p1 = (c1.0, c1.1, overlay.data[idx(j, i + 1)]);
-                let p2 = (c2.0, c2.1, overlay.data[idx(j + 1, i + 1)]);
-                let p3 = (c3.0, c3.1, overlay.data[idx(j + 1, i)]);
-
-                let mut pts = Vec::with_capacity(4);
-                if let Some(p) = interp_point(p0, p1, level) {
-                    pts.push(p);
-                }
-                if let Some(p) = interp_point(p1, p2, level) {
-                    pts.push(p);
-                }
-                if let Some(p) = interp_point(p2, p3, level) {
-                    pts.push(p);
-                }
-                if let Some(p) = interp_point(p3, p0, level) {
-                    pts.push(p);
-                }
-
-                if pts.len() < 2 {
-                    continue;
-                }
-
-                let segments: &[(usize, usize)] = if pts.len() == 4 {
-                    &[(0, 1), (2, 3)]
-                } else {
-                    &[(0, 1)]
-                };
-
-                for &(a, b) in segments {
-                    let (x0, y0) = pts[a];
-                    let (x1, y1) = pts[b];
-                    if let Some(mask) = clip_mask {
-                        if !segment_intersects_mask(mask, x0, y0, x1, y1) {
-                            continue;
-                        }
-                    }
-                    draw::draw_line(
-                        img,
-                        layout.map_x as f64 + x0,
-                        layout.map_y as f64 + y0,
-                        layout.map_x as f64 + x1,
-                        layout.map_y as f64 + y1,
-                        overlay.color,
-                        overlay.width,
-                    );
-
-                    if !label_drawn && (x1 - x0).abs() + (y1 - y0).abs() > 18.0 {
-                        let label = text::format_tick(level);
-                        let tx = (layout.map_x as f64 + (x0 + x1) * 0.5) as i32
-                            - text::text_width(&label, 1) as i32 / 2;
-                        let ty = (layout.map_y as f64 + (y0 + y1) * 0.5) as i32 - 4;
-                        text::draw_text(img, &label, tx, ty, overlay.color, 1);
-                        label_drawn = true;
-                    }
-                }
-            }
-        }
+    if levels_are_sorted_finite(&overlay.levels) && overlay.data.len() <= u32::MAX as usize {
+        draw_contours_bucketed(img, layout, overlay, pixel_points, clip_mask);
+    } else {
+        draw_contours_legacy(img, layout, overlay, pixel_points, clip_mask);
     }
 
     // Draw H/L extrema labels if requested
@@ -822,7 +1318,14 @@ fn draw_barbs(
     }
 }
 
-pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) -> RgbaImage {
+pub fn render_to_image_profile(
+    data: &[f64],
+    ny: usize,
+    nx: usize,
+    opts: &RenderOpts,
+) -> (RgbaImage, RenderImageTiming) {
+    let total_start = Instant::now();
+    let layout_start = Instant::now();
     let has_title =
         opts.title.is_some() || opts.subtitle_left.is_some() || opts.subtitle_right.is_some();
     let layout = compute_layout(
@@ -832,7 +1335,9 @@ pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) ->
         has_title,
         opts.presentation,
     );
+    let layout_ms = layout_start.elapsed().as_millis();
 
+    let background_start = Instant::now();
     let canvas_background = if opts.background == Rgba::WHITE {
         opts.presentation.canvas_background
     } else {
@@ -846,10 +1351,12 @@ pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) ->
             img.put_pixel(px, py, opts.presentation.map_background.to_image_rgba());
         }
     }
+    let background_ms = background_start.elapsed().as_millis();
 
     // Paint filled basemap polygons (ocean, land, lakes) under the data. Done
     // in main-canvas pixel space so we don't have to squeeze polygons through
     // the map_img scratch buffer's rasterize path.
+    let polygon_start = Instant::now();
     if let Some(ref extent) = opts.map_extent {
         draw_projected_polygons(
             &mut img,
@@ -859,13 +1366,17 @@ pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) ->
             opts.presentation,
         );
     }
+    let polygon_fill_ms = polygon_start.elapsed().as_millis();
 
+    let projected_pixel_start = Instant::now();
     let projected_pixels = match (&opts.projected_grid, &opts.map_extent) {
         (Some(grid), Some(extent)) if grid.nx == nx && grid.ny == ny => {
             Some(projected_grid_to_pixels_cached(grid, extent, &layout))
         }
         _ => None,
     };
+    let projected_pixel_ms = projected_pixel_start.elapsed().as_millis();
+    let rasterize_start = Instant::now();
     let map_img = if let Some(ref pixel_points) = projected_pixels {
         rasterize::rasterize_projected_grid(
             data,
@@ -879,9 +1390,26 @@ pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) ->
     } else {
         rasterize::rasterize_grid(data, ny, nx, &opts.cmap, layout.map_w, layout.map_h)
     };
+    let rasterize_ms = rasterize_start.elapsed().as_millis();
 
+    let domain_clip_rect = opts.presentation.domain_boundary.and_then(|domain_boundary| {
+        if !domain_boundary.visible {
+            return None;
+        }
+        let inset = domain_boundary.width.saturating_add(3);
+        raster_alpha_bounds(&map_img).and_then(|bounds| inset_rect(bounds, inset))
+    });
+    let domain_clip_mask = domain_clip_rect
+        .map(|rect| build_rect_clip_mask(layout.map_w, layout.map_h, rect));
+
+    let raster_blit_start = Instant::now();
     for py in 0..layout.map_h {
         for px in 0..layout.map_w {
+            if let Some(mask) = domain_clip_mask.as_ref() {
+                if mask.get_pixel(px, py).0[3] == 0 {
+                    continue;
+                }
+            }
             let src = map_img.get_pixel(px, py);
             let a = src.0[3];
             if a == 0 {
@@ -906,7 +1434,9 @@ pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) ->
             }
         }
     }
+    let raster_blit_ms = raster_blit_start.elapsed().as_millis();
 
+    let linework_start = Instant::now();
     if let Some(ref extent) = opts.map_extent {
         draw_projected_lines(
             &mut img,
@@ -916,25 +1446,43 @@ pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) ->
             opts.presentation,
         );
     }
+    let linework_ms = linework_start.elapsed().as_millis();
     let projected_pixels_ref = projected_pixels.as_deref();
+    let contour_start = Instant::now();
     for contour in &opts.contours {
         // Contours self-clip via their own NaN data (interp_point skips non-finite
         // endpoints), so there's no need to clip to the fill raster. Using the
         // fill raster as a mask incorrectly suppressed contours wherever the fill
         // was masked_below — e.g. 500 mb height contours disappearing outside a
         // CAPE blob.
-        draw_contours(&mut img, &layout, contour, projected_pixels_ref, None);
+        draw_contours(
+            &mut img,
+            &layout,
+            contour,
+            projected_pixels_ref,
+            domain_clip_mask.as_ref(),
+        );
     }
+    let contour_ms = contour_start.elapsed().as_millis();
+    let barb_start = Instant::now();
     for barb in &opts.barbs {
         // Barbs have their own NaN handling in draw_wind_barb; same rationale as
         // contours, drop the fill-raster clip so a masked_below fill doesn't
         // suppress valid barbs outside the data blob.
-        draw_barbs(&mut img, &layout, barb, projected_pixels_ref, None);
+        draw_barbs(
+            &mut img,
+            &layout,
+            barb,
+            projected_pixels_ref,
+            domain_clip_mask.as_ref(),
+        );
     }
+    let barb_ms = barb_start.elapsed().as_millis();
 
     // Title is a muted near-black slate rather than pure black — reads as
     // editorial/quiet chrome instead of a hard headline. Subtitles shade even
     // lighter so the hierarchy (title > subtitle > attribution) is obvious.
+    let chrome_start = Instant::now();
     let title_color = opts.presentation.chrome.title_color;
     let subtitle_color = opts.presentation.chrome.subtitle_color;
     if let Some(ref t) = opts.title {
@@ -1013,23 +1561,48 @@ pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) ->
 
     if let Some(domain_boundary) = opts.presentation.domain_boundary {
         if domain_boundary.visible {
-            let map_right = layout.map_x + layout.map_w.saturating_sub(1);
-            let map_bottom = layout.map_y + layout.map_h.saturating_sub(1);
-            draw::draw_polyline(
-                &mut img,
-                &[
-                    (layout.map_x as f64, layout.map_y as f64),
-                    (map_right as f64, layout.map_y as f64),
-                    (map_right as f64, map_bottom as f64),
-                    (layout.map_x as f64, map_bottom as f64),
-                    (layout.map_x as f64, layout.map_y as f64),
-                ],
-                domain_boundary.color,
-                domain_boundary.width,
-            );
+            if let Some(rect) = domain_clip_rect {
+                draw_local_rect_outline(
+                    &mut img,
+                    &layout,
+                    rect,
+                    domain_boundary.color,
+                    domain_boundary.width,
+                );
+            } else {
+                let drew_grid_boundary = match (&opts.projected_grid, projected_pixels_ref) {
+                    (Some(grid), Some(pixel_points)) => draw_projected_grid_boundary(
+                        &mut img,
+                        &layout,
+                        grid,
+                        pixel_points,
+                        domain_boundary.color,
+                        domain_boundary.width,
+                    ),
+                    _ => false,
+                };
+                if !drew_grid_boundary {
+                let map_right = layout.map_x + layout.map_w.saturating_sub(1);
+                let map_bottom = layout.map_y + layout.map_h.saturating_sub(1);
+                draw::draw_polyline_aa(
+                    &mut img,
+                    &[
+                        (layout.map_x as f64, layout.map_y as f64),
+                        (map_right as f64, layout.map_y as f64),
+                        (map_right as f64, map_bottom as f64),
+                        (layout.map_x as f64, map_bottom as f64),
+                        (layout.map_x as f64, layout.map_y as f64),
+                    ],
+                    domain_boundary.color,
+                    domain_boundary.width,
+                );
+            }
+            }
         }
     }
+    let chrome_ms = chrome_start.elapsed().as_millis();
 
+    let colorbar_start = Instant::now();
     if opts.colorbar {
         colorbar::draw_colorbar(
             &mut img,
@@ -1064,23 +1637,62 @@ pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) ->
                     let frac = (tick_val - lo) / range;
                     let px = layout.cbar_x as f64 + frac * layout.cbar_w as f64;
                     let label = text::format_tick(*tick_val);
-                    let lw = text::text_width(&label, 1);
-                    let lx = (px as i32) - (lw as i32 / 2);
+                    let lw = text::text_width(&label, 1) as i32;
+                    let centered_lx = (px as i32) - (lw / 2);
+                    let max_lx = (img.width() as i32).saturating_sub(lw);
+                    let lx = centered_lx.clamp(0, max_lx.max(0));
                     text::draw_text(&mut img, &label, lx, tick_y, label_color, 1);
                 }
             }
         }
     }
+    let colorbar_ms = colorbar_start.elapsed().as_millis();
 
-    img
+    let timing = RenderImageTiming {
+        layout_ms,
+        background_ms,
+        polygon_fill_ms,
+        projected_pixel_ms,
+        rasterize_ms,
+        raster_blit_ms,
+        linework_ms,
+        contour_ms,
+        barb_ms,
+        chrome_ms,
+        colorbar_ms,
+        total_ms: total_start.elapsed().as_millis(),
+    };
+
+    (img, timing)
+}
+
+pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) -> RgbaImage {
+    render_to_image_profile(data, ny, nx, opts).0
+}
+
+pub fn render_to_png_profile(
+    data: &[f64],
+    ny: usize,
+    nx: usize,
+    opts: &RenderOpts,
+) -> (Vec<u8>, RenderPngTiming) {
+    let total_start = Instant::now();
+    let (image, image_timing) = render_to_image_profile(data, ny, nx, opts);
+    let encode_start = Instant::now();
+    let mut buf = Vec::new();
+    image
+        .write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
+        .expect("PNG encoding failed");
+    let timing = RenderPngTiming {
+        image_timing,
+        png_encode_ms: encode_start.elapsed().as_millis(),
+        total_ms: total_start.elapsed().as_millis(),
+    };
+    (buf, timing)
 }
 
 pub fn render_to_png(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) -> Vec<u8> {
-    let mut buf = Vec::new();
-    render_to_image(data, ny, nx, opts)
-        .write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
-        .expect("PNG encoding failed");
-    buf
+    render_to_png_profile(data, ny, nx, opts).0
 }
 
 #[cfg(test)]
@@ -1143,6 +1755,99 @@ mod tests {
             barbs: Vec::new(),
             presentation: RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology),
         }
+    }
+
+    fn contour_test_layout() -> Layout {
+        Layout {
+            map_x: 0,
+            map_y: 0,
+            map_w: 64,
+            map_h: 64,
+            cbar_x: 0,
+            cbar_y: 0,
+            cbar_w: 0,
+            cbar_h: 0,
+            title_y: 0,
+            subtitle_y: 0,
+        }
+    }
+
+    fn blank_test_image() -> RgbaImage {
+        RgbaImage::from_pixel(80, 80, Rgba::WHITE.to_image_rgba())
+    }
+
+    #[test]
+    fn bucketed_contours_match_legacy_for_sorted_levels() {
+        let layout = contour_test_layout();
+        let overlay = ContourOverlay {
+            data: vec![0.0, 1.0, 2.0, 1.0, 2.0, 3.0, 2.0, 3.0, 4.0],
+            ny: 3,
+            nx: 3,
+            levels: vec![1.5, 2.5],
+            color: Rgba::BLACK,
+            width: 1,
+            labels: false,
+            show_extrema: false,
+        };
+
+        let mut legacy = blank_test_image();
+        let mut bucketed = blank_test_image();
+        draw_contours_legacy(&mut legacy, &layout, &overlay, None, None);
+        draw_contours_bucketed(&mut bucketed, &layout, &overlay, None, None);
+
+        assert_eq!(legacy, bucketed);
+    }
+
+    #[test]
+    fn bucketed_contours_match_legacy_with_nan_corner() {
+        let layout = contour_test_layout();
+        let overlay = ContourOverlay {
+            data: vec![0.0, 1.0, f64::NAN, 3.0],
+            ny: 2,
+            nx: 2,
+            levels: vec![0.5, 1.5, 2.5],
+            color: Rgba::BLACK,
+            width: 1,
+            labels: false,
+            show_extrema: false,
+        };
+
+        let mut legacy = blank_test_image();
+        let mut bucketed = blank_test_image();
+        draw_contours_legacy(&mut legacy, &layout, &overlay, None, None);
+        draw_contours_bucketed(&mut bucketed, &layout, &overlay, None, None);
+
+        assert_eq!(legacy, bucketed);
+    }
+
+    #[test]
+    fn bucketed_contours_match_legacy_when_projected_corner_is_missing() {
+        let layout = contour_test_layout();
+        let overlay = ContourOverlay {
+            data: vec![0.0, 1.0, 2.0, 3.0],
+            ny: 2,
+            nx: 2,
+            levels: vec![1.5],
+            color: Rgba::BLACK,
+            width: 1,
+            labels: false,
+            show_extrema: false,
+        };
+        let pixel_points = vec![Some((0.0, 0.0)), None, Some((64.0, 64.0)), Some((0.0, 64.0))];
+
+        let mut legacy = blank_test_image();
+        let mut bucketed = blank_test_image();
+        draw_contours_legacy(&mut legacy, &layout, &overlay, Some(&pixel_points), None);
+        draw_contours_bucketed(&mut bucketed, &layout, &overlay, Some(&pixel_points), None);
+
+        assert_eq!(legacy, bucketed);
+    }
+
+    #[test]
+    fn levels_are_sorted_finite_rejects_unsorted_or_nan_levels() {
+        assert!(levels_are_sorted_finite(&[1.0, 2.0, 3.0]));
+        assert!(!levels_are_sorted_finite(&[2.0, 1.0]));
+        assert!(!levels_are_sorted_finite(&[1.0, f64::NAN, 3.0]));
     }
 
     #[test]

@@ -12,10 +12,11 @@ use rustwx_models::{
     ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
 };
 use rustwx_render::{
-    draw_centered_text_line, map_frame_aspect_ratio_for_mode, render_panel_grid, save_png,
+    draw_centered_text_line, map_frame_aspect_ratio_for_mode, render_panel_grid, save_png_profile,
     solar07::{solar07_palette, Solar07Palette},
     Color, ColorScale, ContourLayer, DiscreteColorScale, ExtendMode, MapRenderRequest,
-    PanelGridLayout, PanelPadding, ProductVisualMode, ProjectedDomain, ProjectedMap, WindBarbLayer,
+    PanelGridLayout, PanelPadding, ProductVisualMode, ProjectedDomain, ProjectedMap,
+    RenderImageTiming, RenderStateTiming, WindBarbLayer,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -103,8 +104,14 @@ pub struct DirectFetchRuntimeInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectRecipeTiming {
     pub project_ms: u128,
+    pub request_build_ms: u128,
+    pub render_state_prep_ms: u128,
+    pub png_encode_ms: u128,
+    pub file_write_ms: u128,
     pub render_ms: u128,
     pub total_ms: u128,
+    pub state_timing: RenderStateTiming,
+    pub image_timing: RenderImageTiming,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -855,8 +862,13 @@ fn render_worker_count(recipe_count: usize) -> usize {
         return 1;
     }
 
+    let override_threads = std::env::var("RUSTWX_RENDER_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0);
+
     thread::available_parallelism()
-        .map(|count| (count.get() / 2).max(1))
+        .map(|count| override_threads.unwrap_or((count.get() / 2).max(1)))
         .unwrap_or(1)
         .min(recipe_count)
 }
@@ -951,7 +963,8 @@ fn render_direct_recipe(
                 canonical_product
             )
         })?;
-    let project_ms = if let Some(spec) = composite_panel_spec(item.recipe.slug) {
+    let (project_ms, request_build_ms, render_state_prep_ms, png_encode_ms, file_write_ms, state_timing, image_timing) =
+        if let Some(spec) = composite_panel_spec(item.recipe.slug) {
         render_direct_composite_panel(
             item.recipe,
             spec,
@@ -997,6 +1010,7 @@ fn render_direct_recipe(
         };
         let project_ms = project_start.elapsed().as_millis();
 
+        let request_build_start = Instant::now();
         let mut render_request = build_render_request(
             item.recipe,
             filled,
@@ -1005,13 +1019,22 @@ fn render_direct_recipe(
             request.domain.bounds,
             barb_stride_cache,
         )?;
+        let request_build_ms = request_build_start.elapsed().as_millis();
         render_request.subtitle_left = Some(format!(
             "{} {}Z F{:03}  {}",
             request.date_yyyymmdd, latest.cycle.hour_utc, request.forecast_hour, request.model
         ));
         render_request.subtitle_right = Some(format!("source: {}", latest.source));
-        save_png(&render_request, &output_path)?;
-        project_ms
+        let save_timing = save_png_profile(&render_request, &output_path)?;
+        (
+            project_ms,
+            request_build_ms,
+            save_timing.state_timing.state_prep_ms,
+            save_timing.png_timing.png_encode_ms,
+            save_timing.file_write_ms,
+            save_timing.state_timing,
+            save_timing.png_timing.image_timing,
+        )
     };
     let content_identity = artifact_identity_from_path(&output_path)?;
     let total_ms = render_start.elapsed().as_millis();
@@ -1029,8 +1052,14 @@ fn render_direct_recipe(
         input_fetch_keys: vec![runtime_fetch.fetch_key.clone()],
         timing: DirectRecipeTiming {
             project_ms,
+            request_build_ms,
+            render_state_prep_ms,
+            png_encode_ms,
+            file_write_ms,
             render_ms: total_ms.saturating_sub(project_ms),
             total_ms,
+            state_timing,
+            image_timing,
         },
     })
 }
@@ -1044,7 +1073,18 @@ fn render_direct_composite_panel(
     output_path: &std::path::Path,
     shared_context: Option<&dyn ProjectedMapProvider>,
     barb_stride_cache: &SharedBarbStrideCache,
-) -> Result<u128, Box<dyn std::error::Error>> {
+) -> Result<
+    (
+        u128,
+        u128,
+        u128,
+        u128,
+        u128,
+        RenderStateTiming,
+        RenderImageTiming,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let first_component = plot_recipe(spec.component_slugs[0])
         .ok_or_else(|| format!("missing component recipe '{}'", spec.component_slugs[0]))?;
     let first_selector = first_component
@@ -1077,6 +1117,7 @@ fn render_direct_composite_panel(
     };
     let project_ms = project_start.elapsed().as_millis();
 
+    let request_build_start = Instant::now();
     let mut panel_requests = Vec::with_capacity(spec.component_slugs.len());
     for component_slug in spec.component_slugs {
         let component_recipe = plot_recipe(component_slug)
@@ -1103,6 +1144,7 @@ fn render_direct_composite_panel(
         panel_request.subtitle_right = None;
         panel_requests.push(panel_request);
     }
+    let request_build_ms = request_build_start.elapsed().as_millis();
 
     let layout =
         PanelGridLayout::new(spec.rows, spec.columns, spec.panel_width, spec.panel_height)?
@@ -1110,7 +1152,9 @@ fn render_direct_composite_panel(
                 top: spec.top_padding,
                 ..Default::default()
             });
+    let render_start = Instant::now();
     let mut canvas = render_panel_grid(&layout, &panel_requests)?;
+    let render_ms = render_start.elapsed().as_millis();
     draw_centered_text_line(&mut canvas, recipe.title, 10, Color::BLACK, 2);
     draw_centered_text_line(
         &mut canvas,
@@ -1129,8 +1173,21 @@ fn render_direct_composite_panel(
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let write_start = Instant::now();
     DynamicImage::ImageRgba8(canvas).save(output_path)?;
-    Ok(project_ms)
+    let file_write_ms = write_start.elapsed().as_millis();
+    Ok((
+        project_ms,
+        request_build_ms,
+        0,
+        0,
+        file_write_ms,
+        RenderStateTiming::default(),
+        RenderImageTiming {
+            total_ms: render_ms,
+            ..RenderImageTiming::default()
+        },
+    ))
 }
 
 fn build_render_request(

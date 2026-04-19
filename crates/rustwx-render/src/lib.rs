@@ -26,7 +26,10 @@ pub use panel::{compose_panel_images, render_panel_grid, PanelGridLayout, PanelP
 pub use presentation::{LineworkRole, PolygonRole, ProductVisualMode, RenderPresentation};
 pub use projected_map::{build_projected_map, ProjectedMap};
 pub use projection::LambertConformal;
-pub use render::{map_frame_aspect_ratio, map_frame_aspect_ratio_for_mode};
+pub use render::{
+    map_frame_aspect_ratio, map_frame_aspect_ratio_for_mode, render_to_image_profile,
+    render_to_png_profile as profile_render_to_png, RenderImageTiming, RenderPngTiming,
+};
 pub use request::{
     Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, ExtendMode, Field2D,
     GridShape, LatLonGrid, MapRenderRequest, ProductKey, ProductMaturity, ProductSemanticFlag,
@@ -47,13 +50,37 @@ use crate::colormap::{Extend, LeveledColormap};
 use crate::overlay::{
     BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPolygon, ProjectedPolyline,
 };
-use crate::render::{render_to_image as native_render_to_image, render_to_png, RenderOpts};
+use crate::render::{
+    render_to_image as native_render_to_image, render_to_png, render_to_png_profile, RenderOpts,
+};
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::path::Path;
 use std::sync::OnceLock;
+use std::time::Instant;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RustRenderer;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RenderStateTiming {
+    pub validate_ms: u128,
+    pub data_buffer_ms: u128,
+    pub projected_grid_ms: u128,
+    pub projected_lines_ms: u128,
+    pub projected_polygons_ms: u128,
+    pub contour_prep_ms: u128,
+    pub barb_prep_ms: u128,
+    pub state_prep_ms: u128,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RenderSaveTiming {
+    pub state_timing: RenderStateTiming,
+    pub png_timing: RenderPngTiming,
+    pub file_write_ms: u128,
+    pub total_ms: u128,
+}
 
 #[derive(Default)]
 struct RenderScratch {
@@ -173,6 +200,30 @@ impl RustRenderer {
             source,
         })
     }
+
+    pub fn save_png_profile<P: AsRef<Path>>(
+        self,
+        request: &MapRenderRequest,
+        output_path: P,
+    ) -> Result<RenderSaveTiming, RustwxRenderError> {
+        let total_start = Instant::now();
+        let (bytes, state_timing, png_timing) =
+            with_render_state_profile(request, |data, ny, nx, opts| {
+                Ok(render_to_png_profile(data, ny, nx, opts))
+            })?;
+        let path = output_path.as_ref();
+        let write_start = Instant::now();
+        std::fs::write(path, bytes).map_err(|source| RustwxRenderError::WriteFile {
+            path: path.display().to_string(),
+            source,
+        })?;
+        Ok(RenderSaveTiming {
+            state_timing,
+            png_timing,
+            file_write_ms: write_start.elapsed().as_millis(),
+            total_ms: total_start.elapsed().as_millis(),
+        })
+    }
 }
 
 pub fn render_png(request: &MapRenderRequest) -> Result<Vec<u8>, RustwxRenderError> {
@@ -190,11 +241,31 @@ pub fn save_png<P: AsRef<Path>>(
     RustRenderer.save_png(request, output_path)
 }
 
+pub fn save_png_profile<P: AsRef<Path>>(
+    request: &MapRenderRequest,
+    output_path: P,
+) -> Result<RenderSaveTiming, RustwxRenderError> {
+    RustRenderer.save_png_profile(request, output_path)
+}
+
 fn with_render_state<T>(
     request: &MapRenderRequest,
     render: impl FnOnce(&[f64], usize, usize, &RenderOpts) -> Result<T, RustwxRenderError>,
 ) -> Result<T, RustwxRenderError> {
+    with_render_state_profile(request, |data, ny, nx, opts| {
+        Ok((render(data, ny, nx, opts)?, RenderPngTiming::default()))
+    })
+    .map(|(result, _, _)| result)
+}
+
+fn with_render_state_profile<T>(
+    request: &MapRenderRequest,
+    render: impl FnOnce(&[f64], usize, usize, &RenderOpts) -> Result<(T, RenderPngTiming), RustwxRenderError>,
+) -> Result<(T, RenderStateTiming, RenderPngTiming), RustwxRenderError> {
+    let total_start = Instant::now();
+    let validate_start = Instant::now();
     validate_request(request)?;
+    let validate_ms = validate_start.elapsed().as_millis();
 
     let shape = request.field.grid.shape;
     let overlay_only = request.is_overlay_only();
@@ -215,19 +286,24 @@ fn with_render_state<T>(
     RENDER_SCRATCH.with(|scratch_cell| {
         let mut scratch = scratch_cell.borrow_mut();
 
+        let data_start = Instant::now();
         let data = if overlay_only {
             scratch.fill_f64_constant(shape.len(), OVERLAY_ONLY_FILL_VALUE)
         } else {
             scratch.fill_f64_from_f32(&request.field.values)
         };
+        let data_buffer_ms = data_start.elapsed().as_millis();
 
+        let projected_grid_start = Instant::now();
         let projected_grid = projected_domain.map(|domain| ProjectedGrid {
             x: scratch.fill_f64_from_f64(&domain.x),
             y: scratch.fill_f64_from_f64(&domain.y),
             ny: shape.ny,
             nx: shape.nx,
         });
+        let projected_grid_ms = projected_grid_start.elapsed().as_millis();
 
+        let projected_lines_start = Instant::now();
         let mut projected_lines = Vec::with_capacity(request.projected_lines.len());
         for line in &request.projected_lines {
             projected_lines.push(ProjectedPolyline {
@@ -237,7 +313,9 @@ fn with_render_state<T>(
                 role: line.role,
             });
         }
+        let projected_lines_ms = projected_lines_start.elapsed().as_millis();
 
+        let projected_polygons_start = Instant::now();
         let mut projected_polygons = Vec::with_capacity(request.projected_polygons.len());
         for poly in &request.projected_polygons {
             let rings = poly
@@ -251,7 +329,9 @@ fn with_render_state<T>(
                 role: poly.role,
             });
         }
+        let projected_polygons_ms = projected_polygons_start.elapsed().as_millis();
 
+        let contour_start = Instant::now();
         let mut contours = Vec::with_capacity(request.contours.len());
         for layer in &request.contours {
             contours.push(ContourOverlay {
@@ -265,7 +345,9 @@ fn with_render_state<T>(
                 show_extrema: layer.show_extrema,
             });
         }
+        let contour_prep_ms = contour_start.elapsed().as_millis();
 
+        let barb_start = Instant::now();
         let mut barbs = Vec::with_capacity(request.wind_barbs.len());
         for layer in &request.wind_barbs {
             barbs.push(BarbOverlay {
@@ -280,6 +362,7 @@ fn with_render_state<T>(
                 length_px: layer.length_px,
             });
         }
+        let barb_prep_ms = barb_start.elapsed().as_millis();
 
         let opts = RenderOpts {
             width: request.width,
@@ -305,9 +388,20 @@ fn with_render_state<T>(
             presentation,
         };
 
+        let state_timing = RenderStateTiming {
+            validate_ms,
+            data_buffer_ms,
+            projected_grid_ms,
+            projected_lines_ms,
+            projected_polygons_ms,
+            contour_prep_ms,
+            barb_prep_ms,
+            state_prep_ms: total_start.elapsed().as_millis(),
+        };
+
         let result = render(&data, shape.ny, shape.nx, &opts);
         scratch.reclaim_render_opts(opts, data);
-        result
+        result.map(|(value, png_timing)| (value, state_timing, png_timing))
     })
 }
 

@@ -26,6 +26,25 @@ pub fn blend_pixel(img: &mut RgbaImage, x: i32, y: i32, color: Rgba) {
     img.put_pixel(x as u32, y as u32, blended);
 }
 
+fn blend_pixel_coverage(img: &mut RgbaImage, x: i32, y: i32, color: Rgba, coverage: f64) {
+    if coverage <= 0.0 || color.a == 0 {
+        return;
+    }
+    let scaled_alpha = ((color.a as f64) * coverage.clamp(0.0, 1.0)).round() as u8;
+    if scaled_alpha == 0 {
+        return;
+    }
+    blend_pixel(
+        img,
+        x,
+        y,
+        Rgba {
+            a: scaled_alpha,
+            ..color
+        },
+    );
+}
+
 fn draw_disc(img: &mut RgbaImage, x: i32, y: i32, radius: i32, color: Rgba) {
     let r = radius.max(0);
     for dy in -r..=r {
@@ -61,6 +80,172 @@ pub fn draw_line(img: &mut RgbaImage, x0: f64, y0: f64, x1: f64, y1: f64, color:
     }
 }
 
+fn ipart(x: f64) -> i32 {
+    x.floor() as i32
+}
+
+fn roundi(x: f64) -> i32 {
+    (x + 0.5).floor() as i32
+}
+
+fn fpart(x: f64) -> f64 {
+    x - x.floor()
+}
+
+fn rfpart(x: f64) -> f64 {
+    1.0 - fpart(x)
+}
+
+pub fn draw_line_aa(
+    img: &mut RgbaImage,
+    mut x0: f64,
+    mut y0: f64,
+    mut x1: f64,
+    mut y1: f64,
+    color: Rgba,
+) {
+    if !x0.is_finite() || !y0.is_finite() || !x1.is_finite() || !y1.is_finite() {
+        return;
+    }
+
+    if (x1 - x0).abs() < 1e-6 && (y1 - y0).abs() < 1e-6 {
+        blend_pixel(img, x0.round() as i32, y0.round() as i32, color);
+        return;
+    }
+
+    let steep = (y1 - y0).abs() > (x1 - x0).abs();
+    if steep {
+        std::mem::swap(&mut x0, &mut y0);
+        std::mem::swap(&mut x1, &mut y1);
+    }
+    if x0 > x1 {
+        std::mem::swap(&mut x0, &mut x1);
+        std::mem::swap(&mut y0, &mut y1);
+    }
+
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    if dx.abs() < 1e-6 {
+        draw_line(img, x0, y0, x1, y1, color, 1);
+        return;
+    }
+    let gradient = dy / dx;
+
+    let plot = |img: &mut RgbaImage, steep: bool, x: i32, y: i32, alpha: f64| {
+        if steep {
+            blend_pixel_coverage(img, y, x, color, alpha);
+        } else {
+            blend_pixel_coverage(img, x, y, color, alpha);
+        }
+    };
+
+    let xend = roundi(x0) as f64;
+    let yend = y0 + gradient * (xend - x0);
+    let xgap = rfpart(x0 + 0.5);
+    let xpxl1 = xend as i32;
+    let ypxl1 = ipart(yend);
+    plot(img, steep, xpxl1, ypxl1, rfpart(yend) * xgap);
+    plot(img, steep, xpxl1, ypxl1 + 1, fpart(yend) * xgap);
+    let mut intery = yend + gradient;
+
+    let xend = roundi(x1) as f64;
+    let yend = y1 + gradient * (xend - x1);
+    let xgap = fpart(x1 + 0.5);
+    let xpxl2 = xend as i32;
+    let ypxl2 = ipart(yend);
+    plot(img, steep, xpxl2, ypxl2, rfpart(yend) * xgap);
+    plot(img, steep, xpxl2, ypxl2 + 1, fpart(yend) * xgap);
+
+    for x in (xpxl1 + 1)..xpxl2 {
+        let y = ipart(intery);
+        plot(img, steep, x, y, rfpart(intery));
+        plot(img, steep, x, y + 1, fpart(intery));
+        intery += gradient;
+    }
+}
+
+pub fn draw_line_aa_width(
+    img: &mut RgbaImage,
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+    color: Rgba,
+    width: u32,
+) {
+    match width {
+        0 | 1 => draw_line_aa(img, x0, y0, x1, y1, color),
+        2 => {
+            let dx = x1 - x0;
+            let dy = y1 - y0;
+            let len = (dx * dx + dy * dy).sqrt();
+            if len < 1e-6 {
+                draw_disc(img, x0.round() as i32, y0.round() as i32, 1, color);
+                return;
+            }
+
+            let perp_x = -dy / len;
+            let perp_y = dx / len;
+            let offset = 0.35;
+            let alpha = ((color.a as f64) * 0.72).round() as u8;
+            let stroke = Rgba { a: alpha, ..color };
+            draw_line_aa(
+                img,
+                x0 - perp_x * offset,
+                y0 - perp_y * offset,
+                x1 - perp_x * offset,
+                y1 - perp_y * offset,
+                stroke,
+            );
+            draw_line_aa(
+                img,
+                x0 + perp_x * offset,
+                y0 + perp_y * offset,
+                x1 + perp_x * offset,
+                y1 + perp_y * offset,
+                stroke,
+            );
+        }
+        3 => {
+            let dx = x1 - x0;
+            let dy = y1 - y0;
+            let len = (dx * dx + dy * dy).sqrt();
+            if len < 1e-6 {
+                draw_disc(img, x0.round() as i32, y0.round() as i32, 1, color);
+                return;
+            }
+
+            let perp_x = -dy / len;
+            let perp_y = dx / len;
+            let outer_offset = 0.7;
+            let outer_alpha = ((color.a as f64) * 0.72).round() as u8;
+            let outer_stroke = Rgba {
+                a: outer_alpha,
+                ..color
+            };
+
+            draw_line_aa(img, x0, y0, x1, y1, color);
+            draw_line_aa(
+                img,
+                x0 - perp_x * outer_offset,
+                y0 - perp_y * outer_offset,
+                x1 - perp_x * outer_offset,
+                y1 - perp_y * outer_offset,
+                outer_stroke,
+            );
+            draw_line_aa(
+                img,
+                x0 + perp_x * outer_offset,
+                y0 + perp_y * outer_offset,
+                x1 + perp_x * outer_offset,
+                y1 + perp_y * outer_offset,
+                outer_stroke,
+            );
+        }
+        _ => draw_line(img, x0, y0, x1, y1, color, width),
+    }
+}
+
 pub fn draw_polyline(img: &mut RgbaImage, points: &[(f64, f64)], color: Rgba, width: u32) {
     if points.len() < 2 {
         return;
@@ -69,6 +254,17 @@ pub fn draw_polyline(img: &mut RgbaImage, points: &[(f64, f64)], color: Rgba, wi
         let (x0, y0) = segment[0];
         let (x1, y1) = segment[1];
         draw_line(img, x0, y0, x1, y1, color, width);
+    }
+}
+
+pub fn draw_polyline_aa(img: &mut RgbaImage, points: &[(f64, f64)], color: Rgba, width: u32) {
+    if points.len() < 2 {
+        return;
+    }
+    for segment in points.windows(2) {
+        let (x0, y0) = segment[0];
+        let (x1, y1) = segment[1];
+        draw_line_aa_width(img, x0, y0, x1, y1, color, width);
     }
 }
 
@@ -295,6 +491,28 @@ pub fn draw_wind_barb(
             color,
             width,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anti_aliased_line_blends_neighbor_pixels() {
+        let mut img = RgbaImage::from_pixel(8, 8, image::Rgba([255, 255, 255, 255]));
+        draw_line_aa(&mut img, 1.0, 1.0, 6.0, 4.0, Rgba::BLACK);
+
+        let mut blended_neighbor_found = false;
+        for pixel in img.pixels() {
+            let rgb = &pixel.0[..3];
+            if *rgb != [255, 255, 255] && *rgb != [0, 0, 0] {
+                blended_neighbor_found = true;
+                break;
+            }
+        }
+
+        assert!(blended_neighbor_found);
     }
 }
 

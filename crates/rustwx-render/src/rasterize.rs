@@ -92,6 +92,7 @@ pub fn rasterize_projected_grid(
         }
     }
 
+    feather_projected_raster_edges(&mut img);
     img
 }
 
@@ -175,4 +176,63 @@ fn edge_fn(a: (f64, f64), b: (f64, f64), p: (f64, f64)) -> f64 {
 
 fn nearest_finite(points: &[((f64, f64), f64)]) -> Option<f64> {
     points.iter().find_map(|(_, v)| v.is_finite().then_some(*v))
+}
+
+fn feather_projected_raster_edges(img: &mut RgbaImage) {
+    if img.width() < 2 || img.height() < 2 {
+        return;
+    }
+
+    let src = img.clone();
+    let width = src.width() as i32;
+    let height = src.height() as i32;
+
+    for py in 0..height {
+        for px in 0..width {
+            let center = src.get_pixel(px as u32, py as u32);
+            let center_alpha = center.0[3];
+            let mut transparent_neighbor = false;
+            let mut opaque_count = 0u32;
+            let mut r_sum = 0u32;
+            let mut g_sum = 0u32;
+            let mut b_sum = 0u32;
+
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    if dx == 0 && dy == 0 {
+                        continue;
+                    }
+                    let nx = px + dx;
+                    let ny = py + dy;
+                    if nx < 0 || ny < 0 || nx >= width || ny >= height {
+                        transparent_neighbor = true;
+                        continue;
+                    }
+                    let neighbor = src.get_pixel(nx as u32, ny as u32);
+                    if neighbor.0[3] > 0 {
+                        opaque_count += 1;
+                        r_sum += neighbor.0[0] as u32;
+                        g_sum += neighbor.0[1] as u32;
+                        b_sum += neighbor.0[2] as u32;
+                    } else {
+                        transparent_neighbor = true;
+                    }
+                }
+            }
+
+            if center_alpha > 0 && transparent_neighbor {
+                let mut softened = *center;
+                softened.0[3] = softened.0[3].min(216);
+                img.put_pixel(px as u32, py as u32, softened);
+            } else if center_alpha == 0 && opaque_count > 0 {
+                let feather = image::Rgba([
+                    (r_sum / opaque_count) as u8,
+                    (g_sum / opaque_count) as u8,
+                    (b_sum / opaque_count) as u8,
+                    72,
+                ]);
+                img.put_pixel(px as u32, py as u32, feather);
+            }
+        }
+    }
 }

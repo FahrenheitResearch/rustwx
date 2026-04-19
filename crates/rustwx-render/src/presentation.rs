@@ -221,42 +221,42 @@ impl RenderPresentation {
     ) -> LineworkStyle {
         let (color, width, visible) = match self.mode {
             ProductVisualMode::OverlayAnalysis => match role {
-                LineworkRole::Coast => (Rgba::new(86, 96, 108), 1, true),
-                LineworkRole::Lake => (Rgba::new(110, 128, 148), 1, true),
+                LineworkRole::Coast => (Rgba::with_alpha(24, 28, 34, 210), 2, true),
+                LineworkRole::Lake => (Rgba::with_alpha(40, 88, 150, 210), 2, true),
                 LineworkRole::International => (Rgba::new(74, 82, 94), 1, true),
-                LineworkRole::State => (Rgba::new(118, 128, 140), 1, true),
+                LineworkRole::State => (Rgba::with_alpha(24, 28, 34, 210), 2, true),
                 LineworkRole::County => (Rgba::with_alpha(142, 151, 162, 150), 1, true),
                 LineworkRole::Generic => (fallback, fallback_width.max(1), true),
             },
             ProductVisualMode::UpperAirAnalysis => match role {
-                LineworkRole::Coast => (Rgba::new(86, 94, 104), 1, true),
-                LineworkRole::Lake => (Rgba::new(112, 130, 148), 1, true),
+                LineworkRole::Coast => (Rgba::with_alpha(22, 26, 32, 220), 2, true),
+                LineworkRole::Lake => (Rgba::with_alpha(38, 84, 146, 220), 2, true),
                 LineworkRole::International => (Rgba::new(68, 76, 86), 1, true),
-                LineworkRole::State => (Rgba::new(116, 124, 134), 1, true),
+                LineworkRole::State => (Rgba::with_alpha(22, 26, 32, 220), 2, true),
                 LineworkRole::County => (Rgba::with_alpha(150, 158, 168, 90), 1, true),
                 LineworkRole::Generic => (fallback, fallback_width.max(1), true),
             },
             ProductVisualMode::SevereDiagnostic => match role {
-                LineworkRole::Coast => (Rgba::new(94, 103, 111), 1, true),
-                LineworkRole::Lake => (Rgba::new(118, 132, 146), 1, true),
+                LineworkRole::Coast => (Rgba::with_alpha(22, 26, 31, 225), 2, true),
+                LineworkRole::Lake => (Rgba::with_alpha(36, 80, 142, 225), 2, true),
                 LineworkRole::International => (Rgba::new(72, 80, 88), 1, true),
-                LineworkRole::State => (Rgba::new(82, 89, 98), 1, true),
+                LineworkRole::State => (Rgba::with_alpha(22, 26, 31, 225), 2, true),
                 LineworkRole::County => (Rgba::with_alpha(126, 134, 143, 175), 1, true),
                 LineworkRole::Generic => (fallback, fallback_width.max(1), true),
             },
             ProductVisualMode::PanelMember | ProductVisualMode::ComparisonPanel => match role {
-                LineworkRole::Coast => (Rgba::new(104, 112, 122), 1, true),
-                LineworkRole::Lake => (Rgba::new(124, 138, 152), 1, true),
+                LineworkRole::Coast => (Rgba::with_alpha(26, 30, 36, 215), 2, true),
+                LineworkRole::Lake => (Rgba::with_alpha(44, 92, 154, 215), 2, true),
                 LineworkRole::International => (Rgba::new(92, 100, 110), 1, true),
-                LineworkRole::State => (Rgba::new(132, 140, 150), 1, true),
+                LineworkRole::State => (Rgba::with_alpha(26, 30, 36, 215), 2, true),
                 LineworkRole::County => (Rgba::with_alpha(150, 158, 168, 70), 1, true),
                 LineworkRole::Generic => (fallback, fallback_width.max(1), true),
             },
             ProductVisualMode::FilledMeteorology => match role {
-                LineworkRole::Coast => (Rgba::with_alpha(84, 92, 104, 190), 1, true),
-                LineworkRole::Lake => (Rgba::with_alpha(118, 136, 154, 220), 1, true),
+                LineworkRole::Coast => (Rgba::with_alpha(22, 26, 32, 220), 2, true),
+                LineworkRole::Lake => (Rgba::with_alpha(42, 90, 152, 220), 2, true),
                 LineworkRole::International => (Rgba::with_alpha(72, 80, 92, 210), 1, true),
-                LineworkRole::State => (Rgba::with_alpha(88, 96, 108, 185), 1, true),
+                LineworkRole::State => (Rgba::with_alpha(22, 26, 32, 220), 2, true),
                 LineworkRole::County => (Rgba::with_alpha(140, 148, 160, 70), 1, false),
                 LineworkRole::Generic => (fallback, fallback_width.max(1), true),
             },
@@ -313,8 +313,36 @@ mod tests {
             );
 
         assert!(style.visible);
-        assert_eq!(style.width, 1);
-        assert_eq!(style.color, Rgba::with_alpha(118, 136, 154, 220));
+        assert_eq!(style.width, 2);
+        assert_eq!(style.color, Rgba::with_alpha(42, 90, 152, 220));
+    }
+
+    #[test]
+    fn filled_meteorology_uses_dark_thicker_state_lines() {
+        let style =
+            RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology).linework_style(
+                LineworkRole::State,
+                Rgba::BLACK,
+                1,
+            );
+
+        assert!(style.visible);
+        assert_eq!(style.width, 2);
+        assert_eq!(style.color, Rgba::with_alpha(22, 26, 32, 220));
+    }
+
+    #[test]
+    fn filled_meteorology_aligns_coast_and_state_lines() {
+        let style =
+            RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology).linework_style(
+                LineworkRole::Coast,
+                Rgba::BLACK,
+                1,
+            );
+
+        assert!(style.visible);
+        assert_eq!(style.width, 2);
+        assert_eq!(style.color, Rgba::with_alpha(22, 26, 32, 220));
     }
 }
 
@@ -363,12 +391,8 @@ fn filled_meteorology() -> RenderPresentation {
         mode: ProductVisualMode::FilledMeteorology,
         canvas_background: Rgba::new(247, 248, 250),
         map_background: Rgba::new(250, 250, 247),
-        domain_boundary: Some(LineworkStyle {
-            visible: true,
-            color: Rgba::with_alpha(55, 63, 75, 120),
-            width: 1,
-        }),
-        chrome: common_chrome(TitleAnchor::Left, Some(Rgba::new(108, 116, 128))),
+        domain_boundary: None,
+        chrome: common_chrome(TitleAnchor::Left, None),
         colorbar: common_colorbar(),
         layout: normal_layout(),
     }
@@ -379,12 +403,8 @@ fn upper_air_analysis() -> RenderPresentation {
         mode: ProductVisualMode::UpperAirAnalysis,
         canvas_background: Rgba::new(246, 247, 249),
         map_background: Rgba::new(250, 250, 248),
-        domain_boundary: Some(LineworkStyle {
-            visible: true,
-            color: Rgba::with_alpha(38, 45, 56, 130),
-            width: 1,
-        }),
-        chrome: common_chrome(TitleAnchor::Left, Some(Rgba::new(96, 104, 116))),
+        domain_boundary: None,
+        chrome: common_chrome(TitleAnchor::Left, None),
         colorbar: common_colorbar(),
         layout: normal_layout(),
     }
@@ -395,12 +415,8 @@ fn overlay_analysis() -> RenderPresentation {
         mode: ProductVisualMode::OverlayAnalysis,
         canvas_background: Rgba::WHITE,
         map_background: Rgba::WHITE,
-        domain_boundary: Some(LineworkStyle {
-            visible: true,
-            color: Rgba::with_alpha(28, 34, 42, 130),
-            width: 1,
-        }),
-        chrome: common_chrome(TitleAnchor::Left, Some(Rgba::new(116, 124, 136))),
+        domain_boundary: None,
+        chrome: common_chrome(TitleAnchor::Left, None),
         colorbar: common_colorbar(),
         layout: normal_layout(),
     }
@@ -411,12 +427,8 @@ fn severe_diagnostic() -> RenderPresentation {
         mode: ProductVisualMode::SevereDiagnostic,
         canvas_background: Rgba::new(247, 248, 249),
         map_background: Rgba::new(252, 253, 251),
-        domain_boundary: Some(LineworkStyle {
-            visible: true,
-            color: Rgba::with_alpha(35, 40, 46, 145),
-            width: 1,
-        }),
-        chrome: common_chrome(TitleAnchor::Left, Some(Rgba::new(88, 96, 108))),
+        domain_boundary: None,
+        chrome: common_chrome(TitleAnchor::Left, None),
         colorbar: common_colorbar(),
         layout: normal_layout(),
     }
@@ -427,12 +439,8 @@ fn panel_member() -> RenderPresentation {
         mode: ProductVisualMode::PanelMember,
         canvas_background: Rgba::new(246, 247, 249),
         map_background: Rgba::new(250, 250, 247),
-        domain_boundary: Some(LineworkStyle {
-            visible: true,
-            color: Rgba::with_alpha(58, 66, 78, 95),
-            width: 1,
-        }),
-        chrome: common_chrome(TitleAnchor::Left, Some(Rgba::new(140, 148, 158))),
+        domain_boundary: None,
+        chrome: common_chrome(TitleAnchor::Left, None),
         colorbar: common_colorbar(),
         layout: compact_layout(),
     }

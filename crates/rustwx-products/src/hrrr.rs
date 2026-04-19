@@ -499,8 +499,13 @@ pub fn severe_panel_fields_from_supported(fields: SupportedSevereFields) -> Vec<
 }
 
 fn png_render_parallelism(job_count: usize) -> usize {
+    let override_threads = std::env::var("RUSTWX_RENDER_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0);
+
     thread::available_parallelism()
-        .map(|parallelism| (parallelism.get() / 2).max(1))
+        .map(|parallelism| override_threads.unwrap_or((parallelism.get() / 2).max(1)))
         .unwrap_or(1)
         .min(job_count.max(1))
 }

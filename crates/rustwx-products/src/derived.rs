@@ -10,9 +10,10 @@ use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId,
 };
 use rustwx_render::{
-    build_projected_map as build_projected_map_from_latlon, map_frame_aspect_ratio, save_png,
-    Color, DerivedProductStyle, ExtendMode, MapRenderRequest, ProductVisualMode, ProjectedDomain,
-    ProjectedExtent, ProjectedMap, Solar07Palette, Solar07Product, WindBarbLayer,
+    build_projected_map as build_projected_map_from_latlon, map_frame_aspect_ratio,
+    save_png_profile, Color, DerivedProductStyle, ExtendMode, MapRenderRequest,
+    ProductVisualMode, ProjectedDomain, ProjectedExtent, ProjectedMap, RenderImageTiming,
+    RenderStateTiming, Solar07Palette, Solar07Product, WindBarbLayer,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -335,8 +336,13 @@ pub struct DerivedSharedTiming {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DerivedRecipeTiming {
+    pub render_state_prep_ms: u128,
+    pub png_encode_ms: u128,
+    pub file_write_ms: u128,
     pub render_ms: u128,
     pub total_ms: u128,
+    pub state_timing: RenderStateTiming,
+    pub image_timing: RenderImageTiming,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -927,7 +933,7 @@ fn run_derived_batch_from_loaded_bundles(
             model,
             native_field.values.clone(),
         )?;
-        save_png(&render_artifact.request, &output_path)?;
+        let save_timing = save_png_profile(&render_artifact.request, &output_path)?;
         let render_ms = render_start.elapsed().as_millis();
         let content_identity = artifact_identity_from_path(&output_path)?;
         rendered_by_recipe.insert(
@@ -940,8 +946,13 @@ fn run_derived_batch_from_loaded_bundles(
                 content_identity,
                 input_fetch_keys: input_fetch_keys.clone(),
                 timing: DerivedRecipeTiming {
+                    render_state_prep_ms: save_timing.state_timing.state_prep_ms,
+                    png_encode_ms: save_timing.png_timing.png_encode_ms,
+                    file_write_ms: save_timing.file_write_ms,
                     render_ms,
                     total_ms: render_ms,
+                    state_timing: save_timing.state_timing,
+                    image_timing: save_timing.png_timing.image_timing,
                 },
             },
         );
@@ -1002,7 +1013,7 @@ fn run_derived_batch_from_loaded_bundles(
                             computed,
                         )
                         .map_err(thread_render_error)?;
-                        save_png(&render_artifact.request, &output_path)
+                        let save_timing = save_png_profile(&render_artifact.request, &output_path)
                             .map_err(thread_render_error)?;
                         let render_ms = render_start.elapsed().as_millis();
                         let content_identity = artifact_identity_from_path(&output_path)
@@ -1019,8 +1030,13 @@ fn run_derived_batch_from_loaded_bundles(
                             content_identity,
                             input_fetch_keys: lane_fetch_keys,
                             timing: DerivedRecipeTiming {
+                                render_state_prep_ms: save_timing.state_timing.state_prep_ms,
+                                png_encode_ms: save_timing.png_timing.png_encode_ms,
+                                file_write_ms: save_timing.file_write_ms,
                                 render_ms,
                                 total_ms: render_ms,
+                                state_timing: save_timing.state_timing,
+                                image_timing: save_timing.png_timing.image_timing,
                             },
                         })
                     },
@@ -2412,8 +2428,13 @@ fn normalize_slug(value: &str) -> String {
 }
 
 fn png_render_parallelism(job_count: usize) -> usize {
+    let override_threads = std::env::var("RUSTWX_RENDER_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0);
+
     thread::available_parallelism()
-        .map(|parallelism| (parallelism.get() / 2).max(1))
+        .map(|parallelism| override_threads.unwrap_or((parallelism.get() / 2).max(1)))
         .unwrap_or(1)
         .min(job_count.max(1))
 }
