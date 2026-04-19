@@ -34,6 +34,7 @@ use crate::runtime::{
     load_execution_plan, BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet,
 };
 use crate::shared_context::{DomainSpec, ProjectedMapProvider};
+use crate::source::{ProductSourceRoute, direct_route_for_recipe_slug};
 use crate::spec::direct_product_specs;
 
 const OUTPUT_WIDTH: u32 = 1200;
@@ -125,6 +126,7 @@ pub struct DirectFetchTiming {
 pub struct DirectRenderedRecipe {
     pub recipe_slug: String,
     pub title: String,
+    pub source_route: ProductSourceRoute,
     pub grib_product: String,
     pub fetched_grib_product: String,
     pub resolved_source: SourceId,
@@ -1017,6 +1019,7 @@ fn render_direct_recipe(
     Ok(DirectRenderedRecipe {
         recipe_slug: item.recipe.slug.to_string(),
         title: item.recipe.title.to_string(),
+        source_route: direct_route_for_recipe_slug(item.recipe.slug),
         grib_product: item.plan.product.to_string(),
         fetched_grib_product: runtime_fetch.fetched_product.clone(),
         resolved_source: runtime_fetch.resolved_source,

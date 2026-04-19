@@ -2,20 +2,7 @@ use grib_core::grib2::{Grib2File, Grib2Message, flip_rows, grid_latlon, level_na
 use rustwx_core::{GridShape, LatLonGrid, ModelId};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ThermoPathMode {
-    CanonicalDerived,
-    PreferNativeExact,
-    CompareNativeVsDerived,
-    NativeOnly,
-}
-
-impl Default for ThermoPathMode {
-    fn default() -> Self {
-        Self::CanonicalDerived
-    }
-}
+use crate::source::ProductSourceMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -175,21 +162,12 @@ pub fn native_candidate_for_slug(model: ModelId, slug: &str) -> Option<NativeThe
     native_candidate(model, recipe)
 }
 
-pub fn should_prefer_native_exact(
-    mode: ThermoPathMode,
+pub fn native_candidate_allowed_in_fastest(
+    mode: ProductSourceMode,
     model: ModelId,
     recipe: NativeThermoRecipe,
 ) -> bool {
-    let Some(candidate) = native_candidate(model, recipe) else {
-        return false;
-    };
-    match mode {
-        ThermoPathMode::CanonicalDerived | ThermoPathMode::CompareNativeVsDerived => false,
-        ThermoPathMode::PreferNativeExact => {
-            candidate.auto_eligible && candidate.semantics == NativeSemantics::ExactEquivalent
-        }
-        ThermoPathMode::NativeOnly => true,
-    }
+    matches!(mode, ProductSourceMode::Fastest) && native_candidate(model, recipe).is_some()
 }
 
 pub fn extract_native_thermo_field(

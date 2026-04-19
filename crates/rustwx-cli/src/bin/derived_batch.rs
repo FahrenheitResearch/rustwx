@@ -12,7 +12,7 @@ use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::derived::{
     DerivedBatchRequest, run_derived_batch, supported_derived_recipe_slugs,
 };
-use rustwx_products::thermo_native::ThermoPathMode;
+use rustwx_products::source::ProductSourceMode;
 use rustwx_products::publication::{
     ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
     canonical_run_slug, finalize_and_publish_run_manifest, publish_failure_manifest,
@@ -51,25 +51,21 @@ struct Args {
     cache_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_cache: bool,
-    #[arg(long, value_enum, default_value_t = ThermoPathArg::PreferNativeExact)]
-    thermo_path: ThermoPathArg,
+    #[arg(long = "source-mode", alias = "thermo-path", value_enum, default_value_t = SourceModeArg::Canonical)]
+    source_mode: SourceModeArg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum ThermoPathArg {
-    CanonicalDerived,
-    PreferNativeExact,
-    CompareNativeVsDerived,
-    NativeOnly,
+enum SourceModeArg {
+    Canonical,
+    Fastest,
 }
 
-impl From<ThermoPathArg> for ThermoPathMode {
-    fn from(value: ThermoPathArg) -> Self {
+impl From<SourceModeArg> for ProductSourceMode {
+    fn from(value: SourceModeArg) -> Self {
         match value {
-            ThermoPathArg::CanonicalDerived => Self::CanonicalDerived,
-            ThermoPathArg::PreferNativeExact => Self::PreferNativeExact,
-            ThermoPathArg::CompareNativeVsDerived => Self::CompareNativeVsDerived,
-            ThermoPathArg::NativeOnly => Self::NativeOnly,
+            SourceModeArg::Canonical => Self::Canonical,
+            SourceModeArg::Fastest => Self::Fastest,
         }
     }
 }
@@ -140,7 +136,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         recipe_slugs: recipes,
         surface_product_override: args.surface_product.clone(),
         pressure_product_override: args.pressure_product.clone(),
-        thermo_path_mode: args.thermo_path.into(),
+        source_mode: args.source_mode.into(),
     };
     let report = run_derived_batch(&request)?;
 
@@ -169,25 +165,66 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             )
             .with_input_fetches(report.input_fetches.clone())
             .with_artifacts(
-                report
-                    .recipes
+                request
+                    .recipe_slugs
                     .iter()
-                    .map(|recipe| {
+                    .map(|slug| {
                         PublishedArtifactRecord::planned(
-                            recipe.recipe_slug.clone(),
-                            relative_output_path(&args.out_dir, &recipe.output_path),
+                            slug.clone(),
+                            expected_output_relative_path(
+                                report.model.as_str(),
+                                &report.date_yyyymmdd,
+                                report.cycle_utc,
+                                report.forecast_hour,
+                                &report.domain.slug,
+                                slug,
+                            ),
                         )
-                        .with_state(ArtifactPublicationState::Complete)
-                        .with_content_identity(recipe.content_identity.clone())
-                        .with_input_fetch_keys(recipe.input_fetch_keys.clone())
                     })
                     .collect(),
             );
+    for recipe in &report.recipes {
+        run_manifest.update_artifact_state(
+            &recipe.recipe_slug,
+            ArtifactPublicationState::Complete,
+            Some(format!(
+                "source_mode={} source_route={}",
+                report.source_mode.as_str(),
+                recipe.source_route.as_str()
+            )),
+        );
+        run_manifest.update_artifact_identity(&recipe.recipe_slug, recipe.content_identity.clone());
+        run_manifest
+            .update_artifact_input_fetch_keys(&recipe.recipe_slug, recipe.input_fetch_keys.clone());
+    }
+    for blocker in &report.blockers {
+        run_manifest.update_artifact_state(
+            &blocker.recipe_slug,
+            ArtifactPublicationState::Blocked,
+            Some(format!(
+                "source_mode={} source_route={} {}",
+                report.source_mode.as_str(),
+                blocker.source_route.as_str(),
+                blocker.reason
+            )),
+        );
+    }
     let (canonical_manifest, attempt_manifest) =
         finalize_and_publish_run_manifest(&mut run_manifest, &args.out_dir, &stem)?;
 
     for recipe in &report.recipes {
         println!("{}", recipe.output_path.display());
+    }
+    if !report.blockers.is_empty() {
+        eprintln!("blocked derived products:");
+        for blocker in &report.blockers {
+            eprintln!(
+                "  {} [{}]: {}",
+                blocker.recipe_slug,
+                blocker.source_route.as_str(),
+                blocker.reason
+            );
+        }
     }
     println!("{}", manifest_path.display());
     println!("{}", timing_path.display());
@@ -196,9 +233,21 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn relative_output_path(root: &std::path::Path, output_path: &std::path::Path) -> PathBuf {
-    output_path
-        .strip_prefix(root)
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| output_path.to_path_buf())
+fn expected_output_relative_path(
+    model_slug: &str,
+    date_yyyymmdd: &str,
+    cycle_utc: u8,
+    forecast_hour: u16,
+    domain_slug: &str,
+    product_slug: &str,
+) -> PathBuf {
+    PathBuf::from(format!(
+        "rustwx_{}_{}_{}z_f{:03}_{}_{}.png",
+        model_slug.replace('-', "_"),
+        date_yyyymmdd,
+        cycle_utc,
+        forecast_hour,
+        domain_slug,
+        product_slug
+    ))
 }

@@ -1,8 +1,8 @@
 use crate::derived::{
     HrrrDerivedBatchReport, HrrrDerivedBatchRequest, plan_derived_recipes,
     plan_native_thermo_routes, run_hrrr_derived_batch_from_loaded,
+    run_hrrr_derived_batch_without_loaded,
 };
-use crate::thermo_native::ThermoPathMode;
 use crate::direct::{
     HrrrDirectBatchReport, HrrrDirectBatchRequest, run_hrrr_direct_batch_from_loaded,
 };
@@ -17,6 +17,7 @@ use crate::publication::{
 use crate::publication_provenance::capture_default_build_provenance;
 use crate::runtime::{BundleLoaderConfig, load_execution_plan};
 use crate::severe::build_severe_execution_plan;
+use crate::source::ProductSourceMode;
 use crate::windowed::{
     HrrrWindowedBatchReport, HrrrWindowedBatchRequest, HrrrWindowedProduct,
     HrrrWindowedRenderedProduct, collect_windowed_input_fetches,
@@ -40,11 +41,11 @@ pub struct HrrrNonEcapeHourRequest {
     pub out_dir: PathBuf,
     pub cache_root: PathBuf,
     pub use_cache: bool,
+    #[serde(default)]
+    pub source_mode: ProductSourceMode,
     pub direct_recipe_slugs: Vec<String>,
     pub derived_recipe_slugs: Vec<String>,
     pub windowed_products: Vec<HrrrWindowedProduct>,
-    #[serde(default)]
-    pub thermo_path_mode: ThermoPathMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +76,8 @@ pub struct HrrrNonEcapeHourReport {
     pub out_dir: PathBuf,
     pub cache_root: PathBuf,
     pub use_cache: bool,
+    #[serde(default)]
+    pub source_mode: ProductSourceMode,
     /// Canonical (latest-attempt) run manifest path — stable across
     /// reruns and therefore clobberable.
     pub publication_manifest_path: PathBuf,
@@ -143,16 +146,24 @@ pub fn run_hrrr_non_ecape_hour(
     } else {
         plan_derived_recipes(&normalized.derived_recipe_slugs)?
     };
-    let (derived_compute_recipes, derived_native_routes) = if derived_recipes.is_empty() {
-        (Vec::new(), Vec::new())
+    let derived_routes = if derived_recipes.is_empty() {
+        None
     } else {
-        plan_native_thermo_routes(ModelId::Hrrr, &derived_recipes, request.thermo_path_mode)?
+        Some(plan_native_thermo_routes(
+            ModelId::Hrrr,
+            &derived_recipes,
+            request.source_mode,
+        )?)
     };
 
     // Combine derived (surface+pressure pair) and direct (per-group
     // NativeAnalysis) requirements into one execution plan.
     let mut plan_builder = ExecutionPlanBuilder::new(&latest, request.forecast_hour);
-    if !derived_compute_recipes.is_empty() {
+    if derived_routes
+        .as_ref()
+        .map(|routes| !routes.compute_recipes.is_empty())
+        .unwrap_or(false)
+    {
         // Reuse the severe/ECAPE pair builder; planner dedupes when
         // direct requirements collapse onto the same sfc/prs fetches.
         let pair_plan = build_severe_execution_plan(&latest, request.forecast_hour, None, None);
@@ -169,15 +180,19 @@ pub fn run_hrrr_non_ecape_hour(
         }
     }
     let mut native_products = std::collections::BTreeSet::<String>::new();
-    for route in &derived_native_routes {
-        if native_products.insert(route.candidate.fetch_product.to_string()) {
-            let requirement =
-                BundleRequirement::new(CanonicalBundleDescriptor::NativeAnalysis, request.forecast_hour)
-                    .with_native_override(route.candidate.fetch_product);
-            plan_builder.require_with_logical_family(
-                &requirement,
-                Some(&format!("thermo-native:{}", route.candidate.fetch_product)),
-            );
+    if let Some(routes) = &derived_routes {
+        for route in &routes.native_routes {
+            if native_products.insert(route.candidate.fetch_product.to_string()) {
+                let requirement = BundleRequirement::new(
+                    CanonicalBundleDescriptor::NativeAnalysis,
+                    request.forecast_hour,
+                )
+                .with_native_override(route.candidate.fetch_product);
+                plan_builder.require_with_logical_family(
+                    &requirement,
+                    Some(&format!("thermo-native:{}", route.candidate.fetch_product)),
+                );
+            }
         }
     }
     for group in &direct_groups {
@@ -248,11 +263,12 @@ pub fn run_hrrr_non_ecape_hour(
                 cache_root: request.cache_root.clone(),
                 use_cache: request.use_cache,
                 recipe_slugs: normalized.derived_recipe_slugs.clone(),
-                thermo_path_mode: request.thermo_path_mode,
+                source_mode: request.source_mode,
             },
             derived_recipes.clone(),
         )
     });
+    let derived_latest = latest.clone();
 
     let windowed_request =
         (!normalized.windowed_products.is_empty()).then(|| HrrrWindowedBatchRequest {
@@ -279,11 +295,11 @@ pub fn run_hrrr_non_ecape_hour(
         }),
         derived_request.as_ref().map(|(lane_request, recipes)| {
             lane("derived", move || {
-                run_hrrr_derived_batch_from_loaded(
-                    lane_request,
-                    recipes,
-                    loaded_ref.expect("planner must load bundles when derived is requested"),
-                )
+                if let Some(loaded) = loaded_ref {
+                    run_hrrr_derived_batch_from_loaded(lane_request, recipes, loaded)
+                } else {
+                    run_hrrr_derived_batch_without_loaded(lane_request, recipes, &derived_latest)
+                }
             })
         }),
         windowed_request.as_ref().map(|lane_request| {
@@ -333,6 +349,7 @@ pub fn run_hrrr_non_ecape_hour(
         out_dir: request.out_dir.clone(),
         cache_root: request.cache_root.clone(),
         use_cache: request.use_cache,
+        source_mode: request.source_mode,
         publication_manifest_path: canonical_manifest_path,
         attempt_manifest_path: Some(attempt_manifest_path),
         requested: normalized,
@@ -552,7 +569,8 @@ fn apply_direct_manifest_updates(
             &direct_artifact_key(&recipe.recipe_slug),
             ArtifactPublicationState::Complete,
             Some(format!(
-                "planned_family={} fetched_family={} resolved_source={} resolved_url={}",
+                "source_route={} planned_family={} fetched_family={} resolved_source={} resolved_url={}",
+                recipe.source_route.as_str(),
                 recipe.grib_product,
                 recipe.fetched_grib_product,
                 recipe.resolved_source,
@@ -580,7 +598,9 @@ fn apply_derived_manifest_updates(
     for recipe in &report.recipes {
         let detail = if let Some(fetch_decode) = &report.shared_timing.fetch_decode {
             format!(
-                "shared_surface planned_family={} fetched_family={} resolved_source={}; shared_pressure planned_family={} fetched_family={} resolved_source={}",
+                "source_mode={} source_route={} shared_surface planned_family={} fetched_family={} resolved_source={}; shared_pressure planned_family={} fetched_family={} resolved_source={}",
+                report.source_mode.as_str(),
+                recipe.source_route.as_str(),
                 fetch_decode.surface_fetch.planned_product,
                 fetch_decode.surface_fetch.fetched_product,
                 fetch_decode.surface_fetch.resolved_source,
@@ -590,8 +610,9 @@ fn apply_derived_manifest_updates(
             )
         } else {
             format!(
-                "native_thermo_only thermo_path={:?} native_extract_ms={} native_compare_ms={}",
-                report.thermo_path_mode,
+                "source_mode={} source_route={} native_thermo_only native_extract_ms={} native_compare_ms={}",
+                report.source_mode.as_str(),
+                recipe.source_route.as_str(),
                 report.shared_timing.native_extract_ms,
                 report.shared_timing.native_compare_ms
             )
@@ -608,6 +629,18 @@ fn apply_derived_manifest_updates(
         manifest.update_artifact_input_fetch_keys(
             &derived_artifact_key(&recipe.recipe_slug),
             recipe.input_fetch_keys.clone(),
+        );
+    }
+    for blocker in &report.blockers {
+        manifest.update_artifact_state(
+            &derived_artifact_key(&blocker.recipe_slug),
+            ArtifactPublicationState::Blocked,
+            Some(format!(
+                "source_mode={} source_route={} {}",
+                report.source_mode.as_str(),
+                blocker.source_route.as_str(),
+                blocker.reason
+            )),
         );
     }
 }
@@ -781,10 +814,10 @@ mod tests {
             out_dir: PathBuf::from("C:\\temp\\proof"),
             cache_root: PathBuf::from("C:\\temp\\proof\\cache"),
             use_cache: true,
+            source_mode: ProductSourceMode::Canonical,
             direct_recipe_slugs: Vec::new(),
             derived_recipe_slugs: Vec::new(),
             windowed_products: Vec::new(),
-            thermo_path_mode: ThermoPathMode::PreferNativeExact,
         }
     }
 
@@ -859,6 +892,7 @@ mod tests {
             recipes: vec![HrrrDirectRenderedRecipe {
                 recipe_slug: "composite_reflectivity".into(),
                 title: "Composite Reflectivity".into(),
+                source_route: crate::source::ProductSourceRoute::DirectNativeExact,
                 grib_product: "nat".into(),
                 fetched_grib_product: "sfc".into(),
                 resolved_source: SourceId::Aws,
@@ -921,6 +955,7 @@ mod tests {
             recipes: vec![HrrrDerivedRenderedRecipe {
                 recipe_slug: "sbcape".into(),
                 title: "SBCAPE".into(),
+                source_route: crate::source::ProductSourceRoute::CanonicalDerived,
                 output_path: PathBuf::from("C:\\proof\\derived.png"),
                 content_identity: crate::publication::artifact_identity_from_bytes(b"derived"),
                 input_fetch_keys: vec!["derived:sfc".into(), "derived:prs".into()],
@@ -929,7 +964,8 @@ mod tests {
                     total_ms: 6,
                 },
             }],
-            thermo_path_mode: ThermoPathMode::PreferNativeExact,
+            source_mode: ProductSourceMode::Canonical,
+            blockers: Vec::new(),
             native_thermo_artifacts: Vec::new(),
             total_ms: 11,
         };
@@ -1047,6 +1083,7 @@ mod tests {
             recipes: vec![HrrrDirectRenderedRecipe {
                 recipe_slug: "500mb_height_winds".into(),
                 title: "500mb Height / Winds".into(),
+                source_route: crate::source::ProductSourceRoute::DirectNativeExact,
                 grib_product: "prs".into(),
                 fetched_grib_product: "prs".into(),
                 resolved_source: SourceId::Aws,
@@ -1111,6 +1148,7 @@ mod tests {
             recipes: vec![HrrrDerivedRenderedRecipe {
                 recipe_slug: "sbcape".into(),
                 title: "SBCAPE".into(),
+                source_route: crate::source::ProductSourceRoute::CanonicalDerived,
                 output_path: PathBuf::from(
                     "C:\\proof\\run\\rustwx_hrrr_20260415_12z_f006_conus_sbcape.png",
                 ),
@@ -1121,7 +1159,8 @@ mod tests {
                     total_ms: 1,
                 },
             }],
-            thermo_path_mode: ThermoPathMode::PreferNativeExact,
+            source_mode: ProductSourceMode::Canonical,
+            blockers: Vec::new(),
             native_thermo_artifacts: Vec::new(),
             total_ms: 5,
         };
@@ -1365,6 +1404,7 @@ mod tests {
             out_dir: PathBuf::from("C:\\proof\\bench"),
             cache_root: PathBuf::from("C:\\proof\\bench\\cache"),
             use_cache: false,
+            source_mode: ProductSourceMode::Canonical,
             publication_manifest_path: PathBuf::from("C:\\proof\\bench\\run_manifest.json"),
             attempt_manifest_path: None,
             requested: HrrrNonEcapeHourRequestedProducts {

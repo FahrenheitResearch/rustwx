@@ -35,13 +35,14 @@ use crate::severe::{
     build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
 };
 use crate::shared_context::DomainSpec;
+use crate::source::{ProductSourceMode, ProductSourceRoute};
 use crate::thermo_native::{
-    compare_native_vs_derived, crop_native_field, extract_native_thermo_field, native_candidate,
-    should_prefer_native_exact, NativeDerivedComparisonStats, NativeRoute, NativeSemantics,
-    NativeThermoCandidate, NativeThermoRecipe, ThermoPathMode,
+    crop_native_field, extract_native_thermo_field, native_candidate, NativeSemantics,
+    NativeThermoCandidate, NativeThermoRecipe,
 };
 use rustwx_models::{
-    latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
+    latest_available_run_at_forecast_hour, latest_available_run_for_products_at_forecast_hour,
+    resolve_canonical_bundle_product,
 };
 
 const OUTPUT_WIDTH: u32 = 1200;
@@ -302,7 +303,7 @@ pub struct DerivedBatchRequest {
     pub surface_product_override: Option<String>,
     pub pressure_product_override: Option<String>,
     #[serde(default)]
-    pub thermo_path_mode: ThermoPathMode,
+    pub source_mode: ProductSourceMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -317,7 +318,7 @@ pub struct HrrrDerivedBatchRequest {
     pub use_cache: bool,
     pub recipe_slugs: Vec<String>,
     #[serde(default)]
-    pub thermo_path_mode: ThermoPathMode,
+    pub source_mode: ProductSourceMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -342,6 +343,7 @@ pub struct DerivedRecipeTiming {
 pub struct DerivedRenderedRecipe {
     pub recipe_slug: String,
     pub title: String,
+    pub source_route: ProductSourceRoute,
     pub output_path: PathBuf,
     pub content_identity: ArtifactContentIdentity,
     pub input_fetch_keys: Vec<String>,
@@ -349,20 +351,21 @@ pub struct DerivedRenderedRecipe {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DerivedRecipeBlocker {
+    pub recipe_slug: String,
+    pub source_route: ProductSourceRoute,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NativeThermoArtifactReport {
     pub recipe_slug: String,
-    pub main_route: NativeRoute,
+    pub source_route: ProductSourceRoute,
     pub semantics: NativeSemantics,
     pub auto_eligible: bool,
     pub native_label: String,
     pub native_detail: String,
     pub native_fetch_product: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub native_output_path: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub comparison_json_path: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub comparison: Option<NativeDerivedComparisonStats>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -377,7 +380,9 @@ pub struct DerivedBatchReport {
     pub shared_timing: DerivedSharedTiming,
     pub recipes: Vec<DerivedRenderedRecipe>,
     #[serde(default)]
-    pub thermo_path_mode: ThermoPathMode,
+    pub source_mode: ProductSourceMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blockers: Vec<DerivedRecipeBlocker>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub native_thermo_artifacts: Vec<NativeThermoArtifactReport>,
     pub total_ms: u128,
@@ -394,7 +399,9 @@ pub struct HrrrDerivedBatchReport {
     pub shared_timing: DerivedSharedTiming,
     pub recipes: Vec<DerivedRenderedRecipe>,
     #[serde(default)]
-    pub thermo_path_mode: ThermoPathMode,
+    pub source_mode: ProductSourceMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blockers: Vec<DerivedRecipeBlocker>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub native_thermo_artifacts: Vec<NativeThermoArtifactReport>,
     pub total_ms: u128,
@@ -417,8 +424,15 @@ pub(crate) struct PlannedNativeThermoRoute {
     pub(crate) recipe: DerivedRecipe,
     pub(crate) native_recipe: NativeThermoRecipe,
     pub(crate) candidate: NativeThermoCandidate,
-    pub(crate) main_route: NativeRoute,
-    pub(crate) compare_native_vs_derived: bool,
+    pub(crate) source_route: ProductSourceRoute,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PlannedDerivedSourceRoutes {
+    pub(crate) output_recipes: Vec<DerivedRecipe>,
+    pub(crate) compute_recipes: Vec<DerivedRecipe>,
+    pub(crate) native_routes: Vec<PlannedNativeThermoRoute>,
+    pub(crate) blockers: Vec<DerivedRecipeBlocker>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -722,7 +736,7 @@ impl DerivedBatchRequest {
             recipe_slugs: request.recipe_slugs.clone(),
             surface_product_override: None,
             pressure_product_override: None,
-            thermo_path_mode: request.thermo_path_mode,
+            source_mode: request.source_mode,
         }
     }
 }
@@ -742,16 +756,22 @@ pub fn run_derived_batch(
     request: &DerivedBatchRequest,
 ) -> Result<DerivedBatchReport, Box<dyn std::error::Error>> {
     let recipes = plan_derived_recipes(&request.recipe_slugs)?;
-    let (derived_compute_recipes, native_routes) =
-        plan_native_thermo_routes(request.model, &recipes, request.thermo_path_mode)?;
-    let latest = resolve_derived_run(request, &derived_compute_recipes, &native_routes)?;
+    let planned_routes = plan_native_thermo_routes(request.model, &recipes, request.source_mode)?;
+    let latest = resolve_derived_run(
+        request,
+        &planned_routes.compute_recipes,
+        &planned_routes.native_routes,
+    )?;
+    if planned_routes.output_recipes.is_empty() {
+        return Ok(empty_derived_report(request, &latest, planned_routes.blockers));
+    }
     let plan = build_derived_execution_plan(
         &latest,
         request.forecast_hour,
         request.surface_product_override.as_deref(),
         request.pressure_product_override.as_deref(),
-        !derived_compute_recipes.is_empty(),
-        &native_routes,
+        !planned_routes.compute_recipes.is_empty(),
+        &planned_routes.native_routes,
     );
     let loaded = load_execution_plan(
         plan,
@@ -781,18 +801,24 @@ fn run_derived_batch_from_loaded_bundles(
         fs::create_dir_all(&request.cache_root)?;
     }
     let total_start = Instant::now();
-    let (derived_compute_recipes, native_routes) =
-        plan_native_thermo_routes(request.model, recipes, request.thermo_path_mode)?;
+    let planned_routes = plan_native_thermo_routes(request.model, recipes, request.source_mode)?;
+    if planned_routes.output_recipes.is_empty() {
+        return Ok(empty_derived_report(
+            request,
+            &loaded.latest,
+            planned_routes.blockers,
+        ));
+    }
     let mut computed = DerivedComputedFields::default();
     let mut fetch_decode = None;
     let mut compute_ms = 0u128;
     let mut project_ms = 0u128;
     let mut native_extract_ms = 0u128;
-    let mut native_compare_ms = 0u128;
+    let native_compare_ms = 0u128;
     let mut grid: Option<rustwx_core::LatLonGrid> = None;
     let mut projected: Option<ProjectedMap> = None;
 
-    if !derived_compute_recipes.is_empty() {
+    if !planned_routes.compute_recipes.is_empty() {
         let (surface_planned, surface_decode, pressure_planned, pressure_decode) = loaded
             .require_surface_pressure_pair()
             .map_err(|err| format!("derived surface/pressure pair unavailable: {err}"))?;
@@ -819,7 +845,7 @@ fn run_derived_batch_from_loaded_bundles(
         project_ms += project_start.elapsed().as_millis();
 
         let compute_start = Instant::now();
-        computed = compute_derived_fields_generic(surface, pressure, &derived_compute_recipes)?;
+        computed = compute_derived_fields_generic(surface, pressure, &planned_routes.compute_recipes)?;
         compute_ms += compute_start.elapsed().as_millis();
         fetch_decode = Some(build_shared_timing_for_pair(
             loaded,
@@ -841,7 +867,7 @@ fn run_derived_batch_from_loaded_bundles(
     let mut rendered_by_recipe = HashMap::<DerivedRecipe, DerivedRenderedRecipe>::new();
     let mut native_thermo_artifacts = Vec::<NativeThermoArtifactReport>::new();
 
-    for route in &native_routes {
+    for route in &planned_routes.native_routes {
         let native_planned = find_loaded_native_bundle(loaded, route.candidate.fetch_product)
             .ok_or_else(|| {
                 format!(
@@ -878,116 +904,61 @@ fn run_derived_batch_from_loaded_bundles(
             grid = Some(native_field.grid.clone());
             projected = Some(native_projected);
         }
-
-        let mut native_output_path = None;
-        let mut comparison_json_path = None;
-        let mut comparison = None;
-
-        if route.compare_native_vs_derived {
-            let comparison_start = Instant::now();
-            let stats = compare_native_vs_derived(
-                route.recipe.slug(),
-                &native_field.values,
-                derived_values_for_recipe(computed, route.recipe)?,
-            )?;
-            let compare_path = request.out_dir.join(format!(
-                "rustwx_{}_{}_{}z_f{:03}_{}_{}_native_compare.json",
-                model.as_str().replace('-', "_"),
-                request.date_yyyymmdd,
-                cycle_utc,
-                request.forecast_hour,
-                request.domain.slug,
-                route.recipe.slug()
-            ));
-            crate::publication::atomic_write_json(&compare_path, &stats)?;
-            native_compare_ms += comparison_start.elapsed().as_millis();
-            comparison_json_path = Some(compare_path);
-            comparison = Some(stats);
-
-            let sidecar_path = request.out_dir.join(format!(
-                "rustwx_{}_{}_{}z_f{:03}_{}_{}_native.png",
-                model.as_str().replace('-', "_"),
-                request.date_yyyymmdd,
-                cycle_utc,
-                request.forecast_hour,
-                request.domain.slug,
-                route.recipe.slug()
-            ));
-            let render_artifact = build_native_render_artifact(
-                route.recipe,
-                &native_field.grid,
-                projected
-                    .as_ref()
-                    .ok_or("native thermo projection missing during compare render")?,
-                date_yyyymmdd,
-                cycle_utc,
-                forecast_hour,
-                source,
-                model,
-                native_field.values.clone(),
-            )?;
-            save_png(&render_artifact.request, &sidecar_path)?;
-            native_output_path = Some(sidecar_path);
-        }
-
-        if !matches!(route.main_route, NativeRoute::Derived) {
-            let output_path = request.out_dir.join(format!(
-                "rustwx_{}_{}_{}z_f{:03}_{}_{}.png",
-                model.as_str().replace('-', "_"),
-                request.date_yyyymmdd,
-                cycle_utc,
-                request.forecast_hour,
-                request.domain.slug,
-                route.recipe.slug()
-            ));
-            let render_start = Instant::now();
-            let render_artifact = build_native_render_artifact(
-                route.recipe,
-                &native_field.grid,
-                projected
-                    .as_ref()
-                    .ok_or("native thermo projection missing during main render")?,
-                date_yyyymmdd,
-                cycle_utc,
-                forecast_hour,
-                source,
-                model,
-                native_field.values.clone(),
-            )?;
-            save_png(&render_artifact.request, &output_path)?;
-            let render_ms = render_start.elapsed().as_millis();
-            let content_identity = artifact_identity_from_path(&output_path)?;
-            rendered_by_recipe.insert(
-                route.recipe,
-                DerivedRenderedRecipe {
-                    recipe_slug: render_artifact.recipe_slug,
-                    title: render_artifact.title,
-                    output_path,
-                    content_identity,
-                    input_fetch_keys: input_fetch_keys.clone(),
-                    timing: DerivedRecipeTiming {
-                        render_ms,
-                        total_ms: render_ms,
-                    },
+        let output_path = request.out_dir.join(format!(
+            "rustwx_{}_{}_{}z_f{:03}_{}_{}.png",
+            model.as_str().replace('-', "_"),
+            request.date_yyyymmdd,
+            cycle_utc,
+            request.forecast_hour,
+            request.domain.slug,
+            route.recipe.slug()
+        ));
+        let render_start = Instant::now();
+        let render_artifact = build_native_render_artifact(
+            route.recipe,
+            &native_field.grid,
+            projected
+                .as_ref()
+                .ok_or("native thermo projection missing during main render")?,
+            date_yyyymmdd,
+            cycle_utc,
+            forecast_hour,
+            source,
+            model,
+            native_field.values.clone(),
+        )?;
+        save_png(&render_artifact.request, &output_path)?;
+        let render_ms = render_start.elapsed().as_millis();
+        let content_identity = artifact_identity_from_path(&output_path)?;
+        rendered_by_recipe.insert(
+            route.recipe,
+            DerivedRenderedRecipe {
+                recipe_slug: render_artifact.recipe_slug,
+                title: render_artifact.title,
+                source_route: route.source_route,
+                output_path,
+                content_identity,
+                input_fetch_keys: input_fetch_keys.clone(),
+                timing: DerivedRecipeTiming {
+                    render_ms,
+                    total_ms: render_ms,
                 },
-            );
-        }
+            },
+        );
 
         native_thermo_artifacts.push(NativeThermoArtifactReport {
             recipe_slug: route.recipe.slug().to_string(),
-            main_route: route.main_route,
+            source_route: route.source_route,
             semantics: route.candidate.semantics,
             auto_eligible: route.candidate.auto_eligible,
             native_label: route.candidate.label.to_string(),
             native_detail: route.candidate.detail.to_string(),
             native_fetch_product: route.candidate.fetch_product.to_string(),
-            native_output_path,
-            comparison_json_path,
-            comparison,
         });
     }
 
-    let derived_output_recipes = recipes
+    let derived_output_recipes = planned_routes
+        .output_recipes
         .iter()
         .copied()
         .filter(|recipe| !rendered_by_recipe.contains_key(recipe))
@@ -1039,6 +1010,11 @@ fn run_derived_batch_from_loaded_bundles(
                         Ok(DerivedRenderedRecipe {
                             recipe_slug: render_artifact.recipe_slug,
                             title: render_artifact.title,
+                            source_route: derived_compute_source_route(recipe, request.source_mode)
+                                .ok_or_else(|| io::Error::other(format!(
+                                    "missing compute source route for '{}'",
+                                    recipe.slug()
+                                )))?,
                             output_path,
                             content_identity,
                             input_fetch_keys: lane_fetch_keys,
@@ -1068,7 +1044,8 @@ fn run_derived_batch_from_loaded_bundles(
         }
     }
 
-    let rendered = recipes
+    let rendered = planned_routes
+        .output_recipes
         .iter()
         .map(|recipe| {
             rendered_by_recipe
@@ -1093,7 +1070,8 @@ fn run_derived_batch_from_loaded_bundles(
             native_compare_ms,
         },
         recipes: rendered,
-        thermo_path_mode: request.thermo_path_mode,
+        source_mode: request.source_mode,
+        blockers: planned_routes.blockers,
         native_thermo_artifacts,
         total_ms: total_start.elapsed().as_millis(),
     })
@@ -1112,6 +1090,17 @@ pub(crate) fn run_hrrr_derived_batch_from_loaded(
     Ok(into_hrrr_report(report))
 }
 
+pub(crate) fn run_hrrr_derived_batch_without_loaded(
+    request: &HrrrDerivedBatchRequest,
+    recipes: &[DerivedRecipe],
+    latest: &rustwx_models::LatestRun,
+) -> Result<HrrrDerivedBatchReport, Box<dyn std::error::Error>> {
+    let generic_request = DerivedBatchRequest::from_hrrr(request);
+    let planned_routes = plan_native_thermo_routes(ModelId::Hrrr, recipes, request.source_mode)?;
+    let report = empty_derived_report(&generic_request, latest, planned_routes.blockers);
+    Ok(into_hrrr_report(report))
+}
+
 fn into_hrrr_report(report: DerivedBatchReport) -> HrrrDerivedBatchReport {
     HrrrDerivedBatchReport {
         date_yyyymmdd: report.date_yyyymmdd,
@@ -1122,9 +1111,48 @@ fn into_hrrr_report(report: DerivedBatchReport) -> HrrrDerivedBatchReport {
         input_fetches: report.input_fetches,
         shared_timing: report.shared_timing,
         recipes: report.recipes,
-        thermo_path_mode: report.thermo_path_mode,
+        source_mode: report.source_mode,
+        blockers: report.blockers,
         native_thermo_artifacts: report.native_thermo_artifacts,
         total_ms: report.total_ms,
+    }
+}
+
+fn derived_compute_source_route(
+    recipe: DerivedRecipe,
+    mode: ProductSourceMode,
+) -> Option<ProductSourceRoute> {
+    match mode {
+        ProductSourceMode::Canonical => Some(ProductSourceRoute::CanonicalDerived),
+        ProductSourceMode::Fastest => cheap_fastest_route(recipe),
+    }
+}
+
+fn empty_derived_report(
+    request: &DerivedBatchRequest,
+    latest: &rustwx_models::LatestRun,
+    blockers: Vec<DerivedRecipeBlocker>,
+) -> DerivedBatchReport {
+    DerivedBatchReport {
+        model: request.model,
+        date_yyyymmdd: latest.cycle.date_yyyymmdd.clone(),
+        cycle_utc: latest.cycle.hour_utc,
+        forecast_hour: request.forecast_hour,
+        source: latest.source,
+        domain: request.domain.clone(),
+        input_fetches: Vec::new(),
+        shared_timing: DerivedSharedTiming {
+            fetch_decode: None,
+            compute_ms: 0,
+            project_ms: 0,
+            native_extract_ms: 0,
+            native_compare_ms: 0,
+        },
+        recipes: Vec::new(),
+        source_mode: request.source_mode,
+        blockers,
+        native_thermo_artifacts: Vec::new(),
+        total_ms: 0,
     }
 }
 
@@ -1146,29 +1174,6 @@ fn find_loaded_native_bundle<'a>(
         bundle.id.bundle == CanonicalBundleDescriptor::NativeAnalysis
             && bundle.fetch_key().native_product == fetch_product
     })
-}
-
-fn derived_values_for_recipe<'a>(
-    computed: &'a DerivedComputedFields,
-    recipe: DerivedRecipe,
-) -> Result<&'a Vec<f64>, Box<dyn std::error::Error>> {
-    match recipe {
-        DerivedRecipe::Sbcape => required_values(&computed.sbcape_jkg, recipe, "sbcape_jkg"),
-        DerivedRecipe::Sbcin => required_values(&computed.sbcin_jkg, recipe, "sbcin_jkg"),
-        DerivedRecipe::Sblcl => required_values(&computed.sblcl_m, recipe, "sblcl_m"),
-        DerivedRecipe::Mlcape => required_values(&computed.mlcape_jkg, recipe, "mlcape_jkg"),
-        DerivedRecipe::Mlcin => required_values(&computed.mlcin_jkg, recipe, "mlcin_jkg"),
-        DerivedRecipe::Mucape => required_values(&computed.mucape_jkg, recipe, "mucape_jkg"),
-        DerivedRecipe::Mucin => required_values(&computed.mucin_jkg, recipe, "mucin_jkg"),
-        DerivedRecipe::LiftedIndex => {
-            required_values(&computed.lifted_index_c, recipe, "lifted_index_c")
-        }
-        _ => Err(format!(
-            "recipe '{}' does not expose comparable native thermo values",
-            recipe.slug()
-        )
-        .into()),
-    }
 }
 
 fn build_native_render_artifact(
@@ -1308,64 +1313,72 @@ fn native_recipe_for_derived(recipe: DerivedRecipe) -> Option<NativeThermoRecipe
 pub(crate) fn plan_native_thermo_routes(
     model: ModelId,
     recipes: &[DerivedRecipe],
-    mode: ThermoPathMode,
-) -> Result<(Vec<DerivedRecipe>, Vec<PlannedNativeThermoRoute>), Box<dyn std::error::Error>> {
+    mode: ProductSourceMode,
+) -> Result<PlannedDerivedSourceRoutes, Box<dyn std::error::Error>> {
+    let mut output_recipes = Vec::new();
     let mut compute_recipes = Vec::new();
     let mut native_routes = Vec::new();
+    let mut blockers = Vec::new();
 
     for &recipe in recipes {
         let candidate = native_recipe_for_derived(recipe).and_then(|native_recipe| {
             native_candidate(model, native_recipe).map(|candidate| (native_recipe, candidate))
         });
-        let compare_native_vs_derived =
-            matches!(mode, ThermoPathMode::CompareNativeVsDerived) && candidate.is_some();
-        let main_route = match mode {
-            ThermoPathMode::CanonicalDerived | ThermoPathMode::CompareNativeVsDerived => {
-                NativeRoute::Derived
+
+        match mode {
+            ProductSourceMode::Canonical => {
+                output_recipes.push(recipe);
+                compute_recipes.push(recipe);
             }
-            ThermoPathMode::PreferNativeExact => {
-                if let Some((native_recipe, _)) = candidate.as_ref() {
-                    if should_prefer_native_exact(mode, model, *native_recipe) {
-                        NativeRoute::NativeExact
-                    } else {
-                        NativeRoute::Derived
+            ProductSourceMode::Fastest => {
+                if let Some((native_recipe, candidate)) = candidate {
+                    output_recipes.push(recipe);
+                    native_routes.push(PlannedNativeThermoRoute {
+                        recipe,
+                        native_recipe,
+                        source_route: native_source_route(candidate.semantics),
+                        candidate,
+                    });
+                } else if let Some(source_route) = cheap_fastest_route(recipe) {
+                    output_recipes.push(recipe);
+                    if matches!(source_route, ProductSourceRoute::CheapDerived) {
+                        compute_recipes.push(recipe);
                     }
                 } else {
-                    NativeRoute::Derived
+                    blockers.push(DerivedRecipeBlocker {
+                        recipe_slug: recipe.slug().to_string(),
+                        source_route: ProductSourceRoute::BlockedNoFastRoute,
+                        reason: format!(
+                            "recipe '{}' has no fast native/cheap route; fastest mode will not fall back to canonical-derived compute",
+                            recipe.slug()
+                        ),
+                    });
                 }
-            }
-            ThermoPathMode::NativeOnly => match candidate.as_ref() {
-                Some((_, candidate)) => match candidate.semantics {
-                    NativeSemantics::ExactEquivalent => NativeRoute::NativeExact,
-                    NativeSemantics::ProxyEquivalent => NativeRoute::NativeProxy,
-                },
-                None => {
-                    return Err(format!(
-                        "recipe '{}' has no native thermo route for --thermo-path native-only",
-                        recipe.slug()
-                    )
-                    .into());
-                }
-            },
-        };
-
-        if matches!(main_route, NativeRoute::Derived) || compare_native_vs_derived {
-            compute_recipes.push(recipe);
-        }
-        if let Some((native_recipe, candidate)) = candidate {
-            if !matches!(main_route, NativeRoute::Derived) || compare_native_vs_derived {
-                native_routes.push(PlannedNativeThermoRoute {
-                    recipe,
-                    native_recipe,
-                    candidate,
-                    main_route,
-                    compare_native_vs_derived,
-                });
             }
         }
     }
 
-    Ok((compute_recipes, native_routes))
+    Ok(PlannedDerivedSourceRoutes {
+        output_recipes,
+        compute_recipes,
+        native_routes,
+        blockers,
+    })
+}
+
+fn native_source_route(semantics: NativeSemantics) -> ProductSourceRoute {
+    match semantics {
+        NativeSemantics::ExactEquivalent => ProductSourceRoute::NativeExact,
+        NativeSemantics::ProxyEquivalent => ProductSourceRoute::NativeProxy,
+    }
+}
+
+fn cheap_fastest_route(_recipe: DerivedRecipe) -> Option<ProductSourceRoute> {
+    // The current derived kernel still routes every non-native recipe
+    // through the canonical surface+pressure pair compute path. Until a
+    // recipe can be satisfied from already-loaded native/direct inputs
+    // without forcing that pair, fastest mode blocks it explicitly.
+    None
 }
 
 fn resolve_derived_run(
@@ -1374,15 +1387,32 @@ fn resolve_derived_run(
     native_routes: &[PlannedNativeThermoRoute],
 ) -> Result<rustwx_models::LatestRun, Box<dyn std::error::Error>> {
     let needs_pair = !derived_compute_recipes.is_empty();
-    if request.cycle_override_utc.is_some() {
+    if let Some(hour_utc) = request.cycle_override_utc {
+        if !needs_pair {
+            return Ok(rustwx_models::LatestRun {
+                model: request.model,
+                cycle: rustwx_core::CycleSpec::new(request.date_yyyymmdd.clone(), hour_utc)?,
+                source: request.source,
+            });
+        }
         return resolve_thermo_pair_run(
             request.model,
             &request.date_yyyymmdd,
-            request.cycle_override_utc,
+            Some(hour_utc),
             request.forecast_hour,
             request.source,
             request.surface_product_override.as_deref(),
             request.pressure_product_override.as_deref(),
+        )
+        .map_err(Into::into);
+    }
+
+    if !needs_pair && native_routes.is_empty() {
+        return latest_available_run_at_forecast_hour(
+            request.model,
+            Some(request.source),
+            &request.date_yyyymmdd,
+            request.forecast_hour,
         )
         .map_err(Into::into);
     }
@@ -2535,60 +2565,109 @@ mod tests {
     }
 
     #[test]
-    fn prefer_native_exact_promotes_only_validated_exact_routes() {
+    fn canonical_mode_keeps_all_supported_recipes_on_canonical_path() {
         let recipes = vec![
             DerivedRecipe::Sbcape,
             DerivedRecipe::LiftedIndex,
             DerivedRecipe::BulkShear06km,
         ];
-        let (compute, native) =
-            plan_native_thermo_routes(ModelId::Hrrr, &recipes, ThermoPathMode::PreferNativeExact)
+        let planned =
+            plan_native_thermo_routes(ModelId::Hrrr, &recipes, ProductSourceMode::Canonical)
                 .unwrap();
-        assert_eq!(
-            compute,
-            vec![DerivedRecipe::LiftedIndex, DerivedRecipe::BulkShear06km]
-        );
-        assert_eq!(native.len(), 1);
-        assert_eq!(native[0].recipe, DerivedRecipe::Sbcape);
-        assert_eq!(native[0].main_route, NativeRoute::NativeExact);
+        assert_eq!(planned.output_recipes, recipes);
+        assert_eq!(planned.compute_recipes, recipes);
+        assert!(planned.native_routes.is_empty());
+        assert!(planned.blockers.is_empty());
     }
 
     #[test]
-    fn compare_mode_keeps_canonical_outputs_and_plans_native_sidecars() {
+    fn fastest_mode_uses_native_exact_and_blocks_non_fast_recipes() {
         let recipes = vec![DerivedRecipe::Sbcape, DerivedRecipe::BulkShear06km];
-        let (compute, native) = plan_native_thermo_routes(
-            ModelId::Gfs,
-            &recipes,
-            ThermoPathMode::CompareNativeVsDerived,
-        )
-        .unwrap();
-        assert_eq!(compute, recipes);
-        assert_eq!(native.len(), 1);
-        assert!(native[0].compare_native_vs_derived);
-        assert_eq!(native[0].main_route, NativeRoute::Derived);
-    }
-
-    #[test]
-    fn native_only_rejects_recipes_without_native_route() {
-        let err = plan_native_thermo_routes(
+        let planned = plan_native_thermo_routes(
             ModelId::Hrrr,
-            &[DerivedRecipe::BulkShear06km],
-            ThermoPathMode::NativeOnly,
+            &recipes,
+            ProductSourceMode::Fastest,
         )
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("no native thermo route"));
+        .unwrap();
+        assert_eq!(planned.output_recipes, vec![DerivedRecipe::Sbcape]);
+        assert!(planned.compute_recipes.is_empty());
+        assert_eq!(planned.native_routes.len(), 1);
+        assert_eq!(planned.native_routes[0].recipe, DerivedRecipe::Sbcape);
+        assert_eq!(
+            planned.native_routes[0].source_route,
+            ProductSourceRoute::NativeExact
+        );
+        assert_eq!(planned.blockers.len(), 1);
+        assert_eq!(planned.blockers[0].recipe_slug, "bulk_shear_0_6km");
+        assert_eq!(
+            planned.blockers[0].source_route,
+            ProductSourceRoute::BlockedNoFastRoute
+        );
     }
 
     #[test]
-    fn prefer_native_exact_keeps_unvalidated_gfs_candidates_derived() {
-        let (compute, native) = plan_native_thermo_routes(
+    fn fastest_mode_keeps_proxy_native_routes_when_labeled() {
+        let planned = plan_native_thermo_routes(
             ModelId::Gfs,
-            &[DerivedRecipe::Sbcape],
-            ThermoPathMode::PreferNativeExact,
+            &[DerivedRecipe::Mlcape],
+            ProductSourceMode::Fastest,
         )
         .unwrap();
-        assert_eq!(compute, vec![DerivedRecipe::Sbcape]);
-        assert!(native.is_empty());
+        assert_eq!(planned.output_recipes, vec![DerivedRecipe::Mlcape]);
+        assert_eq!(planned.native_routes.len(), 1);
+        assert_eq!(
+            planned.native_routes[0].source_route,
+            ProductSourceRoute::NativeProxy
+        );
+        assert!(planned.blockers.is_empty());
+    }
+
+    #[test]
+    fn fastest_mode_blocks_surface_only_canonical_shortcuts_until_a_true_fast_path_exists() {
+        let planned = plan_native_thermo_routes(
+            ModelId::Hrrr,
+            &[DerivedRecipe::HeatIndex2m],
+            ProductSourceMode::Fastest,
+        )
+        .unwrap();
+        assert!(planned.output_recipes.is_empty());
+        assert!(planned.native_routes.is_empty());
+        assert_eq!(planned.blockers.len(), 1);
+        assert!(planned.blockers[0]
+            .reason
+            .contains("will not fall back to canonical-derived compute"));
+    }
+
+    #[test]
+    fn cycle_pinned_fastest_native_only_run_skips_pair_resolution() {
+        let request = DerivedBatchRequest {
+            model: ModelId::Hrrr,
+            date_yyyymmdd: "20260418".to_string(),
+            cycle_override_utc: Some(12),
+            forecast_hour: 0,
+            source: SourceId::Aws,
+            domain: DomainSpec::new("midwest", (-104.0, -80.0, 34.0, 49.0)),
+            out_dir: PathBuf::from("target\\test-out"),
+            cache_root: PathBuf::from("target\\test-cache"),
+            use_cache: true,
+            recipe_slugs: vec!["sbcape".to_string()],
+            surface_product_override: None,
+            pressure_product_override: None,
+            source_mode: ProductSourceMode::Fastest,
+        };
+        let planned = plan_native_thermo_routes(
+            request.model,
+            &[DerivedRecipe::Sbcape],
+            request.source_mode,
+        )
+        .unwrap();
+
+        let latest =
+            resolve_derived_run(&request, &planned.compute_recipes, &planned.native_routes).unwrap();
+
+        assert_eq!(latest.model, ModelId::Hrrr);
+        assert_eq!(latest.cycle.date_yyyymmdd, "20260418");
+        assert_eq!(latest.cycle.hour_utc, 12);
+        assert_eq!(latest.source, SourceId::Aws);
     }
 }

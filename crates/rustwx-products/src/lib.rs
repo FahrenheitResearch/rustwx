@@ -14,6 +14,7 @@ pub mod publication_provenance;
 pub mod runtime;
 pub mod severe;
 pub mod shared_context;
+pub mod source;
 pub mod spec;
 pub mod thermo_native;
 pub mod windowed;

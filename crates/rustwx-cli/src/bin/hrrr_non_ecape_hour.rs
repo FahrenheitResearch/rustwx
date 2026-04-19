@@ -12,7 +12,7 @@ use rustwx_products::publication::{
     atomic_write_json, canonical_run_slug, publish_failure_manifest,
 };
 use rustwx_products::shared_context::DomainSpec;
-use rustwx_products::thermo_native::ThermoPathMode;
+use rustwx_products::source::ProductSourceMode;
 use rustwx_products::windowed::HrrrWindowedProduct;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -83,25 +83,21 @@ struct Args {
         help = "Disable caches for an honest cold-run ingest benchmark"
     )]
     no_cache: bool,
-    #[arg(long, value_enum, default_value_t = ThermoPathArg::PreferNativeExact)]
-    thermo_path: ThermoPathArg,
+    #[arg(long = "source-mode", alias = "thermo-path", value_enum, default_value_t = SourceModeArg::Canonical)]
+    source_mode: SourceModeArg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum ThermoPathArg {
-    CanonicalDerived,
-    PreferNativeExact,
-    CompareNativeVsDerived,
-    NativeOnly,
+enum SourceModeArg {
+    Canonical,
+    Fastest,
 }
 
-impl From<ThermoPathArg> for ThermoPathMode {
-    fn from(value: ThermoPathArg) -> Self {
+impl From<SourceModeArg> for ProductSourceMode {
+    fn from(value: SourceModeArg) -> Self {
         match value {
-            ThermoPathArg::CanonicalDerived => Self::CanonicalDerived,
-            ThermoPathArg::PreferNativeExact => Self::PreferNativeExact,
-            ThermoPathArg::CompareNativeVsDerived => Self::CompareNativeVsDerived,
-            ThermoPathArg::NativeOnly => Self::NativeOnly,
+            SourceModeArg::Canonical => Self::Canonical,
+            SourceModeArg::Fastest => Self::Fastest,
         }
     }
 }
@@ -158,7 +154,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         direct_recipe_slugs: args.direct_recipes.clone(),
         derived_recipe_slugs: args.derived_recipes.clone(),
         windowed_products: args.windowed_products.iter().copied().map(Into::into).collect(),
-        thermo_path_mode: args.thermo_path.into(),
+        source_mode: args.source_mode.into(),
     };
     let report = run_hrrr_non_ecape_hour(&request)?;
     let report_path = args.out_dir.join(format!(
@@ -175,6 +171,19 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("blocked windowed products:");
             for blocker in &windowed.blockers {
                 eprintln!("  {}: {}", blocker.product.slug(), blocker.reason);
+            }
+        }
+    }
+    if let Some(derived) = &report.derived {
+        if !derived.blockers.is_empty() {
+            eprintln!("blocked derived products:");
+            for blocker in &derived.blockers {
+                eprintln!(
+                    "  {} [{}]: {}",
+                    blocker.recipe_slug,
+                    blocker.source_route.as_str(),
+                    blocker.reason
+                );
             }
         }
     }

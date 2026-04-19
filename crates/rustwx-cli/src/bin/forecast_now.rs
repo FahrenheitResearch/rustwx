@@ -36,7 +36,7 @@ use rustwx_products::hrrr::{HrrrBatchProduct, HrrrBatchRequest, run_hrrr_batch};
 use rustwx_products::non_ecape::{HrrrNonEcapeHourRequest, run_hrrr_non_ecape_hour};
 use rustwx_products::severe::{SevereBatchRequest, run_severe_batch};
 use rustwx_products::shared_context::DomainSpec;
-use rustwx_products::thermo_native::ThermoPathMode;
+use rustwx_products::source::ProductSourceMode;
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -114,26 +114,22 @@ struct Args {
     #[arg(long, default_value_t = false)]
     all_supported: bool,
 
-    /// Thermodynamic routing mode for the derived lane.
-    #[arg(long, value_enum, default_value_t = ThermoPathArg::PreferNativeExact)]
-    thermo_path: ThermoPathArg,
+    /// Product source mode for derived/non-ECAPE execution.
+    #[arg(long = "source-mode", alias = "thermo-path", value_enum, default_value_t = SourceModeArg::Canonical)]
+    source_mode: SourceModeArg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum ThermoPathArg {
-    CanonicalDerived,
-    PreferNativeExact,
-    CompareNativeVsDerived,
-    NativeOnly,
+enum SourceModeArg {
+    Canonical,
+    Fastest,
 }
 
-impl From<ThermoPathArg> for ThermoPathMode {
-    fn from(value: ThermoPathArg) -> Self {
+impl From<SourceModeArg> for ProductSourceMode {
+    fn from(value: SourceModeArg) -> Self {
         match value {
-            ThermoPathArg::CanonicalDerived => Self::CanonicalDerived,
-            ThermoPathArg::PreferNativeExact => Self::PreferNativeExact,
-            ThermoPathArg::CompareNativeVsDerived => Self::CompareNativeVsDerived,
-            ThermoPathArg::NativeOnly => Self::NativeOnly,
+            SourceModeArg::Canonical => Self::Canonical,
+            SourceModeArg::Fastest => Self::Fastest,
         }
     }
 }
@@ -955,7 +951,7 @@ fn run_derived_lane(
         recipe_slugs: recipes.to_vec(),
         surface_product_override: None,
         pressure_product_override: None,
-        thermo_path_mode: args.thermo_path.into(),
+        source_mode: args.source_mode.into(),
     };
     let slug = Lane::Derived.slug();
     match run_derived_batch(&request) {
@@ -965,19 +961,33 @@ fn run_derived_lane(
                 .iter()
                 .map(|r| r.output_path.to_string_lossy().to_string())
                 .collect();
+            let blockers: Vec<String> = report
+                .blockers
+                .iter()
+                .map(|b| format!("{} [{}]: {}", b.recipe_slug, b.source_route.as_str(), b.reason))
+                .collect();
             counts.outputs += outputs.len();
-            counts.succeeded += 1;
-            println!("[ok  ] {model} f{fh:03} {slug}: {} png", outputs.len());
+            counts.blocked_recipes += blockers.len();
+            if blockers.is_empty() || !outputs.is_empty() {
+                counts.succeeded += 1;
+            } else {
+                counts.failed += 1;
+            }
+            println!(
+                "[ok  ] {model} f{fh:03} {slug}: {} png, {} blocker(s)",
+                outputs.len(),
+                blockers.len()
+            );
             lane_outcome_from_pinned(
                 pinned,
                 model,
                 fh,
                 slug,
-                true,
+                !outputs.is_empty() || blockers.is_empty(),
                 start.elapsed().as_millis(),
                 None,
                 outputs,
-                Vec::new(),
+                blockers,
             )
         }
         Err(err) => {
@@ -1122,7 +1132,7 @@ fn run_hrrr_unified(
                 Vec::new()
             },
             windowed_products: Vec::new(),
-            thermo_path_mode: args.thermo_path.into(),
+            source_mode: args.source_mode.into(),
         };
         match run_hrrr_non_ecape_hour(&request) {
             Ok(report) => {
@@ -1132,24 +1142,52 @@ fn run_hrrr_unified(
                     .iter()
                     .map(|p| p.to_string_lossy().to_string())
                     .collect();
+                let mut blockers = Vec::new();
+                if let Some(direct) = &report.direct {
+                    blockers.extend(
+                        direct
+                            .blockers
+                            .iter()
+                            .map(|b| format!("{}: {}", b.recipe_slug, b.reason)),
+                    );
+                }
+                if let Some(derived) = &report.derived {
+                    blockers.extend(derived.blockers.iter().map(|b| {
+                        format!("{} [{}]: {}", b.recipe_slug, b.source_route.as_str(), b.reason)
+                    }));
+                }
+                if let Some(windowed) = &report.windowed {
+                    blockers.extend(
+                        windowed
+                            .blockers
+                            .iter()
+                            .map(|b| format!("{}: {}", b.product.slug(), b.reason)),
+                    );
+                }
                 let dur = start.elapsed().as_millis();
                 println!(
-                    "[ok  ] hrrr f{fh:03} hrrr_non_ecape_hour: {} png in {:.2}s",
+                    "[ok  ] hrrr f{fh:03} hrrr_non_ecape_hour: {} png, {} blocker(s) in {:.2}s",
                     outputs.len(),
+                    blockers.len(),
                     dur as f64 / 1000.0
                 );
-                counts.succeeded += 1;
                 counts.outputs += outputs.len();
+                counts.blocked_recipes += blockers.len();
+                if blockers.is_empty() || !outputs.is_empty() {
+                    counts.succeeded += 1;
+                } else {
+                    counts.failed += 1;
+                }
                 outcomes.push(lane_outcome_from_pinned(
                     pinned,
                     ModelId::Hrrr,
                     fh,
                     "hrrr_non_ecape_hour",
-                    true,
+                    !outputs.is_empty() || blockers.is_empty(),
                     dur,
                     None,
                     outputs,
-                    Vec::new(),
+                    blockers,
                 ));
             }
             Err(err) => {

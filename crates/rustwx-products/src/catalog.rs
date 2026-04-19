@@ -5,10 +5,12 @@ use rustwx_models::{
 use rustwx_render::{ProductMaturity, ProductSemanticFlag};
 use serde::{Deserialize, Serialize};
 
+use crate::source::{ProductSourceRoute, direct_route_for_recipe_slug};
 use crate::spec::{
     ProductSpec, blocked_derived_product_specs, direct_product_specs, heavy_product_specs,
     supported_derived_product_specs, windowed_product_specs,
 };
+use crate::thermo_native::{NativeSemantics, native_candidate_for_slug};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -56,6 +58,8 @@ pub struct ProductTargetSupport {
     pub status: ProductTargetStatus,
     pub fetch_mode: Option<PlotRecipeFetchMode>,
     pub grib_product: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_routes: Vec<ProductSourceRoute>,
     pub blockers: Vec<String>,
 }
 
@@ -157,6 +161,7 @@ fn build_direct_entries() -> Vec<ProductCatalogEntry> {
                         status: ProductTargetStatus::Supported,
                         fetch_mode: Some(plan.fetch_mode),
                         grib_product: Some(plan.product.to_string()),
+                        source_routes: vec![direct_route_for_recipe_slug(&spec.slug)],
                         blockers: Vec::new(),
                     },
                     Err(_) => ProductTargetSupport {
@@ -165,6 +170,7 @@ fn build_direct_entries() -> Vec<ProductCatalogEntry> {
                         status: ProductTargetStatus::Blocked,
                         fetch_mode: None,
                         grib_product: None,
+                        source_routes: Vec::new(),
                         blockers: plot_recipe_fetch_blockers(&spec.slug, model.id)
                             .unwrap_or_default()
                             .into_iter()
@@ -195,35 +201,36 @@ fn build_direct_entries() -> Vec<ProductCatalogEntry> {
 }
 
 fn build_derived_entries() -> Vec<ProductCatalogEntry> {
-    let supported_models = built_in_models()
-        .iter()
-        .map(|model| ProductTargetSupport {
-            target: model.id.to_string(),
-            model: Some(model.id),
-            status: ProductTargetStatus::Supported,
-            fetch_mode: None,
-            grib_product: None,
-            blockers: Vec::new(),
-        })
-        .collect::<Vec<_>>();
-
     let mut entries = supported_derived_product_specs()
         .into_iter()
         .map(|spec| {
-            let mut runners = vec!["derived_batch".to_string()];
-            if supported_models
+            let support = built_in_models()
                 .iter()
-                .any(|target| target.model == Some(ModelId::Hrrr))
-            {
+                .map(|model| {
+                    let mut source_routes = vec![ProductSourceRoute::CanonicalDerived];
+                    if let Some(candidate) = native_candidate_for_slug(model.id, &spec.slug) {
+                        source_routes.push(match candidate.semantics {
+                            NativeSemantics::ExactEquivalent => ProductSourceRoute::NativeExact,
+                            NativeSemantics::ProxyEquivalent => ProductSourceRoute::NativeProxy,
+                        });
+                    }
+                    ProductTargetSupport {
+                        target: model.id.to_string(),
+                        model: Some(model.id),
+                        status: ProductTargetStatus::Supported,
+                        fetch_mode: None,
+                        grib_product: None,
+                        source_routes,
+                        blockers: Vec::new(),
+                    }
+                })
+                .collect::<Vec<_>>();
+            let mut runners = vec!["derived_batch".to_string()];
+            if support.iter().any(|target| target.model == Some(ModelId::Hrrr)) {
                 runners.push("hrrr_derived_batch".to_string());
                 runners.push("hrrr_non_ecape_hour".to_string());
             }
-            build_catalog_entry(
-                spec,
-                ProductCatalogStatus::Supported,
-                runners,
-                supported_models.clone(),
-            )
+            build_catalog_entry(spec, ProductCatalogStatus::Supported, runners, support)
         })
         .collect::<Vec<_>>();
 
@@ -237,6 +244,7 @@ fn build_derived_entries() -> Vec<ProductCatalogEntry> {
                 status: ProductTargetStatus::Blocked,
                 fetch_mode: None,
                 grib_product: None,
+                source_routes: Vec::new(),
                 blockers: blockers.clone(),
             })
             .collect::<Vec<_>>();
@@ -269,6 +277,7 @@ fn build_heavy_entries() -> Vec<ProductCatalogEntry> {
                             status: ProductTargetStatus::Supported,
                             fetch_mode: None,
                             grib_product: None,
+                            source_routes: vec![ProductSourceRoute::CanonicalDerived],
                             blockers: Vec::new(),
                         })
                         .collect::<Vec<_>>();
@@ -291,6 +300,7 @@ fn build_heavy_entries() -> Vec<ProductCatalogEntry> {
                             status: ProductTargetStatus::Supported,
                             fetch_mode: None,
                             grib_product: None,
+                            source_routes: vec![ProductSourceRoute::CanonicalDerived],
                             blockers: Vec::new(),
                         })
                         .collect::<Vec<_>>();
@@ -311,6 +321,7 @@ fn build_heavy_entries() -> Vec<ProductCatalogEntry> {
                         status: ProductTargetStatus::Supported,
                         fetch_mode: None,
                         grib_product: None,
+                        source_routes: vec![ProductSourceRoute::CanonicalDerived],
                         blockers: Vec::new(),
                     }],
                 ),
@@ -337,6 +348,7 @@ fn build_windowed_entries() -> Vec<ProductCatalogEntry> {
                     status: ProductTargetStatus::Supported,
                     fetch_mode: None,
                     grib_product: None,
+                    source_routes: vec![ProductSourceRoute::CheapDerived],
                     blockers: Vec::new(),
                 }],
             )
@@ -490,6 +502,15 @@ mod tests {
                 .flags
                 .contains(&rustwx_core::ProductSemanticFlag::Composite)
         );
+        let hrrr_support = precipitation_type
+            .support
+            .iter()
+            .find(|target| target.model == Some(ModelId::Hrrr))
+            .unwrap();
+        assert_eq!(
+            hrrr_support.source_routes,
+            vec![ProductSourceRoute::DirectNativeCompositeExact]
+        );
     }
 
     #[test]
@@ -549,6 +570,52 @@ mod tests {
                 .expect("derived entry should carry provenance")
                 .lineage,
             rustwx_core::ProductLineage::Derived
+        );
+        assert!(
+            entry
+                .support
+                .iter()
+                .all(|target| target.source_routes == vec![ProductSourceRoute::CanonicalDerived])
+        );
+    }
+
+    #[test]
+    fn derived_catalog_exposes_fastest_native_routes_per_model() {
+        let catalog = build_supported_products_catalog();
+        let mlcape = catalog
+            .derived
+            .iter()
+            .find(|entry| entry.slug == "mlcape")
+            .expect("catalog should expose mlcape");
+        let gfs = mlcape
+            .support
+            .iter()
+            .find(|target| target.model == Some(ModelId::Gfs))
+            .unwrap();
+        assert_eq!(
+            gfs.source_routes,
+            vec![
+                ProductSourceRoute::CanonicalDerived,
+                ProductSourceRoute::NativeProxy
+            ]
+        );
+
+        let sbcape = catalog
+            .derived
+            .iter()
+            .find(|entry| entry.slug == "sbcape")
+            .expect("catalog should expose sbcape");
+        let hrrr = sbcape
+            .support
+            .iter()
+            .find(|target| target.model == Some(ModelId::Hrrr))
+            .unwrap();
+        assert_eq!(
+            hrrr.source_routes,
+            vec![
+                ProductSourceRoute::CanonicalDerived,
+                ProductSourceRoute::NativeExact
+            ]
         );
     }
 
