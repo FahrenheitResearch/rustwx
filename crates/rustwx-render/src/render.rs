@@ -779,22 +779,6 @@ fn covered(mask: &RgbaImage, x: u32, y: u32) -> bool {
     mask.get_pixel(x, y).0[3] > 0
 }
 
-fn first_covered_y(mask: &RgbaImage, x: u32, y0: u32, y1: u32) -> Option<u32> {
-    (y0..=y1).find(|&y| covered(mask, x, y))
-}
-
-fn last_covered_y(mask: &RgbaImage, x: u32, y0: u32, y1: u32) -> Option<u32> {
-    (y0..=y1).rev().find(|&y| covered(mask, x, y))
-}
-
-fn first_covered_x(mask: &RgbaImage, y: u32, x0: u32, x1: u32) -> Option<u32> {
-    (x0..=x1).find(|&x| covered(mask, x, y))
-}
-
-fn last_covered_x(mask: &RgbaImage, y: u32, x0: u32, x1: u32) -> Option<u32> {
-    (x0..=x1).rev().find(|&x| covered(mask, x, y))
-}
-
 fn row_coverage_count(mask: &RgbaImage, y: u32, x0: u32, x1: u32) -> u32 {
     (x0..=x1).filter(|&x| covered(mask, x, y)).count() as u32
 }

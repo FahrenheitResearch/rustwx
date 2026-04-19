@@ -1,0 +1,374 @@
+﻿{
+    "started_utc":  "2026-04-19T19:20:31.0723965Z",
+    "finished_utc":  "2026-04-19T19:22:54.0997882Z",
+    "wall_clock_ms":  143027,
+    "invocation_count":  12,
+    "failed_invocation_count":  0,
+    "invocations":  [
+                        {
+                            "model":  "gfs",
+                            "forecast_hour":  0,
+                            "cycle_utc":  12,
+                            "source":  "nomads",
+                            "exit_code":  0,
+                            "duration_ms":  18898
+                        },
+                        {
+                            "model":  "hrrr",
+                            "forecast_hour":  0,
+                            "cycle_utc":  17,
+                            "source":  "nomads",
+                            "exit_code":  0,
+                            "duration_ms":  24074
+                        },
+                        {
+                            "model":  "hrrr",
+                            "forecast_hour":  3,
+                            "cycle_utc":  17,
+                            "source":  "nomads",
+                            "exit_code":  0,
+                            "duration_ms":  24067
+                        },
+                        {
+                            "model":  "hrrr",
+                            "forecast_hour":  6,
+                            "cycle_utc":  17,
+                            "source":  "nomads",
+                            "exit_code":  0,
+                            "duration_ms":  24058
+                        },
+                        {
+                            "model":  "ecmwf-open-data",
+                            "forecast_hour":  0,
+                            "cycle_utc":  0,
+                            "source":  "ecmwf",
+                            "exit_code":  0,
+                            "duration_ms":  10290
+                        },
+                        {
+                            "model":  "ecmwf-open-data",
+                            "forecast_hour":  3,
+                            "cycle_utc":  0,
+                            "source":  "ecmwf",
+                            "exit_code":  0,
+                            "duration_ms":  10275
+                        },
+                        {
+                            "model":  "gfs",
+                            "forecast_hour":  3,
+                            "cycle_utc":  12,
+                            "source":  "nomads",
+                            "exit_code":  0,
+                            "duration_ms":  17018
+                        },
+                        {
+                            "model":  "gfs",
+                            "forecast_hour":  6,
+                            "cycle_utc":  12,
+                            "source":  "nomads",
+                            "exit_code":  0,
+                            "duration_ms":  14446
+                        },
+                        {
+                            "model":  "ecmwf-open-data",
+                            "forecast_hour":  6,
+                            "cycle_utc":  0,
+                            "source":  "ecmwf",
+                            "exit_code":  0,
+                            "duration_ms":  5145
+                        },
+                        {
+                            "model":  "rrfs-a",
+                            "forecast_hour":  0,
+                            "cycle_utc":  16,
+                            "source":  "aws",
+                            "exit_code":  0,
+                            "duration_ms":  48797
+                        },
+                        {
+                            "model":  "rrfs-a",
+                            "forecast_hour":  3,
+                            "cycle_utc":  16,
+                            "source":  "aws",
+                            "exit_code":  0,
+                            "duration_ms":  98278
+                        },
+                        {
+                            "model":  "rrfs-a",
+                            "forecast_hour":  6,
+                            "cycle_utc":  16,
+                            "source":  "aws",
+                            "exit_code":  0,
+                            "duration_ms":  102848
+                        }
+                    ],
+    "timing_file_count":  12,
+    "recipe_output_count":  386,
+    "fetch_count":  15,
+    "totals_ms":  {
+                      "fetch_extract_ms":  35578,
+                      "fetch_fetch_ms":  228619,
+                      "fetch_total_ms":  35578,
+                      "request_build_ms":  37369,
+                      "project_ms":  173522,
+                      "render_state_prep_ms":  59119,
+                      "render_ms":  787586,
+                      "png_encode_ms":  5759,
+                      "file_write_ms":  1207,
+                      "recipe_total_ms":  961108,
+                      "image_background_ms":  7366,
+                      "image_barb_ms":  2136,
+                      "image_chrome_ms":  136,
+                      "image_colorbar_ms":  27,
+                      "image_contour_ms":  11440,
+                      "image_layout_ms":  0,
+                      "image_linework_ms":  30517,
+                      "image_polygon_fill_ms":  225854,
+                      "image_postprocess_ms":  58044,
+                      "image_projected_pixel_ms":  36562,
+                      "image_raster_blit_ms":  4096,
+                      "image_rasterize_ms":  110090,
+                      "image_total_ms":  633807
+                  },
+    "averages":  {
+                     "recipe_total_ms":  2489.92,
+                     "image_total_ms":  1641.99,
+                     "invocation_wall_clock_ms":  11918.95
+                 },
+    "by_model":  {
+                     "Hrrr":  {
+                                  "timing_files":  3,
+                                  "recipes":  141,
+                                  "fetches":  6,
+                                  "fetch_total_ms":  18665,
+                                  "request_build_ms":  27859,
+                                  "project_ms":  98848,
+                                  "render_state_prep_ms":  35151,
+                                  "render_ms":  392603,
+                                  "recipe_total_ms":  491451,
+                                  "image_total_ms":  303954,
+                                  "image_rasterize_ms":  63646,
+                                  "image_polygon_fill_ms":  68117,
+                                  "image_contour_ms":  6433,
+                                  "image_linework_ms":  12377,
+                                  "image_barb_ms":  634,
+                                  "image_postprocess_ms":  27913
+                              },
+                     "RrfsA":  {
+                                   "timing_files":  3,
+                                   "recipes":  66,
+                                   "fetches":  3,
+                                   "fetch_total_ms":  6778,
+                                   "request_build_ms":  2228,
+                                   "project_ms":  16993,
+                                   "render_state_prep_ms":  6406,
+                                   "render_ms":  89270,
+                                   "recipe_total_ms":  106263,
+                                   "image_total_ms":  72532,
+                                   "image_rasterize_ms":  14565,
+                                   "image_polygon_fill_ms":  31780,
+                                   "image_contour_ms":  2887,
+                                   "image_linework_ms":  2671,
+                                   "image_barb_ms":  242,
+                                   "image_postprocess_ms":  3342
+                               },
+                     "EcmwfOpenData":  {
+                                           "timing_files":  3,
+                                           "recipes":  60,
+                                           "fetches":  3,
+                                           "fetch_total_ms":  3612,
+                                           "request_build_ms":  2137,
+                                           "project_ms":  20922,
+                                           "render_state_prep_ms":  7327,
+                                           "render_ms":  111678,
+                                           "recipe_total_ms":  132600,
+                                           "image_total_ms":  95550,
+                                           "image_rasterize_ms":  12277,
+                                           "image_polygon_fill_ms":  49367,
+                                           "image_contour_ms":  986,
+                                           "image_linework_ms":  5420,
+                                           "image_barb_ms":  567,
+                                           "image_postprocess_ms":  9780
+                                       },
+                     "Gfs":  {
+                                 "timing_files":  3,
+                                 "recipes":  119,
+                                 "fetches":  3,
+                                 "fetch_total_ms":  6523,
+                                 "request_build_ms":  5145,
+                                 "project_ms":  36759,
+                                 "render_state_prep_ms":  10235,
+                                 "render_ms":  194035,
+                                 "recipe_total_ms":  230794,
+                                 "image_total_ms":  161771,
+                                 "image_rasterize_ms":  19602,
+                                 "image_polygon_fill_ms":  76590,
+                                 "image_contour_ms":  1134,
+                                 "image_linework_ms":  10049,
+                                 "image_barb_ms":  693,
+                                 "image_postprocess_ms":  17009
+                             }
+                 },
+    "slowest":  [
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  0,
+                        "recipe_slug":  "precipitation_type",
+                        "total_ms":  9613,
+                        "image_total_ms":  5929,
+                        "render_ms":  9027
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  3,
+                        "recipe_slug":  "precipitation_type",
+                        "total_ms":  8676,
+                        "image_total_ms":  4322,
+                        "render_ms":  7335
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  6,
+                        "recipe_slug":  "precipitation_type",
+                        "total_ms":  8201,
+                        "image_total_ms":  3962,
+                        "render_ms":  6613
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  3,
+                        "recipe_slug":  "700mb_rh_height_winds",
+                        "total_ms":  7470,
+                        "image_total_ms":  4443,
+                        "render_ms":  6064
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  3,
+                        "recipe_slug":  "700mb_height_winds",
+                        "total_ms":  7265,
+                        "image_total_ms":  4580,
+                        "render_ms":  6016
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  6,
+                        "recipe_slug":  "300mb_temperature_height_winds",
+                        "total_ms":  7238,
+                        "image_total_ms":  4032,
+                        "render_ms":  5594
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  3,
+                        "recipe_slug":  "300mb_temperature_height_winds",
+                        "total_ms":  6788,
+                        "image_total_ms":  3547,
+                        "render_ms":  5425
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  6,
+                        "recipe_slug":  "700mb_temperature_height_winds",
+                        "total_ms":  6754,
+                        "image_total_ms":  3719,
+                        "render_ms":  5120
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  6,
+                        "recipe_slug":  "200mb_rh_height_winds",
+                        "total_ms":  6746,
+                        "image_total_ms":  3838,
+                        "render_ms":  5076
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  3,
+                        "recipe_slug":  "mslp_10m_winds",
+                        "total_ms":  6737,
+                        "image_total_ms":  4085,
+                        "render_ms":  5462
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  6,
+                        "recipe_slug":  "mslp_10m_winds",
+                        "total_ms":  6711,
+                        "image_total_ms":  3605,
+                        "render_ms":  5167
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  6,
+                        "recipe_slug":  "700mb_rh_height_winds",
+                        "total_ms":  6701,
+                        "image_total_ms":  3779,
+                        "render_ms":  5046
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  0,
+                        "recipe_slug":  "200mb_rh_height_winds",
+                        "total_ms":  6578,
+                        "image_total_ms":  5038,
+                        "render_ms":  6042
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  0,
+                        "recipe_slug":  "700mb_height_winds",
+                        "total_ms":  6567,
+                        "image_total_ms":  4670,
+                        "render_ms":  5948
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  3,
+                        "recipe_slug":  "700mb_temperature_height_winds",
+                        "total_ms":  6530,
+                        "image_total_ms":  3793,
+                        "render_ms":  5114
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  0,
+                        "recipe_slug":  "300mb_temperature_height_winds",
+                        "total_ms":  6501,
+                        "image_total_ms":  4607,
+                        "render_ms":  5882
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  0,
+                        "recipe_slug":  "700mb_rh_height_winds",
+                        "total_ms":  6421,
+                        "image_total_ms":  4593,
+                        "render_ms":  5843
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  3,
+                        "recipe_slug":  "200mb_rh_height_winds",
+                        "total_ms":  6416,
+                        "image_total_ms":  3643,
+                        "render_ms":  5023
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  6,
+                        "recipe_slug":  "300mb_absolute_vorticity_height_winds",
+                        "total_ms":  6365,
+                        "image_total_ms":  3916,
+                        "render_ms":  4828
+                    },
+                    {
+                        "model":  "Hrrr",
+                        "forecast_hour":  3,
+                        "recipe_slug":  "2m_temperature_10m_winds",
+                        "total_ms":  6345,
+                        "image_total_ms":  3557,
+                        "render_ms":  4930
+                    }
+                ]
+}

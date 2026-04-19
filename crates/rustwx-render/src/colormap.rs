@@ -154,12 +154,10 @@ impl LeveledColormap {
         if value < self.levels[0] {
             return self.under_color.unwrap_or(Rgba::TRANSPARENT);
         }
-        // Find interval via linear scan (fast for typical 20-100 levels)
         let n_intervals = self.levels.len() - 1;
-        for i in 0..n_intervals {
-            if value < self.levels[i + 1] {
-                return self.colors[i.min(self.colors.len() - 1)];
-            }
+        let idx = self.levels.partition_point(|level| *level <= value);
+        if idx <= n_intervals {
+            return self.colors[idx.saturating_sub(1).min(self.colors.len() - 1)];
         }
         // Value == last level or above
         if value >= self.levels[n_intervals] {

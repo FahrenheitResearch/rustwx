@@ -56,30 +56,6 @@ fn draw_disc(img: &mut RgbaImage, x: i32, y: i32, radius: i32, color: Rgba) {
     }
 }
 
-pub fn draw_line(img: &mut RgbaImage, x0: f64, y0: f64, x1: f64, y1: f64, color: Rgba, width: u32) {
-    let dx = x1 - x0;
-    let dy = y1 - y0;
-    let steps = dx.abs().max(dy.abs()).ceil() as usize;
-    if steps == 0 {
-        draw_disc(
-            img,
-            x0.round() as i32,
-            y0.round() as i32,
-            (width / 2) as i32,
-            color,
-        );
-        return;
-    }
-
-    let radius = (width as i32 - 1) / 2;
-    for step in 0..=steps {
-        let t = step as f64 / steps as f64;
-        let x = x0 + dx * t;
-        let y = y0 + dy * t;
-        draw_disc(img, x.round() as i32, y.round() as i32, radius, color);
-    }
-}
-
 fn distance_to_segment(px: f64, py: f64, x0: f64, y0: f64, x1: f64, y1: f64) -> f64 {
     let dx = x1 - x0;
     let dy = y1 - y0;
@@ -132,10 +108,6 @@ fn draw_line_aa_kernel(
     }
 }
 
-pub fn draw_line_aa(img: &mut RgbaImage, x0: f64, y0: f64, x1: f64, y1: f64, color: Rgba) {
-    draw_line_aa_kernel(img, x0, y0, x1, y1, color, 1);
-}
-
 pub fn draw_line_aa_width(
     img: &mut RgbaImage,
     x0: f64,
@@ -146,17 +118,6 @@ pub fn draw_line_aa_width(
     width: u32,
 ) {
     draw_line_aa_kernel(img, x0, y0, x1, y1, color, width.max(1));
-}
-
-pub fn draw_polyline(img: &mut RgbaImage, points: &[(f64, f64)], color: Rgba, width: u32) {
-    if points.len() < 2 {
-        return;
-    }
-    for segment in points.windows(2) {
-        let (x0, y0) = segment[0];
-        let (x1, y1) = segment[1];
-        draw_line(img, x0, y0, x1, y1, color, width);
-    }
 }
 
 pub fn draw_polyline_aa(img: &mut RgbaImage, points: &[(f64, f64)], color: Rgba, width: u32) {
@@ -267,6 +228,8 @@ pub fn fill_polygon(
     // for edges that straddle the scanline (using half-open [y_min, y_max)
     // avoids double-counting shared endpoints).
     let mut xs: Vec<f64> = Vec::with_capacity(edges.len());
+    let opaque_fill = color.a == 255;
+    let opaque_rgba = color.to_image_rgba();
     for y in y0..=y1 {
         let yf = y as f64 + 0.5;
         xs.clear();
@@ -285,8 +248,14 @@ pub fn fill_polygon(
             let xa = xs[i].max(cx0 as f64).ceil() as i32;
             let xb = xs[i + 1].min(cx1 as f64).floor() as i32;
             if xb >= xa {
-                for x in xa..=xb {
-                    blend_pixel(img, x, y, color);
+                if opaque_fill {
+                    for x in xa..=xb {
+                        img.put_pixel(x as u32, y as u32, opaque_rgba);
+                    }
+                } else {
+                    for x in xa..=xb {
+                        blend_pixel(img, x, y, color);
+                    }
                 }
             }
             i += 2;
@@ -398,7 +367,7 @@ mod tests {
     #[test]
     fn anti_aliased_line_blends_neighbor_pixels() {
         let mut img = RgbaImage::from_pixel(8, 8, image::Rgba([255, 255, 255, 255]));
-        draw_line_aa(&mut img, 1.0, 1.0, 6.0, 4.0, Rgba::BLACK);
+        draw_line_aa_width(&mut img, 1.0, 1.0, 6.0, 4.0, Rgba::BLACK, 1);
 
         let mut blended_neighbor_found = false;
         for pixel in img.pixels() {
