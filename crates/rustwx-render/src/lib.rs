@@ -31,10 +31,10 @@ pub use render::{
     render_to_png_profile as profile_render_to_png, RenderImageTiming, RenderPngTiming,
 };
 pub use request::{
-    Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, ExtendMode, Field2D,
-    GridShape, LatLonGrid, MapRenderRequest, ProductKey, ProductMaturity, ProductSemanticFlag,
-    ProductSemantics, ProjectedDomain, ProjectedExtent, ProjectedLineOverlay, ProjectedPolygonFill,
-    WindBarbLayer, WindBarbStyle,
+    ChromeScale, Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, ExtendMode,
+    Field2D, GridShape, LatLonGrid, MapRenderRequest, ProductKey, ProductMaturity,
+    ProductSemanticFlag, ProductSemantics, ProjectedDomain, ProjectedExtent,
+    ProjectedLineOverlay, ProjectedPolygonFill, WindBarbLayer, WindBarbStyle,
 };
 pub use rustwx_core::{
     Field2D as CoreField2D, GridShape as CoreGridShape, LatLonGrid as CoreLatLonGrid,
@@ -46,6 +46,9 @@ pub use solar07::{
 };
 
 use crate::color::Rgba;
+pub use crate::colormap::{
+    ColormapBuildOptions, LegendControls, LegendMode, LevelDensity, RenderDensity,
+};
 use crate::colormap::{Extend, LeveledColormap};
 use crate::overlay::{
     BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPolygon, ProjectedPolyline,
@@ -278,7 +281,13 @@ fn with_render_state_profile<T>(
     let cmap = if overlay_only {
         blank_fill_colormap()
     } else {
-        build_colormap(&request.scale)
+        build_colormap(
+            &request.scale,
+            ColormapBuildOptions {
+                render_density: request.render_density,
+                legend: request.legend,
+            },
+        )
     };
     let projected_domain = request.projected_domain.as_ref();
     let default_title = default_title(&request.field);
@@ -374,6 +383,8 @@ fn with_render_state_profile<T>(
             subtitle_left: request.subtitle_left.clone(),
             subtitle_right: request.subtitle_right.clone(),
             cbar_tick_step: request.cbar_tick_step,
+            colorbar_mode: request.legend.mode,
+            chrome_scale: request.chrome_scale,
             map_extent: projected_domain.map(|domain| MapExtent {
                 x_min: domain.extent.x_min,
                 x_max: domain.extent.x_max,
@@ -405,18 +416,19 @@ fn with_render_state_profile<T>(
     })
 }
 
-fn build_colormap(scale: &ColorScale) -> LeveledColormap {
+fn build_colormap(scale: &ColorScale, options: ColormapBuildOptions) -> LeveledColormap {
     let discrete = match scale {
         ColorScale::Solar07(preset) => preset.scale(),
         ColorScale::Discrete(scale) => scale.clone(),
     };
 
     let colors: Vec<Rgba> = discrete.colors.into_iter().map(Into::into).collect();
-    LeveledColormap::from_palette(
+    LeveledColormap::from_palette_with_options(
         &colors,
         &discrete.levels,
         discrete.extend.into(),
         discrete.mask_below,
+        options,
     )
 }
 
@@ -575,6 +587,9 @@ mod tests {
             subtitle_left: Some("HRRR 2026-04-14 20Z F00".into()),
             subtitle_right: Some("rustwx-render".into()),
             cbar_tick_step: Some(500.0),
+            render_density: RenderDensity::default(),
+            legend: LegendControls::default(),
+            chrome_scale: ChromeScale::default(),
             visual_mode: ProductVisualMode::FilledMeteorology,
             projected_domain: None,
             projected_polygons: Vec::new(),
@@ -628,6 +643,9 @@ mod tests {
             subtitle_left: None,
             subtitle_right: None,
             cbar_tick_step: Some(500.0),
+            render_density: RenderDensity::default(),
+            legend: LegendControls::default(),
+            chrome_scale: ChromeScale::default(),
             visual_mode: ProductVisualMode::FilledMeteorology,
             projected_domain: None,
             projected_polygons: Vec::new(),

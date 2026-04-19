@@ -1,4 +1,5 @@
 use crate::presentation::{LineworkRole, PolygonRole, ProductVisualMode};
+use crate::colormap::{LegendControls, RenderDensity};
 use crate::RustwxRenderError;
 use rustwx_core as core;
 use serde::{Deserialize, Serialize};
@@ -303,6 +304,29 @@ pub struct ProjectedLineOverlay {
     pub role: LineworkRole,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChromeScale {
+    Fixed(f32),
+    Auto {
+        base_width: u32,
+        base_height: u32,
+        min: f32,
+        max: f32,
+    },
+}
+
+impl Default for ChromeScale {
+    fn default() -> Self {
+        Self::Auto {
+            base_width: 1200,
+            base_height: 900,
+            min: 1.0,
+            max: 3.0,
+        }
+    }
+}
+
 /// A filled polygon in projected map coordinates. First ring is the outer
 /// boundary; additional rings punch holes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -415,6 +439,12 @@ pub struct MapRenderRequest {
     pub subtitle_right: Option<String>,
     pub cbar_tick_step: Option<f64>,
     #[serde(default)]
+    pub render_density: RenderDensity,
+    #[serde(default)]
+    pub legend: LegendControls,
+    #[serde(default)]
+    pub chrome_scale: ChromeScale,
+    #[serde(default)]
     pub visual_mode: ProductVisualMode,
     pub projected_domain: Option<ProjectedDomain>,
     /// Filled polygon basemap layers (ocean/land/lakes). Drawn BEFORE the
@@ -441,6 +471,9 @@ impl MapRenderRequest {
             subtitle_left: None,
             subtitle_right: None,
             cbar_tick_step: None,
+            render_density: RenderDensity::default(),
+            legend: LegendControls::default(),
+            chrome_scale: ChromeScale::default(),
             visual_mode: ProductVisualMode::FilledMeteorology,
             projected_domain: None,
             projected_polygons: Vec::new(),

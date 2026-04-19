@@ -6,6 +6,7 @@ use crate::overlay::{
     BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPolygon, ProjectedPolyline,
 };
 use crate::presentation::{ProductVisualMode, RenderPresentation, TitleAnchor};
+use crate::request::ChromeScale;
 use crate::rasterize;
 use crate::text;
 use image::RgbaImage;
@@ -31,6 +32,8 @@ pub struct RenderOpts {
     pub subtitle_left: Option<String>,
     pub subtitle_right: Option<String>,
     pub cbar_tick_step: Option<f64>,
+    pub colorbar_mode: crate::colormap::LegendMode,
+    pub chrome_scale: ChromeScale,
     pub map_extent: Option<MapExtent>,
     pub projected_grid: Option<ProjectedGrid>,
     /// Filled polygons (lat/lon-derived). Drawn BEFORE the data raster so the
@@ -86,6 +89,8 @@ impl Default for RenderOpts {
             subtitle_left: None,
             subtitle_right: None,
             cbar_tick_step: None,
+            colorbar_mode: crate::colormap::LegendMode::Stepped,
+            chrome_scale: ChromeScale::default(),
             map_extent: None,
             projected_grid: None,
             projected_polygons: vec![],
@@ -108,6 +113,8 @@ struct Layout {
     cbar_h: u32,
     title_y: u32,
     subtitle_y: u32,
+    text_scale: u32,
+    label_gap: u32,
 }
 
 #[derive(Clone)]
@@ -169,8 +176,10 @@ fn compute_layout(
     has_cbar: bool,
     has_title: bool,
     presentation: RenderPresentation,
+    chrome_scale: ChromeScale,
 ) -> Layout {
-    let metrics = presentation.layout;
+    let chrome_scale = resolve_chrome_scale(total_w, total_h, chrome_scale);
+    let metrics = scaled_layout_metrics(presentation.layout, chrome_scale);
     let map_x = metrics.margin_x.min(total_w.saturating_sub(1));
     let title_h = if has_title { metrics.title_h } else { 0 };
     let footer_h = if has_cbar {
@@ -192,12 +201,12 @@ fn compute_layout(
         0
     };
     let cbar_x = if has_cbar {
-        map_x
+        map_x.saturating_add(metrics.colorbar_margin_x).min(total_w.saturating_sub(1))
     } else {
         0
     };
     let cbar_w = if has_cbar {
-        map_w
+        map_w.saturating_sub(metrics.colorbar_margin_x.saturating_mul(2)).max(1)
     } else {
         0
     };
@@ -219,9 +228,49 @@ fn compute_layout(
         cbar_y,
         cbar_w,
         cbar_h,
-        title_y: 2,
-        subtitle_y: title_h.saturating_sub(18),
+        title_y: scale_u32(2, chrome_scale),
+        subtitle_y: title_h.saturating_sub(scale_u32(18, chrome_scale)),
+        text_scale: text_scale_from_chrome(chrome_scale),
+        label_gap: scale_u32(14, chrome_scale),
     }
+}
+
+fn resolve_chrome_scale(total_w: u32, total_h: u32, chrome_scale: ChromeScale) -> f32 {
+    match chrome_scale {
+        ChromeScale::Fixed(value) => value.clamp(0.5, 4.0),
+        ChromeScale::Auto {
+            base_width,
+            base_height,
+            min,
+            max,
+        } => {
+            let base_area = (base_width.max(1) as f64) * (base_height.max(1) as f64);
+            let area = (total_w.max(1) as f64) * (total_h.max(1) as f64);
+            ((area / base_area).sqrt() as f32).clamp(min, max)
+        }
+    }
+}
+
+fn scale_u32(value: u32, scale: f32) -> u32 {
+    ((value as f32) * scale).round().max(1.0) as u32
+}
+
+fn scaled_layout_metrics(
+    metrics: crate::presentation::LayoutMetrics,
+    scale: f32,
+) -> crate::presentation::LayoutMetrics {
+    crate::presentation::LayoutMetrics {
+        margin_x: scale_u32(metrics.margin_x, scale),
+        title_h: scale_u32(metrics.title_h, scale),
+        footer_h: scale_u32(metrics.footer_h, scale),
+        colorbar_h: scale_u32(metrics.colorbar_h, scale),
+        colorbar_gap: scale_u32(metrics.colorbar_gap, scale),
+        colorbar_margin_x: scale_u32(metrics.colorbar_margin_x, scale),
+    }
+}
+
+fn text_scale_from_chrome(chrome_scale: f32) -> u32 {
+    chrome_scale.round().clamp(1.0, 4.0) as u32
 }
 
 pub fn map_frame_aspect_ratio(total_w: u32, total_h: u32, has_cbar: bool, has_title: bool) -> f64 {
@@ -247,6 +296,7 @@ pub fn map_frame_aspect_ratio_for_mode(
         has_cbar,
         has_title,
         RenderPresentation::for_mode(mode),
+        ChromeScale::default(),
     );
     layout.map_w as f64 / (layout.map_h.max(1) as f64)
 }
@@ -292,6 +342,10 @@ fn pick_ticks(levels: &[f64], step: Option<f64>) -> Vec<f64> {
         v += nice;
     }
     ticks
+}
+
+fn colorbar_levels_for_ticks(cmap: &LeveledColormap) -> &[f64] {
+    cmap.legend_levels_for_display()
 }
 
 fn grid_to_pixel(i: f64, j: f64, nx: usize, ny: usize, layout: &Layout) -> (f64, f64) {
@@ -1336,6 +1390,7 @@ pub fn render_to_image_profile(
         opts.colorbar,
         has_title,
         opts.presentation,
+        opts.chrome_scale,
     );
     let layout_ms = layout_start.elapsed().as_millis();
 
@@ -1490,7 +1545,13 @@ pub fn render_to_image_profile(
     if let Some(ref t) = opts.title {
         match opts.presentation.chrome.title_anchor {
             TitleAnchor::Center => {
-                text::draw_text_centered(&mut img, t, layout.title_y as i32, title_color, 1);
+                text::draw_text_centered(
+                    &mut img,
+                    t,
+                    layout.title_y as i32,
+                    title_color,
+                    layout.text_scale,
+                );
             }
             TitleAnchor::Left => {
                 text::draw_text(
@@ -1499,7 +1560,7 @@ pub fn render_to_image_profile(
                     layout.map_x as i32,
                     layout.title_y as i32,
                     title_color,
-                    1,
+                    layout.text_scale,
                 );
             }
         }
@@ -1511,7 +1572,7 @@ pub fn render_to_image_profile(
             layout.map_x as i32,
             layout.subtitle_y as i32,
             subtitle_color,
-            1,
+            layout.text_scale,
         );
     }
     if let Some(ref t) = opts.subtitle_right {
@@ -1521,7 +1582,7 @@ pub fn render_to_image_profile(
             (layout.map_x + layout.map_w) as i32,
             layout.subtitle_y as i32,
             subtitle_color,
-            1,
+            layout.text_scale,
         );
     }
     if has_title && opts.subtitle_left.is_none() && opts.subtitle_right.is_none() {
@@ -1532,7 +1593,7 @@ pub fn render_to_image_profile(
             made_by,
             layout.subtitle_y as i32,
             Rgba::new(168, 174, 184),
-            1,
+            layout.text_scale,
         );
     }
 
@@ -1613,10 +1674,11 @@ pub fn render_to_image_profile(
             layout.cbar_y,
             layout.cbar_w,
             layout.cbar_h,
+            opts.colorbar_mode,
             opts.presentation.colorbar,
         );
-        let ticks = pick_ticks(&opts.cmap.levels, opts.cbar_tick_step);
-        let levels = &opts.cmap.levels;
+        let levels = colorbar_levels_for_ticks(&opts.cmap);
+        let ticks = pick_ticks(levels, opts.cbar_tick_step);
         if levels.len() >= 2 {
             let lo = levels[0];
             let hi = levels[levels.len() - 1];
@@ -1633,17 +1695,24 @@ pub fn render_to_image_profile(
                 );
                 // Labels sit above the tick marks; text is a muted near-black so
                 // it doesn't compete with the colorbar swatches.
-                let tick_y = layout.cbar_y.saturating_sub(14) as i32;
+                let tick_y = layout.cbar_y.saturating_sub(layout.label_gap) as i32;
                 let label_color = opts.presentation.colorbar.label_color;
                 for tick_val in &ticks {
                     let frac = (tick_val - lo) / range;
                     let px = layout.cbar_x as f64 + frac * layout.cbar_w as f64;
                     let label = text::format_tick(*tick_val);
-                    let lw = text::text_width(&label, 1) as i32;
+                    let lw = text::text_width(&label, layout.text_scale) as i32;
                     let centered_lx = (px as i32) - (lw / 2);
                     let max_lx = (img.width() as i32).saturating_sub(lw);
                     let lx = centered_lx.clamp(0, max_lx.max(0));
-                    text::draw_text(&mut img, &label, lx, tick_y, label_color, 1);
+                    text::draw_text(
+                        &mut img,
+                        &label,
+                        lx,
+                        tick_y,
+                        label_color,
+                        layout.text_scale,
+                    );
                 }
             }
         }
@@ -1713,7 +1782,7 @@ fn projected_pixel_cache_miss_count_for_tests() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::colormap::Extend;
+    use crate::colormap::{ColormapBuildOptions, Extend, LevelDensity};
 
     fn sample_cmap() -> LeveledColormap {
         LeveledColormap::from_palette(
@@ -1744,6 +1813,8 @@ mod tests {
             subtitle_left: None,
             subtitle_right: None,
             cbar_tick_step: None,
+            colorbar_mode: crate::colormap::LegendMode::Stepped,
+            chrome_scale: ChromeScale::default(),
             map_extent: Some(MapExtent {
                 x_min: 0.0,
                 x_max: 1.0,
@@ -1771,6 +1842,8 @@ mod tests {
             cbar_h: 0,
             title_y: 0,
             subtitle_y: 0,
+            text_scale: 1,
+            label_gap: 14,
         }
     }
 
@@ -1893,6 +1966,50 @@ mod tests {
         let ratio = map_frame_aspect_ratio(1200, 900, true, true);
         assert!(ratio > 1.4);
         assert!(ratio < 1.7);
+    }
+
+    #[test]
+    fn colorbar_tick_levels_follow_legend_levels_when_fill_is_densified() {
+        let cmap = LeveledColormap::from_palette_with_options(
+            &[Rgba::new(0, 0, 255), Rgba::new(255, 0, 0)],
+            &[0.0, 10.0, 20.0, 30.0, 40.0],
+            Extend::Neither,
+            None,
+            ColormapBuildOptions {
+                render_density: crate::colormap::RenderDensity::default(),
+                legend: crate::colormap::LegendControls {
+                    density: LevelDensity::default(),
+                    mode: crate::colormap::LegendMode::Stepped,
+                },
+            },
+        );
+
+        assert!(cmap.levels.len() > cmap.legend_levels.len());
+        assert_eq!(colorbar_levels_for_ticks(&cmap), cmap.legend_levels.as_slice());
+    }
+
+    #[test]
+    fn chrome_scale_grows_layout_for_larger_outputs() {
+        let base = compute_layout(
+            1200,
+            900,
+            true,
+            true,
+            RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology),
+            ChromeScale::default(),
+        );
+        let bigger = compute_layout(
+            2400,
+            1800,
+            true,
+            true,
+            RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology),
+            ChromeScale::default(),
+        );
+
+        assert!(bigger.cbar_h > base.cbar_h);
+        assert!(bigger.text_scale > base.text_scale);
+        assert!(bigger.label_gap > base.label_gap);
     }
 
     #[test]

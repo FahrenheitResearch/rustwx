@@ -1,5 +1,5 @@
 use crate::color::Rgba;
-use crate::colormap::LeveledColormap;
+use crate::colormap::{LegendMode, LeveledColormap};
 use crate::presentation::ColorbarPresentation;
 use image::RgbaImage;
 
@@ -34,18 +34,11 @@ pub fn draw_colorbar(
     y: u32,
     width: u32,
     height: u32,
+    mode: LegendMode,
     presentation: ColorbarPresentation,
 ) {
-    let legend_levels = if cmap.legend_levels.len() > 1 {
-        &cmap.legend_levels
-    } else {
-        &cmap.levels
-    };
-    let legend_colors = if !cmap.legend_colors.is_empty() {
-        &cmap.legend_colors
-    } else {
-        &cmap.colors
-    };
+    let legend_levels = cmap.legend_levels_for_display();
+    let legend_colors = cmap.legend_colors_for_display();
 
     let n_intervals = if legend_levels.len() > 1 {
         legend_levels.len() - 1
@@ -55,12 +48,34 @@ pub fn draw_colorbar(
 
     for px in x..x.saturating_add(width).min(img.width()) {
         let rel = (px - x) as f64 / width.max(1) as f64;
-        let interval = (rel * n_intervals as f64) as usize;
-        let interval = interval.min(n_intervals - 1);
-        let color = if interval < legend_colors.len() {
-            legend_colors[interval]
-        } else {
-            Rgba::TRANSPARENT
+        let color = match mode {
+            LegendMode::Stepped => {
+                let interval = (rel * n_intervals as f64) as usize;
+                let interval = interval.min(n_intervals - 1);
+                if interval < legend_colors.len() {
+                    legend_colors[interval]
+                } else {
+                    Rgba::TRANSPARENT
+                }
+            }
+            LegendMode::SmoothRamp => {
+                let pos = rel.clamp(0.0, 1.0) * (legend_colors.len().saturating_sub(1)) as f64;
+                let lo = pos.floor() as usize;
+                let hi = pos.ceil() as usize;
+                if lo == hi || hi >= legend_colors.len() {
+                    legend_colors[lo.min(legend_colors.len() - 1)]
+                } else {
+                    let t = pos - lo as f64;
+                    let a = legend_colors[lo];
+                    let b = legend_colors[hi];
+                    Rgba {
+                        r: (a.r as f64 + (b.r as f64 - a.r as f64) * t).round() as u8,
+                        g: (a.g as f64 + (b.g as f64 - a.g as f64) * t).round() as u8,
+                        b: (a.b as f64 + (b.b as f64 - a.b as f64) * t).round() as u8,
+                        a: (a.a as f64 + (b.a as f64 - a.a as f64) * t).round() as u8,
+                    }
+                }
+            }
         };
         for py in y..y.saturating_add(height).min(img.height()) {
             img.put_pixel(px, py, color.to_image_rgba());
@@ -77,22 +92,24 @@ pub fn draw_colorbar(
     } else {
         presentation.divider_color
     };
-    for i in 1..n_intervals {
-        let tick_x = x + (i as u32 * width / n_intervals as u32);
-        if tick_x < img.width() {
-            for py in (y + 1)..y_end.saturating_sub(1) {
-                // Alpha-composite onto the existing swatch so dense bars keep
-                // visible bin edges without turning into a full black grid.
-                let dst = img.get_pixel(tick_x, py).0;
-                let a = divider_color.a as f64 / 255.0;
-                let inv = 1.0 - a;
-                let blended = image::Rgba([
-                    (divider_color.r as f64 * a + dst[0] as f64 * inv).round() as u8,
-                    (divider_color.g as f64 * a + dst[1] as f64 * inv).round() as u8,
-                    (divider_color.b as f64 * a + dst[2] as f64 * inv).round() as u8,
-                    255,
-                ]);
-                img.put_pixel(tick_x, py, blended);
+    if matches!(mode, LegendMode::Stepped) {
+        for i in 1..n_intervals {
+            let tick_x = x + (i as u32 * width / n_intervals as u32);
+            if tick_x < img.width() {
+                for py in (y + 1)..y_end.saturating_sub(1) {
+                    // Alpha-composite onto the existing swatch so dense bars keep
+                    // visible bin edges without turning into a full black grid.
+                    let dst = img.get_pixel(tick_x, py).0;
+                    let a = divider_color.a as f64 / 255.0;
+                    let inv = 1.0 - a;
+                    let blended = image::Rgba([
+                        (divider_color.r as f64 * a + dst[0] as f64 * inv).round() as u8,
+                        (divider_color.g as f64 * a + dst[1] as f64 * inv).round() as u8,
+                        (divider_color.b as f64 * a + dst[2] as f64 * inv).round() as u8,
+                        255,
+                    ]);
+                    img.put_pixel(tick_x, py, blended);
+                }
             }
         }
     }

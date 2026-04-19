@@ -1,31 +1,112 @@
 use crate::color::{Rgba, lerp_rgba};
+use serde::{Deserialize, Serialize};
 
 const PALETTE_RESOLUTION_MULTIPLIER: usize = 4;
 const LEVEL_RESOLUTION_MULTIPLIER: usize = 4;
 
-fn densify_palette(palette: &[Rgba]) -> Vec<Rgba> {
-    if palette.len() <= 1 {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LevelDensity {
+    pub multiplier: usize,
+    pub min_source_level_count: usize,
+}
+
+impl Default for LevelDensity {
+    fn default() -> Self {
+        Self {
+            multiplier: 1,
+            min_source_level_count: usize::MAX,
+        }
+    }
+}
+
+impl LevelDensity {
+    pub const fn fill_default() -> Self {
+        Self {
+            multiplier: LEVEL_RESOLUTION_MULTIPLIER,
+            min_source_level_count: 5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenderDensity {
+    pub fill: LevelDensity,
+    pub palette_multiplier: usize,
+}
+
+impl Default for RenderDensity {
+    fn default() -> Self {
+        Self {
+            fill: LevelDensity::fill_default(),
+            palette_multiplier: PALETTE_RESOLUTION_MULTIPLIER,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LegendMode {
+    #[default]
+    Stepped,
+    SmoothRamp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegendControls {
+    pub density: LevelDensity,
+    pub mode: LegendMode,
+}
+
+impl Default for LegendControls {
+    fn default() -> Self {
+        Self {
+            density: LevelDensity::default(),
+            mode: LegendMode::Stepped,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColormapBuildOptions {
+    pub render_density: RenderDensity,
+    pub legend: LegendControls,
+}
+
+impl Default for ColormapBuildOptions {
+    fn default() -> Self {
+        Self {
+            render_density: RenderDensity::default(),
+            legend: LegendControls::default(),
+        }
+    }
+}
+
+fn densify_palette_with_multiplier(palette: &[Rgba], multiplier: usize) -> Vec<Rgba> {
+    if palette.len() <= 1 || multiplier <= 1 {
         return palette.to_vec();
     }
-    let dense_len = (palette.len() - 1) * PALETTE_RESOLUTION_MULTIPLIER + 1;
+    let dense_len = (palette.len() - 1) * multiplier + 1;
     lerp_rgba(palette, dense_len)
 }
 
-fn densify_levels(levels: &[f64]) -> Vec<f64> {
-    if levels.len() < 2 || levels.len() <= 4 {
+fn densify_levels_with_density(levels: &[f64], density: LevelDensity) -> Vec<f64> {
+    if levels.len() < 2
+        || density.multiplier <= 1
+        || levels.len() < density.min_source_level_count
+    {
         return levels.to_vec();
     }
 
-    let mut dense = Vec::with_capacity((levels.len() - 1) * LEVEL_RESOLUTION_MULTIPLIER + 1);
+    let mut dense = Vec::with_capacity((levels.len() - 1) * density.multiplier + 1);
     dense.push(levels[0]);
     for window in levels.windows(2) {
         let lo = window[0];
         let hi = window[1];
-        let step = (hi - lo) / LEVEL_RESOLUTION_MULTIPLIER as f64;
+        let step = (hi - lo) / density.multiplier as f64;
         if !step.is_finite() || step <= 0.0 {
             continue;
         }
-        for i in 1..=LEVEL_RESOLUTION_MULTIPLIER {
+        for i in 1..=density.multiplier {
             dense.push(lo + step * i as f64);
         }
     }
@@ -96,14 +177,15 @@ impl LeveledColormap {
     ///
     /// Samples `palette` to produce one colour per interval, matching
     /// matplotlib's behaviour with `contourf(levels=..., cmap=cmap)`.
-    pub fn from_palette(
+    pub fn from_palette_with_options(
         palette: &[Rgba],
         levels: &[f64],
         extend: Extend,
         mask_below: Option<f64>,
+        options: ColormapBuildOptions,
     ) -> Self {
-        let dense_levels = densify_levels(levels);
-        let legend_levels = levels.to_vec();
+        let dense_levels = densify_levels_with_density(levels, options.render_density.fill);
+        let legend_levels = densify_levels_with_density(levels, options.legend.density);
         let n_intervals = if dense_levels.len() > 1 {
             dense_levels.len() - 1
         } else {
@@ -124,7 +206,8 @@ impl LeveledColormap {
         // Densify the editorial palette so interval sampling has finer
         // color resolution than the raw anchor list. This keeps the
         // same overall ramp but reduces visible banding.
-        let dense_palette = densify_palette(palette);
+        let dense_palette =
+            densify_palette_with_multiplier(palette, options.render_density.palette_multiplier);
 
         // Sample the full palette for the actual contour intervals.
         let sampled: Vec<Rgba> = (0..n_intervals)
@@ -177,20 +260,52 @@ impl LeveledColormap {
             mask_below,
         }
     }
+
+    pub fn from_palette(
+        palette: &[Rgba],
+        levels: &[f64],
+        extend: Extend,
+        mask_below: Option<f64>,
+    ) -> Self {
+        Self::from_palette_with_options(
+            palette,
+            levels,
+            extend,
+            mask_below,
+            ColormapBuildOptions::default(),
+        )
+    }
+
+    pub fn legend_levels_for_display(&self) -> &[f64] {
+        if self.legend_levels.len() > 1 {
+            &self.legend_levels
+        } else {
+            &self.levels
+        }
+    }
+
+    pub fn legend_colors_for_display(&self) -> &[Rgba] {
+        if !self.legend_colors.is_empty() {
+            &self.legend_colors
+        } else {
+            &self.colors
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        LEVEL_RESOLUTION_MULTIPLIER, LeveledColormap, densify_levels, densify_palette,
+        ColormapBuildOptions, LEVEL_RESOLUTION_MULTIPLIER, LeveledColormap, LevelDensity,
+        densify_levels_with_density, densify_palette_with_multiplier,
     };
     use crate::color::Rgba;
 
     #[test]
     fn palette_densification_increases_internal_resolution_fourfold() {
         let palette = vec![Rgba::new(0, 0, 0), Rgba::new(255, 255, 255)];
-        let dense = densify_palette(&palette);
-        assert_eq!(dense.len(), 9);
+        let dense = densify_palette_with_multiplier(&palette, 4);
+        assert_eq!(dense.len(), (palette.len() - 1) * 4 + 1);
         assert_eq!(dense.first().copied(), Some(Rgba::new(0, 0, 0)));
         assert_eq!(dense.last().copied(), Some(Rgba::new(255, 255, 255)));
     }
@@ -210,11 +325,18 @@ mod tests {
         assert_eq!(cmap.colors[1], Rgba::new(255, 255, 255));
 
         let more_levels = vec![0.0, 1.0, 2.0, 3.0, 4.0];
-        let smoother = LeveledColormap::from_palette(
+        let smoother = LeveledColormap::from_palette_with_options(
             &palette,
             &more_levels,
             super::Extend::Neither,
             None,
+            ColormapBuildOptions {
+                render_density: super::RenderDensity {
+                    fill: LevelDensity::default(),
+                    palette_multiplier: 4,
+                },
+                legend: super::LegendControls::default(),
+            },
         );
         assert_eq!(smoother.colors.len(), 4);
         assert!(smoother.colors[1].r > 0 && smoother.colors[1].r < 255);
@@ -224,12 +346,31 @@ mod tests {
     #[test]
     fn level_densification_increases_visible_fill_intervals() {
         let levels = vec![0.0, 10.0, 20.0];
-        assert_eq!(densify_levels(&levels), levels);
+        assert_eq!(
+            densify_levels_with_density(&levels, LevelDensity::fill_default()),
+            levels
+        );
 
         let more_levels = vec![0.0, 10.0, 20.0, 30.0, 40.0];
-        let dense = densify_levels(&more_levels);
+        let dense = densify_levels_with_density(&more_levels, LevelDensity::fill_default());
         assert_eq!(dense.first().copied(), Some(0.0));
         assert_eq!(dense.last().copied(), Some(40.0));
         assert_eq!(dense.len(), (more_levels.len() - 1) * LEVEL_RESOLUTION_MULTIPLIER + 1);
+    }
+
+    #[test]
+    fn legend_density_defaults_to_original_levels() {
+        let palette = vec![Rgba::new(0, 0, 0), Rgba::new(255, 255, 255)];
+        let levels = vec![0.0, 10.0, 20.0, 30.0, 40.0];
+        let cmap = LeveledColormap::from_palette_with_options(
+            &palette,
+            &levels,
+            super::Extend::Neither,
+            None,
+            ColormapBuildOptions::default(),
+        );
+        assert_eq!(cmap.legend_levels, levels);
+        assert_eq!(cmap.legend_colors.len(), levels.len() - 1);
+        assert!(cmap.levels.len() > cmap.legend_levels.len());
     }
 }
