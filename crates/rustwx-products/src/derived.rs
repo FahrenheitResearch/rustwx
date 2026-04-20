@@ -38,7 +38,8 @@ use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
 };
 use crate::runtime::{
-    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, LoadedBundleTiming,
+    BundleLoaderConfig, CroppedDecodeProfile, FetchedBundleBytes, LoadedBundleSet,
+    LoadedBundleTiming,
     load_execution_plan,
 };
 use crate::severe::{
@@ -365,6 +366,33 @@ pub struct DerivedSharedTiming {
     pub native_extract_ms: u128,
     #[serde(default)]
     pub native_compare_ms: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_profile: Option<DerivedMemoryProfile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DerivedMemoryProfile {
+    pub source_grid_nx: usize,
+    pub source_grid_ny: usize,
+    pub cropped_grid_nx: usize,
+    pub cropped_grid_ny: usize,
+    pub crop_x_start: usize,
+    pub crop_x_end: usize,
+    pub crop_y_start: usize,
+    pub crop_y_end: usize,
+    pub surface_fetch_bytes_len: usize,
+    pub pressure_fetch_bytes_len: usize,
+    pub cropped_surface_decoded_bytes_estimate: usize,
+    pub cropped_pressure_decoded_bytes_estimate: usize,
+    pub cropped_decoded_total_bytes_estimate: usize,
+    pub pressure_level_count: usize,
+    pub thermo_volume_points: usize,
+    pub compute_recipe_count: usize,
+    pub needs_volume: bool,
+    pub needs_height_agl: bool,
+    pub canonical_pressure_3d_pa_bytes_estimate: usize,
+    pub canonical_height_agl_3d_bytes_estimate: usize,
+    pub canonical_shared_volume_work_bytes_estimate: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -988,6 +1016,8 @@ fn maybe_load_rrfs_cropped_pair_for_derived(
     surface_file.bytes.shrink_to_fit();
     pressure_file.bytes.clear();
     pressure_file.bytes.shrink_to_fit();
+    let surface_fetch_bytes_len = surface_file.fetched.result.bytes.len();
+    let pressure_fetch_bytes_len = pressure_file.fetched.result.bytes.len();
 
     let mut fetched = BTreeMap::new();
     fetched.insert(
@@ -1025,6 +1055,18 @@ fn maybe_load_rrfs_cropped_pair_for_derived(
             fetch_ms_total: fetch_surface_ms + fetch_pressure_ms,
             decode_surface_ms_total: decode_surface_ms,
             decode_pressure_ms_total: decode_pressure_ms,
+            cropped_decode_profile: Some(CroppedDecodeProfile {
+                source_grid_nx: surface_grid.nx,
+                source_grid_ny: surface_grid.ny,
+                crop_x_start: crop.x_start,
+                crop_x_end: crop.x_end,
+                crop_y_start: crop.y_start,
+                crop_y_end: crop.y_end,
+                cropped_grid_nx: crop.width(),
+                cropped_grid_ny: crop.height(),
+                surface_fetch_bytes_len,
+                pressure_fetch_bytes_len,
+            }),
         },
     }))
 }
@@ -1090,6 +1132,7 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
     let mut project_ms = 0u128;
     let mut native_extract_ms = 0u128;
     let native_compare_ms = 0u128;
+    let mut memory_profile = None;
     let mut grid: Option<rustwx_core::LatLonGrid> = None;
     let mut projected: Option<ProjectedMap> = None;
 
@@ -1099,6 +1142,13 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
             .map_err(|err| format!("derived surface/pressure pair unavailable: {err}"))?;
         let full_surface = &surface_decode.value;
         let full_pressure = &pressure_decode.value;
+        memory_profile = build_derived_memory_profile(
+            request.model,
+            &planned_routes.compute_recipes,
+            full_surface,
+            full_pressure,
+            loaded.timing.cropped_decode_profile,
+        );
         let owned_full_grid = full_surface.core_grid()?;
         let project_start = Instant::now();
         let full_projected = build_projected_map_from_latlon(
@@ -1404,7 +1454,6 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                 .ok_or_else(|| format!("derived renderer missed recipe '{}'", recipe.slug()))
         })
         .collect::<Result<Vec<_>, _>>()?;
-
     Ok(DerivedBatchReport {
         model: request.model,
         date_yyyymmdd: request.date_yyyymmdd.clone(),
@@ -1419,6 +1468,7 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
             project_ms,
             native_extract_ms,
             native_compare_ms,
+            memory_profile,
         },
         recipes: rendered,
         source_mode: request.source_mode,
@@ -1533,6 +1583,57 @@ fn derived_compute_source_route(
     }
 }
 
+fn build_derived_memory_profile(
+    model: ModelId,
+    compute_recipes: &[DerivedRecipe],
+    surface: &GenericSurfaceFields,
+    pressure: &GenericPressureFields,
+    cropped_profile: Option<CroppedDecodeProfile>,
+) -> Option<DerivedMemoryProfile> {
+    if model != ModelId::RrfsA {
+        return None;
+    }
+    let cropped = cropped_profile?;
+    let requirements = DerivedRequirements::from_recipes(compute_recipes);
+    let pressure_level_count = pressure.pressure_levels_hpa.len();
+    let thermo_volume_points = surface.nx * surface.ny * pressure_level_count;
+    let canonical_pressure_3d_pa_bytes_estimate = if requirements.needs_volume() {
+        thermo_volume_points * std::mem::size_of::<f64>()
+    } else {
+        0
+    };
+    let canonical_height_agl_3d_bytes_estimate = if requirements.needs_height_agl() {
+        thermo_volume_points * std::mem::size_of::<f64>()
+    } else {
+        0
+    };
+    Some(DerivedMemoryProfile {
+        source_grid_nx: cropped.source_grid_nx,
+        source_grid_ny: cropped.source_grid_ny,
+        cropped_grid_nx: cropped.cropped_grid_nx,
+        cropped_grid_ny: cropped.cropped_grid_ny,
+        crop_x_start: cropped.crop_x_start,
+        crop_x_end: cropped.crop_x_end,
+        crop_y_start: cropped.crop_y_start,
+        crop_y_end: cropped.crop_y_end,
+        surface_fetch_bytes_len: cropped.surface_fetch_bytes_len,
+        pressure_fetch_bytes_len: cropped.pressure_fetch_bytes_len,
+        cropped_surface_decoded_bytes_estimate: surface.decoded_bytes_estimate(),
+        cropped_pressure_decoded_bytes_estimate: pressure.decoded_bytes_estimate(),
+        cropped_decoded_total_bytes_estimate: surface.decoded_bytes_estimate()
+            + pressure.decoded_bytes_estimate(),
+        pressure_level_count,
+        thermo_volume_points,
+        compute_recipe_count: compute_recipes.len(),
+        needs_volume: requirements.needs_volume(),
+        needs_height_agl: requirements.needs_height_agl(),
+        canonical_pressure_3d_pa_bytes_estimate,
+        canonical_height_agl_3d_bytes_estimate,
+        canonical_shared_volume_work_bytes_estimate: canonical_pressure_3d_pa_bytes_estimate
+            + canonical_height_agl_3d_bytes_estimate,
+    })
+}
+
 fn empty_derived_report(
     request: &DerivedBatchRequest,
     latest: &rustwx_models::LatestRun,
@@ -1552,6 +1653,7 @@ fn empty_derived_report(
             project_ms: 0,
             native_extract_ms: 0,
             native_compare_ms: 0,
+            memory_profile: None,
         },
         recipes: Vec::new(),
         source_mode: request.source_mode,

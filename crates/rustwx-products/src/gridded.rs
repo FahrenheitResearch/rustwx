@@ -44,6 +44,12 @@ impl SurfaceFields {
             self.lon.iter().map(|&v| v as f32).collect(),
         )
     }
+
+    pub fn decoded_bytes_estimate(&self) -> usize {
+        let len = self.lat.len();
+        let f64_fields = 8usize;
+        len * f64_fields * std::mem::size_of::<f64>() + std::mem::size_of::<bool>()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +68,15 @@ pub struct PressureFields {
     pub u_ms_3d: Vec<f64>,
     pub v_ms_3d: Vec<f64>,
     pub gh_m_3d: Vec<f64>,
+}
+
+impl PressureFields {
+    pub fn decoded_bytes_estimate(&self) -> usize {
+        let level_count = self.pressure_levels_hpa.len();
+        let volume_len = self.temperature_c_3d.len();
+        level_count * std::mem::size_of::<f64>()
+            + volume_len * 5usize * std::mem::size_of::<f64>()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

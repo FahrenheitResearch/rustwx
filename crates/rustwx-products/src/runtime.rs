@@ -74,6 +74,21 @@ pub struct LoadedBundleTiming {
     pub fetch_ms_total: u128,
     pub decode_surface_ms_total: u128,
     pub decode_pressure_ms_total: u128,
+    pub cropped_decode_profile: Option<CroppedDecodeProfile>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CroppedDecodeProfile {
+    pub source_grid_nx: usize,
+    pub source_grid_ny: usize,
+    pub crop_x_start: usize,
+    pub crop_x_end: usize,
+    pub crop_y_start: usize,
+    pub crop_y_end: usize,
+    pub cropped_grid_nx: usize,
+    pub cropped_grid_ny: usize,
+    pub surface_fetch_bytes_len: usize,
+    pub pressure_fetch_bytes_len: usize,
 }
 
 /// Raw fetched bytes for a single physical fetch key, plus the original
@@ -432,6 +447,7 @@ pub fn load_execution_plan(
             fetch_ms_total: total_fetch_ms,
             decode_surface_ms_total,
             decode_pressure_ms_total,
+            cropped_decode_profile: None,
         },
     })
 }
