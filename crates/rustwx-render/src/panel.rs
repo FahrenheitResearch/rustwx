@@ -1,6 +1,6 @@
 use image::{GenericImage, Rgba, RgbaImage};
 
-use crate::{render_image, Color, MapRenderRequest, RustwxRenderError};
+use crate::{Color, MapRenderRequest, RustwxRenderError, render_image};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PanelPadding {

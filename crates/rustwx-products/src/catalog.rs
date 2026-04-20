@@ -226,7 +226,10 @@ fn build_derived_entries() -> Vec<ProductCatalogEntry> {
                 })
                 .collect::<Vec<_>>();
             let mut runners = vec!["derived_batch".to_string()];
-            if support.iter().any(|target| target.model == Some(ModelId::Hrrr)) {
+            if support
+                .iter()
+                .any(|target| target.model == Some(ModelId::Hrrr))
+            {
                 runners.push("hrrr_derived_batch".to_string());
                 runners.push("hrrr_non_ecape_hour".to_string());
             }

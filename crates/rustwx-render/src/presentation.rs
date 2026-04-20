@@ -305,12 +305,8 @@ mod tests {
 
     #[test]
     fn filled_meteorology_keeps_lake_linework_visible() {
-        let style =
-            RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology).linework_style(
-                LineworkRole::Lake,
-                Rgba::BLACK,
-                3,
-            );
+        let style = RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology)
+            .linework_style(LineworkRole::Lake, Rgba::BLACK, 3);
 
         assert!(style.visible);
         assert_eq!(style.width, 2);
@@ -319,12 +315,8 @@ mod tests {
 
     #[test]
     fn filled_meteorology_uses_dark_thicker_state_lines() {
-        let style =
-            RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology).linework_style(
-                LineworkRole::State,
-                Rgba::BLACK,
-                1,
-            );
+        let style = RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology)
+            .linework_style(LineworkRole::State, Rgba::BLACK, 1);
 
         assert!(style.visible);
         assert_eq!(style.width, 2);
@@ -333,12 +325,8 @@ mod tests {
 
     #[test]
     fn filled_meteorology_aligns_coast_and_state_lines() {
-        let style =
-            RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology).linework_style(
-                LineworkRole::Coast,
-                Rgba::BLACK,
-                1,
-            );
+        let style = RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology)
+            .linework_style(LineworkRole::Coast, Rgba::BLACK, 1);
 
         assert!(style.visible);
         assert_eq!(style.width, 2);

@@ -155,10 +155,13 @@ fn resolve_git_head(repo_root: &Path) -> (Option<String>, Option<String>) {
     }
     // Support `.git` files that point to a gitdir (worktrees, submodules).
     let git_dir = if git_dir.is_file() {
-        match fs::read_to_string(&git_dir)
-            .ok()
-            .and_then(|contents| contents.trim().strip_prefix("gitdir:").map(str::trim).map(PathBuf::from))
-        {
+        match fs::read_to_string(&git_dir).ok().and_then(|contents| {
+            contents
+                .trim()
+                .strip_prefix("gitdir:")
+                .map(str::trim)
+                .map(PathBuf::from)
+        }) {
             Some(redirect) => {
                 if redirect.is_absolute() {
                     redirect
@@ -223,11 +226,7 @@ fn capture_toolchain_provenance() -> ToolchainProvenance {
     } else {
         "release".to_string()
     };
-    let target_triple = format!(
-        "{}-{}",
-        std::env::consts::ARCH,
-        std::env::consts::OS
-    );
+    let target_triple = format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS);
     let rustc_version = Command::new("rustc")
         .arg("--version")
         .output()
@@ -277,10 +276,7 @@ mod tests {
 
     #[test]
     fn resolves_git_head_from_loose_ref() {
-        let root = std::env::temp_dir().join(format!(
-            "rustwx_prov_loose_{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("rustwx_prov_loose_{}", std::process::id()));
         let git = root.join(".git");
         fs::create_dir_all(git.join("refs/heads")).unwrap();
         fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
@@ -291,7 +287,10 @@ mod tests {
         .unwrap();
 
         let (sha, r) = resolve_git_head(&root);
-        assert_eq!(sha.as_deref(), Some("abcdef0123456789abcdef0123456789abcdef01"));
+        assert_eq!(
+            sha.as_deref(),
+            Some("abcdef0123456789abcdef0123456789abcdef01")
+        );
         assert_eq!(r.as_deref(), Some("refs/heads/main"));
 
         let _ = fs::remove_dir_all(root);
@@ -299,10 +298,7 @@ mod tests {
 
     #[test]
     fn resolves_git_head_from_packed_ref() {
-        let root = std::env::temp_dir().join(format!(
-            "rustwx_prov_packed_{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("rustwx_prov_packed_{}", std::process::id()));
         let git = root.join(".git");
         fs::create_dir_all(&git).unwrap();
         fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
@@ -313,7 +309,10 @@ mod tests {
         .unwrap();
 
         let (sha, r) = resolve_git_head(&root);
-        assert_eq!(sha.as_deref(), Some("feedfacefeedfacefeedfacefeedfacefeedface"));
+        assert_eq!(
+            sha.as_deref(),
+            Some("feedfacefeedfacefeedfacefeedfacefeedface")
+        );
         assert_eq!(r.as_deref(), Some("refs/heads/main"));
 
         let _ = fs::remove_dir_all(root);
@@ -321,13 +320,15 @@ mod tests {
 
     #[test]
     fn resolves_detached_head_sha() {
-        let root = std::env::temp_dir().join(format!(
-            "rustwx_prov_detached_{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rustwx_prov_detached_{}", std::process::id()));
         let git = root.join(".git");
         fs::create_dir_all(&git).unwrap();
-        fs::write(git.join("HEAD"), "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n").unwrap();
+        fs::write(
+            git.join("HEAD"),
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n",
+        )
+        .unwrap();
 
         let (sha, r) = resolve_git_head(&root);
         assert_eq!(
@@ -341,10 +342,7 @@ mod tests {
 
     #[test]
     fn missing_git_dir_yields_none() {
-        let root = std::env::temp_dir().join(format!(
-            "rustwx_prov_nogit_{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("rustwx_prov_nogit_{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
 
         let (sha, r) = resolve_git_head(&root);
@@ -356,10 +354,7 @@ mod tests {
 
     #[test]
     fn capture_build_provenance_includes_profile_and_target() {
-        let root = std::env::temp_dir().join(format!(
-            "rustwx_prov_capture_{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("rustwx_prov_capture_{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("Cargo.lock"), b"[[package]]\nname = \"demo\"\n").unwrap();
 
@@ -388,16 +383,16 @@ mod tests {
 
     #[test]
     fn workspace_root_walks_up_to_cargo_lock() {
-        let root = std::env::temp_dir().join(format!(
-            "rustwx_prov_ws_{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("rustwx_prov_ws_{}", std::process::id()));
         let deep = root.join("crates/rustwx-cli");
         fs::create_dir_all(&deep).unwrap();
         fs::write(root.join("Cargo.lock"), b"# empty\n").unwrap();
 
         let discovered = workspace_root_from_manifest_dir(deep.to_str().unwrap());
-        assert_eq!(fs::canonicalize(discovered).unwrap(), fs::canonicalize(&root).unwrap());
+        assert_eq!(
+            fs::canonicalize(discovered).unwrap(),
+            fs::canonicalize(&root).unwrap()
+        );
 
         let _ = fs::remove_dir_all(root);
     }

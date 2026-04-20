@@ -12,12 +12,10 @@
 //! does no I/O of its own beyond the optional bincode cache.
 use crate::cache::{load_bincode, store_bincode};
 use crate::windowed::{HrrrWindowedProduct, HrrrWindowedProductMetadata};
-use grib_core::grib2::{unpack_message_normalized, Grib2File, Grib2Message};
+use grib_core::grib2::{Grib2File, Grib2Message, unpack_message_normalized};
 use rustwx_calc::{max_window_fields, sum_window_fields};
 use rustwx_core::{Field2D, ProductKey};
-use rustwx_render::{
-    palette_scale, ColorScale, ExtendMode, Solar07Palette, Solar07Product,
-};
+use rustwx_render::{ColorScale, ExtendMode, Solar07Palette, Solar07Product, palette_scale};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -430,10 +428,7 @@ mod tests {
                 }),
             );
         }
-        apcp.insert(
-            2,
-            Err("hour 2 fetch failed: 404 Not Found".to_string()),
-        );
+        apcp.insert(2, Err("hour 2 fetch failed: 404 Not Found".to_string()));
 
         // Qpf24h hitting forecast_hour 3 would want hours 1..=3 — the
         // missing hour 2 has to blocker this product. Use QpfTotal

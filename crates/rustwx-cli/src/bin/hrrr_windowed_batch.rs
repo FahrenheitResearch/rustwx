@@ -157,18 +157,21 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         .with_state(ArtifactPublicationState::Blocked)
         .with_detail(blocker.reason.clone())
     }));
-    let mut run_manifest =
-        RunPublicationManifest::new("hrrr_windowed_batch", run_slug.clone(), args.out_dir.clone())
-            .with_run_metadata(
-                "hrrr",
-                report.date_yyyymmdd.clone(),
-                report.cycle_utc,
-                report.forecast_hour,
-                report.source.as_str(),
-                report.domain.slug.clone(),
-            )
-            .with_input_fetches(collect_windowed_input_fetches(&report))
-            .with_artifacts(artifacts);
+    let mut run_manifest = RunPublicationManifest::new(
+        "hrrr_windowed_batch",
+        run_slug.clone(),
+        args.out_dir.clone(),
+    )
+    .with_run_metadata(
+        "hrrr",
+        report.date_yyyymmdd.clone(),
+        report.cycle_utc,
+        report.forecast_hour,
+        report.source.as_str(),
+        report.domain.slug.clone(),
+    )
+    .with_input_fetches(collect_windowed_input_fetches(&report))
+    .with_artifacts(artifacts);
     let (canonical_manifest, attempt_manifest) =
         finalize_and_publish_run_manifest(&mut run_manifest, &args.out_dir, &run_slug)?;
 

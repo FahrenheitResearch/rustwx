@@ -1,6 +1,6 @@
 //! Port of every colormap from Solarpower07/WRF-Runner colormaps.py.
 
-use crate::color::{lerp_hex, Rgba};
+use crate::color::{Rgba, lerp_hex};
 
 // -----------------------------------------------------------------------
 // Raw anchor data (hex strings) — exact copies from colormaps.py

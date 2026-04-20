@@ -12,16 +12,16 @@ use region::RegionPreset;
 use rustwx_core::VerticalSelector;
 use rustwx_core::{CanonicalField, CycleSpec, FieldSelector, ModelId, ModelRunRequest, SourceId};
 use rustwx_io::{
-    extract_field_from_grib2, fetch_bytes, fetch_bytes_with_cache, load_cached_selected_field,
-    store_cached_selected_field, FetchRequest,
+    FetchRequest, extract_field_from_grib2, fetch_bytes, fetch_bytes_with_cache,
+    load_cached_selected_field, store_cached_selected_field,
 };
-use rustwx_models::{plot_recipe, plot_recipe_fetch_plan, ModelError, PlotRecipe};
+use rustwx_models::{ModelError, PlotRecipe, plot_recipe, plot_recipe_fetch_plan};
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_render::{
+    Color, ColorScale, ContourLayer, DiscreteColorScale, ExtendMode, MapRenderRequest,
+    ProductVisualMode, ProjectedDomain, ProjectedMap, WindBarbLayer,
     build_projected_map as build_projected_map_from_latlon, map_frame_aspect_ratio_for_mode,
-    save_png, solar07::solar07_palette, solar07::Solar07Palette, Color, ColorScale, ContourLayer,
-    DiscreteColorScale, ExtendMode, MapRenderRequest, ProductVisualMode, ProjectedDomain,
-    ProjectedMap, WindBarbLayer,
+    save_png, solar07::Solar07Palette, solar07::solar07_palette,
 };
 use serde_json::json;
 

@@ -2,9 +2,8 @@ use image::DynamicImage;
 use rustwx_core::{Field2D, LatLonGrid, ProductKey};
 pub use rustwx_render::ProjectedMap;
 use rustwx_render::{
-    draw_centered_text_line, map_frame_aspect_ratio_for_mode, render_panel_grid, Color,
-    MapRenderRequest, PanelGridLayout, PanelPadding, ProductVisualMode, ProjectedDomain,
-    Solar07Product,
+    Color, MapRenderRequest, PanelGridLayout, PanelPadding, ProductVisualMode, ProjectedDomain,
+    Solar07Product, draw_centered_text_line, map_frame_aspect_ratio_for_mode, render_panel_grid,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

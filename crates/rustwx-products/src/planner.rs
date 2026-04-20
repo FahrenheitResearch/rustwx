@@ -158,9 +158,9 @@ impl ExecutionPlan {
         bundle: CanonicalBundleDescriptor,
         forecast_hour: u16,
     ) -> Option<&PlannedBundle> {
-        self.bundles
-            .iter()
-            .find(|planned| planned.id.bundle == bundle && planned.id.forecast_hour == forecast_hour)
+        self.bundles.iter().find(|planned| {
+            planned.id.bundle == bundle && planned.id.forecast_hour == forecast_hour
+        })
     }
 
     pub fn bundles_by_family(&self, bundle: CanonicalBundleDescriptor) -> Vec<&PlannedBundle> {
@@ -226,11 +226,14 @@ impl ExecutionPlanBuilder {
         if let Some(family) = logical_family {
             alias = alias.with_logical_family(family);
         }
-        let entry = self.bundles.entry(id.clone()).or_insert_with(|| PlannedBundle {
-            id: id.clone(),
-            resolved,
-            aliases: BTreeSet::new(),
-        });
+        let entry = self
+            .bundles
+            .entry(id.clone())
+            .or_insert_with(|| PlannedBundle {
+                id: id.clone(),
+                resolved,
+                aliases: BTreeSet::new(),
+            });
         entry.aliases.insert(alias);
         id
     }
@@ -302,7 +305,8 @@ mod tests {
         // distinct CanonicalBundleIds (different bundle discriminator)
         // but a single fetch key the loader can satisfy with one HTTP
         // request.
-        let mut builder = ExecutionPlanBuilder::new(&latest_for(ModelId::Gfs, SourceId::Nomads), 12);
+        let mut builder =
+            ExecutionPlanBuilder::new(&latest_for(ModelId::Gfs, SourceId::Nomads), 12);
         let surface_id = builder.require(&BundleRequirement::new(
             CanonicalBundleDescriptor::SurfaceAnalysis,
             12,

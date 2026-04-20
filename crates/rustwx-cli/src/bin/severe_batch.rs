@@ -13,8 +13,8 @@ use rustwx_products::publication::{
     ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
     canonical_run_slug, finalize_and_publish_run_manifest, publish_failure_manifest,
 };
-use rustwx_products::shared_context::DomainSpec;
 use rustwx_products::severe::{SevereBatchRequest, run_severe_batch};
+use rustwx_products::shared_context::DomainSpec;
 
 #[derive(Debug, Parser)]
 #[command(

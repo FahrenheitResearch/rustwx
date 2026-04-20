@@ -1345,8 +1345,14 @@ mod tests {
             850,
         ))
         .unwrap();
-        let wind_message =
-            ieee_f32_message(PARAMETER_UGRD[0], 100, 85_000.0, &[12.0, 15.0], -99.0, -98.0);
+        let wind_message = ieee_f32_message(
+            PARAMETER_UGRD[0],
+            100,
+            85_000.0,
+            &[12.0, 15.0],
+            -99.0,
+            -98.0,
+        );
         assert!(wind_selector.matches(&wind_message));
 
         let temp_700 = StructuredMessageSelector::try_from(FieldSelector::isobaric(
@@ -1717,9 +1723,8 @@ mod tests {
             messages: vec![stratospheric, tropospheric],
         };
 
-        let field =
-            extract_pressure_field_from_grib2(&grib, CanonicalField::RelativeHumidity, 700)
-                .unwrap();
+        let field = extract_pressure_field_from_grib2(&grib, CanonicalField::RelativeHumidity, 700)
+            .unwrap();
 
         assert_eq!(field.values, vec![55.0, 65.0]);
     }
@@ -1727,8 +1732,14 @@ mod tests {
     #[test]
     fn extract_field_from_grib2_returns_selector_backed_field() {
         // 500 hPa is encoded as 50_000 Pa per GRIB2 Code Table 4.5 level 100.
-        let message =
-            ieee_f32_message(PARAMETER_TMP[0], 100, 50_000.0, &[255.0, 256.5], 261.0, 262.0);
+        let message = ieee_f32_message(
+            PARAMETER_TMP[0],
+            100,
+            50_000.0,
+            &[255.0, 256.5],
+            261.0,
+            262.0,
+        );
         let grib = Grib2File {
             messages: vec![message],
         };

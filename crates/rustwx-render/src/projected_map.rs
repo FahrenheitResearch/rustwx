@@ -1,9 +1,9 @@
 use std::error::Error;
 
+use crate::MapExtent;
 use crate::features::{load_styled_conus_features, load_styled_conus_polygons};
 use crate::projection::LambertConformal;
 use crate::request::{Color, ProjectedExtent, ProjectedLineOverlay, ProjectedPolygonFill};
-use crate::MapExtent;
 
 #[derive(Debug, Clone)]
 pub struct ProjectedMap {

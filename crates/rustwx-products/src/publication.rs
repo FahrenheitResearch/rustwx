@@ -195,9 +195,9 @@ impl RunPublicationManifest {
     /// Convenience for runners: capture provenance from a workspace
     /// root and attach it in one call.
     pub fn with_captured_build_provenance(self, workspace_root: &Path) -> Self {
-        self.with_build_provenance(
-            crate::publication_provenance::capture_build_provenance(workspace_root),
-        )
+        self.with_build_provenance(crate::publication_provenance::capture_build_provenance(
+            workspace_root,
+        ))
     }
 
     /// Choose a run state based on the current artifact state mix:
@@ -367,14 +367,8 @@ pub fn default_run_manifest_path(output_root: &Path, run_slug: &str) -> PathBuf 
 /// specific run that will not silently change later. Paired with the
 /// `attempt_id` stored inside the manifest body they form the
 /// immutable-attempt contract.
-pub fn attempt_run_manifest_path(
-    output_root: &Path,
-    run_slug: &str,
-    attempt_id: &str,
-) -> PathBuf {
-    output_root.join(format!(
-        "{run_slug}_run_manifest.{attempt_id}.json"
-    ))
+pub fn attempt_run_manifest_path(output_root: &Path, run_slug: &str, attempt_id: &str) -> PathBuf {
+    output_root.join(format!("{run_slug}_run_manifest.{attempt_id}.json"))
 }
 
 pub fn publish_run_manifest(
@@ -398,8 +392,7 @@ pub fn publish_run_manifest_with_attempt(
     run_slug: &str,
     manifest: &RunPublicationManifest,
 ) -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
-    let attempt_path =
-        attempt_run_manifest_path(output_root, run_slug, &manifest.attempt_id);
+    let attempt_path = attempt_run_manifest_path(output_root, run_slug, &manifest.attempt_id);
     atomic_write_json(canonical_path, manifest)?;
     atomic_write_json(&attempt_path, manifest)?;
     Ok((canonical_path.to_path_buf(), attempt_path))
@@ -559,12 +552,7 @@ pub fn fetch_identity_from_cached_result(
     fetch: &FetchRequest,
     fetched: &CachedFetchResult,
 ) -> PublishedFetchIdentity {
-    fetch_identity_from_cached_result_with_aliases(
-        planned_family,
-        Vec::new(),
-        fetch,
-        fetched,
-    )
+    fetch_identity_from_cached_result_with_aliases(planned_family, Vec::new(), fetch, fetched)
 }
 
 pub fn fetch_identity_from_cached_result_with_aliases(
@@ -843,8 +831,8 @@ mod tests {
         complete.finalize_from_artifact_states();
         assert_eq!(complete.state, RunPublicationState::Complete);
 
-        let mut partial = RunPublicationManifest::new("x", "y", PathBuf::from("z"))
-            .with_artifacts(vec![
+        let mut partial =
+            RunPublicationManifest::new("x", "y", PathBuf::from("z")).with_artifacts(vec![
                 PublishedArtifactRecord::planned("a", "a.png")
                     .with_state(ArtifactPublicationState::Complete),
                 PublishedArtifactRecord::planned("b", "b.png")
@@ -855,8 +843,8 @@ mod tests {
         assert_eq!(partial.state, RunPublicationState::Partial);
         assert_eq!(partial.detail.as_deref(), Some("1 artifact(s) blocked"));
 
-        let mut failed = RunPublicationManifest::new("x", "y", PathBuf::from("z"))
-            .with_artifacts(vec![
+        let mut failed =
+            RunPublicationManifest::new("x", "y", PathBuf::from("z")).with_artifacts(vec![
                 PublishedArtifactRecord::planned("a", "a.png")
                     .with_state(ArtifactPublicationState::Failed)
                     .with_detail("boom"),
@@ -870,10 +858,7 @@ mod tests {
 
     #[test]
     fn publish_with_attempt_writes_both_canonical_and_attempt_paths() {
-        let root = std::env::temp_dir().join(format!(
-            "rustwx_pub_attempt_{}",
-            process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("rustwx_pub_attempt_{}", process::id()));
         fs::create_dir_all(&root).unwrap();
         let slug = "demo_run";
         let canonical = default_run_manifest_path(&root, slug);
@@ -916,20 +901,12 @@ mod tests {
 
     #[test]
     fn publish_failure_manifest_writes_canonical_and_attempt_paths() {
-        let root = std::env::temp_dir().join(format!(
-            "rustwx_pub_failure_{}",
-            process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("rustwx_pub_failure_{}", process::id()));
         let _ = fs::remove_dir_all(&root);
         let slug = "rustwx_demo_failure";
-        let (canonical, attempt) = publish_failure_manifest(
-            "demo_batch",
-            slug,
-            &root,
-            slug,
-            "simulated upstream outage",
-        )
-        .unwrap();
+        let (canonical, attempt) =
+            publish_failure_manifest("demo_batch", slug, &root, slug, "simulated upstream outage")
+                .unwrap();
         assert!(canonical.exists());
         assert!(attempt.exists());
         let parsed: RunPublicationManifest =
