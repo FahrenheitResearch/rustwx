@@ -1,6 +1,7 @@
 use crate::derived::{
     HrrrDerivedBatchReport, HrrrDerivedBatchRequest, plan_derived_recipes,
-    plan_native_thermo_routes, run_hrrr_derived_batch_from_loaded,
+    plan_native_thermo_routes, prepare_shared_derived_fields,
+    run_hrrr_derived_batch_from_loaded, run_hrrr_derived_batch_from_loaded_with_precomputed,
     run_hrrr_derived_batch_without_loaded,
 };
 use crate::direct::{
@@ -26,9 +27,11 @@ use crate::windowed::{
 use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
 use rustwx_models::plot_recipe;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
 use std::time::Instant;
 
 fn default_output_width() -> u32 {
@@ -79,6 +82,8 @@ pub struct HrrrNonEcapeMultiDomainRequest {
     pub output_width: u32,
     #[serde(default = "default_output_height")]
     pub output_height: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain_jobs: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,6 +165,7 @@ struct PreparedNonEcapeHour {
     normalized: HrrrNonEcapeHourRequestedProducts,
     latest: rustwx_models::LatestRun,
     derived_recipes: Vec<crate::derived::DerivedRecipe>,
+    precomputed_derived: Option<crate::derived::PreparedSharedDerivedFields>,
     loaded: Option<crate::runtime::LoadedBundleSet>,
 }
 
@@ -181,6 +187,7 @@ pub fn run_hrrr_non_ecape_hour(
         windowed_products: request.windowed_products.clone(),
         output_width: request.output_width,
         output_height: request.output_height,
+        domain_jobs: None,
     };
     let report = run_hrrr_non_ecape_hour_multi_domain(&multi_request)?;
     let domain_report = report
@@ -215,9 +222,59 @@ pub fn run_hrrr_non_ecape_hour_multi_domain(
     validate_requested_domains(&request.domains)?;
     let total_start = Instant::now();
     let prepared = prepare_non_ecape_hour(request)?;
+    let worker_count = domain_worker_count(request.domain_jobs, request.domains.len());
     let mut domain_reports = Vec::with_capacity(request.domains.len());
-    for domain in &request.domains {
-        domain_reports.push(run_prepared_non_ecape_domain(request, &prepared, domain)?);
+    if worker_count <= 1 || request.domains.len() <= 1 {
+        for domain in &request.domains {
+            domain_reports.push(run_prepared_non_ecape_domain(request, &prepared, domain)?);
+        }
+    } else {
+        let queue = Arc::new(Mutex::new(
+            (0..request.domains.len()).collect::<VecDeque<usize>>(),
+        ));
+        let (tx, rx) =
+            mpsc::channel::<(usize, Result<HrrrNonEcapeDomainReport, String>)>();
+        let mut ordered = vec![None; request.domains.len()];
+        let request_ref = request;
+        let prepared_ref = &prepared;
+        let domains_ref = &request.domains;
+        thread::scope(|scope| {
+            for _ in 0..worker_count {
+                let queue = Arc::clone(&queue);
+                let tx = tx.clone();
+                let request_ref = request_ref;
+                let prepared_ref = prepared_ref;
+                let domains_ref = domains_ref;
+                scope.spawn(move || loop {
+                    let next = {
+                        let mut queue = queue.lock().expect("domain queue poisoned");
+                        queue.pop_front()
+                    };
+                    let Some(index) = next else {
+                        break;
+                    };
+                    let result = run_prepared_non_ecape_domain(
+                        request_ref,
+                        prepared_ref,
+                        &domains_ref[index],
+                    )
+                    .map_err(|err| err.to_string());
+                    if tx.send((index, result)).is_err() {
+                        break;
+                    }
+                });
+            }
+            drop(tx);
+            for (index, result) in rx {
+                ordered[index] = Some(result);
+            }
+        });
+        for result in ordered {
+            let report = result
+                .ok_or("domain worker dropped a result")?
+                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+            domain_reports.push(report);
+        }
     }
     Ok(HrrrNonEcapeMultiDomainReport {
         date_yyyymmdd: prepared.latest.cycle.date_yyyymmdd.clone(),
@@ -272,7 +329,7 @@ fn prepare_non_ecape_hour(
             cycle_override_utc: pinned_cycle,
             forecast_hour: request.forecast_hour,
             source: pinned_source,
-            domain: planning_domain,
+            domain: planning_domain.clone(),
             out_dir: request.out_dir.clone(),
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
@@ -356,11 +413,37 @@ fn prepare_non_ecape_hour(
             },
         )?)
     };
+    let precomputed_derived = if derived_recipes.is_empty() {
+        None
+    } else if let Some(loaded) = loaded.as_ref() {
+        let derived_request = HrrrDerivedBatchRequest {
+            date_yyyymmdd: latest.cycle.date_yyyymmdd.clone(),
+            cycle_override_utc: Some(latest.cycle.hour_utc),
+            forecast_hour: request.forecast_hour,
+            source: latest.source,
+            domain: planning_domain,
+            out_dir: request.out_dir.clone(),
+            cache_root: request.cache_root.clone(),
+            use_cache: request.use_cache,
+            recipe_slugs: normalized.derived_recipe_slugs.clone(),
+            source_mode: request.source_mode,
+            output_width: request.output_width,
+            output_height: request.output_height,
+        };
+        prepare_shared_derived_fields(
+            &crate::derived::DerivedBatchRequest::from_hrrr(&derived_request),
+            &derived_recipes,
+            loaded,
+        )?
+    } else {
+        None
+    };
 
     Ok(PreparedNonEcapeHour {
         normalized,
         latest,
         derived_recipes,
+        precomputed_derived,
         loaded,
     })
 }
@@ -431,6 +514,7 @@ fn run_prepared_non_ecape_domain(
         )
     });
     let derived_latest = prepared.latest.clone();
+    let precomputed_derived = prepared.precomputed_derived.as_ref();
 
     let windowed_request =
         (!prepared.normalized.windowed_products.is_empty()).then(|| HrrrWindowedBatchRequest {
@@ -460,7 +544,16 @@ fn run_prepared_non_ecape_domain(
         derived_request.as_ref().map(|(lane_request, recipes)| {
             lane("derived", move || {
                 if let Some(loaded) = loaded_ref {
-                    run_hrrr_derived_batch_from_loaded(lane_request, recipes, loaded)
+                    if let Some(precomputed) = precomputed_derived {
+                        run_hrrr_derived_batch_from_loaded_with_precomputed(
+                            lane_request,
+                            recipes,
+                            loaded,
+                            precomputed,
+                        )
+                    } else {
+                        run_hrrr_derived_batch_from_loaded(lane_request, recipes, loaded)
+                    }
                 } else {
                     run_hrrr_derived_batch_without_loaded(lane_request, recipes, &derived_latest)
                 }
@@ -577,6 +670,20 @@ fn normalize_requested_products_from_parts(
 
 fn should_run_lanes_concurrently(source: SourceId) -> bool {
     !matches!(source, SourceId::Nomads)
+}
+
+fn domain_worker_count(requested_jobs: Option<usize>, domain_count: usize) -> usize {
+    if domain_count <= 1 {
+        return 1;
+    }
+
+    let env_override = std::env::var("RUSTWX_DOMAIN_JOBS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0);
+    let requested = requested_jobs.or(env_override).filter(|&value| value > 0);
+    let default_jobs = 1;
+    requested.unwrap_or(default_jobs).clamp(1, domain_count)
 }
 
 fn build_summary(

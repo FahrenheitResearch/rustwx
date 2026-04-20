@@ -251,6 +251,7 @@ struct BarbStrideCacheKey {
 }
 
 type SharedBarbStrideCache = Arc<Mutex<HashMap<BarbStrideCacheKey, (usize, usize)>>>;
+type SharedProjectedMapCache = Arc<Mutex<HashMap<(u32, u32, u8), ProjectedMap>>>;
 
 impl DirectBatchRequest {
     fn from_hrrr(request: &HrrrDirectBatchRequest) -> Self {
@@ -818,6 +819,7 @@ fn render_direct_recipes(
     shared_context: Option<&dyn ProjectedMapProvider>,
 ) -> Result<Vec<DirectRenderedRecipe>, Box<dyn std::error::Error>> {
     let barb_stride_cache = Arc::new(Mutex::new(HashMap::new()));
+    let projected_map_cache = Arc::new(Mutex::new(HashMap::new()));
     let worker_count = render_worker_count(planned.len());
     if worker_count <= 1 {
         return planned
@@ -831,6 +833,7 @@ fn render_direct_recipes(
                     fetch_truth_by_actual_product,
                     shared_context,
                     &barb_stride_cache,
+                    &projected_map_cache,
                 )
             })
             .collect();
@@ -843,6 +846,7 @@ fn render_direct_recipes(
         let mut handles = Vec::new();
         for (chunk_index, chunk) in planned.chunks(chunk_size).enumerate() {
             let barb_stride_cache = Arc::clone(&barb_stride_cache);
+            let projected_map_cache = Arc::clone(&projected_map_cache);
             let start_index = chunk_index * chunk_size;
             handles.push(scope.spawn(
                 move || -> Result<Vec<(usize, DirectRenderedRecipe)>, std::io::Error> {
@@ -856,6 +860,7 @@ fn render_direct_recipes(
                             fetch_truth_by_actual_product,
                             shared_context,
                             &barb_stride_cache,
+                            &projected_map_cache,
                         )
                         .map_err(|err| {
                             std::io::Error::other(format!(
@@ -968,6 +973,17 @@ fn composite_panel_spec(slug: &str) -> Option<CompositePanelSpec> {
     }
 }
 
+fn visual_mode_cache_key(mode: ProductVisualMode) -> u8 {
+    match mode {
+        ProductVisualMode::FilledMeteorology => 0,
+        ProductVisualMode::UpperAirAnalysis => 1,
+        ProductVisualMode::OverlayAnalysis => 2,
+        ProductVisualMode::SevereDiagnostic => 3,
+        ProductVisualMode::PanelMember => 4,
+        ProductVisualMode::ComparisonPanel => 5,
+    }
+}
+
 fn render_direct_recipe(
     request: &DirectBatchRequest,
     latest: &LatestRun,
@@ -976,6 +992,7 @@ fn render_direct_recipe(
     fetch_truth_by_actual_product: &HashMap<String, DirectFetchRuntimeInfo>,
     shared_context: Option<&dyn ProjectedMapProvider>,
     barb_stride_cache: &SharedBarbStrideCache,
+    projected_map_cache: &SharedProjectedMapCache,
 ) -> Result<DirectRenderedRecipe, Box<dyn std::error::Error>> {
     let render_start = Instant::now();
     let output_path = request.out_dir.join(format!(
@@ -1014,6 +1031,7 @@ fn render_direct_recipe(
             &output_path,
             shared_context,
             barb_stride_cache,
+            projected_map_cache,
         )?
     } else {
         let filled_selector = item
@@ -1026,28 +1044,46 @@ fn render_direct_recipe(
             .ok_or_else(|| format!("missing filled selector {:?}", filled_selector))?;
 
         let project_start = Instant::now();
+        let visual_mode = visual_mode_for_direct_recipe(
+            item.recipe,
+            filled_selector,
+            should_render_overlay_only(filled_selector, item.recipe.contours.is_some()),
+        );
+        let cache_key = (
+            request.output_width,
+            request.output_height,
+            visual_mode_cache_key(visual_mode),
+        );
         let projected = if let Some(projected) = shared_context.and_then(|ctx| {
             ctx.projected_map(request.output_width, request.output_height)
                 .cloned()
         }) {
             projected
+        } else if let Some(projected) = projected_map_cache
+            .lock()
+            .expect("projected map cache poisoned")
+            .get(&cache_key)
+            .cloned()
+        {
+            projected
         } else {
-            build_projected_map(
+            let projected = build_projected_map(
                 &filled.grid.lat_deg,
                 &filled.grid.lon_deg,
                 request.domain.bounds,
                 map_frame_aspect_ratio_for_mode(
-                    visual_mode_for_direct_recipe(
-                        item.recipe,
-                        filled_selector,
-                        should_render_overlay_only(filled_selector, item.recipe.contours.is_some()),
-                    ),
+                    visual_mode,
                     request.output_width,
                     request.output_height,
                     true,
                     true,
                 ),
-            )?
+            )?;
+            projected_map_cache
+                .lock()
+                .expect("projected map cache poisoned")
+                .insert(cache_key, projected.clone());
+            projected
         };
         let project_ms = project_start.elapsed().as_millis();
 
@@ -1116,6 +1152,7 @@ fn render_direct_composite_panel(
     output_path: &std::path::Path,
     shared_context: Option<&dyn ProjectedMapProvider>,
     barb_stride_cache: &SharedBarbStrideCache,
+    projected_map_cache: &SharedProjectedMapCache,
 ) -> Result<
     (
         u128,
@@ -1139,13 +1176,25 @@ fn render_direct_composite_panel(
         .ok_or_else(|| format!("missing component selector {:?}", first_selector))?;
 
     let project_start = Instant::now();
+    let cache_key = (
+        spec.panel_width,
+        spec.panel_height,
+        visual_mode_cache_key(ProductVisualMode::PanelMember),
+    );
     let projected = if let Some(projected) = shared_context.and_then(|ctx| {
         ctx.projected_map(spec.panel_width, spec.panel_height)
             .cloned()
     }) {
         projected
+    } else if let Some(projected) = projected_map_cache
+        .lock()
+        .expect("projected map cache poisoned")
+        .get(&cache_key)
+        .cloned()
+    {
+        projected
     } else {
-        build_projected_map(
+        let projected = build_projected_map(
             &first_field.grid.lat_deg,
             &first_field.grid.lon_deg,
             request.domain.bounds,
@@ -1156,7 +1205,12 @@ fn render_direct_composite_panel(
                 true,
                 true,
             ),
-        )?
+        )?;
+        projected_map_cache
+            .lock()
+            .expect("projected map cache poisoned")
+            .insert(cache_key, projected.clone());
+        projected
     };
     let project_ms = project_start.elapsed().as_millis();
 

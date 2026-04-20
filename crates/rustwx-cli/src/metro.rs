@@ -29,7 +29,6 @@ impl MetroCropPreset {
 
 pub const MAJOR_US_CITY_PRESETS: &[MetroCropPreset] = &[
     metro("al_birmingham", "Birmingham, AL", -86.80, 33.52),
-    metro("ak_anchorage", "Anchorage, AK", -149.90, 61.22),
     metro("az_phoenix", "Phoenix, AZ", -112.07, 33.45),
     metro("ar_little_rock", "Little Rock, AR", -92.29, 34.75),
     metro("ca_los_angeles", "Los Angeles, CA", -118.24, 34.05),
@@ -44,7 +43,6 @@ pub const MAJOR_US_CITY_PRESETS: &[MetroCropPreset] = &[
     metro("fl_tampa", "Tampa, FL", -82.46, 27.95),
     metro("fl_orlando", "Orlando, FL", -81.38, 28.54),
     metro("ga_atlanta", "Atlanta, GA", -84.39, 33.75),
-    metro("hi_honolulu", "Honolulu, HI", -157.86, 21.31),
     metro("id_boise", "Boise, ID", -116.20, 43.62),
     metro("il_chicago", "Chicago, IL", -87.63, 41.88),
     metro("in_indianapolis", "Indianapolis, IN", -86.16, 39.77),

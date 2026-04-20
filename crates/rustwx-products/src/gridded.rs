@@ -525,6 +525,13 @@ impl GridCrop {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectedGridIntersection {
+    Empty,
+    Full,
+    Crop(GridCrop),
+}
+
 /// Cropped surface+pressure pair plus the recomputed `LatLonGrid`. The
 /// generic loader returns full-domain decoded fields; lane runners that
 /// know they only need a regional slice (mainly `hrrr_batch` for
@@ -562,10 +569,19 @@ pub fn crop_heavy_domain_for_projected_extent(
     extent: &ProjectedExtent,
     pad_cells: usize,
 ) -> Result<Option<CroppedHeavyDomain>, Box<dyn std::error::Error>> {
-    let Some(crop) =
-        crop_rect_for_projected_extent(surface, projected_x, projected_y, extent, pad_cells)?
-    else {
-        return Ok(None);
+    let crop = match classify_projected_grid_intersection(
+        surface.nx,
+        surface.ny,
+        projected_x,
+        projected_y,
+        extent,
+        pad_cells,
+    )? {
+        ProjectedGridIntersection::Empty => {
+            return Err("requested projected crop produced an empty heavy-compute domain".into());
+        }
+        ProjectedGridIntersection::Full => return Ok(None),
+        ProjectedGridIntersection::Crop(crop) => crop,
     };
     let cropped_surface = crop_surface_fields(surface, crop);
     let cropped_pressure = crop_pressure_fields(pressure, surface.nx, surface.ny, crop)?;
@@ -575,6 +591,85 @@ pub fn crop_heavy_domain_for_projected_extent(
         pressure: cropped_pressure,
         grid,
     }))
+}
+
+pub fn classify_projected_grid_intersection(
+    nx: usize,
+    ny: usize,
+    projected_x: &[f64],
+    projected_y: &[f64],
+    extent: &ProjectedExtent,
+    pad_cells: usize,
+) -> Result<ProjectedGridIntersection, Box<dyn std::error::Error>> {
+    let expected_len = nx * ny;
+    if projected_x.len() != expected_len || projected_y.len() != expected_len {
+        return Err("projected crop inputs did not match surface grid size".into());
+    }
+
+    let mut min_x = nx;
+    let mut max_x = 0usize;
+    let mut min_y = ny;
+    let mut max_y = 0usize;
+    let mut found = false;
+
+    for y in 0..ny {
+        let row_offset = y * nx;
+        for x in 0..nx {
+            let idx = row_offset + x;
+            let px = projected_x[idx];
+            let py = projected_y[idx];
+            if px >= extent.x_min && px <= extent.x_max && py >= extent.y_min && py <= extent.y_max
+            {
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+                found = true;
+            }
+        }
+    }
+
+    if !found {
+        return Ok(ProjectedGridIntersection::Empty);
+    }
+
+    let crop = GridCrop {
+        x_start: min_x.saturating_sub(pad_cells),
+        x_end: (max_x + 1 + pad_cells).min(nx),
+        y_start: min_y.saturating_sub(pad_cells),
+        y_end: (max_y + 1 + pad_cells).min(ny),
+    };
+
+    if crop.x_start == 0 && crop.x_end == nx && crop.y_start == 0 && crop.y_end == ny {
+        Ok(ProjectedGridIntersection::Full)
+    } else {
+        Ok(ProjectedGridIntersection::Crop(crop))
+    }
+}
+
+pub fn crop_values_f64(values: &[f64], source_nx: usize, crop: GridCrop) -> Vec<f64> {
+    crop_2d_values(values, source_nx, crop)
+}
+
+pub fn crop_values_f32(values: &[f32], source_nx: usize, crop: GridCrop) -> Vec<f32> {
+    let mut cropped = Vec::with_capacity(crop.width() * crop.height());
+    for y in crop.y_start..crop.y_end {
+        let start = y * source_nx + crop.x_start;
+        let end = y * source_nx + crop.x_end;
+        cropped.extend_from_slice(&values[start..end]);
+    }
+    cropped
+}
+
+pub fn crop_latlon_grid(
+    grid: &LatLonGrid,
+    crop: GridCrop,
+) -> Result<LatLonGrid, Box<dyn std::error::Error>> {
+    Ok(LatLonGrid::new(
+        GridShape::new(crop.width(), crop.height())?,
+        crop_values_f32(&grid.lat_deg, grid.shape.nx, crop),
+        crop_values_f32(&grid.lon_deg, grid.shape.nx, crop),
+    )?)
 }
 
 fn crop_rect_for_bounds(
@@ -612,63 +707,6 @@ fn crop_rect_for_bounds(
         x_end: max_x + 1,
         y_start: min_y,
         y_end: max_y + 1,
-    };
-
-    if crop.x_start == 0
-        && crop.x_end == surface.nx
-        && crop.y_start == 0
-        && crop.y_end == surface.ny
-    {
-        Ok(None)
-    } else {
-        Ok(Some(crop))
-    }
-}
-
-fn crop_rect_for_projected_extent(
-    surface: &SurfaceFields,
-    projected_x: &[f64],
-    projected_y: &[f64],
-    extent: &ProjectedExtent,
-    pad_cells: usize,
-) -> Result<Option<GridCrop>, Box<dyn std::error::Error>> {
-    let expected_len = surface.nx * surface.ny;
-    if projected_x.len() != expected_len || projected_y.len() != expected_len {
-        return Err("projected crop inputs did not match surface grid size".into());
-    }
-
-    let mut min_x = surface.nx;
-    let mut max_x = 0usize;
-    let mut min_y = surface.ny;
-    let mut max_y = 0usize;
-    let mut found = false;
-
-    for y in 0..surface.ny {
-        let row_offset = y * surface.nx;
-        for x in 0..surface.nx {
-            let idx = row_offset + x;
-            let px = projected_x[idx];
-            let py = projected_y[idx];
-            if px >= extent.x_min && px <= extent.x_max && py >= extent.y_min && py <= extent.y_max
-            {
-                min_x = min_x.min(x);
-                max_x = max_x.max(x);
-                min_y = min_y.min(y);
-                max_y = max_y.max(y);
-                found = true;
-            }
-        }
-    }
-
-    if !found {
-        return Err("requested projected crop produced an empty heavy-compute domain".into());
-    }
-
-    let crop = GridCrop {
-        x_start: min_x.saturating_sub(pad_cells),
-        x_end: (max_x + 1 + pad_cells).min(surface.nx),
-        y_start: min_y.saturating_sub(pad_cells),
-        y_end: (max_y + 1 + pad_cells).min(surface.ny),
     };
 
     if crop.x_start == 0

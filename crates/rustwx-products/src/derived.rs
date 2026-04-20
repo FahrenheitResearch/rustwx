@@ -25,8 +25,10 @@ use std::thread;
 use std::time::Instant;
 
 use crate::gridded::{
-    PressureFields as GenericPressureFields, SharedTiming as GenericSharedTiming,
-    SurfaceFields as GenericSurfaceFields, broadcast_levels_pa, resolve_thermo_pair_run,
+    PressureFields as GenericPressureFields, ProjectedGridIntersection,
+    SharedTiming as GenericSharedTiming, SurfaceFields as GenericSurfaceFields,
+    broadcast_levels_pa, classify_projected_grid_intersection, crop_latlon_grid,
+    crop_values_f64, resolve_thermo_pair_run,
 };
 use crate::planner::{ExecutionPlanBuilder, PlannedBundle};
 use crate::publication::{
@@ -443,6 +445,13 @@ pub struct HrrrDerivedLiveArtifact {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct PreparedSharedDerivedFields {
+    grid: rustwx_core::LatLonGrid,
+    computed: DerivedComputedFields,
+    fetch_decode: Option<GenericSharedTiming>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct PlannedNativeThermoRoute {
     pub(crate) recipe: DerivedRecipe,
     pub(crate) native_recipe: NativeThermoRecipe,
@@ -745,7 +754,7 @@ impl DerivedRequirements {
 }
 
 impl DerivedBatchRequest {
-    fn from_hrrr(request: &HrrrDerivedBatchRequest) -> Self {
+    pub(crate) fn from_hrrr(request: &HrrrDerivedBatchRequest) -> Self {
         Self {
             model: ModelId::Hrrr,
             date_yyyymmdd: request.date_yyyymmdd.clone(),
@@ -825,6 +834,15 @@ fn run_derived_batch_from_loaded_bundles(
     recipes: &[DerivedRecipe],
     loaded: &LoadedBundleSet,
 ) -> Result<DerivedBatchReport, Box<dyn std::error::Error>> {
+    run_derived_batch_from_loaded_bundles_with_precomputed(request, recipes, loaded, None)
+}
+
+fn run_derived_batch_from_loaded_bundles_with_precomputed(
+    request: &DerivedBatchRequest,
+    recipes: &[DerivedRecipe],
+    loaded: &LoadedBundleSet,
+    shared_precomputed: Option<&PreparedSharedDerivedFields>,
+) -> Result<DerivedBatchReport, Box<dyn std::error::Error>> {
     fs::create_dir_all(&request.out_dir)?;
     if request.use_cache {
         fs::create_dir_all(&request.cache_root)?;
@@ -861,42 +879,99 @@ fn run_derived_batch_from_loaded_bundles(
             request.domain.bounds,
             map_frame_aspect_ratio(request.output_width, request.output_height, true, true),
         )?;
-        let cropped = crate::gridded::crop_heavy_domain_for_projected_extent(
-            full_surface,
-            full_pressure,
-            &full_projected.projected_x,
-            &full_projected.projected_y,
-            &full_projected.extent,
-            2,
-        )?;
-        let (surface, pressure, derived_grid) = match cropped.as_ref() {
-            Some(cropped) => (&cropped.surface, &cropped.pressure, cropped.grid.clone()),
-            None => (full_surface, full_pressure, owned_full_grid.clone()),
-        };
+        match shared_precomputed {
+            Some(shared) => {
+                match classify_projected_grid_intersection(
+                    shared.grid.shape.nx,
+                    shared.grid.shape.ny,
+                    &full_projected.projected_x,
+                    &full_projected.projected_y,
+                    &full_projected.extent,
+                    2,
+                )? {
+                    ProjectedGridIntersection::Empty => {
+                        return Err(format!(
+                            "derived projected crop for domain '{}' produced an empty domain",
+                            request.domain.slug
+                        )
+                        .into());
+                    }
+                    ProjectedGridIntersection::Full => {
+                        grid = Some(shared.grid.clone());
+                        projected = Some(full_projected);
+                        computed = shared.computed.clone();
+                    }
+                    ProjectedGridIntersection::Crop(crop) => {
+                        let derived_grid = crop_latlon_grid(&shared.grid, crop)?;
+                        let derived_projected = build_projected_map_from_latlon(
+                            &derived_grid.lat_deg,
+                            &derived_grid.lon_deg,
+                            request.domain.bounds,
+                            map_frame_aspect_ratio(
+                                request.output_width,
+                                request.output_height,
+                                true,
+                                true,
+                            ),
+                        )?;
+                        grid = Some(derived_grid);
+                        projected = Some(derived_projected);
+                        computed = crop_computed_fields(
+                            &shared.computed,
+                            shared.grid.shape.nx,
+                            crop,
+                        );
+                    }
+                }
+                fetch_decode = shared.fetch_decode.clone();
+            }
+            None => {
+                let cropped = crate::gridded::crop_heavy_domain_for_projected_extent(
+                    full_surface,
+                    full_pressure,
+                    &full_projected.projected_x,
+                    &full_projected.projected_y,
+                    &full_projected.extent,
+                    2,
+                )?;
+                let (surface, pressure, derived_grid) = match cropped.as_ref() {
+                    Some(cropped) => (&cropped.surface, &cropped.pressure, cropped.grid.clone()),
+                    None => (full_surface, full_pressure, owned_full_grid.clone()),
+                };
 
-        let derived_projected = if cropped.is_some() {
-            build_projected_map_from_latlon(
-                &derived_grid.lat_deg,
-                &derived_grid.lon_deg,
-                request.domain.bounds,
-                map_frame_aspect_ratio(request.output_width, request.output_height, true, true),
-            )?
-        } else {
-            full_projected
-        };
+                let derived_projected = if cropped.is_some() {
+                    build_projected_map_from_latlon(
+                        &derived_grid.lat_deg,
+                        &derived_grid.lon_deg,
+                        request.domain.bounds,
+                        map_frame_aspect_ratio(
+                            request.output_width,
+                            request.output_height,
+                            true,
+                            true,
+                        ),
+                    )?
+                } else {
+                    full_projected
+                };
+
+                let compute_start = Instant::now();
+                computed = compute_derived_fields_generic(
+                    surface,
+                    pressure,
+                    &planned_routes.compute_recipes,
+                )?;
+                compute_ms += compute_start.elapsed().as_millis();
+                fetch_decode = Some(build_shared_timing_for_pair(
+                    loaded,
+                    surface_planned,
+                    pressure_planned,
+                )?);
+                grid = Some(derived_grid);
+                projected = Some(derived_projected);
+            }
+        }
         project_ms += project_start.elapsed().as_millis();
-
-        let compute_start = Instant::now();
-        computed =
-            compute_derived_fields_generic(surface, pressure, &planned_routes.compute_recipes)?;
-        compute_ms += compute_start.elapsed().as_millis();
-        fetch_decode = Some(build_shared_timing_for_pair(
-            loaded,
-            surface_planned,
-            pressure_planned,
-        )?);
-        grid = Some(derived_grid);
-        projected = Some(derived_projected);
     }
 
     let input_fetches = build_planned_input_fetches(loaded);
@@ -1146,6 +1221,60 @@ pub(crate) fn run_hrrr_derived_batch_from_loaded(
 ) -> Result<HrrrDerivedBatchReport, Box<dyn std::error::Error>> {
     let generic_request = DerivedBatchRequest::from_hrrr(request);
     let report = run_derived_batch_from_loaded_bundles(&generic_request, recipes, loaded)?;
+    Ok(into_hrrr_report(report))
+}
+
+pub(crate) fn prepare_shared_derived_fields(
+    request: &DerivedBatchRequest,
+    recipes: &[DerivedRecipe],
+    loaded: &LoadedBundleSet,
+) -> Result<Option<PreparedSharedDerivedFields>, Box<dyn std::error::Error>> {
+    let planned_routes = plan_native_thermo_routes(request.model, recipes, request.source_mode)?;
+    if planned_routes.compute_recipes.is_empty() {
+        return Ok(None);
+    }
+
+    let (surface_planned, surface_decode, pressure_planned, pressure_decode) = loaded
+        .require_surface_pressure_pair()
+        .map_err(|err| format!("derived surface/pressure pair unavailable: {err}"))?;
+    let computed = compute_derived_fields_generic(
+        &surface_decode.value,
+        &pressure_decode.value,
+        &planned_routes.compute_recipes,
+    )?;
+    let fetch_decode = build_shared_timing_for_pair(loaded, surface_planned, pressure_planned)?;
+    Ok(Some(PreparedSharedDerivedFields {
+        grid: surface_decode.value.core_grid()?,
+        computed,
+        fetch_decode: Some(GenericSharedTiming {
+            fetch_surface_ms: 0,
+            fetch_pressure_ms: 0,
+            decode_surface_ms: 0,
+            decode_pressure_ms: 0,
+            fetch_surface_cache_hit: fetch_decode.fetch_surface_cache_hit,
+            fetch_pressure_cache_hit: fetch_decode.fetch_pressure_cache_hit,
+            decode_surface_cache_hit: fetch_decode.decode_surface_cache_hit,
+            decode_pressure_cache_hit: fetch_decode.decode_pressure_cache_hit,
+            surface_fetch: fetch_decode.surface_fetch,
+            pressure_fetch: fetch_decode.pressure_fetch,
+        }),
+    }))
+}
+
+pub(crate) fn run_hrrr_derived_batch_from_loaded_with_precomputed(
+    request: &HrrrDerivedBatchRequest,
+    recipes: &[DerivedRecipe],
+    loaded: &LoadedBundleSet,
+    prepared: &PreparedSharedDerivedFields,
+) -> Result<HrrrDerivedBatchReport, Box<dyn std::error::Error>> {
+    let generic_request = DerivedBatchRequest::from_hrrr(request);
+    let mut report = run_derived_batch_from_loaded_bundles_with_precomputed(
+        &generic_request,
+        recipes,
+        loaded,
+        Some(prepared),
+    )?;
+    report.shared_timing.compute_ms = 0;
     Ok(into_hrrr_report(report))
 }
 
@@ -2190,6 +2319,75 @@ fn required_values<'a>(
         )
         .into()
     })
+}
+
+fn crop_optional_values(
+    values: &Option<Vec<f64>>,
+    source_nx: usize,
+    crop: crate::gridded::GridCrop,
+) -> Option<Vec<f64>> {
+    values
+        .as_ref()
+        .map(|values| crop_values_f64(values, source_nx, crop))
+}
+
+fn crop_computed_fields(
+    computed: &DerivedComputedFields,
+    source_nx: usize,
+    crop: crate::gridded::GridCrop,
+) -> DerivedComputedFields {
+    DerivedComputedFields {
+        sbcape_jkg: crop_optional_values(&computed.sbcape_jkg, source_nx, crop),
+        sbcin_jkg: crop_optional_values(&computed.sbcin_jkg, source_nx, crop),
+        sblcl_m: crop_optional_values(&computed.sblcl_m, source_nx, crop),
+        mlcape_jkg: crop_optional_values(&computed.mlcape_jkg, source_nx, crop),
+        mlcin_jkg: crop_optional_values(&computed.mlcin_jkg, source_nx, crop),
+        mucape_jkg: crop_optional_values(&computed.mucape_jkg, source_nx, crop),
+        mucin_jkg: crop_optional_values(&computed.mucin_jkg, source_nx, crop),
+        theta_e_2m_k: crop_optional_values(&computed.theta_e_2m_k, source_nx, crop),
+        apparent_temperature_2m_c: crop_optional_values(
+            &computed.apparent_temperature_2m_c,
+            source_nx,
+            crop,
+        ),
+        heat_index_2m_c: crop_optional_values(&computed.heat_index_2m_c, source_nx, crop),
+        wind_chill_2m_c: crop_optional_values(&computed.wind_chill_2m_c, source_nx, crop),
+        surface_u10_ms: crop_optional_values(&computed.surface_u10_ms, source_nx, crop),
+        surface_v10_ms: crop_optional_values(&computed.surface_v10_ms, source_nx, crop),
+        lifted_index_c: crop_optional_values(&computed.lifted_index_c, source_nx, crop),
+        lapse_rate_700_500_cpkm: crop_optional_values(
+            &computed.lapse_rate_700_500_cpkm,
+            source_nx,
+            crop,
+        ),
+        lapse_rate_0_3km_cpkm: crop_optional_values(
+            &computed.lapse_rate_0_3km_cpkm,
+            source_nx,
+            crop,
+        ),
+        shear_01km_kt: crop_optional_values(&computed.shear_01km_kt, source_nx, crop),
+        shear_06km_kt: crop_optional_values(&computed.shear_06km_kt, source_nx, crop),
+        srh_01km_m2s2: crop_optional_values(&computed.srh_01km_m2s2, source_nx, crop),
+        srh_03km_m2s2: crop_optional_values(&computed.srh_03km_m2s2, source_nx, crop),
+        ehi_01km: crop_optional_values(&computed.ehi_01km, source_nx, crop),
+        ehi_03km: crop_optional_values(&computed.ehi_03km, source_nx, crop),
+        stp_fixed: crop_optional_values(&computed.stp_fixed, source_nx, crop),
+        scp_mu_03km_06km_proxy: crop_optional_values(
+            &computed.scp_mu_03km_06km_proxy,
+            source_nx,
+            crop,
+        ),
+        temperature_advection_700mb_cph: crop_optional_values(
+            &computed.temperature_advection_700mb_cph,
+            source_nx,
+            crop,
+        ),
+        temperature_advection_850mb_cph: crop_optional_values(
+            &computed.temperature_advection_850mb_cph,
+            source_nx,
+            crop,
+        ),
+    }
 }
 
 fn computed_surface_u10(

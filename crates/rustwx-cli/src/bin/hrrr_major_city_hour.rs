@@ -94,6 +94,10 @@ struct Args {
     skip_conus: bool,
     #[arg(long)]
     max_cities: Option<usize>,
+    #[arg(long, default_value_t = 1)]
+    domain_jobs: usize,
+    #[arg(long)]
+    render_threads: Option<usize>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -109,6 +113,26 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| default_proof_cache_dir(&args.out_dir));
     if !args.no_cache {
         ensure_dir(&cache_root)?;
+    }
+
+    let render_threads = args.render_threads.or_else(|| {
+        if args.domain_jobs > 1 {
+            Some(1)
+        } else {
+            None
+        }
+    });
+    match render_threads {
+        Some(value) if value > 0 => {
+            unsafe {
+                std::env::set_var("RUSTWX_RENDER_THREADS", value.to_string());
+            }
+        }
+        _ => {
+            unsafe {
+                std::env::remove_var("RUSTWX_RENDER_THREADS");
+            }
+        }
     }
 
     let mut domains = Vec::<DomainSpec>::new();
@@ -158,6 +182,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             .collect(),
         output_width: 1200,
         output_height: 900,
+        domain_jobs: Some(args.domain_jobs),
     };
 
     let report = run_hrrr_non_ecape_hour_multi_domain(&request)?;
