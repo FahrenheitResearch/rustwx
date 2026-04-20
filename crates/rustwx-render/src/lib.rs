@@ -237,10 +237,13 @@ impl RustRenderer {
             path: path.display().to_string(),
             source,
         })?;
+        let file_write_ms = write_start.elapsed().as_millis();
+        let mut png_timing = png_timing;
+        png_timing.png_write_ms = file_write_ms;
         Ok(RenderSaveTiming {
             state_timing,
             png_timing,
-            file_write_ms: write_start.elapsed().as_millis(),
+            file_write_ms,
             total_ms: total_start.elapsed().as_millis(),
         })
     }
@@ -289,14 +292,17 @@ pub fn save_rgba_png_profile_with_options<P: AsRef<Path>>(
         path: path.display().to_string(),
         source,
     })?;
+    let file_write_ms = write_start.elapsed().as_millis();
     Ok(RenderSaveTiming {
         state_timing: RenderStateTiming::default(),
         png_timing: RenderPngTiming {
             image_timing: RenderImageTiming::default(),
+            render_to_image_ms: 0,
             png_encode_ms,
-            total_ms: png_encode_ms,
+            png_write_ms: file_write_ms,
+            total_ms: png_encode_ms + file_write_ms,
         },
-        file_write_ms: write_start.elapsed().as_millis(),
+        file_write_ms,
         total_ms: total_start.elapsed().as_millis(),
     })
 }

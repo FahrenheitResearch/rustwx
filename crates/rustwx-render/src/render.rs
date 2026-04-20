@@ -72,7 +72,11 @@ pub struct RenderImageTiming {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RenderPngTiming {
     pub image_timing: RenderImageTiming,
+    #[serde(default)]
+    pub render_to_image_ms: u128,
     pub png_encode_ms: u128,
+    #[serde(default)]
+    pub png_write_ms: u128,
     pub total_ms: u128,
 }
 
@@ -2128,10 +2132,13 @@ pub fn render_to_png_profile_with_options(
 ) -> (Vec<u8>, RenderPngTiming) {
     let total_start = Instant::now();
     let (image, image_timing) = render_to_image_profile(data, ny, nx, opts);
+    let render_to_image_ms = image_timing.total_ms;
     let (buf, png_encode_ms) = encode_rgba_png_profile_with_options(&image, png_options);
     let timing = RenderPngTiming {
         image_timing,
+        render_to_image_ms,
         png_encode_ms,
+        png_write_ms: 0,
         total_ms: total_start.elapsed().as_millis(),
     };
     (buf, timing)

@@ -135,6 +135,14 @@ pub struct DirectRecipeTiming {
     pub contour_prepare_ms: u128,
     #[serde(default)]
     pub barb_prepare_ms: u128,
+    #[serde(default)]
+    pub render_to_image_ms: u128,
+    #[serde(default)]
+    pub data_layer_draw_ms: u128,
+    #[serde(default)]
+    pub overlay_draw_ms: u128,
+    #[serde(default)]
+    pub panel_compose_ms: u128,
     pub request_build_ms: u128,
     pub render_state_prep_ms: u128,
     pub png_encode_ms: u128,
@@ -216,6 +224,17 @@ struct DirectRequestBuildTiming {
     field_prepare_ms: u128,
     contour_prepare_ms: u128,
     barb_prepare_ms: u128,
+}
+
+fn direct_data_layer_draw_ms(image_timing: &RenderImageTiming) -> u128 {
+    image_timing.polygon_fill_ms
+        + image_timing.projected_pixel_ms
+        + image_timing.rasterize_ms
+        + image_timing.raster_blit_ms
+}
+
+fn direct_overlay_draw_ms(image_timing: &RenderImageTiming) -> u128 {
+    image_timing.linework_ms + image_timing.contour_ms + image_timing.barb_ms
 }
 
 #[derive(Debug, Clone)]
@@ -1175,6 +1194,12 @@ fn render_direct_recipe(
     let content_identity = artifact_identity_from_path(&output_path)?;
     let total_ms = render_start.elapsed().as_millis();
 
+    let panel_compose_ms = if composite_panel_spec(item.recipe.slug).is_some() {
+        image_timing.total_ms
+    } else {
+        0
+    };
+
     Ok(DirectRenderedRecipe {
         recipe_slug: item.recipe.slug.to_string(),
         title: item.recipe.title.to_string(),
@@ -1187,6 +1212,10 @@ fn render_direct_recipe(
         content_identity,
         input_fetch_keys: vec![runtime_fetch.fetch_key.clone()],
         timing: DirectRecipeTiming {
+            render_to_image_ms: image_timing.total_ms,
+            data_layer_draw_ms: direct_data_layer_draw_ms(&image_timing),
+            overlay_draw_ms: direct_overlay_draw_ms(&image_timing),
+            panel_compose_ms,
             project_ms,
             field_prepare_ms,
             contour_prepare_ms,

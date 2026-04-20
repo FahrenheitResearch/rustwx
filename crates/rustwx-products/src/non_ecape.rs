@@ -103,6 +103,17 @@ pub struct HrrrNonEcapeSharedTiming {
     pub total_prepare_ms: u128,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HrrrNonEcapeFanoutTiming {
+    pub domain_context_build_ms: u128,
+    pub domain_fanout_wall_ms: u128,
+    pub domain_render_sum_ms: u128,
+    pub domain_render_max_ms: u128,
+    pub conus_wall_ms: u128,
+    pub city_domains_sum_ms: u128,
+    pub city_domains_max_ms: u128,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HrrrNonEcapeHourRequestedProducts {
     pub direct_recipe_slugs: Vec<String>,
@@ -178,6 +189,8 @@ pub struct HrrrNonEcapeMultiDomainReport {
     pub requested: HrrrNonEcapeHourRequestedProducts,
     #[serde(default)]
     pub shared_timing: HrrrNonEcapeSharedTiming,
+    #[serde(default)]
+    pub fanout_timing: HrrrNonEcapeFanoutTiming,
     pub domains: Vec<HrrrNonEcapeDomainReport>,
     pub total_ms: u128,
 }
@@ -247,6 +260,8 @@ pub fn run_hrrr_non_ecape_hour_multi_domain(
     let total_start = Instant::now();
     let prepared = prepare_non_ecape_hour(request)?;
     let worker_count = domain_worker_count(request.domain_jobs, request.domains.len());
+    let domain_context_build_ms = 0;
+    let domain_fanout_start = Instant::now();
     let mut domain_reports = Vec::with_capacity(request.domains.len());
     if worker_count <= 1 || request.domains.len() <= 1 {
         for domain in &request.domains {
@@ -300,6 +315,29 @@ pub fn run_hrrr_non_ecape_hour_multi_domain(
             domain_reports.push(report);
         }
     }
+    let domain_fanout_wall_ms = domain_fanout_start.elapsed().as_millis();
+    let domain_render_sum_ms = domain_reports.iter().map(|report| report.total_ms).sum();
+    let domain_render_max_ms = domain_reports
+        .iter()
+        .map(|report| report.total_ms)
+        .max()
+        .unwrap_or(0);
+    let conus_wall_ms = domain_reports
+        .iter()
+        .find(|report| report.domain.slug == "conus")
+        .map(|report| report.total_ms)
+        .unwrap_or(0);
+    let city_domains_sum_ms = domain_reports
+        .iter()
+        .filter(|report| report.domain.slug != "conus")
+        .map(|report| report.total_ms)
+        .sum();
+    let city_domains_max_ms = domain_reports
+        .iter()
+        .filter(|report| report.domain.slug != "conus")
+        .map(|report| report.total_ms)
+        .max()
+        .unwrap_or(0);
     Ok(HrrrNonEcapeMultiDomainReport {
         date_yyyymmdd: prepared.latest.cycle.date_yyyymmdd.clone(),
         cycle_utc: prepared.latest.cycle.hour_utc,
@@ -311,6 +349,15 @@ pub fn run_hrrr_non_ecape_hour_multi_domain(
         source_mode: request.source_mode,
         requested: prepared.normalized.clone(),
         shared_timing: prepared.timing.clone(),
+        fanout_timing: HrrrNonEcapeFanoutTiming {
+            domain_context_build_ms,
+            domain_fanout_wall_ms,
+            domain_render_sum_ms,
+            domain_render_max_ms,
+            conus_wall_ms,
+            city_domains_sum_ms,
+            city_domains_max_ms,
+        },
         domains: domain_reports,
         total_ms: total_start.elapsed().as_millis(),
     })
@@ -1236,6 +1283,10 @@ mod tests {
                     field_prepare_ms: 0,
                     contour_prepare_ms: 0,
                     barb_prepare_ms: 0,
+                    render_to_image_ms: 0,
+                    data_layer_draw_ms: 0,
+                    overlay_draw_ms: 0,
+                    panel_compose_ms: 0,
                     request_build_ms: 0,
                     render_state_prep_ms: 0,
                     png_encode_ms: 0,
@@ -1300,6 +1351,9 @@ mod tests {
                 content_identity: crate::publication::artifact_identity_from_bytes(b"derived"),
                 input_fetch_keys: vec!["derived:sfc".into(), "derived:prs".into()],
                 timing: HrrrDerivedRecipeTiming {
+                    render_to_image_ms: 0,
+                    data_layer_draw_ms: 0,
+                    overlay_draw_ms: 0,
                     render_state_prep_ms: 0,
                     png_encode_ms: 0,
                     file_write_ms: 0,
@@ -1443,6 +1497,10 @@ mod tests {
                     field_prepare_ms: 0,
                     contour_prepare_ms: 0,
                     barb_prepare_ms: 0,
+                    render_to_image_ms: 0,
+                    data_layer_draw_ms: 0,
+                    overlay_draw_ms: 0,
+                    panel_compose_ms: 0,
                     request_build_ms: 0,
                     render_state_prep_ms: 0,
                     png_encode_ms: 0,
@@ -1509,6 +1567,9 @@ mod tests {
                 content_identity: crate::publication::artifact_identity_from_bytes(b"derived-run"),
                 input_fetch_keys: vec!["derived:sfc".into(), "derived:prs".into()],
                 timing: HrrrDerivedRecipeTiming {
+                    render_to_image_ms: 0,
+                    data_layer_draw_ms: 0,
+                    overlay_draw_ms: 0,
                     render_state_prep_ms: 0,
                     png_encode_ms: 0,
                     file_write_ms: 0,

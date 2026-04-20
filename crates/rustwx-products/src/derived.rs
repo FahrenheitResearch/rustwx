@@ -364,6 +364,12 @@ pub struct DerivedSharedTiming {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DerivedRecipeTiming {
+    #[serde(default)]
+    pub render_to_image_ms: u128,
+    #[serde(default)]
+    pub data_layer_draw_ms: u128,
+    #[serde(default)]
+    pub overlay_draw_ms: u128,
     pub render_state_prep_ms: u128,
     pub png_encode_ms: u128,
     pub file_write_ms: u128,
@@ -444,6 +450,17 @@ pub struct HrrrDerivedBatchReport {
 pub type HrrrDerivedSharedTiming = DerivedSharedTiming;
 pub type HrrrDerivedRecipeTiming = DerivedRecipeTiming;
 pub type HrrrDerivedRenderedRecipe = DerivedRenderedRecipe;
+
+fn derived_data_layer_draw_ms(image_timing: &RenderImageTiming) -> u128 {
+    image_timing.polygon_fill_ms
+        + image_timing.projected_pixel_ms
+        + image_timing.rasterize_ms
+        + image_timing.raster_blit_ms
+}
+
+fn derived_overlay_draw_ms(image_timing: &RenderImageTiming) -> u128 {
+    image_timing.linework_ms + image_timing.contour_ms + image_timing.barb_ms
+}
 
 #[derive(Debug, Clone)]
 pub struct HrrrDerivedLiveArtifact {
@@ -1080,6 +1097,13 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                 content_identity,
                 input_fetch_keys: input_fetch_keys.clone(),
                 timing: DerivedRecipeTiming {
+                    render_to_image_ms: save_timing.png_timing.render_to_image_ms,
+                    data_layer_draw_ms: derived_data_layer_draw_ms(
+                        &save_timing.png_timing.image_timing,
+                    ),
+                    overlay_draw_ms: derived_overlay_draw_ms(
+                        &save_timing.png_timing.image_timing,
+                    ),
                     render_state_prep_ms: save_timing.state_timing.state_prep_ms,
                     png_encode_ms: save_timing.png_timing.png_encode_ms,
                     file_write_ms: save_timing.file_write_ms,
@@ -1172,6 +1196,13 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                             content_identity,
                             input_fetch_keys: lane_fetch_keys,
                             timing: DerivedRecipeTiming {
+                                render_to_image_ms: save_timing.png_timing.render_to_image_ms,
+                                data_layer_draw_ms: derived_data_layer_draw_ms(
+                                    &save_timing.png_timing.image_timing,
+                                ),
+                                overlay_draw_ms: derived_overlay_draw_ms(
+                                    &save_timing.png_timing.image_timing,
+                                ),
                                 render_state_prep_ms: save_timing.state_timing.state_prep_ms,
                                 png_encode_ms: save_timing.png_timing.png_encode_ms,
                                 file_write_ms: save_timing.file_write_ms,
