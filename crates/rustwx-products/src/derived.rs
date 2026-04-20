@@ -10,10 +10,9 @@ use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId,
 };
 use rustwx_render::{
-    Color, DerivedProductStyle, DomainFrame, ExtendMode, MapRenderRequest, ProductVisualMode,
-    PngCompressionMode, PngWriteOptions, ProjectedDomain, ProjectedExtent, ProjectedMap,
-    RenderImageTiming, RenderStateTiming,
-    Solar07Palette, Solar07Product, WindBarbLayer,
+    Color, DerivedProductStyle, DomainFrame, ExtendMode, MapRenderRequest, PngCompressionMode,
+    PngWriteOptions, ProductVisualMode, ProjectedDomain, ProjectedExtent, ProjectedMap,
+    RenderImageTiming, RenderStateTiming, Solar07Palette, Solar07Product, WindBarbLayer,
     build_projected_map as build_projected_map_from_latlon, map_frame_aspect_ratio,
     save_png_profile_with_options,
 };
@@ -28,8 +27,8 @@ use std::time::Instant;
 use crate::gridded::{
     PressureFields as GenericPressureFields, ProjectedGridIntersection,
     SharedTiming as GenericSharedTiming, SurfaceFields as GenericSurfaceFields,
-    broadcast_levels_pa, classify_projected_grid_intersection, crop_latlon_grid,
-    crop_values_f64, decode_cache_path, decode_surface_grid, fetch_family_file,
+    broadcast_levels_pa, classify_projected_grid_intersection, crop_latlon_grid, crop_values_f64,
+    decode_cache_path, decode_surface_grid, fetch_family_file,
     load_or_decode_pressure_cropped_with_shape, load_or_decode_surface_cropped,
     resolve_thermo_pair_run,
 };
@@ -39,8 +38,7 @@ use crate::publication::{
 };
 use crate::runtime::{
     BundleLoaderConfig, CroppedDecodeProfile, FetchedBundleBytes, LoadedBundleSet,
-    LoadedBundleTiming,
-    load_execution_plan,
+    LoadedBundleTiming, load_execution_plan,
 };
 use crate::severe::{
     build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
@@ -869,11 +867,9 @@ pub fn run_derived_batch(
             planned_routes.blockers,
         ));
     }
-    if let Some(loaded) = maybe_load_rrfs_cropped_pair_for_derived(
-        request,
-        &latest,
-        &planned_routes,
-    )? {
+    if let Some(loaded) =
+        maybe_load_rrfs_cropped_pair_for_derived(request, &latest, &planned_routes)?
+    {
         return run_derived_batch_from_loaded_bundles(request, &recipes, &loaded);
     }
     let plan = build_derived_execution_plan(
@@ -915,10 +911,16 @@ fn maybe_load_rrfs_cropped_pair_for_derived(
         &[],
     );
     let surface_planned = plan
-        .bundle_for(CanonicalBundleDescriptor::SurfaceAnalysis, request.forecast_hour)
+        .bundle_for(
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+            request.forecast_hour,
+        )
         .ok_or("rrfs derived crop path missing surface bundle")?;
     let pressure_planned = plan
-        .bundle_for(CanonicalBundleDescriptor::PressureAnalysis, request.forecast_hour)
+        .bundle_for(
+            CanonicalBundleDescriptor::PressureAnalysis,
+            request.forecast_hour,
+        )
         .ok_or("rrfs derived crop path missing pressure bundle")?;
 
     let surface_fetch_start = Instant::now();
@@ -976,7 +978,7 @@ fn maybe_load_rrfs_cropped_pair_for_derived(
                 "rrfs derived projected crop for domain '{}' produced an empty domain",
                 request.domain.slug
             )
-            .into())
+            .into());
         }
         ProjectedGridIntersection::Full => return Ok(None),
         ProjectedGridIntersection::Crop(crop) => crop,
@@ -1202,11 +1204,8 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                         )?;
                         grid = Some(derived_grid);
                         projected = Some(derived_projected);
-                        computed = crop_computed_fields(
-                            &shared.computed,
-                            shared.grid.shape.nx,
-                            crop,
-                        );
+                        computed =
+                            crop_computed_fields(&shared.computed, shared.grid.shape.nx, crop);
                     }
                 }
                 fetch_decode = shared.fetch_decode.clone();
@@ -1354,9 +1353,7 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                     data_layer_draw_ms: derived_data_layer_draw_ms(
                         &save_timing.png_timing.image_timing,
                     ),
-                    overlay_draw_ms: derived_overlay_draw_ms(
-                        &save_timing.png_timing.image_timing,
-                    ),
+                    overlay_draw_ms: derived_overlay_draw_ms(&save_timing.png_timing.image_timing),
                     render_state_prep_ms: save_timing.state_timing.state_prep_ms,
                     png_encode_ms: save_timing.png_timing.png_encode_ms,
                     file_write_ms: save_timing.file_write_ms,
@@ -3099,16 +3096,19 @@ fn render_derived_output_recipe(
     )
     .map_err(thread_render_error)?;
     let render_ms = render_start.elapsed().as_millis();
-    let content_identity = artifact_identity_from_path(&output_path).map_err(thread_render_error)?;
+    let content_identity =
+        artifact_identity_from_path(&output_path).map_err(thread_render_error)?;
     Ok(DerivedRenderedRecipe {
         recipe_slug: render_artifact.recipe_slug,
         title: render_artifact.title,
-        source_route: derived_compute_source_route(recipe, request.source_mode).ok_or_else(|| {
-            io::Error::other(format!(
-                "missing compute source route for '{}'",
-                recipe.slug()
-            ))
-        })?,
+        source_route: derived_compute_source_route(recipe, request.source_mode).ok_or_else(
+            || {
+                io::Error::other(format!(
+                    "missing compute source route for '{}'",
+                    recipe.slug()
+                ))
+            },
+        )?,
         output_path,
         content_identity,
         input_fetch_keys: lane_fetch_keys,

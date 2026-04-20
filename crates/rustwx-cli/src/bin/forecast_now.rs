@@ -19,7 +19,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
@@ -31,13 +31,12 @@ use region::RegionPreset;
 use rustwx_core::{ModelId, SourceId};
 use rustwx_models::model_summary;
 use rustwx_products::cache::ensure_dir;
-use rustwx_products::ecape::{EcapeBatchRequest, run_ecape_batch};
-use rustwx_products::hrrr::{HrrrBatchProduct, HrrrBatchRequest, run_hrrr_batch};
+use rustwx_products::ecape::{run_ecape_batch, EcapeBatchRequest};
+use rustwx_products::hrrr::{run_hrrr_batch, HrrrBatchProduct, HrrrBatchRequest};
 use rustwx_products::non_ecape::{
-    HrrrNonEcapeHourRequest, NonEcapeHourRequest, run_hrrr_non_ecape_hour,
-    run_model_non_ecape_hour,
+    run_hrrr_non_ecape_hour, run_model_non_ecape_hour, HrrrNonEcapeHourRequest, NonEcapeHourRequest,
 };
-use rustwx_products::severe::{SevereBatchRequest, run_severe_batch};
+use rustwx_products::severe::{run_severe_batch, SevereBatchRequest};
 use rustwx_products::shared_context::DomainSpec;
 use rustwx_products::source::ProductSourceMode;
 use serde::Serialize;
@@ -137,12 +136,37 @@ struct Args {
     /// Product source mode for derived/non-ECAPE execution.
     #[arg(long = "source-mode", alias = "thermo-path", value_enum, default_value_t = SourceModeArg::Canonical)]
     source_mode: SourceModeArg,
+
+    /// Route policy for direct+derived non-ECAPE work.
+    ///
+    /// `auto` keeps the safe default: HRRR uses its unified optimized path,
+    /// while non-HRRR models stay on split direct+derived execution.
+    /// `unified` forces the generic non-ECAPE path for non-HRRR models.
+    /// `split` forces per-lane direct+derived execution for non-HRRR models.
+    #[arg(long, value_enum, default_value_t = RoutePolicyArg::Auto)]
+    route_policy: RoutePolicyArg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum SourceModeArg {
     Canonical,
     Fastest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RoutePolicyArg {
+    Auto,
+    Unified,
+    Split,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RouteSelection {
+    HrrrUnified,
+    Unified,
+    Split,
 }
 
 impl From<SourceModeArg> for ProductSourceMode {
@@ -250,6 +274,7 @@ struct LaneOutcome {
     model: ModelId,
     forecast_hour: u16,
     lane: String,
+    route_selected: RouteSelection,
     run_date_yyyymmdd: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     run_cycle_utc: Option<u8>,
@@ -270,6 +295,7 @@ fn lane_outcome_from_pinned(
     model: ModelId,
     forecast_hour: u16,
     lane: &str,
+    route_selected: RouteSelection,
     ok: bool,
     duration_ms: u128,
     error: Option<String>,
@@ -281,6 +307,7 @@ fn lane_outcome_from_pinned(
         model,
         forecast_hour,
         lane: lane.to_string(),
+        route_selected,
         run_date_yyyymmdd: pinned.date_yyyymmdd.clone(),
         run_cycle_utc: pinned.cycle_override_utc,
         run_source: pinned.source,
@@ -343,17 +370,15 @@ fn run_forecast_job(job: ForecastJob, config: &ExecConfig) -> ForecastJobResult 
             outcome.region = job.region_slug.clone();
             outcomes.push(outcome);
         }
-        let use_generic_non_hrrr_non_ecape =
-            std::env::var_os("RUSTWX_ENABLE_NON_HRRR_NON_ECAPE").is_some();
-        let want_non_hrrr_non_ecape =
-            (!config.skip_direct && !job.direct_recipes.is_empty())
-                || (!config.skip_derived && !job.derived_recipes.is_empty());
+        let want_non_hrrr_non_ecape = (!config.skip_direct && !job.direct_recipes.is_empty())
+            || (!config.skip_derived && !job.derived_recipes.is_empty());
+        let non_hrrr_route = select_non_hrrr_non_ecape_route(job.model, config.route_policy);
         if want_non_hrrr_non_ecape
-            && use_generic_non_hrrr_non_ecape
+            && matches!(non_hrrr_route, RouteSelection::Unified)
             && matches!(
-            job.model,
-            ModelId::RrfsA | ModelId::Gfs | ModelId::EcmwfOpenData
-        )
+                job.model,
+                ModelId::RrfsA | ModelId::Gfs | ModelId::EcmwfOpenData
+            )
         {
             let mut outcome = run_non_hrrr_non_ecape_hour(
                 job.model,
@@ -409,7 +434,7 @@ fn run_forecast_job(job: ForecastJob, config: &ExecConfig) -> ForecastJobResult 
 /// for summary display; per-model filtering happens in
 /// `model_supported_recipe_lists`.
 fn all_supported_recipe_lists() -> (Vec<String>, Vec<String>) {
-    use rustwx_products::catalog::{ProductCatalogStatus, build_supported_products_catalog};
+    use rustwx_products::catalog::{build_supported_products_catalog, ProductCatalogStatus};
     let catalog = build_supported_products_catalog();
     let include = |status: ProductCatalogStatus| {
         matches!(
@@ -441,7 +466,7 @@ fn all_supported_recipe_lists() -> (Vec<String>, Vec<String>) {
 /// currently errors on the first unsupported slug, so per-model
 /// filtering keeps the benchmark honest.
 fn model_supported_recipe_lists(model: ModelId) -> (Vec<String>, Vec<String>) {
-    use rustwx_products::catalog::{ProductTargetStatus, build_supported_products_catalog};
+    use rustwx_products::catalog::{build_supported_products_catalog, ProductTargetStatus};
     let catalog = build_supported_products_catalog();
     let supported_for_model = |support: &[rustwx_products::catalog::ProductTargetSupport]| {
         support
@@ -471,6 +496,16 @@ fn filter_recipes_for_model(requested: &[String], supported: &[String]) -> Vec<S
         .collect()
 }
 
+fn select_non_hrrr_non_ecape_route(model: ModelId, policy: RoutePolicyArg) -> RouteSelection {
+    if matches!(model, ModelId::Hrrr) {
+        return RouteSelection::HrrrUnified;
+    }
+    match policy {
+        RoutePolicyArg::Auto | RoutePolicyArg::Split => RouteSelection::Split,
+        RoutePolicyArg::Unified => RouteSelection::Unified,
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct RunSummary {
     started_utc: String,
@@ -483,6 +518,7 @@ struct RunSummary {
     hours: Vec<u16>,
     direct_recipes: Vec<String>,
     derived_recipes: Vec<String>,
+    route_policy: RoutePolicyArg,
     outcomes: Vec<LaneOutcome>,
     counts_by_model: BTreeMap<String, ModelCounts>,
     resolved_runs_by_model: BTreeMap<String, ResolvedRunSummary>,
@@ -514,6 +550,7 @@ struct ExecConfig {
     skip_direct: bool,
     skip_derived: bool,
     source_mode: ProductSourceMode,
+    route_policy: RoutePolicyArg,
     output_width: u32,
     output_height: u32,
 }
@@ -598,12 +635,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!(
-        "[forecast-now] date={date} regions={:?} hours={:?} models={:?} direct={} derived={} size={}x{} job_concurrency={} render_threads={:?}",
+        "[forecast-now] date={date} regions={:?} hours={:?} models={:?} direct={} derived={} route_policy={:?} size={}x{} job_concurrency={} render_threads={:?}",
         args.regions.iter().map(|r| r.slug()).collect::<Vec<_>>(),
         hours,
         args.models,
         direct_recipes.len(),
         derived_recipes.len(),
+        args.route_policy,
         args.width,
         args.height,
         args.job_concurrency,
@@ -675,6 +713,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         skip_direct: args.skip_direct,
         skip_derived: args.skip_derived,
         source_mode: args.source_mode.into(),
+        route_policy: args.route_policy,
         output_width: args.width,
         output_height: args.height,
     };
@@ -742,19 +781,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let queue = Arc::clone(&queue);
             let config = Arc::clone(&config);
             let tx = tx.clone();
-            handles.push(thread::spawn(move || {
-                loop {
-                    let job = {
-                        let mut queue = queue.lock().expect("forecast job queue poisoned");
-                        queue.pop_front()
-                    };
-                    let Some(job) = job else {
-                        break;
-                    };
-                    let result = run_forecast_job(job, &config);
-                    if tx.send(result).is_err() {
-                        break;
-                    }
+            handles.push(thread::spawn(move || loop {
+                let job = {
+                    let mut queue = queue.lock().expect("forecast job queue poisoned");
+                    queue.pop_front()
+                };
+                let Some(job) = job else {
+                    break;
+                };
+                let result = run_forecast_job(job, &config);
+                if tx.send(result).is_err() {
+                    break;
                 }
             }));
         }
@@ -796,6 +833,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hours: hours.clone(),
         direct_recipes,
         derived_recipes,
+        route_policy: args.route_policy,
         outcomes,
         counts_by_model,
         resolved_runs_by_model: pinned_runs_by_model
@@ -943,6 +981,7 @@ fn run_severe_lane(
                 model,
                 fh,
                 slug,
+                RouteSelection::Split,
                 true,
                 start.elapsed().as_millis(),
                 None,
@@ -958,6 +997,7 @@ fn run_severe_lane(
                 model,
                 fh,
                 slug,
+                RouteSelection::Split,
                 false,
                 start.elapsed().as_millis(),
                 Some(err.to_string()),
@@ -1002,6 +1042,7 @@ fn run_ecape_lane(
                 model,
                 fh,
                 slug,
+                RouteSelection::Split,
                 true,
                 start.elapsed().as_millis(),
                 None,
@@ -1017,6 +1058,7 @@ fn run_ecape_lane(
                 model,
                 fh,
                 slug,
+                RouteSelection::Split,
                 false,
                 start.elapsed().as_millis(),
                 Some(err.to_string()),
@@ -1115,6 +1157,7 @@ fn run_non_hrrr_non_ecape_hour(
                 model,
                 fh,
                 &slug,
+                RouteSelection::Unified,
                 !outputs.is_empty() || blockers.is_empty(),
                 dur,
                 None,
@@ -1130,6 +1173,7 @@ fn run_non_hrrr_non_ecape_hour(
                 model,
                 fh,
                 &slug,
+                RouteSelection::Unified,
                 false,
                 start.elapsed().as_millis(),
                 Some(err.to_string()),
@@ -1198,6 +1242,7 @@ fn run_direct_lane(
                 model,
                 fh,
                 slug,
+                RouteSelection::Split,
                 !outputs.is_empty() || blockers.is_empty(),
                 start.elapsed().as_millis(),
                 None,
@@ -1213,6 +1258,7 @@ fn run_direct_lane(
                 model,
                 fh,
                 slug,
+                RouteSelection::Split,
                 false,
                 start.elapsed().as_millis(),
                 Some(err.to_string()),
@@ -1288,6 +1334,7 @@ fn run_derived_lane(
                 model,
                 fh,
                 slug,
+                RouteSelection::Split,
                 !outputs.is_empty() || blockers.is_empty(),
                 start.elapsed().as_millis(),
                 None,
@@ -1303,6 +1350,7 @@ fn run_derived_lane(
                 model,
                 fh,
                 slug,
+                RouteSelection::Split,
                 false,
                 start.elapsed().as_millis(),
                 Some(err.to_string()),
@@ -1325,9 +1373,8 @@ fn run_derived_lane(
 /// Falling back to the generic per-lane runners for HRRR forces four
 /// separate `load_execution_plan` calls and three redundant
 /// `prepare_heavy_volume` passes, which is why forecast_now was ~10×
-/// slower than the checked-in HRRR baselines. GFS/ECMWF/RRFS-A still
-/// route through the per-lane runners (no unified variant exists for
-/// them yet).
+/// slower than the checked-in HRRR baselines. Non-HRRR models follow
+/// the explicit route policy handled in `run_forecast_job`.
 fn run_hrrr_unified(
     pinned: &PinnedRunRequest,
     fh: u16,
@@ -1387,6 +1434,7 @@ fn run_hrrr_unified(
                     ModelId::Hrrr,
                     fh,
                     slug,
+                    RouteSelection::HrrrUnified,
                     true,
                     dur,
                     None,
@@ -1402,6 +1450,7 @@ fn run_hrrr_unified(
                     ModelId::Hrrr,
                     fh,
                     slug,
+                    RouteSelection::HrrrUnified,
                     false,
                     start.elapsed().as_millis(),
                     Some(err.to_string()),
@@ -1496,6 +1545,7 @@ fn run_hrrr_unified(
                     ModelId::Hrrr,
                     fh,
                     "hrrr_non_ecape_hour",
+                    RouteSelection::HrrrUnified,
                     !outputs.is_empty() || blockers.is_empty(),
                     dur,
                     None,
@@ -1511,6 +1561,7 @@ fn run_hrrr_unified(
                     ModelId::Hrrr,
                     fh,
                     "hrrr_non_ecape_hour",
+                    RouteSelection::HrrrUnified,
                     false,
                     start.elapsed().as_millis(),
                     Some(err.to_string()),

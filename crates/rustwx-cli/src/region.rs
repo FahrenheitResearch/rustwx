@@ -48,21 +48,9 @@ pub const US_SPLIT_REGION_PRESETS: &[SplitRegionPreset] = &[
         "Southern Plains",
         (-109.0, -90.0, 25.0, 40.5),
     ),
-    split_region(
-        "great_lakes",
-        "Great Lakes",
-        (-97.5, -72.0, 39.0, 50.5),
-    ),
-    split_region(
-        "southeast",
-        "Southeast",
-        (-96.0, -72.0, 24.0, 38.5),
-    ),
-    split_region(
-        "northeast",
-        "Northeast",
-        (-84.5, -65.0, 36.0, 48.5),
-    ),
+    split_region("great_lakes", "Great Lakes", (-97.5, -72.0, 39.0, 50.5)),
+    split_region("southeast", "Southeast", (-96.0, -72.0, 24.0, 38.5)),
+    split_region("northeast", "Northeast", (-84.5, -65.0, 36.0, 48.5)),
 ];
 
 pub fn us_split_region_domains() -> Vec<DomainSpec> {
@@ -88,7 +76,11 @@ const fn split_region(
     label: &'static str,
     bounds: (f64, f64, f64, f64),
 ) -> SplitRegionPreset {
-    SplitRegionPreset { slug, label, bounds }
+    SplitRegionPreset {
+        slug,
+        label,
+        bounds,
+    }
 }
 
 impl RegionPreset {
@@ -154,7 +146,11 @@ mod tests {
     fn split_region_slugs_are_unique() {
         let mut seen = HashSet::new();
         for region in US_SPLIT_REGION_PRESETS {
-            assert!(seen.insert(region.slug), "duplicate split-region slug {}", region.slug);
+            assert!(
+                seen.insert(region.slug),
+                "duplicate split-region slug {}",
+                region.slug
+            );
         }
     }
 }

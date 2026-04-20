@@ -255,6 +255,220 @@ impl LoadedBundleSet {
     }
 }
 
+fn empty_loaded_bundle_set(plan: ExecutionPlan) -> LoadedBundleSet {
+    let latest = plan.latest();
+    let forecast_hour = plan.forecast_hour;
+    LoadedBundleSet {
+        plan,
+        latest,
+        forecast_hour,
+        fetched: BTreeMap::new(),
+        fetch_failures: BTreeMap::new(),
+        surface_decodes: BTreeMap::new(),
+        pressure_decodes: BTreeMap::new(),
+        bundle_failures: BTreeMap::new(),
+        timing: LoadedBundleTiming::default(),
+    }
+}
+
+fn fetch_execution_plan_into(
+    loaded: &mut LoadedBundleSet,
+    config: &BundleLoaderConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let parallel_fetches = !matches!(loaded.plan.source, SourceId::Nomads);
+
+    // Phase 1: fetch each unique physical file. Parallel for non-NOMADS
+    // sources; the planner already deduped, so each spawn corresponds
+    // to one distinct GRIB file.
+    let fetch_keys = loaded.plan.fetch_keys();
+    let cache_root = config.cache_root.clone();
+    let use_cache = config.use_cache;
+    let fetch_results: Vec<(
+        BundleFetchKey,
+        Result<FetchedBundleBytes, Box<dyn std::error::Error + Send + Sync>>,
+    )> = if parallel_fetches && fetch_keys.len() > 1 {
+        std::thread::scope(|scope| -> Vec<_> {
+            let handles: Vec<_> = fetch_keys
+                .iter()
+                .cloned()
+                .map(|key| {
+                    let cache_root = cache_root.clone();
+                    let use_cache = use_cache;
+                    let key_for_worker = key.clone();
+                    let plan = &loaded.plan;
+                    let handle = scope
+                        .spawn(move || fetch_one(plan, key_for_worker, &cache_root, use_cache));
+                    (key, handle)
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|(key, handle)| {
+                    let result = handle.join().unwrap_or_else(|_| {
+                        Err(Box::<dyn std::error::Error + Send + Sync>::from(
+                            "planner fetch worker panicked",
+                        ))
+                    });
+                    (key, result)
+                })
+                .collect()
+        })
+    } else {
+        fetch_keys
+            .iter()
+            .cloned()
+            .map(|key| {
+                let result = fetch_one(&loaded.plan, key.clone(), &cache_root, use_cache);
+                (key, result)
+            })
+            .collect()
+    };
+
+    loaded.fetched.clear();
+    loaded.fetch_failures.clear();
+    loaded.timing.fetch_ms_total = 0;
+
+    for (key, entry) in fetch_results {
+        match entry {
+            Ok(bundle) => {
+                loaded.timing.fetch_ms_total += bundle.fetch_ms;
+                loaded.fetched.insert(bundle.key.clone(), bundle);
+            }
+            Err(err) => {
+                loaded.fetch_failures.insert(key, err.to_string());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn decode_execution_plan_into(
+    loaded: &mut LoadedBundleSet,
+    config: &BundleLoaderConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Phase 2: decode surface + pressure bundles. Bundles whose
+    // underlying fetch failed are recorded in `bundle_failures` so
+    // lanes can report "missing bundle" with the actual upstream error;
+    // decode errors are caught and captured the same way.
+    loaded.surface_decodes.clear();
+    loaded.pressure_decodes.clear();
+    loaded.bundle_failures.clear();
+    loaded.timing.decode_surface_ms_total = 0;
+    loaded.timing.decode_pressure_ms_total = 0;
+
+    for bundle in &loaded.plan.bundles {
+        let fetched_bytes = match loaded.fetched.get(&bundle.fetch_key()) {
+            Some(bytes) => bytes,
+            None => {
+                let reason = loaded
+                    .fetch_failures
+                    .get(&bundle.fetch_key())
+                    .cloned()
+                    .unwrap_or_else(|| format!("planner missed fetch for bundle {}", bundle.id));
+                loaded.bundle_failures.insert(bundle.id.clone(), reason);
+                continue;
+            }
+        };
+        match bundle.id.bundle {
+            CanonicalBundleDescriptor::SurfaceAnalysis => {
+                let cache_path =
+                    decode_cache_path(&config.cache_root, &fetched_bytes.file.request, "surface");
+                let start = Instant::now();
+                match load_or_decode_surface(
+                    &cache_path,
+                    fetched_bytes.file.bytes.as_slice(),
+                    config.use_cache,
+                ) {
+                    Ok(decoded) => {
+                        loaded.timing.decode_surface_ms_total += start.elapsed().as_millis();
+                        loaded.surface_decodes.insert(bundle.id.clone(), decoded);
+                    }
+                    Err(err) => {
+                        loaded.timing.decode_surface_ms_total += start.elapsed().as_millis();
+                        loaded
+                            .bundle_failures
+                            .insert(bundle.id.clone(), err.to_string());
+                    }
+                }
+            }
+            CanonicalBundleDescriptor::PressureAnalysis => {
+                let cache_path =
+                    decode_cache_path(&config.cache_root, &fetched_bytes.file.request, "pressure");
+                let start = Instant::now();
+                let decode_outcome = load_or_decode_pressure_with_shape(
+                    &cache_path,
+                    fetched_bytes.file.bytes.as_slice(),
+                    config.use_cache,
+                );
+                loaded.timing.decode_pressure_ms_total += start.elapsed().as_millis();
+                match decode_outcome {
+                    Ok((decoded, shape)) => {
+                        if let Some(matching_surface) = loaded.plan.bundle_for(
+                            CanonicalBundleDescriptor::SurfaceAnalysis,
+                            bundle.id.forecast_hour,
+                        ) {
+                            if let Some(matching) = loaded.surface_decodes.get(&matching_surface.id)
+                            {
+                                if let Err(err) = validate_pressure_decode_against_surface(
+                                    &decoded,
+                                    shape,
+                                    matching.value.nx,
+                                    matching.value.ny,
+                                ) {
+                                    loaded
+                                        .bundle_failures
+                                        .insert(bundle.id.clone(), err.to_string());
+                                    continue;
+                                }
+                            }
+                        }
+                        loaded.pressure_decodes.insert(bundle.id.clone(), decoded);
+                    }
+                    Err(err) => {
+                        loaded
+                            .bundle_failures
+                            .insert(bundle.id.clone(), err.to_string());
+                    }
+                }
+            }
+            CanonicalBundleDescriptor::NativeAnalysis => {
+                // Native bundles surface as raw bytes only; kernels
+                // (windowed UH/QPF, native composite-direct decode) walk
+                // the GRIB messages on demand.
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Materialize only the fetch stage of the execution plan. This is the
+/// entry point for staged cache-warming flows that want planner-deduped
+/// network/disk fetches without paying decode cost yet.
+pub fn fetch_execution_plan(
+    plan: ExecutionPlan,
+    config: &BundleLoaderConfig,
+) -> Result<LoadedBundleSet, Box<dyn std::error::Error>> {
+    let mut loaded = empty_loaded_bundle_set(plan);
+    fetch_execution_plan_into(&mut loaded, config)?;
+    Ok(loaded)
+}
+
+/// Complete the decode stage for a previously fetched `LoadedBundleSet`.
+///
+/// The caller is responsible for passing a set whose `fetched` /
+/// `fetch_failures` came from the same plan. Existing fetch outcomes are
+/// preserved; surface/pressure decodes and bundle failures are rebuilt
+/// from the fetched bytes using the current loader config.
+pub fn decode_loaded_execution_plan(
+    mut loaded: LoadedBundleSet,
+    config: &BundleLoaderConfig,
+) -> Result<LoadedBundleSet, Box<dyn std::error::Error>> {
+    decode_execution_plan_into(&mut loaded, config)?;
+    Ok(loaded)
+}
+
 /// Materialize the plan: fetch each unique fetch key once, then decode
 /// surface and pressure bundles. Other bundle types (e.g. NativeAnalysis
 /// at extra forecast hours used by windowed) are surfaced as raw bytes
@@ -281,175 +495,8 @@ pub fn load_execution_plan(
     plan: ExecutionPlan,
     config: &BundleLoaderConfig,
 ) -> Result<LoadedBundleSet, Box<dyn std::error::Error>> {
-    let latest = plan.latest();
-    let forecast_hour = plan.forecast_hour;
-    let parallel_fetches = !matches!(plan.source, SourceId::Nomads);
-
-    // Phase 1: fetch each unique physical file. Parallel for non-NOMADS
-    // sources; the planner already deduped, so each spawn corresponds
-    // to one distinct GRIB file.
-    let fetch_keys = plan.fetch_keys();
-    let cache_root = config.cache_root.clone();
-    let use_cache = config.use_cache;
-    let fetch_results: Vec<(
-        BundleFetchKey,
-        Result<FetchedBundleBytes, Box<dyn std::error::Error + Send + Sync>>,
-    )> = if parallel_fetches && fetch_keys.len() > 1 {
-        std::thread::scope(|scope| -> Vec<_> {
-            let handles: Vec<_> = fetch_keys
-                .iter()
-                .cloned()
-                .map(|key| {
-                    let cache_root = cache_root.clone();
-                    let use_cache = use_cache;
-                    let key_for_worker = key.clone();
-                    let plan = &plan;
-                    let handle = scope
-                        .spawn(move || fetch_one(plan, key_for_worker, &cache_root, use_cache));
-                    (key, handle)
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|(key, handle)| {
-                    let result = handle.join().unwrap_or_else(|_| {
-                        Err(Box::<dyn std::error::Error + Send + Sync>::from(
-                            "planner fetch worker panicked",
-                        ))
-                    });
-                    (key, result)
-                })
-                .collect()
-        })
-    } else {
-        fetch_keys
-            .iter()
-            .cloned()
-            .map(|key| {
-                let result = fetch_one(&plan, key.clone(), &cache_root, use_cache);
-                (key, result)
-            })
-            .collect()
-    };
-
-    let mut fetched: BTreeMap<BundleFetchKey, FetchedBundleBytes> = BTreeMap::new();
-    let mut fetch_failures: BTreeMap<BundleFetchKey, String> = BTreeMap::new();
-    let mut total_fetch_ms = 0u128;
-    for (key, entry) in fetch_results {
-        match entry {
-            Ok(bundle) => {
-                total_fetch_ms += bundle.fetch_ms;
-                fetched.insert(bundle.key.clone(), bundle);
-            }
-            Err(err) => {
-                fetch_failures.insert(key, err.to_string());
-            }
-        }
-    }
-
-    // Phase 2: decode surface + pressure bundles. Bundles whose
-    // underlying fetch failed are recorded in `bundle_failures` so
-    // lanes can report "missing bundle" with the actual upstream error;
-    // decode errors are caught and captured the same way.
-    let mut surface_decodes: BTreeMap<CanonicalBundleId, CachedDecode<SurfaceFields>> =
-        BTreeMap::new();
-    let mut pressure_decodes: BTreeMap<CanonicalBundleId, CachedDecode<PressureFields>> =
-        BTreeMap::new();
-    let mut bundle_failures: BTreeMap<CanonicalBundleId, String> = BTreeMap::new();
-    let mut decode_surface_ms_total = 0u128;
-    let mut decode_pressure_ms_total = 0u128;
-
-    for bundle in &plan.bundles {
-        let fetched_bytes = match fetched.get(&bundle.fetch_key()) {
-            Some(bytes) => bytes,
-            None => {
-                let reason = fetch_failures
-                    .get(&bundle.fetch_key())
-                    .cloned()
-                    .unwrap_or_else(|| format!("planner missed fetch for bundle {}", bundle.id));
-                bundle_failures.insert(bundle.id.clone(), reason);
-                continue;
-            }
-        };
-        match bundle.id.bundle {
-            CanonicalBundleDescriptor::SurfaceAnalysis => {
-                let cache_path =
-                    decode_cache_path(&config.cache_root, &fetched_bytes.file.request, "surface");
-                let start = Instant::now();
-                match load_or_decode_surface(
-                    &cache_path,
-                    fetched_bytes.file.bytes.as_slice(),
-                    config.use_cache,
-                ) {
-                    Ok(decoded) => {
-                        decode_surface_ms_total += start.elapsed().as_millis();
-                        surface_decodes.insert(bundle.id.clone(), decoded);
-                    }
-                    Err(err) => {
-                        decode_surface_ms_total += start.elapsed().as_millis();
-                        bundle_failures.insert(bundle.id.clone(), err.to_string());
-                    }
-                }
-            }
-            CanonicalBundleDescriptor::PressureAnalysis => {
-                let cache_path =
-                    decode_cache_path(&config.cache_root, &fetched_bytes.file.request, "pressure");
-                let start = Instant::now();
-                let decode_outcome = load_or_decode_pressure_with_shape(
-                    &cache_path,
-                    fetched_bytes.file.bytes.as_slice(),
-                    config.use_cache,
-                );
-                decode_pressure_ms_total += start.elapsed().as_millis();
-                match decode_outcome {
-                    Ok((decoded, shape)) => {
-                        if let Some(matching_surface) = plan.bundle_for(
-                            CanonicalBundleDescriptor::SurfaceAnalysis,
-                            bundle.id.forecast_hour,
-                        ) {
-                            if let Some(matching) = surface_decodes.get(&matching_surface.id) {
-                                if let Err(err) = validate_pressure_decode_against_surface(
-                                    &decoded,
-                                    shape,
-                                    matching.value.nx,
-                                    matching.value.ny,
-                                ) {
-                                    bundle_failures.insert(bundle.id.clone(), err.to_string());
-                                    continue;
-                                }
-                            }
-                        }
-                        pressure_decodes.insert(bundle.id.clone(), decoded);
-                    }
-                    Err(err) => {
-                        bundle_failures.insert(bundle.id.clone(), err.to_string());
-                    }
-                }
-            }
-            CanonicalBundleDescriptor::NativeAnalysis => {
-                // Native bundles surface as raw bytes only; kernels
-                // (windowed UH/QPF, native composite-direct decode) walk
-                // the GRIB messages on demand.
-            }
-        }
-    }
-
-    Ok(LoadedBundleSet {
-        plan,
-        latest,
-        forecast_hour,
-        fetched,
-        fetch_failures,
-        surface_decodes,
-        pressure_decodes,
-        bundle_failures,
-        timing: LoadedBundleTiming {
-            fetch_ms_total: total_fetch_ms,
-            decode_surface_ms_total,
-            decode_pressure_ms_total,
-            cropped_decode_profile: None,
-        },
-    })
+    let loaded = fetch_execution_plan(plan, config)?;
+    decode_loaded_execution_plan(loaded, config)
 }
 
 fn build_fetch_request(

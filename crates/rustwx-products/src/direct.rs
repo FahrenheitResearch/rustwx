@@ -12,10 +12,9 @@ use rustwx_models::{
 };
 use rustwx_render::{
     Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode, MapRenderRequest,
-    PanelGridLayout, PanelPadding, ProductVisualMode, ProjectedDomain, ProjectedMap,
-    PngCompressionMode, PngWriteOptions, RenderImageTiming, RenderStateTiming, WindBarbLayer,
-    draw_centered_text_line,
-    map_frame_aspect_ratio_for_mode, render_panel_grid,
+    PanelGridLayout, PanelPadding, PngCompressionMode, PngWriteOptions, ProductVisualMode,
+    ProjectedDomain, ProjectedMap, RenderImageTiming, RenderStateTiming, WindBarbLayer,
+    draw_centered_text_line, map_frame_aspect_ratio_for_mode, render_panel_grid,
     save_png_profile_with_options, save_rgba_png_profile_with_options,
     solar07::{Solar07Palette, solar07_palette},
 };
@@ -1049,7 +1048,10 @@ fn visual_mode_cache_key(mode: ProductVisualMode) -> u8 {
     }
 }
 
-fn standard_projected_key(request: &DirectBatchRequest, recipe: &PlotRecipe) -> Option<(u32, u32, u8)> {
+fn standard_projected_key(
+    request: &DirectBatchRequest,
+    recipe: &PlotRecipe,
+) -> Option<(u32, u32, u8)> {
     let filled_selector = recipe.filled.selector?;
     let overlay_only = should_render_overlay_only(filled_selector, recipe.contours.is_some());
     let visual_mode = visual_mode_for_direct_recipe(recipe, filled_selector, overlay_only);
@@ -1067,7 +1069,12 @@ fn build_prepared_projected_maps(
 ) -> Result<PreparedProjectedMaps, Box<dyn std::error::Error>> {
     let sample_field = planned
         .iter()
-        .find_map(|item| item.recipe.filled.selector.and_then(|selector| extracted.get(&selector)))
+        .find_map(|item| {
+            item.recipe
+                .filled
+                .selector
+                .and_then(|selector| extracted.get(&selector))
+        })
         .ok_or("direct projected-map preparation missing a filled field")?;
 
     let mut keys = std::collections::BTreeSet::<(u32, u32, u8)>::new();
@@ -1830,7 +1837,10 @@ fn cached_contour_layer(
     let mut cache = contour_layer_cache
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    cache.entry(selector).or_insert_with(|| layer.clone()).clone()
+    cache
+        .entry(selector)
+        .or_insert_with(|| layer.clone())
+        .clone()
 }
 
 fn contour_layer_for_values(selector: FieldSelector, values: &[f32]) -> Option<ContourLayer> {

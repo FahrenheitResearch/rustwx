@@ -74,8 +74,7 @@ impl PressureFields {
     pub fn decoded_bytes_estimate(&self) -> usize {
         let level_count = self.pressure_levels_hpa.len();
         let volume_len = self.temperature_c_3d.len();
-        level_count * std::mem::size_of::<f64>()
-            + volume_len * 5usize * std::mem::size_of::<f64>()
+        level_count * std::mem::size_of::<f64>() + volume_len * 5usize * std::mem::size_of::<f64>()
     }
 }
 
@@ -1026,7 +1025,9 @@ pub(crate) fn load_or_decode_pressure_with_shape(
     ))
 }
 
-pub(crate) fn decode_surface_grid(bytes: &[u8]) -> Result<SurfaceGridLayout, Box<dyn std::error::Error>> {
+pub(crate) fn decode_surface_grid(
+    bytes: &[u8],
+) -> Result<SurfaceGridLayout, Box<dyn std::error::Error>> {
     let file = Grib2File::from_bytes(bytes)?;
     let sample = file
         .messages
@@ -1141,7 +1142,12 @@ fn decode_surface_cropped(
         .messages
         .first()
         .ok_or("surface family GRIB had no messages")?;
-    let SurfaceGridLayout { lat, lon, nx, ny: _ } = decode_surface_grid_from_sample(sample);
+    let SurfaceGridLayout {
+        lat,
+        lon,
+        nx,
+        ny: _,
+    } = decode_surface_grid_from_sample(sample);
 
     let psfc_pa = crop_2d_values(
         &unpack_message_normalized(find_message(
@@ -1156,27 +1162,18 @@ fn decode_surface_cropped(
         Err(_) => (vec![0.0; crop.width() * crop.height()], true),
     };
     let t2_k = crop_2d_values(
-        &unpack_message_normalized(find_message(
-            &file.messages,
-            &[(0, 0, 0, 103, Some(2.0))],
-        )?)?,
+        &unpack_message_normalized(find_message(&file.messages, &[(0, 0, 0, 103, Some(2.0))])?)?,
         nx,
         crop,
     );
     let q2_kgkg = decode_surface_mixing_ratio_cropped(&file.messages, &psfc_pa, &t2_k, nx, crop)?;
     let u10_ms = crop_2d_values(
-        &unpack_message_normalized(find_message(
-            &file.messages,
-            &[(0, 2, 2, 103, Some(10.0))],
-        )?)?,
+        &unpack_message_normalized(find_message(&file.messages, &[(0, 2, 2, 103, Some(10.0))])?)?,
         nx,
         crop,
     );
     let v10_ms = crop_2d_values(
-        &unpack_message_normalized(find_message(
-            &file.messages,
-            &[(0, 2, 3, 103, Some(10.0))],
-        )?)?,
+        &unpack_message_normalized(find_message(&file.messages, &[(0, 2, 3, 103, Some(10.0))])?)?,
         nx,
         crop,
     );
@@ -1214,8 +1211,7 @@ fn decode_pressure_with_shape(
     let aligned_levels = levels.clone();
 
     let expected = nx * ny;
-    let flatten =
-        |records: &Vec<(f64, Vec<f64>)>| -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    let flatten = |records: &Vec<(f64, Vec<f64>)>| -> Result<Vec<f64>, Box<dyn std::error::Error>> {
         let mut out = Vec::with_capacity(levels.len() * expected);
         for &level in &levels {
             let values = level_values(records, level)
@@ -1258,7 +1254,8 @@ fn decode_pressure_cropped_with_shape(
     let u_wind = collect_levels_cropped(&file.messages, 0, 2, 2, 100, nx, crop)?;
     let v_wind = collect_levels_cropped(&file.messages, 0, 2, 3, 100, nx, crop)?;
     let gh = decode_height_levels_cropped(&file.messages, nx, crop)?;
-    let moisture = decode_pressure_mixing_ratio_levels_cropped(&file.messages, &temperature, nx, crop)?;
+    let moisture =
+        decode_pressure_mixing_ratio_levels_cropped(&file.messages, &temperature, nx, crop)?;
 
     let levels = common_isobaric_levels(&temperature, &[&moisture, &u_wind, &v_wind, &gh]);
     if levels.is_empty() {
