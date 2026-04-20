@@ -86,6 +86,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         recipe_slugs: args.recipes.clone(),
         output_width: 1200,
         output_height: 900,
+        png_compression: rustwx_render::PngCompressionMode::Default,
     };
     let report = run_hrrr_direct_batch(&request)?;
 

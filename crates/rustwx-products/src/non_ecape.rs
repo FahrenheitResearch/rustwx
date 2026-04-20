@@ -24,6 +24,7 @@ use crate::windowed::{
     HrrrWindowedRenderedProduct, collect_windowed_input_fetches,
     run_hrrr_windowed_batch_with_context, windowed_product_input_fetch_keys,
 };
+use rustwx_render::PngCompressionMode;
 use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
 use rustwx_models::plot_recipe;
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,10 @@ fn default_output_width() -> u32 {
 
 fn default_output_height() -> u32 {
     900
+}
+
+fn default_png_compression() -> PngCompressionMode {
+    PngCompressionMode::Default
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +66,8 @@ pub struct HrrrNonEcapeHourRequest {
     pub output_width: u32,
     #[serde(default = "default_output_height")]
     pub output_height: u32,
+    #[serde(default = "default_png_compression")]
+    pub png_compression: PngCompressionMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,8 +89,18 @@ pub struct HrrrNonEcapeMultiDomainRequest {
     pub output_width: u32,
     #[serde(default = "default_output_height")]
     pub output_height: u32,
+    #[serde(default = "default_png_compression")]
+    pub png_compression: PngCompressionMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain_jobs: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HrrrNonEcapeSharedTiming {
+    pub resolve_run_ms: u128,
+    pub shared_load_decode_ms: u128,
+    pub shared_derived_prepare_ms: u128,
+    pub total_prepare_ms: u128,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +142,8 @@ pub struct HrrrNonEcapeHourReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt_manifest_path: Option<PathBuf>,
     pub requested: HrrrNonEcapeHourRequestedProducts,
+    #[serde(default)]
+    pub shared_timing: HrrrNonEcapeSharedTiming,
     pub summary: HrrrNonEcapeHourSummary,
     pub direct: Option<HrrrDirectBatchReport>,
     pub derived: Option<HrrrDerivedBatchReport>,
@@ -157,6 +176,8 @@ pub struct HrrrNonEcapeMultiDomainReport {
     #[serde(default)]
     pub source_mode: ProductSourceMode,
     pub requested: HrrrNonEcapeHourRequestedProducts,
+    #[serde(default)]
+    pub shared_timing: HrrrNonEcapeSharedTiming,
     pub domains: Vec<HrrrNonEcapeDomainReport>,
     pub total_ms: u128,
 }
@@ -167,6 +188,7 @@ struct PreparedNonEcapeHour {
     derived_recipes: Vec<crate::derived::DerivedRecipe>,
     precomputed_derived: Option<crate::derived::PreparedSharedDerivedFields>,
     loaded: Option<crate::runtime::LoadedBundleSet>,
+    timing: HrrrNonEcapeSharedTiming,
 }
 
 pub fn run_hrrr_non_ecape_hour(
@@ -187,6 +209,7 @@ pub fn run_hrrr_non_ecape_hour(
         windowed_products: request.windowed_products.clone(),
         output_width: request.output_width,
         output_height: request.output_height,
+        png_compression: request.png_compression,
         domain_jobs: None,
     };
     let report = run_hrrr_non_ecape_hour_multi_domain(&multi_request)?;
@@ -208,6 +231,7 @@ pub fn run_hrrr_non_ecape_hour(
         publication_manifest_path: domain_report.publication_manifest_path,
         attempt_manifest_path: domain_report.attempt_manifest_path,
         requested: report.requested,
+        shared_timing: report.shared_timing,
         summary: domain_report.summary,
         direct: domain_report.direct,
         derived: domain_report.derived,
@@ -286,6 +310,7 @@ pub fn run_hrrr_non_ecape_hour_multi_domain(
         use_cache: request.use_cache,
         source_mode: request.source_mode,
         requested: prepared.normalized.clone(),
+        shared_timing: prepared.timing.clone(),
         domains: domain_reports,
         total_ms: total_start.elapsed().as_millis(),
     })
@@ -294,6 +319,7 @@ pub fn run_hrrr_non_ecape_hour_multi_domain(
 fn prepare_non_ecape_hour(
     request: &HrrrNonEcapeMultiDomainRequest,
 ) -> Result<PreparedNonEcapeHour, Box<dyn std::error::Error>> {
+    let total_prepare_start = Instant::now();
     let normalized = normalize_requested_products_from_parts(
         &request.direct_recipe_slugs,
         &request.derived_recipe_slugs,
@@ -306,12 +332,14 @@ fn prepare_non_ecape_hour(
         fs::create_dir_all(&request.cache_root)?;
     }
 
+    let resolve_start = Instant::now();
     let latest = resolve_hrrr_run(
         &request.date_yyyymmdd,
         request.cycle_override_utc,
         request.forecast_hour,
         request.source,
     )?;
+    let resolve_run_ms = resolve_start.elapsed().as_millis();
     let pinned_date = latest.cycle.date_yyyymmdd.clone();
     let pinned_cycle = Some(latest.cycle.hour_utc);
     let pinned_source = latest.source;
@@ -336,6 +364,7 @@ fn prepare_non_ecape_hour(
             recipe_slugs: normalized.direct_recipe_slugs.clone(),
             output_width: request.output_width,
             output_height: request.output_height,
+            png_compression: request.png_compression,
         };
         let generic_direct =
             crate::direct::DirectBatchRequest::from_hrrr_for_planner(&direct_request);
@@ -402,6 +431,7 @@ fn prepare_non_ecape_hour(
         }
     }
     let plan = plan_builder.build();
+    let load_start = Instant::now();
     let loaded = if plan.bundles.is_empty() {
         None
     } else {
@@ -413,6 +443,8 @@ fn prepare_non_ecape_hour(
             },
         )?)
     };
+    let shared_load_decode_ms = load_start.elapsed().as_millis();
+    let shared_derived_prepare_start = Instant::now();
     let precomputed_derived = if derived_recipes.is_empty() {
         None
     } else if let Some(loaded) = loaded.as_ref() {
@@ -429,6 +461,7 @@ fn prepare_non_ecape_hour(
             source_mode: request.source_mode,
             output_width: request.output_width,
             output_height: request.output_height,
+            png_compression: request.png_compression,
         };
         prepare_shared_derived_fields(
             &crate::derived::DerivedBatchRequest::from_hrrr(&derived_request),
@@ -438,6 +471,7 @@ fn prepare_non_ecape_hour(
     } else {
         None
     };
+    let shared_derived_prepare_ms = shared_derived_prepare_start.elapsed().as_millis();
 
     Ok(PreparedNonEcapeHour {
         normalized,
@@ -445,6 +479,12 @@ fn prepare_non_ecape_hour(
         derived_recipes,
         precomputed_derived,
         loaded,
+        timing: HrrrNonEcapeSharedTiming {
+            resolve_run_ms,
+            shared_load_decode_ms,
+            shared_derived_prepare_ms,
+            total_prepare_ms: total_prepare_start.elapsed().as_millis(),
+        },
     })
 }
 
@@ -492,6 +532,7 @@ fn run_prepared_non_ecape_domain(
             recipe_slugs: prepared.normalized.direct_recipe_slugs.clone(),
             output_width: request.output_width,
             output_height: request.output_height,
+            png_compression: request.png_compression,
         });
 
     let derived_request = (!prepared.normalized.derived_recipe_slugs.is_empty()).then(|| {
@@ -509,6 +550,7 @@ fn run_prepared_non_ecape_domain(
                 source_mode: request.source_mode,
                 output_width: request.output_width,
                 output_height: request.output_height,
+                png_compression: request.png_compression,
             },
             prepared.derived_recipes.clone(),
         )
@@ -1100,6 +1142,7 @@ mod tests {
             windowed_products: Vec::new(),
             output_width: 1200,
             output_height: 900,
+            png_compression: PngCompressionMode::Default,
         }
     }
 
@@ -1190,6 +1233,9 @@ mod tests {
                 input_fetch_keys: vec!["direct:nat->sfc".into()],
                 timing: HrrrDirectRecipeTiming {
                     project_ms: 1,
+                    field_prepare_ms: 0,
+                    contour_prepare_ms: 0,
+                    barb_prepare_ms: 0,
                     request_build_ms: 0,
                     render_state_prep_ms: 0,
                     png_encode_ms: 0,
@@ -1394,6 +1440,9 @@ mod tests {
                 input_fetch_keys: vec!["direct:prs".into()],
                 timing: HrrrDirectRecipeTiming {
                     project_ms: 1,
+                    field_prepare_ms: 0,
+                    contour_prepare_ms: 0,
+                    barb_prepare_ms: 0,
                     request_build_ms: 0,
                     render_state_prep_ms: 0,
                     png_encode_ms: 0,
@@ -1722,6 +1771,7 @@ mod tests {
                 derived_recipe_slugs: vec!["sbcape".into()],
                 windowed_products: vec![HrrrWindowedProduct::Qpf6h],
             },
+            shared_timing: HrrrNonEcapeSharedTiming::default(),
             summary: HrrrNonEcapeHourSummary {
                 runner_count: 1,
                 direct_rendered_count: 1,

@@ -153,10 +153,16 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         use_cache: !args.no_cache,
         direct_recipe_slugs: args.direct_recipes.clone(),
         derived_recipe_slugs: args.derived_recipes.clone(),
-        windowed_products: args.windowed_products.iter().copied().map(Into::into).collect(),
+        windowed_products: args
+            .windowed_products
+            .iter()
+            .copied()
+            .map(Into::into)
+            .collect(),
         source_mode: args.source_mode.into(),
         output_width: 1200,
         output_height: 900,
+        png_compression: rustwx_render::PngCompressionMode::Default,
     };
     let report = run_hrrr_non_ecape_hour(&request)?;
     let report_path = args.out_dir.join(format!(

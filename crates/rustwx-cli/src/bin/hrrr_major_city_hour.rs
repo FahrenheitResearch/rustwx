@@ -19,6 +19,7 @@ use rustwx_products::publication::atomic_write_json;
 use rustwx_products::shared_context::DomainSpec;
 use rustwx_products::source::ProductSourceMode;
 use rustwx_products::windowed::HrrrWindowedProduct;
+use rustwx_render::PngCompressionMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum WindowedProductArg {
@@ -62,6 +63,23 @@ impl From<SourceModeArg> for ProductSourceMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum PngCompressionArg {
+    Default,
+    Fast,
+    Fastest,
+}
+
+impl From<PngCompressionArg> for PngCompressionMode {
+    fn from(value: PngCompressionArg) -> Self {
+        match value {
+            PngCompressionArg::Default => Self::Default,
+            PngCompressionArg::Fast => Self::Fast,
+            PngCompressionArg::Fastest => Self::Fastest,
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "hrrr-major-city-hour",
@@ -98,6 +116,8 @@ struct Args {
     domain_jobs: usize,
     #[arg(long)]
     render_threads: Option<usize>,
+    #[arg(long = "png-compression", value_enum, default_value_t = PngCompressionArg::Default)]
+    png_compression: PngCompressionArg,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -182,6 +202,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             .collect(),
         output_width: 1200,
         output_height: 900,
+        png_compression: args.png_compression.into(),
         domain_jobs: Some(args.domain_jobs),
     };
 

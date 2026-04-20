@@ -19,7 +19,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Instant;
 
@@ -1024,6 +1024,7 @@ fn run_direct_lane(
         product_overrides: HashMap::new(),
         output_width: config.output_width,
         output_height: config.output_height,
+        png_compression: rustwx_render::PngCompressionMode::Default,
     };
     let slug = Lane::Direct.slug();
     match run_direct_batch(&request) {
@@ -1108,6 +1109,7 @@ fn run_derived_lane(
         source_mode: config.source_mode,
         output_width: config.output_width,
         output_height: config.output_height,
+        png_compression: rustwx_render::PngCompressionMode::Default,
     };
     let slug = Lane::Derived.slug();
     match run_derived_batch(&request) {
@@ -1120,7 +1122,14 @@ fn run_derived_lane(
             let blockers: Vec<String> = report
                 .blockers
                 .iter()
-                .map(|b| format!("{} [{}]: {}", b.recipe_slug, b.source_route.as_str(), b.reason))
+                .map(|b| {
+                    format!(
+                        "{} [{}]: {}",
+                        b.recipe_slug,
+                        b.source_route.as_str(),
+                        b.reason
+                    )
+                })
                 .collect();
             counts.outputs += outputs.len();
             counts.blocked_recipes += blockers.len();
@@ -1291,6 +1300,7 @@ fn run_hrrr_unified(
             source_mode: config.source_mode,
             output_width: config.output_width,
             output_height: config.output_height,
+            png_compression: rustwx_render::PngCompressionMode::Default,
         };
         match run_hrrr_non_ecape_hour(&request) {
             Ok(report) => {
@@ -1311,7 +1321,12 @@ fn run_hrrr_unified(
                 }
                 if let Some(derived) = &report.derived {
                     blockers.extend(derived.blockers.iter().map(|b| {
-                        format!("{} [{}]: {}", b.recipe_slug, b.source_route.as_str(), b.reason)
+                        format!(
+                            "{} [{}]: {}",
+                            b.recipe_slug,
+                            b.source_route.as_str(),
+                            b.reason
+                        )
                     }));
                 }
                 if let Some(windowed) = &report.windowed {

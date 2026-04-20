@@ -11,10 +11,11 @@ use rustwx_core::{
 };
 use rustwx_render::{
     Color, DerivedProductStyle, DomainFrame, ExtendMode, MapRenderRequest, ProductVisualMode,
-    ProjectedDomain, ProjectedExtent, ProjectedMap, RenderImageTiming, RenderStateTiming,
+    PngCompressionMode, PngWriteOptions, ProjectedDomain, ProjectedExtent, ProjectedMap,
+    RenderImageTiming, RenderStateTiming,
     Solar07Palette, Solar07Product, WindBarbLayer,
     build_projected_map as build_projected_map_from_latlon, map_frame_aspect_ratio,
-    save_png_profile,
+    save_png_profile_with_options,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -59,6 +60,10 @@ fn default_output_width() -> u32 {
 
 fn default_output_height() -> u32 {
     OUTPUT_HEIGHT
+}
+
+fn default_png_compression() -> PngCompressionMode {
+    PngCompressionMode::Default
 }
 
 trait SurfaceFieldSet {
@@ -320,6 +325,8 @@ pub struct DerivedBatchRequest {
     pub output_width: u32,
     #[serde(default = "default_output_height")]
     pub output_height: u32,
+    #[serde(default = "default_png_compression")]
+    pub png_compression: PngCompressionMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -339,6 +346,8 @@ pub struct HrrrDerivedBatchRequest {
     pub output_width: u32,
     #[serde(default = "default_output_height")]
     pub output_height: u32,
+    #[serde(default = "default_png_compression")]
+    pub png_compression: PngCompressionMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -771,6 +780,13 @@ impl DerivedBatchRequest {
             source_mode: request.source_mode,
             output_width: request.output_width,
             output_height: request.output_height,
+            png_compression: request.png_compression,
+        }
+    }
+
+    fn png_write_options(&self) -> PngWriteOptions {
+        PngWriteOptions {
+            compression: self.png_compression,
         }
     }
 }
@@ -1047,7 +1063,11 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
             request.output_height,
             native_field.values.clone(),
         )?;
-        let save_timing = save_png_profile(&render_artifact.request, &output_path)?;
+        let save_timing = save_png_profile_with_options(
+            &render_artifact.request,
+            &output_path,
+            &request.png_write_options(),
+        )?;
         let render_ms = render_start.elapsed().as_millis();
         let content_identity = artifact_identity_from_path(&output_path)?;
         rendered_by_recipe.insert(
@@ -1129,8 +1149,12 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                             computed,
                         )
                         .map_err(thread_render_error)?;
-                        let save_timing = save_png_profile(&render_artifact.request, &output_path)
-                            .map_err(thread_render_error)?;
+                        let save_timing = save_png_profile_with_options(
+                            &render_artifact.request,
+                            &output_path,
+                            &request.png_write_options(),
+                        )
+                        .map_err(thread_render_error)?;
                         let render_ms = render_start.elapsed().as_millis();
                         let content_identity = artifact_identity_from_path(&output_path)
                             .map_err(thread_render_error)?;
@@ -2926,6 +2950,7 @@ mod tests {
             source_mode: ProductSourceMode::Fastest,
             output_width: OUTPUT_WIDTH,
             output_height: OUTPUT_HEIGHT,
+            png_compression: PngCompressionMode::Default,
         };
         let planned =
             plan_native_thermo_routes(request.model, &[DerivedRecipe::Sbcape], request.source_mode)

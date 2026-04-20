@@ -105,6 +105,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         source_mode: args.source_mode.into(),
         output_width: 1200,
         output_height: 900,
+        png_compression: rustwx_render::PngCompressionMode::Default,
     };
     let report = run_hrrr_derived_batch(&request)?;
 

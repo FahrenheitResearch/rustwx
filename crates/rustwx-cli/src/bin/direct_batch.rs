@@ -121,6 +121,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         product_overrides: parse_product_overrides(&args.product_overrides)?,
         output_width: 1200,
         output_height: 900,
+        png_compression: rustwx_render::PngCompressionMode::Default,
     };
     let report = run_direct_batch(&request)?;
 

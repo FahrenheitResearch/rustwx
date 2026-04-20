@@ -1,5 +1,4 @@
 use grib_core::grib2::Grib2File;
-use image::DynamicImage;
 use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, CanonicalField, CycleSpec, FieldSelector,
     ModelId, SelectedField2D, SourceId, VerticalSelector,
@@ -14,8 +13,10 @@ use rustwx_models::{
 use rustwx_render::{
     Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode, MapRenderRequest,
     PanelGridLayout, PanelPadding, ProductVisualMode, ProjectedDomain, ProjectedMap,
-    RenderImageTiming, RenderStateTiming, WindBarbLayer, draw_centered_text_line,
-    map_frame_aspect_ratio_for_mode, render_panel_grid, save_png_profile,
+    PngCompressionMode, PngWriteOptions, RenderImageTiming, RenderStateTiming, WindBarbLayer,
+    draw_centered_text_line,
+    map_frame_aspect_ratio_for_mode, render_panel_grid,
+    save_png_profile_with_options, save_rgba_png_profile_with_options,
     solar07::{Solar07Palette, solar07_palette},
 };
 use serde::{Deserialize, Serialize};
@@ -57,6 +58,10 @@ fn default_output_height() -> u32 {
     OUTPUT_HEIGHT
 }
 
+fn default_png_compression() -> PngCompressionMode {
+    PngCompressionMode::Default
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectBatchRequest {
     pub model: ModelId,
@@ -74,6 +79,8 @@ pub struct DirectBatchRequest {
     pub output_width: u32,
     #[serde(default = "default_output_height")]
     pub output_height: u32,
+    #[serde(default = "default_png_compression")]
+    pub png_compression: PngCompressionMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +98,8 @@ pub struct HrrrDirectBatchRequest {
     pub output_width: u32,
     #[serde(default = "default_output_height")]
     pub output_height: u32,
+    #[serde(default = "default_png_compression")]
+    pub png_compression: PngCompressionMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +129,12 @@ pub struct DirectFetchRuntimeInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectRecipeTiming {
     pub project_ms: u128,
+    #[serde(default)]
+    pub field_prepare_ms: u128,
+    #[serde(default)]
+    pub contour_prepare_ms: u128,
+    #[serde(default)]
+    pub barb_prepare_ms: u128,
     pub request_build_ms: u128,
     pub render_state_prep_ms: u128,
     pub png_encode_ms: u128,
@@ -196,6 +211,13 @@ pub type HrrrDirectRenderedRecipe = DirectRenderedRecipe;
 pub type HrrrDirectRecipeBlocker = DirectRecipeBlocker;
 pub type HrrrDirectBatchReport = DirectBatchReport;
 
+#[derive(Debug, Clone, Copy, Default)]
+struct DirectRequestBuildTiming {
+    field_prepare_ms: u128,
+    contour_prepare_ms: u128,
+    barb_prepare_ms: u128,
+}
+
 #[derive(Debug, Clone)]
 struct PlannedDirectRecipe {
     recipe: &'static PlotRecipe,
@@ -250,7 +272,9 @@ struct BarbStrideCacheKey {
     bounds_bits: [u64; 4],
 }
 
+type SharedContourLayerCache = Arc<Mutex<HashMap<FieldSelector, Option<ContourLayer>>>>;
 type SharedBarbStrideCache = Arc<Mutex<HashMap<BarbStrideCacheKey, (usize, usize)>>>;
+type SharedBarbLayerCache = Arc<Mutex<HashMap<BarbStrideCacheKey, Vec<WindBarbLayer>>>>;
 type SharedProjectedMapCache = Arc<Mutex<HashMap<(u32, u32, u8), ProjectedMap>>>;
 
 impl DirectBatchRequest {
@@ -269,6 +293,7 @@ impl DirectBatchRequest {
             product_overrides: HashMap::new(),
             output_width: request.output_width,
             output_height: request.output_height,
+            png_compression: request.png_compression,
         }
     }
 
@@ -278,6 +303,14 @@ impl DirectBatchRequest {
     /// loading bundles.
     pub fn from_hrrr_for_planner(request: &HrrrDirectBatchRequest) -> Self {
         Self::from_hrrr(request)
+    }
+}
+
+impl DirectBatchRequest {
+    fn png_write_options(&self) -> PngWriteOptions {
+        PngWriteOptions {
+            compression: self.png_compression,
+        }
     }
 }
 
@@ -818,6 +851,8 @@ fn render_direct_recipes(
     fetch_truth_by_actual_product: &HashMap<String, DirectFetchRuntimeInfo>,
     shared_context: Option<&dyn ProjectedMapProvider>,
 ) -> Result<Vec<DirectRenderedRecipe>, Box<dyn std::error::Error>> {
+    let contour_layer_cache = Arc::new(Mutex::new(HashMap::new()));
+    let barb_layer_cache = Arc::new(Mutex::new(HashMap::new()));
     let barb_stride_cache = Arc::new(Mutex::new(HashMap::new()));
     let projected_map_cache = Arc::new(Mutex::new(HashMap::new()));
     let worker_count = render_worker_count(planned.len());
@@ -832,6 +867,8 @@ fn render_direct_recipes(
                     extracted,
                     fetch_truth_by_actual_product,
                     shared_context,
+                    &contour_layer_cache,
+                    &barb_layer_cache,
                     &barb_stride_cache,
                     &projected_map_cache,
                 )
@@ -846,6 +883,8 @@ fn render_direct_recipes(
         let mut handles = Vec::new();
         for (chunk_index, chunk) in planned.chunks(chunk_size).enumerate() {
             let barb_stride_cache = Arc::clone(&barb_stride_cache);
+            let contour_layer_cache = Arc::clone(&contour_layer_cache);
+            let barb_layer_cache = Arc::clone(&barb_layer_cache);
             let projected_map_cache = Arc::clone(&projected_map_cache);
             let start_index = chunk_index * chunk_size;
             handles.push(scope.spawn(
@@ -859,6 +898,8 @@ fn render_direct_recipes(
                             extracted,
                             fetch_truth_by_actual_product,
                             shared_context,
+                            &contour_layer_cache,
+                            &barb_layer_cache,
                             &barb_stride_cache,
                             &projected_map_cache,
                         )
@@ -991,6 +1032,8 @@ fn render_direct_recipe(
     extracted: &HashMap<FieldSelector, SelectedField2D>,
     fetch_truth_by_actual_product: &HashMap<String, DirectFetchRuntimeInfo>,
     shared_context: Option<&dyn ProjectedMapProvider>,
+    contour_layer_cache: &SharedContourLayerCache,
+    barb_layer_cache: &SharedBarbLayerCache,
     barb_stride_cache: &SharedBarbStrideCache,
     projected_map_cache: &SharedProjectedMapCache,
 ) -> Result<DirectRenderedRecipe, Box<dyn std::error::Error>> {
@@ -1015,6 +1058,9 @@ fn render_direct_recipe(
         })?;
     let (
         project_ms,
+        field_prepare_ms,
+        contour_prepare_ms,
+        barb_prepare_ms,
         request_build_ms,
         render_state_prep_ms,
         png_encode_ms,
@@ -1030,6 +1076,8 @@ fn render_direct_recipe(
             extracted,
             &output_path,
             shared_context,
+            contour_layer_cache,
+            barb_layer_cache,
             barb_stride_cache,
             projected_map_cache,
         )?
@@ -1088,7 +1136,7 @@ fn render_direct_recipe(
         let project_ms = project_start.elapsed().as_millis();
 
         let request_build_start = Instant::now();
-        let mut render_request = build_render_request(
+        let (mut render_request, build_timing) = build_render_request(
             item.recipe,
             filled,
             extracted,
@@ -1096,6 +1144,8 @@ fn render_direct_recipe(
             request.domain.bounds,
             request.output_width,
             request.output_height,
+            contour_layer_cache,
+            barb_layer_cache,
             barb_stride_cache,
         )?;
         let request_build_ms = request_build_start.elapsed().as_millis();
@@ -1104,9 +1154,16 @@ fn render_direct_recipe(
             request.date_yyyymmdd, latest.cycle.hour_utc, request.forecast_hour, request.model
         ));
         render_request.subtitle_right = Some(format!("source: {}", latest.source));
-        let save_timing = save_png_profile(&render_request, &output_path)?;
+        let save_timing = save_png_profile_with_options(
+            &render_request,
+            &output_path,
+            &request.png_write_options(),
+        )?;
         (
             project_ms,
+            build_timing.field_prepare_ms,
+            build_timing.contour_prepare_ms,
+            build_timing.barb_prepare_ms,
             request_build_ms,
             save_timing.state_timing.state_prep_ms,
             save_timing.png_timing.png_encode_ms,
@@ -1131,6 +1188,9 @@ fn render_direct_recipe(
         input_fetch_keys: vec![runtime_fetch.fetch_key.clone()],
         timing: DirectRecipeTiming {
             project_ms,
+            field_prepare_ms,
+            contour_prepare_ms,
+            barb_prepare_ms,
             request_build_ms,
             render_state_prep_ms,
             png_encode_ms,
@@ -1151,10 +1211,15 @@ fn render_direct_composite_panel(
     extracted: &HashMap<FieldSelector, SelectedField2D>,
     output_path: &std::path::Path,
     shared_context: Option<&dyn ProjectedMapProvider>,
+    contour_layer_cache: &SharedContourLayerCache,
+    barb_layer_cache: &SharedBarbLayerCache,
     barb_stride_cache: &SharedBarbStrideCache,
     projected_map_cache: &SharedProjectedMapCache,
 ) -> Result<
     (
+        u128,
+        u128,
+        u128,
         u128,
         u128,
         u128,
@@ -1215,6 +1280,7 @@ fn render_direct_composite_panel(
     let project_ms = project_start.elapsed().as_millis();
 
     let request_build_start = Instant::now();
+    let mut build_timing = DirectRequestBuildTiming::default();
     let mut panel_requests = Vec::with_capacity(spec.component_slugs.len());
     for component_slug in spec.component_slugs {
         let component_recipe = plot_recipe(component_slug)
@@ -1226,7 +1292,7 @@ fn render_direct_composite_panel(
         let filled = extracted
             .get(&selector)
             .ok_or_else(|| format!("missing component selector {:?}", selector))?;
-        let mut panel_request = build_render_request(
+        let (mut panel_request, panel_timing) = build_render_request(
             component_recipe,
             filled,
             extracted,
@@ -1234,8 +1300,13 @@ fn render_direct_composite_panel(
             request.domain.bounds,
             spec.panel_width,
             spec.panel_height,
+            contour_layer_cache,
+            barb_layer_cache,
             barb_stride_cache,
         )?;
+        build_timing.field_prepare_ms += panel_timing.field_prepare_ms;
+        build_timing.contour_prepare_ms += panel_timing.contour_prepare_ms;
+        build_timing.barb_prepare_ms += panel_timing.barb_prepare_ms;
         panel_request.width = spec.panel_width;
         panel_request.height = spec.panel_height;
         panel_request.visual_mode = ProductVisualMode::PanelMember;
@@ -1272,16 +1343,18 @@ fn render_direct_composite_panel(
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let write_start = Instant::now();
-    DynamicImage::ImageRgba8(canvas).save(output_path)?;
-    let file_write_ms = write_start.elapsed().as_millis();
+    let save_timing =
+        save_rgba_png_profile_with_options(&canvas, output_path, &request.png_write_options())?;
     Ok((
         project_ms,
+        build_timing.field_prepare_ms,
+        build_timing.contour_prepare_ms,
+        build_timing.barb_prepare_ms,
         request_build_ms,
-        0,
-        0,
-        file_write_ms,
-        RenderStateTiming::default(),
+        save_timing.state_timing.state_prep_ms,
+        save_timing.png_timing.png_encode_ms,
+        save_timing.file_write_ms,
+        save_timing.state_timing,
         RenderImageTiming {
             total_ms: render_ms,
             ..RenderImageTiming::default()
@@ -1297,16 +1370,25 @@ fn build_render_request(
     bounds: (f64, f64, f64, f64),
     output_width: u32,
     output_height: u32,
+    contour_layer_cache: &SharedContourLayerCache,
+    barb_layer_cache: &SharedBarbLayerCache,
     barb_stride_cache: &SharedBarbStrideCache,
-) -> Result<MapRenderRequest, Box<dyn std::error::Error>> {
+) -> Result<(MapRenderRequest, DirectRequestBuildTiming), Box<dyn std::error::Error>> {
+    let mut timing = DirectRequestBuildTiming::default();
+    let field_prepare_start = Instant::now();
     let filled_field = render_filled_field(recipe, filled, extracted)?;
+    timing.field_prepare_ms = field_prepare_start.elapsed().as_millis();
     let overlay_only = should_render_overlay_only(filled.selector, recipe.contours.is_some());
     let visual_mode = visual_mode_for_direct_recipe(recipe, filled.selector, overlay_only);
     let mut request = if overlay_only {
         let mut request = MapRenderRequest::contour_only(filled_field.clone().into());
-        if let Some(layer) = contour_layer_for_values(filled.selector, &filled.values) {
+        let contour_prepare_start = Instant::now();
+        if let Some(layer) =
+            cached_contour_layer(filled.selector, &filled.values, contour_layer_cache)
+        {
             request.contours.push(layer);
         }
+        timing.contour_prepare_ms += contour_prepare_start.elapsed().as_millis();
         request
     } else {
         MapRenderRequest::new(
@@ -1327,15 +1409,25 @@ fn build_render_request(
     });
     request.projected_lines = projected.lines;
     request.projected_polygons = projected.polygons;
+    let contour_prepare_start = Instant::now();
     if overlay_only {
         request
             .contours
-            .extend(build_contour_layers(recipe, extracted));
+            .extend(build_contour_layers(recipe, extracted, contour_layer_cache));
     } else {
-        request.contours = build_contour_layers(recipe, extracted);
+        request.contours = build_contour_layers(recipe, extracted, contour_layer_cache);
     }
-    request.wind_barbs = build_barb_layers(recipe, extracted, bounds, barb_stride_cache);
-    Ok(request)
+    timing.contour_prepare_ms += contour_prepare_start.elapsed().as_millis();
+    let barb_prepare_start = Instant::now();
+    request.wind_barbs = build_barb_layers(
+        recipe,
+        extracted,
+        bounds,
+        barb_layer_cache,
+        barb_stride_cache,
+    );
+    timing.barb_prepare_ms = barb_prepare_start.elapsed().as_millis();
+    Ok((request, timing))
 }
 
 fn visual_mode_for_direct_recipe(
@@ -1605,6 +1697,7 @@ fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> Colo
 fn build_contour_layers(
     recipe: &PlotRecipe,
     extracted: &HashMap<FieldSelector, SelectedField2D>,
+    contour_layer_cache: &SharedContourLayerCache,
 ) -> Vec<ContourLayer> {
     let Some(spec) = &recipe.contours else {
         return Vec::new();
@@ -1616,9 +1709,30 @@ fn build_contour_layers(
         return Vec::new();
     };
 
-    contour_layer_for_values(selector, &field.values)
+    cached_contour_layer(selector, &field.values, contour_layer_cache)
         .into_iter()
         .collect()
+}
+
+fn cached_contour_layer(
+    selector: FieldSelector,
+    values: &[f32],
+    contour_layer_cache: &SharedContourLayerCache,
+) -> Option<ContourLayer> {
+    {
+        let cache = contour_layer_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(layer) = cache.get(&selector) {
+            return layer.clone();
+        }
+    }
+
+    let layer = contour_layer_for_values(selector, values);
+    let mut cache = contour_layer_cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.entry(selector).or_insert_with(|| layer.clone()).clone()
 }
 
 fn contour_layer_for_values(selector: FieldSelector, values: &[f32]) -> Option<ContourLayer> {
@@ -1684,6 +1798,7 @@ fn build_barb_layers(
     recipe: &PlotRecipe,
     extracted: &HashMap<FieldSelector, SelectedField2D>,
     bounds: (f64, f64, f64, f64),
+    barb_layer_cache: &SharedBarbLayerCache,
     barb_stride_cache: &SharedBarbStrideCache,
 ) -> Vec<WindBarbLayer> {
     let (Some(u_spec), Some(v_spec)) = (&recipe.barbs_u, &recipe.barbs_v) else {
@@ -1695,9 +1810,28 @@ fn build_barb_layers(
     let (Some(u), Some(v)) = (extracted.get(&u_selector), extracted.get(&v_selector)) else {
         return Vec::new();
     };
+    let key = BarbStrideCacheKey {
+        u_selector,
+        v_selector,
+        bounds_bits: [
+            bounds.0.to_bits(),
+            bounds.1.to_bits(),
+            bounds.2.to_bits(),
+            bounds.3.to_bits(),
+        ],
+    };
+    {
+        let cache = barb_layer_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(layers) = cache.get(&key) {
+            return layers.clone();
+        }
+    }
+
     let (stride_x, stride_y) =
         cached_barb_strides(u_selector, v_selector, &u.grid, bounds, barb_stride_cache);
-    vec![WindBarbLayer {
+    let layers = vec![WindBarbLayer {
         u: u.values.iter().map(|value| value * 1.943_844_5).collect(),
         v: v.values.iter().map(|value| value * 1.943_844_5).collect(),
         stride_x,
@@ -1705,7 +1839,11 @@ fn build_barb_layers(
         color: Color::BLACK,
         width: 1,
         length_px: 20.0,
-    }]
+    }];
+    let mut cache = barb_layer_cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.entry(key).or_insert_with(|| layers.clone()).clone()
 }
 
 fn cached_barb_strides(
@@ -1826,6 +1964,7 @@ mod tests {
             product_overrides: HashMap::new(),
             output_width: OUTPUT_WIDTH,
             output_height: OUTPUT_HEIGHT,
+            png_compression: PngCompressionMode::Default,
         }
     }
 

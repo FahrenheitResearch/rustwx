@@ -27,8 +27,9 @@ pub use presentation::{LineworkRole, PolygonRole, ProductVisualMode, RenderPrese
 pub use projected_map::{ProjectedMap, build_projected_map};
 pub use projection::LambertConformal;
 pub use render::{
-    RenderImageTiming, RenderPngTiming, map_frame_aspect_ratio, map_frame_aspect_ratio_for_mode,
-    render_to_image_profile, render_to_png_profile as profile_render_to_png,
+    PngCompressionMode, PngWriteOptions, RenderImageTiming, RenderPngTiming,
+    map_frame_aspect_ratio, map_frame_aspect_ratio_for_mode, render_to_image_profile,
+    render_to_png_profile as profile_render_to_png,
 };
 pub use request::{
     ChromeScale, Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, DomainFrame,
@@ -54,7 +55,8 @@ use crate::overlay::{
     BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPolygon, ProjectedPolyline,
 };
 use crate::render::{
-    RenderOpts, render_to_image as native_render_to_image, render_to_png, render_to_png_profile,
+    RenderOpts, encode_rgba_png_profile_with_options, render_to_image as native_render_to_image,
+    render_to_png, render_to_png_profile_with_options,
 };
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -209,10 +211,25 @@ impl RustRenderer {
         request: &MapRenderRequest,
         output_path: P,
     ) -> Result<RenderSaveTiming, RustwxRenderError> {
+        self.save_png_profile_with_options(request, output_path, &PngWriteOptions::default())
+    }
+
+    pub fn save_png_profile_with_options<P: AsRef<Path>>(
+        self,
+        request: &MapRenderRequest,
+        output_path: P,
+        png_options: &PngWriteOptions,
+    ) -> Result<RenderSaveTiming, RustwxRenderError> {
         let total_start = Instant::now();
         let (bytes, state_timing, png_timing) =
             with_render_state_profile(request, |data, ny, nx, opts| {
-                Ok(render_to_png_profile(data, ny, nx, opts))
+                Ok(render_to_png_profile_with_options(
+                    data,
+                    ny,
+                    nx,
+                    opts,
+                    png_options,
+                ))
             })?;
         let path = output_path.as_ref();
         let write_start = Instant::now();
@@ -249,6 +266,39 @@ pub fn save_png_profile<P: AsRef<Path>>(
     output_path: P,
 ) -> Result<RenderSaveTiming, RustwxRenderError> {
     RustRenderer.save_png_profile(request, output_path)
+}
+
+pub fn save_png_profile_with_options<P: AsRef<Path>>(
+    request: &MapRenderRequest,
+    output_path: P,
+    png_options: &PngWriteOptions,
+) -> Result<RenderSaveTiming, RustwxRenderError> {
+    RustRenderer.save_png_profile_with_options(request, output_path, png_options)
+}
+
+pub fn save_rgba_png_profile_with_options<P: AsRef<Path>>(
+    image: &RgbaImage,
+    output_path: P,
+    png_options: &PngWriteOptions,
+) -> Result<RenderSaveTiming, RustwxRenderError> {
+    let total_start = Instant::now();
+    let (bytes, png_encode_ms) = encode_rgba_png_profile_with_options(image, png_options);
+    let path = output_path.as_ref();
+    let write_start = Instant::now();
+    std::fs::write(path, bytes).map_err(|source| RustwxRenderError::WriteFile {
+        path: path.display().to_string(),
+        source,
+    })?;
+    Ok(RenderSaveTiming {
+        state_timing: RenderStateTiming::default(),
+        png_timing: RenderPngTiming {
+            image_timing: RenderImageTiming::default(),
+            png_encode_ms,
+            total_ms: png_encode_ms,
+        },
+        file_write_ms: write_start.elapsed().as_millis(),
+        total_ms: total_start.elapsed().as_millis(),
+    })
 }
 
 fn with_render_state<T>(

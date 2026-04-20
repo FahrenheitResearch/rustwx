@@ -9,11 +9,13 @@ use crate::presentation::{ProductVisualMode, RenderPresentation, TitleAnchor};
 use crate::rasterize;
 use crate::request::{ChromeScale, DomainFrame};
 use crate::text;
+use image::ExtendedColorType;
+use image::ImageEncoder;
+use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
 use image::RgbaImage;
 use image::imageops::{FilterType, resize};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::io::Cursor;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -72,6 +74,29 @@ pub struct RenderPngTiming {
     pub image_timing: RenderImageTiming,
     pub png_encode_ms: u128,
     pub total_ms: u128,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PngCompressionMode {
+    #[default]
+    Default,
+    Fast,
+    Fastest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PngWriteOptions {
+    #[serde(default)]
+    pub compression: PngCompressionMode,
+}
+
+impl Default for PngWriteOptions {
+    fn default() -> Self {
+        Self {
+            compression: PngCompressionMode::Default,
+        }
+    }
 }
 
 impl Default for RenderOpts {
@@ -2071,25 +2096,54 @@ pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) ->
     render_to_image_profile(data, ny, nx, opts).0
 }
 
+pub fn encode_rgba_png_profile_with_options(
+    image: &RgbaImage,
+    options: &PngWriteOptions,
+) -> (Vec<u8>, u128) {
+    let encode_start = Instant::now();
+    let compression = match options.compression {
+        PngCompressionMode::Default => CompressionType::Default,
+        PngCompressionMode::Fast => CompressionType::Fast,
+        PngCompressionMode::Fastest => CompressionType::Best,
+    };
+    let mut buf = Vec::new();
+    let encoder = PngEncoder::new_with_quality(&mut buf, compression, PngFilterType::Adaptive);
+    encoder
+        .write_image(
+            image.as_raw(),
+            image.width(),
+            image.height(),
+            ExtendedColorType::Rgba8,
+        )
+        .expect("PNG encoding failed");
+    (buf, encode_start.elapsed().as_millis())
+}
+
+pub fn render_to_png_profile_with_options(
+    data: &[f64],
+    ny: usize,
+    nx: usize,
+    opts: &RenderOpts,
+    png_options: &PngWriteOptions,
+) -> (Vec<u8>, RenderPngTiming) {
+    let total_start = Instant::now();
+    let (image, image_timing) = render_to_image_profile(data, ny, nx, opts);
+    let (buf, png_encode_ms) = encode_rgba_png_profile_with_options(&image, png_options);
+    let timing = RenderPngTiming {
+        image_timing,
+        png_encode_ms,
+        total_ms: total_start.elapsed().as_millis(),
+    };
+    (buf, timing)
+}
+
 pub fn render_to_png_profile(
     data: &[f64],
     ny: usize,
     nx: usize,
     opts: &RenderOpts,
 ) -> (Vec<u8>, RenderPngTiming) {
-    let total_start = Instant::now();
-    let (image, image_timing) = render_to_image_profile(data, ny, nx, opts);
-    let encode_start = Instant::now();
-    let mut buf = Vec::new();
-    image
-        .write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
-        .expect("PNG encoding failed");
-    let timing = RenderPngTiming {
-        image_timing,
-        png_encode_ms: encode_start.elapsed().as_millis(),
-        total_ms: total_start.elapsed().as_millis(),
-    };
-    (buf, timing)
+    render_to_png_profile_with_options(data, ny, nx, opts, &PngWriteOptions::default())
 }
 
 pub fn render_to_png(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) -> Vec<u8> {

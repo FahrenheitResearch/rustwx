@@ -12,12 +12,12 @@ use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::derived::{
     DerivedBatchRequest, run_derived_batch, supported_derived_recipe_slugs,
 };
-use rustwx_products::source::ProductSourceMode;
 use rustwx_products::publication::{
     ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
     canonical_run_slug, finalize_and_publish_run_manifest, publish_failure_manifest,
 };
 use rustwx_products::shared_context::DomainSpec;
+use rustwx_products::source::ProductSourceMode;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -139,6 +139,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         source_mode: args.source_mode.into(),
         output_width: 1200,
         output_height: 900,
+        png_compression: rustwx_render::PngCompressionMode::Default,
     };
     let report = run_derived_batch(&request)?;
 
