@@ -295,6 +295,7 @@ type SharedContourLayerCache = Arc<Mutex<HashMap<FieldSelector, Option<ContourLa
 type SharedBarbStrideCache = Arc<Mutex<HashMap<BarbStrideCacheKey, (usize, usize)>>>;
 type SharedBarbLayerCache = Arc<Mutex<HashMap<BarbStrideCacheKey, Vec<WindBarbLayer>>>>;
 type SharedProjectedMapCache = Arc<Mutex<HashMap<(u32, u32, u8), ProjectedMap>>>;
+type PreparedProjectedMaps = Arc<HashMap<(u32, u32, u8), ProjectedMap>>;
 
 impl DirectBatchRequest {
     fn from_hrrr(request: &HrrrDirectBatchRequest) -> Self {
@@ -874,6 +875,7 @@ fn render_direct_recipes(
     let barb_layer_cache = Arc::new(Mutex::new(HashMap::new()));
     let barb_stride_cache = Arc::new(Mutex::new(HashMap::new()));
     let projected_map_cache = Arc::new(Mutex::new(HashMap::new()));
+    let prepared_projected_maps = build_prepared_projected_maps(request, planned, extracted)?;
     let worker_count = render_worker_count(planned.len());
     if worker_count <= 1 {
         return planned
@@ -890,6 +892,7 @@ fn render_direct_recipes(
                     &barb_layer_cache,
                     &barb_stride_cache,
                     &projected_map_cache,
+                    &prepared_projected_maps,
                 )
             })
             .collect();
@@ -905,6 +908,7 @@ fn render_direct_recipes(
             let contour_layer_cache = Arc::clone(&contour_layer_cache);
             let barb_layer_cache = Arc::clone(&barb_layer_cache);
             let projected_map_cache = Arc::clone(&projected_map_cache);
+            let prepared_projected_maps = Arc::clone(&prepared_projected_maps);
             let start_index = chunk_index * chunk_size;
             handles.push(scope.spawn(
                 move || -> Result<Vec<(usize, DirectRenderedRecipe)>, std::io::Error> {
@@ -921,6 +925,7 @@ fn render_direct_recipes(
                             &barb_layer_cache,
                             &barb_stride_cache,
                             &projected_map_cache,
+                            &prepared_projected_maps,
                         )
                         .map_err(|err| {
                             std::io::Error::other(format!(
@@ -1044,6 +1049,63 @@ fn visual_mode_cache_key(mode: ProductVisualMode) -> u8 {
     }
 }
 
+fn standard_projected_key(request: &DirectBatchRequest, recipe: &PlotRecipe) -> Option<(u32, u32, u8)> {
+    let filled_selector = recipe.filled.selector?;
+    let overlay_only = should_render_overlay_only(filled_selector, recipe.contours.is_some());
+    let visual_mode = visual_mode_for_direct_recipe(recipe, filled_selector, overlay_only);
+    Some((
+        request.output_width,
+        request.output_height,
+        visual_mode_cache_key(visual_mode),
+    ))
+}
+
+fn build_prepared_projected_maps(
+    request: &DirectBatchRequest,
+    planned: &[PlannedDirectRecipe],
+    extracted: &HashMap<FieldSelector, SelectedField2D>,
+) -> Result<PreparedProjectedMaps, Box<dyn std::error::Error>> {
+    let sample_field = planned
+        .iter()
+        .find_map(|item| item.recipe.filled.selector.and_then(|selector| extracted.get(&selector)))
+        .ok_or("direct projected-map preparation missing a filled field")?;
+
+    let mut keys = std::collections::BTreeSet::<(u32, u32, u8)>::new();
+    for item in planned {
+        if let Some(spec) = composite_panel_spec(item.recipe.slug) {
+            let spec = spec.scaled_for_request(request);
+            keys.insert((
+                spec.panel_width,
+                spec.panel_height,
+                visual_mode_cache_key(ProductVisualMode::PanelMember),
+            ));
+        } else if let Some(key) = standard_projected_key(request, item.recipe) {
+            keys.insert(key);
+        }
+    }
+
+    let mut prepared = HashMap::new();
+    for (width, height, mode_key) in keys {
+        let visual_mode = match mode_key {
+            0 => ProductVisualMode::FilledMeteorology,
+            1 => ProductVisualMode::UpperAirAnalysis,
+            2 => ProductVisualMode::OverlayAnalysis,
+            3 => ProductVisualMode::SevereDiagnostic,
+            4 => ProductVisualMode::PanelMember,
+            5 => ProductVisualMode::ComparisonPanel,
+            _ => ProductVisualMode::FilledMeteorology,
+        };
+        let projected = build_projected_map(
+            &sample_field.grid.lat_deg,
+            &sample_field.grid.lon_deg,
+            request.domain.bounds,
+            map_frame_aspect_ratio_for_mode(visual_mode, width, height, true, true),
+        )?;
+        prepared.insert((width, height, mode_key), projected);
+    }
+    Ok(Arc::new(prepared))
+}
+
 fn render_direct_recipe(
     request: &DirectBatchRequest,
     latest: &LatestRun,
@@ -1055,6 +1117,7 @@ fn render_direct_recipe(
     barb_layer_cache: &SharedBarbLayerCache,
     barb_stride_cache: &SharedBarbStrideCache,
     projected_map_cache: &SharedProjectedMapCache,
+    prepared_projected_maps: &PreparedProjectedMaps,
 ) -> Result<DirectRenderedRecipe, Box<dyn std::error::Error>> {
     let render_start = Instant::now();
     let output_path = request.out_dir.join(format!(
@@ -1099,6 +1162,7 @@ fn render_direct_recipe(
             barb_layer_cache,
             barb_stride_cache,
             projected_map_cache,
+            prepared_projected_maps,
         )?
     } else {
         let filled_selector = item
@@ -1125,6 +1189,8 @@ fn render_direct_recipe(
             ctx.projected_map(request.output_width, request.output_height)
                 .cloned()
         }) {
+            projected
+        } else if let Some(projected) = prepared_projected_maps.get(&cache_key).cloned() {
             projected
         } else if let Some(projected) = projected_map_cache
             .lock()
@@ -1244,6 +1310,7 @@ fn render_direct_composite_panel(
     barb_layer_cache: &SharedBarbLayerCache,
     barb_stride_cache: &SharedBarbStrideCache,
     projected_map_cache: &SharedProjectedMapCache,
+    prepared_projected_maps: &PreparedProjectedMaps,
 ) -> Result<
     (
         u128,
@@ -1279,6 +1346,8 @@ fn render_direct_composite_panel(
         ctx.projected_map(spec.panel_width, spec.panel_height)
             .cloned()
     }) {
+        projected
+    } else if let Some(projected) = prepared_projected_maps.get(&cache_key).cloned() {
         projected
     } else if let Some(projected) = projected_map_cache
         .lock()
