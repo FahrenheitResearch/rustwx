@@ -1,4 +1,7 @@
-use grib_core::grib2::{Grib2File, Grib2Message, flip_rows, grid_latlon, level_name, parameter_name, parameter_units, unpack_message};
+use grib_core::grib2::{
+    Grib2File, Grib2Message, flip_rows, grid_latlon, level_name, parameter_name, parameter_units,
+    unpack_message,
+};
 use rustwx_core::{GridShape, LatLonGrid, ModelId};
 use serde::{Deserialize, Serialize};
 
@@ -132,7 +135,10 @@ impl NativeThermoSelector {
     }
 }
 
-pub fn native_candidate(model: ModelId, recipe: NativeThermoRecipe) -> Option<NativeThermoCandidate> {
+pub fn native_candidate(
+    model: ModelId,
+    recipe: NativeThermoRecipe,
+) -> Option<NativeThermoCandidate> {
     let (selector, label, semantics, auto_eligible, detail, fetch_product) =
         candidate_spec(model, recipe)?;
     Some(NativeThermoCandidate {
@@ -142,7 +148,11 @@ pub fn native_candidate(model: ModelId, recipe: NativeThermoRecipe) -> Option<Na
         auto_eligible,
         detail,
         fetch_product,
-        resolved_parameter_name: parameter_name(selector.discipline, selector.category, selector.number),
+        resolved_parameter_name: parameter_name(
+            selector.discipline,
+            selector.category,
+            selector.number,
+        ),
         resolved_level_name: level_name(selector.level_type),
     })
 }
@@ -187,11 +197,19 @@ pub fn extract_native_thermo_field(
         auto_eligible,
         detail,
         fetch_product,
-        resolved_parameter_name: parameter_name(selector.discipline, selector.category, selector.number),
+        resolved_parameter_name: parameter_name(
+            selector.discipline,
+            selector.category,
+            selector.number,
+        ),
         resolved_level_name: level_name(selector.level_type),
     };
     let grib = Grib2File::from_bytes(bytes)?;
-    let Some(message) = grib.messages.iter().find(|message| selector.matches(message)) else {
+    let Some(message) = grib
+        .messages
+        .iter()
+        .find(|message| selector.matches(message))
+    else {
         return Ok(None);
     };
     Ok(Some(build_native_field(recipe, candidate, message)?))
@@ -296,14 +314,22 @@ pub fn compare_native_vs_derived(
         .iter()
         .copied()
         .zip(derived.iter().copied())
-        .filter(|(native_value, derived_value)| native_value.is_finite() && derived_value.is_finite())
+        .filter(|(native_value, derived_value)| {
+            native_value.is_finite() && derived_value.is_finite()
+        })
         .collect::<Vec<_>>();
     if paired.is_empty() {
         return Err(format!("no finite native/derived comparison points for {recipe_slug}").into());
     }
 
-    let native_values = paired.iter().map(|(native_value, _)| *native_value).collect::<Vec<_>>();
-    let derived_values = paired.iter().map(|(_, derived_value)| *derived_value).collect::<Vec<_>>();
+    let native_values = paired
+        .iter()
+        .map(|(native_value, _)| *native_value)
+        .collect::<Vec<_>>();
+    let derived_values = paired
+        .iter()
+        .map(|(_, derived_value)| *derived_value)
+        .collect::<Vec<_>>();
     let mean_native = mean(&native_values);
     let mean_derived = mean(&derived_values);
 
@@ -398,7 +424,7 @@ fn candidate_spec(
             "native surface CAPE validated against canonical-derived baseline",
             "sfc",
         )),
-        (ModelId::Gfs, Sbcape) => Some((
+        (ModelId::Gfs, Sbcape) | (ModelId::RrfsA, Sbcape) => Some((
             NativeThermoSelector {
                 discipline: 0,
                 category: 7,
@@ -409,8 +435,16 @@ fn candidate_spec(
             "surface CAPE",
             ExactEquivalent,
             false,
-            "GFS surface CAPE candidate; compare before promotion",
-            "pgrb2.0p25",
+            if matches!(model, ModelId::RrfsA) {
+                "RRFS surface CAPE candidate; compare before promotion"
+            } else {
+                "GFS surface CAPE candidate; compare before promotion"
+            },
+            if matches!(model, ModelId::RrfsA) {
+                "nat-na"
+            } else {
+                "pgrb2.0p25"
+            },
         )),
         (ModelId::Hrrr, Sbcin) => Some((
             NativeThermoSelector {
@@ -426,7 +460,7 @@ fn candidate_spec(
             "HRRR surface CIN candidate; compare before promotion",
             "sfc",
         )),
-        (ModelId::Gfs, Sbcin) => Some((
+        (ModelId::Gfs, Sbcin) | (ModelId::RrfsA, Sbcin) => Some((
             NativeThermoSelector {
                 discipline: 0,
                 category: 7,
@@ -437,8 +471,16 @@ fn candidate_spec(
             "surface CIN",
             ExactEquivalent,
             false,
-            "GFS surface CIN candidate; compare before promotion",
-            "pgrb2.0p25",
+            if matches!(model, ModelId::RrfsA) {
+                "RRFS surface CIN candidate; compare before promotion"
+            } else {
+                "GFS surface CIN candidate; compare before promotion"
+            },
+            if matches!(model, ModelId::RrfsA) {
+                "nat-na"
+            } else {
+                "pgrb2.0p25"
+            },
         )),
         (ModelId::Hrrr, Sblcl) => Some((
             NativeThermoSelector {
@@ -454,7 +496,21 @@ fn candidate_spec(
             "HRRR surface LCL-height candidate; compare before promotion",
             "sfc",
         )),
-        (ModelId::Hrrr, Mlcape) | (ModelId::Gfs, Mlcape) => Some((
+        (ModelId::RrfsA, Sblcl) => Some((
+            NativeThermoSelector {
+                discipline: 0,
+                category: 3,
+                number: 5,
+                level_type: 2,
+                level_value: Some(0.0),
+            },
+            "cloud-base height",
+            ProxyEquivalent,
+            false,
+            "RRFS cloud-base height proxy for surface LCL height",
+            "nat-na",
+        )),
+        (ModelId::Hrrr, Mlcape) | (ModelId::Gfs, Mlcape) | (ModelId::RrfsA, Mlcape) => Some((
             NativeThermoSelector {
                 discipline: 0,
                 category: 7,
@@ -466,9 +522,15 @@ fn candidate_spec(
             ProxyEquivalent,
             false,
             "native mixed-layer CAPE proxy",
-            if matches!(model, ModelId::Hrrr) { "sfc" } else { "pgrb2.0p25" },
+            if matches!(model, ModelId::Hrrr) {
+                "sfc"
+            } else if matches!(model, ModelId::RrfsA) {
+                "nat-na"
+            } else {
+                "pgrb2.0p25"
+            },
         )),
-        (ModelId::Hrrr, Mlcin) | (ModelId::Gfs, Mlcin) => Some((
+        (ModelId::Hrrr, Mlcin) | (ModelId::Gfs, Mlcin) | (ModelId::RrfsA, Mlcin) => Some((
             NativeThermoSelector {
                 discipline: 0,
                 category: 7,
@@ -480,9 +542,15 @@ fn candidate_spec(
             ProxyEquivalent,
             false,
             "native mixed-layer CIN proxy",
-            if matches!(model, ModelId::Hrrr) { "sfc" } else { "pgrb2.0p25" },
+            if matches!(model, ModelId::Hrrr) {
+                "sfc"
+            } else if matches!(model, ModelId::RrfsA) {
+                "nat-na"
+            } else {
+                "pgrb2.0p25"
+            },
         )),
-        (ModelId::Hrrr, Mucape) | (ModelId::Gfs, Mucape) => Some((
+        (ModelId::Hrrr, Mucape) | (ModelId::Gfs, Mucape) | (ModelId::RrfsA, Mucape) => Some((
             NativeThermoSelector {
                 discipline: 0,
                 category: 7,
@@ -494,9 +562,15 @@ fn candidate_spec(
             ProxyEquivalent,
             false,
             "native most-unstable CAPE proxy",
-            if matches!(model, ModelId::Hrrr) { "sfc" } else { "pgrb2.0p25" },
+            if matches!(model, ModelId::Hrrr) {
+                "sfc"
+            } else if matches!(model, ModelId::RrfsA) {
+                "nat-na"
+            } else {
+                "pgrb2.0p25"
+            },
         )),
-        (ModelId::Hrrr, Mucin) | (ModelId::Gfs, Mucin) => Some((
+        (ModelId::Hrrr, Mucin) | (ModelId::Gfs, Mucin) | (ModelId::RrfsA, Mucin) => Some((
             NativeThermoSelector {
                 discipline: 0,
                 category: 7,
@@ -508,7 +582,13 @@ fn candidate_spec(
             ProxyEquivalent,
             false,
             "native most-unstable CIN proxy",
-            if matches!(model, ModelId::Hrrr) { "sfc" } else { "pgrb2.0p25" },
+            if matches!(model, ModelId::Hrrr) {
+                "sfc"
+            } else if matches!(model, ModelId::RrfsA) {
+                "nat-na"
+            } else {
+                "pgrb2.0p25"
+            },
         )),
         (ModelId::Hrrr, LiftedIndex) => Some((
             NativeThermoSelector {
@@ -537,6 +617,20 @@ fn candidate_spec(
             false,
             "GFS surface LI candidate; compare before promotion",
             "pgrb2.0p25",
+        )),
+        (ModelId::RrfsA, LiftedIndex) => Some((
+            NativeThermoSelector {
+                discipline: 0,
+                category: 7,
+                number: 10,
+                level_type: 100,
+                level_value: Some(50000.0),
+            },
+            "500-1000 mb lifted index",
+            ProxyEquivalent,
+            false,
+            "RRFS 500-1000 mb lifted-index proxy; compare before promotion",
+            "nat-na",
         )),
         (ModelId::EcmwfOpenData, Mucape) => Some((
             NativeThermoSelector {
@@ -732,7 +826,10 @@ mod tests {
         assert_eq!(sbcape.level_type, 1);
         assert_eq!(sbcin.level_type, 1);
         assert_eq!(sblcl.level_type, 5);
-        assert_eq!(sbcape.parameter_name, "Convective Available Potential Energy");
+        assert_eq!(
+            sbcape.parameter_name,
+            "Convective Available Potential Energy"
+        );
         assert_eq!(sbcin.parameter_name, "Convective Inhibition");
         assert_eq!(sblcl.parameter_name, "Geopotential Height");
     }
@@ -789,7 +886,10 @@ mod tests {
             extract_native_thermo_field(ModelId::EcmwfOpenData, NativeThermoRecipe::Mucape, &bytes)
                 .unwrap()
                 .unwrap();
-        assert_eq!(mucape.parameter_name, "Convective Available Potential Energy");
+        assert_eq!(
+            mucape.parameter_name,
+            "Convective Available Potential Energy"
+        );
         assert_eq!(mucape.level_type, 17);
     }
 
@@ -801,5 +901,24 @@ mod tests {
         assert_eq!(stats.valid_points, 4);
         assert!(stats.correlation_r > 0.99);
         assert!(stats.mean_abs_diff > 0.0);
+    }
+
+    #[test]
+    fn rrfs_exposes_all_supported_native_thermo_candidates() {
+        let supported = [
+            "sbcape",
+            "sbcin",
+            "sblcl",
+            "mlcape",
+            "mlcin",
+            "mucape",
+            "mucin",
+            "lifted_index",
+        ];
+        for slug in supported {
+            let candidate = native_candidate_for_slug(ModelId::RrfsA, slug)
+                .unwrap_or_else(|| panic!("rrfs native candidate missing for {slug}"));
+            assert_eq!(candidate.fetch_product, "nat-na");
+        }
     }
 }

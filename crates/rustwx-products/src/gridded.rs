@@ -934,6 +934,20 @@ pub(crate) fn bundle_fetch_variable_patterns(
                 .map(str::to_string)
                 .collect()
         }
+        (CanonicalBundleDescriptor::NativeAnalysis, "nat-na") => vec![
+            "CAPE:surface",
+            "CIN:surface",
+            "LFTX:500-1000 mb",
+            "CAPE:90-0 mb above ground",
+            "CIN:90-0 mb above ground",
+            "CAPE:255-0 mb above ground",
+            "CIN:255-0 mb above ground",
+            "HGT:cloud base",
+            "PRES:cloud base",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
         _ => Vec::new(),
     }
 }

@@ -1342,6 +1342,7 @@ mod tests {
                 project_ms: 5,
                 native_extract_ms: 0,
                 native_compare_ms: 0,
+                memory_profile: None,
             },
             recipes: vec![HrrrDerivedRenderedRecipe {
                 recipe_slug: "sbcape".into(),
@@ -1556,6 +1557,7 @@ mod tests {
                 project_ms: 1,
                 native_extract_ms: 0,
                 native_compare_ms: 0,
+                memory_profile: None,
             },
             recipes: vec![HrrrDerivedRenderedRecipe {
                 recipe_slug: "sbcape".into(),
