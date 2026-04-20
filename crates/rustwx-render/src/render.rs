@@ -16,6 +16,8 @@ use image::RgbaImage;
 use image::imageops::{FilterType, resize};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -219,8 +221,15 @@ impl CachedProjectedPixels {
     }
 }
 
+#[derive(Clone)]
+struct CachedStaticBase {
+    key: u64,
+    image: RgbaImage,
+}
+
 thread_local! {
     static PROJECTED_PIXEL_CACHE: RefCell<Option<CachedProjectedPixels>> = const { RefCell::new(None) };
+    static STATIC_BASE_CACHE: RefCell<Option<CachedStaticBase>> = const { RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -587,6 +596,115 @@ fn projected_grid_to_pixels_cached(
         PROJECTED_PIXEL_CACHE_MISSES.with(|count| count.set(count.get() + 1));
         pixels
     })
+}
+
+fn hash_rgba(hasher: &mut impl Hasher, color: Rgba) {
+    color.r.hash(hasher);
+    color.g.hash(hasher);
+    color.b.hash(hasher);
+    color.a.hash(hasher);
+}
+
+fn hash_extent(hasher: &mut impl Hasher, extent: &MapExtent) {
+    extent.x_min.to_bits().hash(hasher);
+    extent.x_max.to_bits().hash(hasher);
+    extent.y_min.to_bits().hash(hasher);
+    extent.y_max.to_bits().hash(hasher);
+}
+
+fn hash_projected_polygons(hasher: &mut impl Hasher, polygons: &[ProjectedPolygon]) {
+    polygons.len().hash(hasher);
+    for polygon in polygons {
+        hash_rgba(hasher, polygon.color);
+        std::mem::discriminant(&polygon.role).hash(hasher);
+        polygon.rings.len().hash(hasher);
+        for ring in &polygon.rings {
+            ring.len().hash(hasher);
+            for &(x, y) in ring {
+                x.to_bits().hash(hasher);
+                y.to_bits().hash(hasher);
+            }
+        }
+    }
+}
+
+fn static_base_cache_key(
+    opts: &RenderOpts,
+    layout: &Layout,
+    extent: Option<&MapExtent>,
+    domain_frame_rect: Option<LocalRect>,
+    canvas_background: Rgba,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    opts.width.hash(&mut hasher);
+    opts.height.hash(&mut hasher);
+    layout.map_x.hash(&mut hasher);
+    layout.map_y.hash(&mut hasher);
+    layout.map_w.hash(&mut hasher);
+    layout.map_h.hash(&mut hasher);
+    hash_rgba(&mut hasher, canvas_background);
+    hash_rgba(&mut hasher, opts.presentation.map_background);
+    opts.domain_frame.is_some().hash(&mut hasher);
+    if let Some(frame) = opts.domain_frame {
+        frame.clear_outside.hash(&mut hasher);
+    }
+    domain_frame_rect.map(|rect| (rect.min_x, rect.max_x, rect.min_y, rect.max_y).hash(&mut hasher));
+    if let Some(extent) = extent {
+        hash_extent(&mut hasher, extent);
+    } else {
+        0u8.hash(&mut hasher);
+    }
+    hash_projected_polygons(&mut hasher, &opts.projected_polygons);
+    hasher.finish()
+}
+
+fn build_static_base_image(
+    opts: &RenderOpts,
+    layout: &Layout,
+    extent: Option<&MapExtent>,
+    domain_frame_rect: Option<LocalRect>,
+    canvas_background: Rgba,
+    polygon_clip_rect: (i32, i32, i32, i32),
+) -> (RgbaImage, u128, u128) {
+    let background_start = Instant::now();
+    let mut img = RgbaImage::from_pixel(opts.width, opts.height, canvas_background.to_image_rgba());
+    if matches!(opts.domain_frame, Some(frame) if frame.clear_outside)
+        && domain_frame_rect.is_some()
+    {
+        let rect = domain_frame_rect.expect("checked is_some above");
+        for py in rect.min_y..=rect.max_y.min(layout.map_h.saturating_sub(1)) {
+            for px in rect.min_x..=rect.max_x.min(layout.map_w.saturating_sub(1)) {
+                img.put_pixel(
+                    layout.map_x + px,
+                    layout.map_y + py,
+                    opts.presentation.map_background.to_image_rgba(),
+                );
+            }
+        }
+    } else {
+        let map_right = layout.map_x.saturating_add(layout.map_w).min(img.width());
+        let map_bottom = layout.map_y.saturating_add(layout.map_h).min(img.height());
+        for py in layout.map_y..map_bottom {
+            for px in layout.map_x..map_right {
+                img.put_pixel(px, py, opts.presentation.map_background.to_image_rgba());
+            }
+        }
+    }
+    let background_ms = background_start.elapsed().as_millis();
+
+    let polygon_start = Instant::now();
+    if let Some(extent) = extent {
+        draw_projected_polygons(
+            &mut img,
+            layout,
+            extent,
+            &opts.projected_polygons,
+            opts.presentation,
+            Some(polygon_clip_rect),
+        );
+    }
+    let polygon_fill_ms = polygon_start.elapsed().as_millis();
+    (img, background_ms, polygon_fill_ms)
 }
 
 fn draw_projected_grid_boundary(
@@ -1687,52 +1805,40 @@ fn render_to_image_profile_inner(
             )
         });
 
-    let background_start = Instant::now();
     let canvas_background = if opts.background == Rgba::WHITE {
         opts.presentation.canvas_background
     } else {
         opts.background
     };
-    let mut img = RgbaImage::from_pixel(opts.width, opts.height, canvas_background.to_image_rgba());
-    if matches!(opts.domain_frame, Some(frame) if frame.clear_outside)
-        && domain_frame_rect.is_some()
-    {
-        let rect = domain_frame_rect.expect("checked is_some above");
-        for py in rect.min_y..=rect.max_y.min(layout.map_h.saturating_sub(1)) {
-            for px in rect.min_x..=rect.max_x.min(layout.map_w.saturating_sub(1)) {
-                img.put_pixel(
-                    layout.map_x + px,
-                    layout.map_y + py,
-                    opts.presentation.map_background.to_image_rgba(),
-                );
+    let static_base_key = static_base_cache_key(
+        opts,
+        &layout,
+        opts.map_extent.as_ref(),
+        domain_frame_rect,
+        canvas_background,
+    );
+    let (mut img, background_ms, polygon_fill_ms) = STATIC_BASE_CACHE.with(|cache_cell| {
+        let mut cache = cache_cell.borrow_mut();
+        if let Some(cached) = cache.as_ref() {
+            if cached.key == static_base_key {
+                return (cached.image.clone(), 0, 0);
             }
         }
-    } else {
-        let map_right = layout.map_x.saturating_add(layout.map_w).min(img.width());
-        let map_bottom = layout.map_y.saturating_add(layout.map_h).min(img.height());
-        for py in layout.map_y..map_bottom {
-            for px in layout.map_x..map_right {
-                img.put_pixel(px, py, opts.presentation.map_background.to_image_rgba());
-            }
-        }
-    }
-    let background_ms = background_start.elapsed().as_millis();
 
-    // Paint filled basemap polygons (ocean, land, lakes) under the data. Done
-    // in main-canvas pixel space so we don't have to squeeze polygons through
-    // the map_img scratch buffer's rasterize path.
-    let polygon_start = Instant::now();
-    if let Some(ref extent) = opts.map_extent {
-        draw_projected_polygons(
-            &mut img,
+        let (image, background_ms, polygon_fill_ms) = build_static_base_image(
+            opts,
             &layout,
-            extent,
-            &opts.projected_polygons,
-            opts.presentation,
-            Some(polygon_clip_rect),
+            opts.map_extent.as_ref(),
+            domain_frame_rect,
+            canvas_background,
+            polygon_clip_rect,
         );
-    }
-    let polygon_fill_ms = polygon_start.elapsed().as_millis();
+        *cache = Some(CachedStaticBase {
+            key: static_base_key,
+            image: image.clone(),
+        });
+        (image, background_ms, polygon_fill_ms)
+    });
     let rasterize_start = Instant::now();
     let map_img = if let Some(ref pixel_points) = projected_pixels {
         rasterize::rasterize_projected_grid(

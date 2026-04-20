@@ -1140,26 +1140,34 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
         let projected_ref = projected
             .as_ref()
             .ok_or("derived render requested but no projection was prepared")?;
-        let rendered = thread::scope(|scope| -> Result<Vec<DerivedRenderedRecipe>, io::Error> {
+        let rendered = if render_parallelism <= 1 {
             let mut rendered = Vec::with_capacity(derived_output_recipes.len());
-            let mut pending = VecDeque::new();
-
             for recipe in derived_output_recipes.iter().copied() {
-                let model_slug = request.model.as_str().replace('-', "_");
-                let output_path = request.out_dir.join(format!(
-                    "rustwx_{}_{}_{}z_f{:03}_{}_{}.png",
-                    model_slug,
-                    request.date_yyyymmdd,
+                rendered.push(render_derived_output_recipe(
+                    request,
+                    recipe,
+                    grid_ref,
+                    projected_ref,
+                    date_yyyymmdd,
                     cycle_utc,
-                    request.forecast_hour,
-                    request.domain.slug,
-                    recipe.slug()
-                ));
-                let lane_fetch_keys = input_fetch_keys.clone();
-                pending.push_back(scope.spawn(
-                    move || -> Result<DerivedRenderedRecipe, io::Error> {
-                        let render_start = Instant::now();
-                        let render_artifact = build_render_artifact(
+                    forecast_hour,
+                    source,
+                    model,
+                    computed,
+                    input_fetch_keys.clone(),
+                )?);
+            }
+            rendered
+        } else {
+            thread::scope(|scope| -> Result<Vec<DerivedRenderedRecipe>, io::Error> {
+                let mut rendered = Vec::with_capacity(derived_output_recipes.len());
+                let mut pending = VecDeque::new();
+
+                for recipe in derived_output_recipes.iter().copied() {
+                    let lane_fetch_keys = input_fetch_keys.clone();
+                    pending.push_back(scope.spawn(move || {
+                        render_derived_output_recipe(
+                            request,
                             recipe,
                             grid_ref,
                             projected_ref,
@@ -1168,65 +1176,24 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                             forecast_hour,
                             source,
                             model,
-                            request.output_width,
-                            request.output_height,
                             computed,
+                            lane_fetch_keys,
                         )
-                        .map_err(thread_render_error)?;
-                        let save_timing = save_png_profile_with_options(
-                            &render_artifact.request,
-                            &output_path,
-                            &request.png_write_options(),
-                        )
-                        .map_err(thread_render_error)?;
-                        let render_ms = render_start.elapsed().as_millis();
-                        let content_identity = artifact_identity_from_path(&output_path)
-                            .map_err(thread_render_error)?;
-                        Ok(DerivedRenderedRecipe {
-                            recipe_slug: render_artifact.recipe_slug,
-                            title: render_artifact.title,
-                            source_route: derived_compute_source_route(recipe, request.source_mode)
-                                .ok_or_else(|| {
-                                    io::Error::other(format!(
-                                        "missing compute source route for '{}'",
-                                        recipe.slug()
-                                    ))
-                                })?,
-                            output_path,
-                            content_identity,
-                            input_fetch_keys: lane_fetch_keys,
-                            timing: DerivedRecipeTiming {
-                                render_to_image_ms: save_timing.png_timing.render_to_image_ms,
-                                data_layer_draw_ms: derived_data_layer_draw_ms(
-                                    &save_timing.png_timing.image_timing,
-                                ),
-                                overlay_draw_ms: derived_overlay_draw_ms(
-                                    &save_timing.png_timing.image_timing,
-                                ),
-                                render_state_prep_ms: save_timing.state_timing.state_prep_ms,
-                                png_encode_ms: save_timing.png_timing.png_encode_ms,
-                                file_write_ms: save_timing.file_write_ms,
-                                render_ms,
-                                total_ms: render_ms,
-                                state_timing: save_timing.state_timing,
-                                image_timing: save_timing.png_timing.image_timing,
-                            },
-                        })
-                    },
-                ));
+                    }));
 
-                if pending.len() >= render_parallelism {
-                    rendered.push(join_render_job(pending.pop_front().unwrap())?);
+                    if pending.len() >= render_parallelism {
+                        rendered.push(join_render_job(pending.pop_front().unwrap())?);
+                    }
                 }
-            }
 
-            while let Some(handle) = pending.pop_front() {
-                rendered.push(join_render_job(handle)?);
-            }
+                while let Some(handle) = pending.pop_front() {
+                    rendered.push(join_render_job(handle)?);
+                }
 
-            Ok(rendered)
-        })
-        .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+                Ok(rendered)
+            })
+            .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?
+        };
         for recipe in rendered {
             let parsed = DerivedRecipe::parse(&recipe.recipe_slug).map_err(io::Error::other)?;
             rendered_by_recipe.insert(parsed, recipe);
@@ -2747,6 +2714,79 @@ fn png_render_parallelism(job_count: usize) -> usize {
 
 fn thread_render_error(err: impl std::fmt::Display) -> io::Error {
     io::Error::other(err.to_string())
+}
+
+fn render_derived_output_recipe(
+    request: &DerivedBatchRequest,
+    recipe: DerivedRecipe,
+    grid_ref: &rustwx_core::LatLonGrid,
+    projected_ref: &ProjectedMap,
+    date_yyyymmdd: &str,
+    cycle_utc: u8,
+    forecast_hour: u16,
+    source: SourceId,
+    model: ModelId,
+    computed: &DerivedComputedFields,
+    lane_fetch_keys: Vec<String>,
+) -> Result<DerivedRenderedRecipe, io::Error> {
+    let model_slug = request.model.as_str().replace('-', "_");
+    let output_path = request.out_dir.join(format!(
+        "rustwx_{}_{}_{}z_f{:03}_{}_{}.png",
+        model_slug,
+        request.date_yyyymmdd,
+        cycle_utc,
+        request.forecast_hour,
+        request.domain.slug,
+        recipe.slug()
+    ));
+    let render_start = Instant::now();
+    let render_artifact = build_render_artifact(
+        recipe,
+        grid_ref,
+        projected_ref,
+        date_yyyymmdd,
+        cycle_utc,
+        forecast_hour,
+        source,
+        model,
+        request.output_width,
+        request.output_height,
+        computed,
+    )
+    .map_err(thread_render_error)?;
+    let save_timing = save_png_profile_with_options(
+        &render_artifact.request,
+        &output_path,
+        &request.png_write_options(),
+    )
+    .map_err(thread_render_error)?;
+    let render_ms = render_start.elapsed().as_millis();
+    let content_identity = artifact_identity_from_path(&output_path).map_err(thread_render_error)?;
+    Ok(DerivedRenderedRecipe {
+        recipe_slug: render_artifact.recipe_slug,
+        title: render_artifact.title,
+        source_route: derived_compute_source_route(recipe, request.source_mode).ok_or_else(|| {
+            io::Error::other(format!(
+                "missing compute source route for '{}'",
+                recipe.slug()
+            ))
+        })?,
+        output_path,
+        content_identity,
+        input_fetch_keys: lane_fetch_keys,
+        timing: DerivedRecipeTiming {
+            render_to_image_ms: save_timing.png_timing.render_to_image_ms,
+            data_layer_draw_ms: derived_data_layer_draw_ms(&save_timing.png_timing.image_timing),
+            overlay_draw_ms: derived_overlay_draw_ms(&save_timing.png_timing.image_timing),
+            render_state_prep_ms: save_timing.state_timing.state_prep_ms,
+            png_encode_ms: save_timing.png_timing.png_encode_ms,
+            file_write_ms: save_timing.file_write_ms,
+            render_ms,
+            total_ms: render_ms,
+            state_timing: save_timing.state_timing,
+            image_timing: save_timing.png_timing.image_timing,
+        },
+    })
 }
 
 fn join_render_job<T>(
