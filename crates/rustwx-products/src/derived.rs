@@ -18,7 +18,7 @@ use rustwx_render::{
     save_png_profile_with_options,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -29,13 +29,18 @@ use crate::gridded::{
     PressureFields as GenericPressureFields, ProjectedGridIntersection,
     SharedTiming as GenericSharedTiming, SurfaceFields as GenericSurfaceFields,
     broadcast_levels_pa, classify_projected_grid_intersection, crop_latlon_grid,
-    crop_values_f64, resolve_thermo_pair_run,
+    crop_values_f64, decode_cache_path, decode_surface_grid, fetch_family_file,
+    load_or_decode_pressure_cropped_with_shape, load_or_decode_surface_cropped,
+    resolve_thermo_pair_run,
 };
 use crate::planner::{ExecutionPlanBuilder, PlannedBundle};
 use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
 };
-use crate::runtime::{BundleLoaderConfig, LoadedBundleSet, load_execution_plan};
+use crate::runtime::{
+    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, LoadedBundleTiming,
+    load_execution_plan,
+};
 use crate::severe::{
     build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
 };
@@ -836,6 +841,13 @@ pub fn run_derived_batch(
             planned_routes.blockers,
         ));
     }
+    if let Some(loaded) = maybe_load_rrfs_cropped_pair_for_derived(
+        request,
+        &latest,
+        &planned_routes,
+    )? {
+        return run_derived_batch_from_loaded_bundles(request, &recipes, &loaded);
+    }
     let plan = build_derived_execution_plan(
         &latest,
         request.forecast_hour,
@@ -852,6 +864,189 @@ pub fn run_derived_batch(
         },
     )?;
     run_derived_batch_from_loaded_bundles(request, &recipes, &loaded)
+}
+
+fn maybe_load_rrfs_cropped_pair_for_derived(
+    request: &DerivedBatchRequest,
+    latest: &rustwx_models::LatestRun,
+    planned_routes: &PlannedDerivedSourceRoutes,
+) -> Result<Option<LoadedBundleSet>, Box<dyn std::error::Error>> {
+    if request.model != ModelId::RrfsA
+        || planned_routes.compute_recipes.is_empty()
+        || !planned_routes.native_routes.is_empty()
+    {
+        return Ok(None);
+    }
+
+    let plan = build_derived_execution_plan(
+        latest,
+        request.forecast_hour,
+        request.surface_product_override.as_deref(),
+        request.pressure_product_override.as_deref(),
+        true,
+        &[],
+    );
+    let surface_planned = plan
+        .bundle_for(CanonicalBundleDescriptor::SurfaceAnalysis, request.forecast_hour)
+        .ok_or("rrfs derived crop path missing surface bundle")?;
+    let pressure_planned = plan
+        .bundle_for(CanonicalBundleDescriptor::PressureAnalysis, request.forecast_hour)
+        .ok_or("rrfs derived crop path missing pressure bundle")?;
+
+    let surface_fetch_start = Instant::now();
+    let mut surface_file = fetch_family_file(
+        request.model,
+        latest.cycle.clone(),
+        request.forecast_hour,
+        latest.source,
+        &surface_planned.resolved,
+        &request.cache_root,
+        request.use_cache,
+    )?;
+    let fetch_surface_ms = surface_fetch_start.elapsed().as_millis();
+
+    let pressure_fetch_start = Instant::now();
+    let mut pressure_file = fetch_family_file(
+        request.model,
+        latest.cycle.clone(),
+        request.forecast_hour,
+        latest.source,
+        &pressure_planned.resolved,
+        &request.cache_root,
+        request.use_cache,
+    )?;
+    let fetch_pressure_ms = pressure_fetch_start.elapsed().as_millis();
+
+    let surface_grid = decode_surface_grid(surface_file.bytes.as_slice())?;
+    let projected = build_projected_map_from_latlon(
+        &surface_grid
+            .lat
+            .iter()
+            .copied()
+            .map(|value| value as f32)
+            .collect::<Vec<_>>(),
+        &surface_grid
+            .lon
+            .iter()
+            .copied()
+            .map(|value| value as f32)
+            .collect::<Vec<_>>(),
+        request.domain.bounds,
+        map_frame_aspect_ratio(request.output_width, request.output_height, true, true),
+    )?;
+
+    let crop = match classify_projected_grid_intersection(
+        surface_grid.nx,
+        surface_grid.ny,
+        &projected.projected_x,
+        &projected.projected_y,
+        &projected.extent,
+        2,
+    )? {
+        ProjectedGridIntersection::Empty => {
+            return Err(format!(
+                "rrfs derived projected crop for domain '{}' produced an empty domain",
+                request.domain.slug
+            )
+            .into())
+        }
+        ProjectedGridIntersection::Full => return Ok(None),
+        ProjectedGridIntersection::Crop(crop) => crop,
+    };
+
+    let surface_decode_start = Instant::now();
+    let surface_decode = load_or_decode_surface_cropped(
+        &cropped_decode_cache_path(&request.cache_root, &surface_file.request, "surface", crop),
+        surface_file.bytes.as_slice(),
+        request.use_cache,
+        crop,
+    )?;
+    let decode_surface_ms = surface_decode_start.elapsed().as_millis();
+
+    let pressure_decode_start = Instant::now();
+    let (pressure_decode, pressure_shape) = load_or_decode_pressure_cropped_with_shape(
+        &cropped_decode_cache_path(
+            &request.cache_root,
+            &pressure_file.request,
+            "pressure",
+            crop,
+        ),
+        pressure_file.bytes.as_slice(),
+        request.use_cache,
+        crop,
+    )?;
+    let decode_pressure_ms = pressure_decode_start.elapsed().as_millis();
+
+    crate::gridded::validate_pressure_decode_against_surface(
+        &pressure_decode,
+        pressure_shape,
+        surface_decode.value.nx,
+        surface_decode.value.ny,
+    )?;
+
+    surface_file.bytes.clear();
+    surface_file.bytes.shrink_to_fit();
+    pressure_file.bytes.clear();
+    pressure_file.bytes.shrink_to_fit();
+
+    let mut fetched = BTreeMap::new();
+    fetched.insert(
+        surface_planned.fetch_key(),
+        FetchedBundleBytes {
+            key: surface_planned.fetch_key(),
+            file: surface_file,
+            fetch_ms: fetch_surface_ms,
+        },
+    );
+    fetched.insert(
+        pressure_planned.fetch_key(),
+        FetchedBundleBytes {
+            key: pressure_planned.fetch_key(),
+            file: pressure_file,
+            fetch_ms: fetch_pressure_ms,
+        },
+    );
+
+    let mut surface_decodes = BTreeMap::new();
+    surface_decodes.insert(surface_planned.id.clone(), surface_decode);
+    let mut pressure_decodes = BTreeMap::new();
+    pressure_decodes.insert(pressure_planned.id.clone(), pressure_decode);
+
+    Ok(Some(LoadedBundleSet {
+        plan,
+        latest: latest.clone(),
+        forecast_hour: request.forecast_hour,
+        fetched,
+        fetch_failures: BTreeMap::new(),
+        surface_decodes,
+        pressure_decodes,
+        bundle_failures: BTreeMap::new(),
+        timing: LoadedBundleTiming {
+            fetch_ms_total: fetch_surface_ms + fetch_pressure_ms,
+            decode_surface_ms_total: decode_surface_ms,
+            decode_pressure_ms_total: decode_pressure_ms,
+        },
+    }))
+}
+
+fn cropped_decode_cache_path(
+    cache_root: &std::path::Path,
+    fetch: &rustwx_io::FetchRequest,
+    name: &str,
+    crop: crate::gridded::GridCrop,
+) -> PathBuf {
+    let mut path = decode_cache_path(cache_root, fetch, name);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(name)
+        .to_string();
+    let suffix = format!(
+        "{stem}_crop_{}_{}_{}_{}",
+        crop.x_start, crop.x_end, crop.y_start, crop.y_end
+    );
+    path.set_file_name(format!("{suffix}.bin"));
+    path
 }
 
 pub fn run_hrrr_derived_batch(

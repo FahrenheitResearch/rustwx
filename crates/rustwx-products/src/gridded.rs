@@ -46,6 +46,14 @@ impl SurfaceFields {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct SurfaceGridLayout {
+    pub lat: Vec<f64>,
+    pub lon: Vec<f64>,
+    pub nx: usize,
+    pub ny: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PressureFields {
     pub pressure_levels_hpa: Vec<f64>,
@@ -989,39 +997,80 @@ pub(crate) fn load_or_decode_pressure_with_shape(
     ))
 }
 
+pub(crate) fn decode_surface_grid(bytes: &[u8]) -> Result<SurfaceGridLayout, Box<dyn std::error::Error>> {
+    let file = Grib2File::from_bytes(bytes)?;
+    let sample = file
+        .messages
+        .first()
+        .ok_or("surface family GRIB had no messages")?;
+    Ok(decode_surface_grid_from_sample(sample))
+}
+
+pub(crate) fn load_or_decode_surface_cropped(
+    path: &Path,
+    bytes: &[u8],
+    use_cache: bool,
+    crop: GridCrop,
+) -> Result<CachedDecode<SurfaceFields>, Box<dyn std::error::Error>> {
+    if use_cache {
+        if let Some(cached) = load_bincode::<SurfaceFields>(path)? {
+            return Ok(CachedDecode {
+                value: cached,
+                cache_hit: true,
+                path: path.to_path_buf(),
+            });
+        }
+    }
+    let decoded = decode_surface_cropped(bytes, crop)?;
+    if use_cache {
+        store_bincode(path, &decoded)?;
+    }
+    Ok(CachedDecode {
+        value: decoded,
+        cache_hit: false,
+        path: path.to_path_buf(),
+    })
+}
+
+pub(crate) fn load_or_decode_pressure_cropped_with_shape(
+    path: &Path,
+    bytes: &[u8],
+    use_cache: bool,
+    crop: GridCrop,
+) -> Result<(CachedDecode<PressureFields>, Option<(usize, usize)>), Box<dyn std::error::Error>> {
+    if use_cache {
+        if let Some(cached) = load_bincode::<PressureFields>(path)? {
+            return Ok((
+                CachedDecode {
+                    value: cached,
+                    cache_hit: true,
+                    path: path.to_path_buf(),
+                },
+                None,
+            ));
+        }
+    }
+    let (decoded, nx, ny) = decode_pressure_cropped_with_shape(bytes, crop)?;
+    if use_cache {
+        store_bincode(path, &decoded)?;
+    }
+    Ok((
+        CachedDecode {
+            value: decoded,
+            cache_hit: false,
+            path: path.to_path_buf(),
+        },
+        Some((nx, ny)),
+    ))
+}
+
 fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Error>> {
     let file = Grib2File::from_bytes(bytes)?;
     let sample = file
         .messages
         .first()
         .ok_or("surface family GRIB had no messages")?;
-    let (mut lat_raw, mut lon_raw) = grid_latlon(&sample.grid);
-    if sample.grid.scan_mode & 0x40 != 0 {
-        flip_rows(
-            &mut lat_raw,
-            sample.grid.nx as usize,
-            sample.grid.ny as usize,
-        );
-        flip_rows(
-            &mut lon_raw,
-            sample.grid.nx as usize,
-            sample.grid.ny as usize,
-        );
-    }
-    normalize_longitude_rows(
-        &mut lat_raw,
-        &mut lon_raw,
-        sample.grid.nx as usize,
-        sample.grid.ny as usize,
-    );
-
-    let lat = lat_raw;
-    let lon = lon_raw
-        .into_iter()
-        .map(normalize_longitude)
-        .collect::<Vec<_>>();
-    let nx = sample.grid.nx as usize;
-    let ny = sample.grid.ny as usize;
+    let SurfaceGridLayout { lat, lon, nx, ny } = decode_surface_grid_from_sample(sample);
 
     let psfc_pa = unpack_message_normalized(find_message(
         &file.messages,
@@ -1054,6 +1103,70 @@ fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Err
     })
 }
 
+fn decode_surface_cropped(
+    bytes: &[u8],
+    crop: GridCrop,
+) -> Result<SurfaceFields, Box<dyn std::error::Error>> {
+    let file = Grib2File::from_bytes(bytes)?;
+    let sample = file
+        .messages
+        .first()
+        .ok_or("surface family GRIB had no messages")?;
+    let SurfaceGridLayout { lat, lon, nx, ny: _ } = decode_surface_grid_from_sample(sample);
+
+    let psfc_pa = crop_2d_values(
+        &unpack_message_normalized(find_message(
+            &file.messages,
+            &[(0, 3, 0, 1, Some(0.0)), (0, 3, 0, 1, None)],
+        )?)?,
+        nx,
+        crop,
+    );
+    let (orog_m, orog_is_proxy) = match decode_orography(&file.messages) {
+        Ok(values) => (crop_2d_values(&values, nx, crop), false),
+        Err(_) => (vec![0.0; crop.width() * crop.height()], true),
+    };
+    let t2_k = crop_2d_values(
+        &unpack_message_normalized(find_message(
+            &file.messages,
+            &[(0, 0, 0, 103, Some(2.0))],
+        )?)?,
+        nx,
+        crop,
+    );
+    let q2_kgkg = decode_surface_mixing_ratio_cropped(&file.messages, &psfc_pa, &t2_k, nx, crop)?;
+    let u10_ms = crop_2d_values(
+        &unpack_message_normalized(find_message(
+            &file.messages,
+            &[(0, 2, 2, 103, Some(10.0))],
+        )?)?,
+        nx,
+        crop,
+    );
+    let v10_ms = crop_2d_values(
+        &unpack_message_normalized(find_message(
+            &file.messages,
+            &[(0, 2, 3, 103, Some(10.0))],
+        )?)?,
+        nx,
+        crop,
+    );
+
+    Ok(SurfaceFields {
+        lat: crop_2d_values(&lat, nx, crop),
+        lon: crop_2d_values(&lon, nx, crop),
+        nx: crop.width(),
+        ny: crop.height(),
+        psfc_pa,
+        orog_m,
+        orog_is_proxy,
+        t2_k,
+        q2_kgkg,
+        u10_ms,
+        v10_ms,
+    })
+}
+
 fn decode_pressure_with_shape(
     bytes: &[u8],
 ) -> Result<(PressureFields, usize, usize), Box<dyn std::error::Error>> {
@@ -1072,7 +1185,8 @@ fn decode_pressure_with_shape(
     let aligned_levels = levels.clone();
 
     let expected = nx * ny;
-    let flatten = |records: &Vec<(f64, Vec<f64>)>| -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    let flatten =
+        |records: &Vec<(f64, Vec<f64>)>| -> Result<Vec<f64>, Box<dyn std::error::Error>> {
         let mut out = Vec::with_capacity(levels.len() * expected);
         for &level in &levels {
             let values = level_values(records, level)
@@ -1103,6 +1217,91 @@ fn decode_pressure_with_shape(
         nx,
         ny,
     ))
+}
+
+fn decode_pressure_cropped_with_shape(
+    bytes: &[u8],
+    crop: GridCrop,
+) -> Result<(PressureFields, usize, usize), Box<dyn std::error::Error>> {
+    let file = Grib2File::from_bytes(bytes)?;
+    let (nx, _ny) = pressure_grid_shape_from_messages(&file.messages)?;
+    let temperature = collect_levels_cropped(&file.messages, 0, 0, 0, 100, nx, crop)?;
+    let u_wind = collect_levels_cropped(&file.messages, 0, 2, 2, 100, nx, crop)?;
+    let v_wind = collect_levels_cropped(&file.messages, 0, 2, 3, 100, nx, crop)?;
+    let gh = decode_height_levels_cropped(&file.messages, nx, crop)?;
+    let moisture = decode_pressure_mixing_ratio_levels_cropped(&file.messages, &temperature, nx, crop)?;
+
+    let levels = common_isobaric_levels(&temperature, &[&moisture, &u_wind, &v_wind, &gh]);
+    if levels.is_empty() {
+        return Err("pressure family had no common thermodynamic levels".into());
+    }
+
+    let expected = crop.width() * crop.height();
+    let flatten = |records: &Vec<(f64, Vec<f64>)>| -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+        let mut out = Vec::with_capacity(levels.len() * expected);
+        for &level in &levels {
+            let values = level_values(records, level)
+                .ok_or_else(|| format!("missing aligned pressure level {level}"))?;
+            if values.len() != expected {
+                return Err("decoded cropped pressure field had unexpected grid size".into());
+            }
+            out.extend_from_slice(values);
+        }
+        Ok(out)
+    };
+
+    let pressure_levels_hpa = levels
+        .iter()
+        .copied()
+        .map(normalize_pressure_level_hpa)
+        .collect();
+
+    Ok((
+        PressureFields {
+            pressure_levels_hpa,
+            temperature_c_3d: flatten(&temperature)?
+                .into_iter()
+                .map(|value| value - 273.15)
+                .collect(),
+            qvapor_kgkg_3d: flatten(&moisture)?,
+            u_ms_3d: flatten(&u_wind)?,
+            v_ms_3d: flatten(&v_wind)?,
+            gh_m_3d: flatten(&gh)?,
+        },
+        crop.width(),
+        crop.height(),
+    ))
+}
+
+fn decode_surface_grid_from_sample(sample: &Grib2Message) -> SurfaceGridLayout {
+    let (mut lat_raw, mut lon_raw) = grid_latlon(&sample.grid);
+    if sample.grid.scan_mode & 0x40 != 0 {
+        flip_rows(
+            &mut lat_raw,
+            sample.grid.nx as usize,
+            sample.grid.ny as usize,
+        );
+        flip_rows(
+            &mut lon_raw,
+            sample.grid.nx as usize,
+            sample.grid.ny as usize,
+        );
+    }
+    normalize_longitude_rows(
+        &mut lat_raw,
+        &mut lon_raw,
+        sample.grid.nx as usize,
+        sample.grid.ny as usize,
+    );
+    SurfaceGridLayout {
+        lat: lat_raw,
+        lon: lon_raw
+            .into_iter()
+            .map(normalize_longitude)
+            .collect::<Vec<_>>(),
+        nx: sample.grid.nx as usize,
+        ny: sample.grid.ny as usize,
+    }
 }
 
 fn decode_orography(messages: &[Grib2Message]) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
@@ -1136,6 +1335,37 @@ fn decode_surface_mixing_ratio(
     }
     if let Ok(message) = find_message(messages, &[(0, 1, 1, 103, Some(2.0))]) {
         let rh_pct = unpack_message_normalized(message)?;
+        return Ok(psfc_pa
+            .iter()
+            .zip(t2_k.iter())
+            .zip(rh_pct.iter())
+            .map(|((&psfc, &t_k), &rh)| mixing_ratio_from_relative_humidity(psfc / 100.0, t_k, rh))
+            .collect());
+    }
+    Err("missing 2m specific humidity/dewpoint/RH field for surface thermodynamics".into())
+}
+
+fn decode_surface_mixing_ratio_cropped(
+    messages: &[Grib2Message],
+    psfc_pa: &[f64],
+    t2_k: &[f64],
+    source_nx: usize,
+    crop: GridCrop,
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    if let Ok(message) = find_message(messages, &[(0, 1, 0, 103, Some(2.0))]) {
+        let values = unpack_message_normalized(message)?;
+        return Ok(q_to_mixing_ratio(&crop_2d_values(&values, source_nx, crop)));
+    }
+    if let Ok(message) = find_message(messages, &[(0, 0, 6, 103, Some(2.0))]) {
+        let dewpoint_k = crop_2d_values(&unpack_message_normalized(message)?, source_nx, crop);
+        return Ok(psfc_pa
+            .iter()
+            .zip(dewpoint_k.iter())
+            .map(|(&psfc, &td_k)| mixing_ratio_from_dewpoint_k(psfc / 100.0, td_k))
+            .collect());
+    }
+    if let Ok(message) = find_message(messages, &[(0, 1, 1, 103, Some(2.0))]) {
+        let rh_pct = crop_2d_values(&unpack_message_normalized(message)?, source_nx, crop);
         return Ok(psfc_pa
             .iter()
             .zip(t2_k.iter())
@@ -1195,6 +1425,57 @@ fn decode_pressure_mixing_ratio_levels(
     Err("missing pressure-level specific humidity/dewpoint/RH field for thermodynamics".into())
 }
 
+fn decode_pressure_mixing_ratio_levels_cropped(
+    messages: &[Grib2Message],
+    temperature: &Vec<(f64, Vec<f64>)>,
+    source_nx: usize,
+    crop: GridCrop,
+) -> Result<Vec<(f64, Vec<f64>)>, Box<dyn std::error::Error>> {
+    if let Ok(levels) = collect_levels_cropped(messages, 0, 1, 0, 100, source_nx, crop) {
+        return Ok(levels
+            .into_iter()
+            .map(|(level, values)| (level, q_to_mixing_ratio(&values)))
+            .collect());
+    }
+    if let Ok(dewpoint) = collect_levels_cropped(messages, 0, 0, 6, 100, source_nx, crop) {
+        let mut out = Vec::with_capacity(dewpoint.len());
+        for (level, td_k) in dewpoint {
+            out.push((
+                level,
+                td_k.into_iter()
+                    .map(|td_k| {
+                        mixing_ratio_from_dewpoint_k(normalize_pressure_level_hpa(level), td_k)
+                    })
+                    .collect(),
+            ));
+        }
+        return Ok(out);
+    }
+    if let Ok(rh) = collect_levels_cropped(messages, 0, 1, 1, 100, source_nx, crop) {
+        let mut out = Vec::with_capacity(rh.len());
+        for (level, rh_pct) in rh {
+            let temperature_k = level_values(temperature, level)
+                .ok_or_else(|| format!("missing temperature level {level} for RH fallback"))?;
+            out.push((
+                level,
+                temperature_k
+                    .iter()
+                    .zip(rh_pct.iter())
+                    .map(|(&t_k, &rh)| {
+                        mixing_ratio_from_relative_humidity(
+                            normalize_pressure_level_hpa(level),
+                            t_k,
+                            rh,
+                        )
+                    })
+                    .collect(),
+            ));
+        }
+        return Ok(out);
+    }
+    Err("missing pressure-level specific humidity/dewpoint/RH field for thermodynamics".into())
+}
+
 fn decode_height_levels(
     messages: &[Grib2Message],
 ) -> Result<Vec<(f64, Vec<f64>)>, Box<dyn std::error::Error>> {
@@ -1202,6 +1483,31 @@ fn decode_height_levels(
         return Ok(levels);
     }
     if let Ok(levels) = collect_levels(messages, 0, 3, 4, 100) {
+        return Ok(levels
+            .into_iter()
+            .map(|(level, values)| {
+                (
+                    level,
+                    values
+                        .into_iter()
+                        .map(|value| value * GEOPOTENTIAL_M2S2_TO_M)
+                        .collect(),
+                )
+            })
+            .collect());
+    }
+    Err("missing pressure-level height/geopotential field".into())
+}
+
+fn decode_height_levels_cropped(
+    messages: &[Grib2Message],
+    source_nx: usize,
+    crop: GridCrop,
+) -> Result<Vec<(f64, Vec<f64>)>, Box<dyn std::error::Error>> {
+    if let Ok(levels) = collect_levels_cropped(messages, 0, 3, 5, 100, source_nx, crop) {
+        return Ok(levels);
+    }
+    if let Ok(levels) = collect_levels_cropped(messages, 0, 3, 4, 100, source_nx, crop) {
         return Ok(levels
             .into_iter()
             .map(|(level, values)| {
@@ -1234,6 +1540,41 @@ fn collect_levels(
                 && msg.product.level_type == level_type
         })
         .map(|msg| Ok((msg.product.level_value, unpack_message_normalized(msg)?)))
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+
+    if records.is_empty() {
+        return Err(format!(
+            "missing GRIB records for discipline={discipline} category={category} number={number} level_type={level_type}"
+        )
+        .into());
+    }
+    records.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(records)
+}
+
+fn collect_levels_cropped(
+    messages: &[Grib2Message],
+    discipline: u8,
+    category: u8,
+    number: u8,
+    level_type: u8,
+    source_nx: usize,
+    crop: GridCrop,
+) -> Result<Vec<(f64, Vec<f64>)>, Box<dyn std::error::Error>> {
+    let mut records = messages
+        .iter()
+        .filter(|msg| {
+            msg.discipline == discipline
+                && msg.product.parameter_category == category
+                && msg.product.parameter_number == number
+                && msg.product.level_type == level_type
+        })
+        .map(|msg| {
+            Ok((
+                msg.product.level_value,
+                crop_2d_values(&unpack_message_normalized(msg)?, source_nx, crop),
+            ))
+        })
         .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
 
     if records.is_empty() {
