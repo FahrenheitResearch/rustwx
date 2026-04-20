@@ -16,7 +16,7 @@
 //! - Writes PNGs and a single summary JSON. The summary lists every
 //!   attempted (model, fh, lane) with outcome + reason.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
@@ -31,11 +31,12 @@ use region::RegionPreset;
 use rustwx_core::{ModelId, SourceId};
 use rustwx_models::model_summary;
 use rustwx_products::cache::ensure_dir;
-use rustwx_products::derived::{DerivedBatchRequest, run_derived_batch};
-use rustwx_products::direct::{DirectBatchRequest, run_direct_batch};
 use rustwx_products::ecape::{EcapeBatchRequest, run_ecape_batch};
 use rustwx_products::hrrr::{HrrrBatchProduct, HrrrBatchRequest, run_hrrr_batch};
-use rustwx_products::non_ecape::{HrrrNonEcapeHourRequest, run_hrrr_non_ecape_hour};
+use rustwx_products::non_ecape::{
+    HrrrNonEcapeHourRequest, NonEcapeHourRequest, run_hrrr_non_ecape_hour,
+    run_model_non_ecape_hour,
+};
 use rustwx_products::severe::{SevereBatchRequest, run_severe_batch};
 use rustwx_products::shared_context::DomainSpec;
 use rustwx_products::source::ProductSourceMode;
@@ -342,31 +343,57 @@ fn run_forecast_job(job: ForecastJob, config: &ExecConfig) -> ForecastJobResult 
             outcome.region = job.region_slug.clone();
             outcomes.push(outcome);
         }
-        if !config.skip_direct {
-            let mut outcome = run_direct_lane(
+        let use_generic_non_hrrr_non_ecape =
+            std::env::var_os("RUSTWX_ENABLE_NON_HRRR_NON_ECAPE").is_some();
+        let want_non_hrrr_non_ecape =
+            (!config.skip_direct && !job.direct_recipes.is_empty())
+                || (!config.skip_derived && !job.derived_recipes.is_empty());
+        if want_non_hrrr_non_ecape
+            && use_generic_non_hrrr_non_ecape
+            && matches!(
+            job.model,
+            ModelId::RrfsA | ModelId::Gfs | ModelId::EcmwfOpenData
+        )
+        {
+            let mut outcome = run_non_hrrr_non_ecape_hour(
                 job.model,
                 &job.pinned,
                 job.forecast_hour,
                 &job.domain,
                 config,
                 &job.direct_recipes,
-                &mut counts,
-            );
-            outcome.region = job.region_slug.clone();
-            outcomes.push(outcome);
-        }
-        if !config.skip_derived {
-            let mut outcome = run_derived_lane(
-                job.model,
-                &job.pinned,
-                job.forecast_hour,
-                &job.domain,
-                config,
                 &job.derived_recipes,
                 &mut counts,
             );
             outcome.region = job.region_slug.clone();
             outcomes.push(outcome);
+        } else {
+            if !config.skip_direct {
+                let mut outcome = run_direct_lane(
+                    job.model,
+                    &job.pinned,
+                    job.forecast_hour,
+                    &job.domain,
+                    config,
+                    &job.direct_recipes,
+                    &mut counts,
+                );
+                outcome.region = job.region_slug.clone();
+                outcomes.push(outcome);
+            }
+            if !config.skip_derived {
+                let mut outcome = run_derived_lane(
+                    job.model,
+                    &job.pinned,
+                    job.forecast_hour,
+                    &job.domain,
+                    config,
+                    &job.derived_recipes,
+                    &mut counts,
+                );
+                outcome.region = job.region_slug.clone();
+                outcomes.push(outcome);
+            }
         }
     }
 
@@ -1000,6 +1027,119 @@ fn run_ecape_lane(
     }
 }
 
+fn run_non_hrrr_non_ecape_hour(
+    model: ModelId,
+    pinned: &PinnedRunRequest,
+    fh: u16,
+    domain: &DomainSpec,
+    config: &ExecConfig,
+    direct_recipes: &[String],
+    derived_recipes: &[String],
+    counts: &mut ModelCounts,
+) -> LaneOutcome {
+    let start = Instant::now();
+    let direct_recipe_slugs = if config.skip_direct {
+        Vec::new()
+    } else {
+        direct_recipes.to_vec()
+    };
+    let derived_recipe_slugs = if config.skip_derived {
+        Vec::new()
+    } else {
+        derived_recipes.to_vec()
+    };
+    let slug = format!("{}_non_ecape_hour", model.as_str().replace('-', "_"));
+
+    let request = NonEcapeHourRequest {
+        model,
+        date_yyyymmdd: pinned.date_yyyymmdd.clone(),
+        cycle_override_utc: pinned.cycle_override_utc,
+        forecast_hour: fh,
+        source: pinned.source,
+        domain: domain.clone(),
+        out_dir: config.out_dir.clone(),
+        cache_root: config.cache_dir.clone(),
+        use_cache: !config.no_cache,
+        source_mode: config.source_mode,
+        direct_recipe_slugs,
+        derived_recipe_slugs,
+        windowed_products: Vec::new(),
+        output_width: config.output_width,
+        output_height: config.output_height,
+        png_compression: rustwx_render::PngCompressionMode::Default,
+    };
+
+    match run_model_non_ecape_hour(&request) {
+        Ok(report) => {
+            let outputs: Vec<String> = report
+                .summary
+                .output_paths
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
+            let mut blockers = Vec::new();
+            if let Some(direct) = &report.direct {
+                blockers.extend(
+                    direct
+                        .blockers
+                        .iter()
+                        .map(|b| format!("{}: {}", b.recipe_slug, b.reason)),
+                );
+            }
+            if let Some(derived) = &report.derived {
+                blockers.extend(derived.blockers.iter().map(|b| {
+                    format!(
+                        "{} [{}]: {}",
+                        b.recipe_slug,
+                        b.source_route.as_str(),
+                        b.reason
+                    )
+                }));
+            }
+            let dur = start.elapsed().as_millis();
+            println!(
+                "[ok  ] {model} f{fh:03} {slug}: {} png, {} blocker(s) in {:.2}s",
+                outputs.len(),
+                blockers.len(),
+                dur as f64 / 1000.0
+            );
+            counts.outputs += outputs.len();
+            counts.blocked_recipes += blockers.len();
+            if blockers.is_empty() || !outputs.is_empty() {
+                counts.succeeded += 1;
+            } else {
+                counts.failed += 1;
+            }
+            lane_outcome_from_pinned(
+                pinned,
+                model,
+                fh,
+                &slug,
+                !outputs.is_empty() || blockers.is_empty(),
+                dur,
+                None,
+                outputs,
+                blockers,
+            )
+        }
+        Err(err) => {
+            eprintln!("[fail] {model} f{fh:03} {slug}: {err}");
+            counts.failed += 1;
+            lane_outcome_from_pinned(
+                pinned,
+                model,
+                fh,
+                &slug,
+                false,
+                start.elapsed().as_millis(),
+                Some(err.to_string()),
+                Vec::new(),
+                Vec::new(),
+            )
+        }
+    }
+}
+
 fn run_direct_lane(
     model: ModelId,
     pinned: &PinnedRunRequest,
@@ -1010,7 +1150,7 @@ fn run_direct_lane(
     counts: &mut ModelCounts,
 ) -> LaneOutcome {
     let start = Instant::now();
-    let request = DirectBatchRequest {
+    let request = rustwx_products::direct::DirectBatchRequest {
         model,
         date_yyyymmdd: pinned.date_yyyymmdd.clone(),
         cycle_override_utc: pinned.cycle_override_utc,
@@ -1021,13 +1161,13 @@ fn run_direct_lane(
         cache_root: config.cache_dir.clone(),
         use_cache: !config.no_cache,
         recipe_slugs: recipes.to_vec(),
-        product_overrides: HashMap::new(),
+        product_overrides: std::collections::HashMap::new(),
         output_width: config.output_width,
         output_height: config.output_height,
         png_compression: rustwx_render::PngCompressionMode::Default,
     };
     let slug = Lane::Direct.slug();
-    match run_direct_batch(&request) {
+    match rustwx_products::direct::run_direct_batch(&request) {
         Ok(report) => {
             let outputs: Vec<String> = report
                 .recipes
@@ -1093,7 +1233,7 @@ fn run_derived_lane(
     counts: &mut ModelCounts,
 ) -> LaneOutcome {
     let start = Instant::now();
-    let request = DerivedBatchRequest {
+    let request = rustwx_products::derived::DerivedBatchRequest {
         model,
         date_yyyymmdd: pinned.date_yyyymmdd.clone(),
         cycle_override_utc: pinned.cycle_override_utc,
@@ -1112,7 +1252,7 @@ fn run_derived_lane(
         png_compression: rustwx_render::PngCompressionMode::Default,
     };
     let slug = Lane::Derived.slug();
-    match run_derived_batch(&request) {
+    match rustwx_products::derived::run_derived_batch(&request) {
         Ok(report) => {
             let outputs: Vec<String> = report
                 .recipes

@@ -1071,6 +1071,14 @@ fn maybe_load_rrfs_cropped_pair_for_derived(
     }))
 }
 
+pub(crate) fn maybe_load_special_pair_for_derived(
+    request: &DerivedBatchRequest,
+    latest: &rustwx_models::LatestRun,
+    planned_routes: &PlannedDerivedSourceRoutes,
+) -> Result<Option<LoadedBundleSet>, Box<dyn std::error::Error>> {
+    maybe_load_rrfs_cropped_pair_for_derived(request, latest, planned_routes)
+}
+
 fn cropped_decode_cache_path(
     cache_root: &std::path::Path,
     fetch: &rustwx_io::FetchRequest,
@@ -1481,14 +1489,51 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
 /// Run the HRRR derived lane consuming a planner-loaded bundle set.
 /// Used by the unified `hrrr_non_ecape_hour` runner so direct + derived
 /// + windowed all share one fetch+decode pass.
+pub(crate) fn run_model_derived_batch_from_loaded(
+    request: &DerivedBatchRequest,
+    recipes: &[DerivedRecipe],
+    loaded: &LoadedBundleSet,
+) -> Result<HrrrDerivedBatchReport, Box<dyn std::error::Error>> {
+    let report = run_derived_batch_from_loaded_bundles(request, recipes, loaded)?;
+    Ok(into_hrrr_report(report))
+}
+
+pub(crate) fn run_model_derived_batch_from_loaded_with_precomputed(
+    request: &DerivedBatchRequest,
+    recipes: &[DerivedRecipe],
+    loaded: &LoadedBundleSet,
+    prepared: &PreparedSharedDerivedFields,
+) -> Result<HrrrDerivedBatchReport, Box<dyn std::error::Error>> {
+    let mut report = run_derived_batch_from_loaded_bundles_with_precomputed(
+        request,
+        recipes,
+        loaded,
+        Some(prepared),
+    )?;
+    report.shared_timing.compute_ms = 0;
+    Ok(into_hrrr_report(report))
+}
+
+pub(crate) fn run_model_derived_batch_without_loaded(
+    request: &DerivedBatchRequest,
+    recipes: &[DerivedRecipe],
+    latest: &rustwx_models::LatestRun,
+) -> Result<HrrrDerivedBatchReport, Box<dyn std::error::Error>> {
+    let planned_routes = plan_native_thermo_routes(request.model, recipes, request.source_mode)?;
+    let report = empty_derived_report(request, latest, planned_routes.blockers);
+    Ok(into_hrrr_report(report))
+}
+
+/// Run the HRRR derived lane consuming a planner-loaded bundle set.
+/// Used by the unified `hrrr_non_ecape_hour` runner so direct + derived
+/// + windowed all share one fetch+decode pass.
 pub(crate) fn run_hrrr_derived_batch_from_loaded(
     request: &HrrrDerivedBatchRequest,
     recipes: &[DerivedRecipe],
     loaded: &LoadedBundleSet,
 ) -> Result<HrrrDerivedBatchReport, Box<dyn std::error::Error>> {
     let generic_request = DerivedBatchRequest::from_hrrr(request);
-    let report = run_derived_batch_from_loaded_bundles(&generic_request, recipes, loaded)?;
-    Ok(into_hrrr_report(report))
+    run_model_derived_batch_from_loaded(&generic_request, recipes, loaded)
 }
 
 pub(crate) fn prepare_shared_derived_fields(
@@ -1535,14 +1580,12 @@ pub(crate) fn run_hrrr_derived_batch_from_loaded_with_precomputed(
     prepared: &PreparedSharedDerivedFields,
 ) -> Result<HrrrDerivedBatchReport, Box<dyn std::error::Error>> {
     let generic_request = DerivedBatchRequest::from_hrrr(request);
-    let mut report = run_derived_batch_from_loaded_bundles_with_precomputed(
+    run_model_derived_batch_from_loaded_with_precomputed(
         &generic_request,
         recipes,
         loaded,
-        Some(prepared),
-    )?;
-    report.shared_timing.compute_ms = 0;
-    Ok(into_hrrr_report(report))
+        prepared,
+    )
 }
 
 pub(crate) fn run_hrrr_derived_batch_without_loaded(
@@ -1551,9 +1594,7 @@ pub(crate) fn run_hrrr_derived_batch_without_loaded(
     latest: &rustwx_models::LatestRun,
 ) -> Result<HrrrDerivedBatchReport, Box<dyn std::error::Error>> {
     let generic_request = DerivedBatchRequest::from_hrrr(request);
-    let planned_routes = plan_native_thermo_routes(ModelId::Hrrr, recipes, request.source_mode)?;
-    let report = empty_derived_report(&generic_request, latest, planned_routes.blockers);
-    Ok(into_hrrr_report(report))
+    run_model_derived_batch_without_loaded(&generic_request, recipes, latest)
 }
 
 fn into_hrrr_report(report: DerivedBatchReport) -> HrrrDerivedBatchReport {

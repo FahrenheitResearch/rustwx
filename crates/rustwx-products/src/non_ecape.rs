@@ -1,11 +1,12 @@
 use crate::derived::{
-    HrrrDerivedBatchReport, HrrrDerivedBatchRequest, plan_derived_recipes,
-    plan_native_thermo_routes, prepare_shared_derived_fields,
-    run_hrrr_derived_batch_from_loaded, run_hrrr_derived_batch_from_loaded_with_precomputed,
-    run_hrrr_derived_batch_without_loaded,
+    DerivedBatchRequest, HrrrDerivedBatchReport, maybe_load_special_pair_for_derived,
+    plan_derived_recipes, plan_native_thermo_routes, prepare_shared_derived_fields,
+    run_model_derived_batch_from_loaded,
+    run_model_derived_batch_from_loaded_with_precomputed,
+    run_model_derived_batch_without_loaded,
 };
 use crate::direct::{
-    HrrrDirectBatchReport, HrrrDirectBatchRequest, run_hrrr_direct_batch_from_loaded,
+    DirectBatchRequest, HrrrDirectBatchReport, run_direct_batch_from_loaded,
 };
 use crate::hrrr::{DomainSpec, resolve_hrrr_run};
 use crate::orchestrator::{lane, run_fanout3};
@@ -26,7 +27,7 @@ use crate::windowed::{
 };
 use rustwx_render::PngCompressionMode;
 use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
-use rustwx_models::plot_recipe;
+use rustwx_models::{LatestRun, latest_available_run_at_forecast_hour, plot_recipe};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -195,19 +196,239 @@ pub struct HrrrNonEcapeMultiDomainReport {
     pub total_ms: u128,
 }
 
-struct PreparedNonEcapeHour {
-    normalized: HrrrNonEcapeHourRequestedProducts,
-    latest: rustwx_models::LatestRun,
-    derived_recipes: Vec<crate::derived::DerivedRecipe>,
-    precomputed_derived: Option<crate::derived::PreparedSharedDerivedFields>,
-    loaded: Option<crate::runtime::LoadedBundleSet>,
-    timing: HrrrNonEcapeSharedTiming,
+pub type NonEcapeSharedTiming = HrrrNonEcapeSharedTiming;
+pub type NonEcapeFanoutTiming = HrrrNonEcapeFanoutTiming;
+pub type NonEcapeRequestedProducts = HrrrNonEcapeHourRequestedProducts;
+pub type NonEcapeHourSummary = HrrrNonEcapeHourSummary;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NonEcapeHourRequest {
+    pub model: ModelId,
+    pub date_yyyymmdd: String,
+    pub cycle_override_utc: Option<u8>,
+    pub forecast_hour: u16,
+    pub source: SourceId,
+    pub domain: DomainSpec,
+    pub out_dir: PathBuf,
+    pub cache_root: PathBuf,
+    pub use_cache: bool,
+    #[serde(default)]
+    pub source_mode: ProductSourceMode,
+    pub direct_recipe_slugs: Vec<String>,
+    pub derived_recipe_slugs: Vec<String>,
+    #[serde(default)]
+    pub windowed_products: Vec<HrrrWindowedProduct>,
+    #[serde(default = "default_output_width")]
+    pub output_width: u32,
+    #[serde(default = "default_output_height")]
+    pub output_height: u32,
+    #[serde(default = "default_png_compression")]
+    pub png_compression: PngCompressionMode,
 }
 
-pub fn run_hrrr_non_ecape_hour(
-    request: &HrrrNonEcapeHourRequest,
-) -> Result<HrrrNonEcapeHourReport, Box<dyn std::error::Error>> {
-    let multi_request = HrrrNonEcapeMultiDomainRequest {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NonEcapeMultiDomainRequest {
+    pub model: ModelId,
+    pub date_yyyymmdd: String,
+    pub cycle_override_utc: Option<u8>,
+    pub forecast_hour: u16,
+    pub source: SourceId,
+    pub domains: Vec<DomainSpec>,
+    pub out_dir: PathBuf,
+    pub cache_root: PathBuf,
+    pub use_cache: bool,
+    #[serde(default)]
+    pub source_mode: ProductSourceMode,
+    pub direct_recipe_slugs: Vec<String>,
+    pub derived_recipe_slugs: Vec<String>,
+    #[serde(default)]
+    pub windowed_products: Vec<HrrrWindowedProduct>,
+    #[serde(default = "default_output_width")]
+    pub output_width: u32,
+    #[serde(default = "default_output_height")]
+    pub output_height: u32,
+    #[serde(default = "default_png_compression")]
+    pub png_compression: PngCompressionMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain_jobs: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NonEcapeHourReport {
+    pub model: ModelId,
+    pub date_yyyymmdd: String,
+    pub cycle_utc: u8,
+    pub forecast_hour: u16,
+    pub source: SourceId,
+    pub domain: DomainSpec,
+    pub out_dir: PathBuf,
+    pub cache_root: PathBuf,
+    pub use_cache: bool,
+    #[serde(default)]
+    pub source_mode: ProductSourceMode,
+    pub publication_manifest_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_manifest_path: Option<PathBuf>,
+    pub requested: NonEcapeRequestedProducts,
+    #[serde(default)]
+    pub shared_timing: NonEcapeSharedTiming,
+    pub summary: NonEcapeHourSummary,
+    pub direct: Option<HrrrDirectBatchReport>,
+    pub derived: Option<HrrrDerivedBatchReport>,
+    pub windowed: Option<HrrrWindowedBatchReport>,
+    pub total_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NonEcapeDomainReport {
+    pub domain: DomainSpec,
+    pub publication_manifest_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_manifest_path: Option<PathBuf>,
+    pub summary: NonEcapeHourSummary,
+    pub direct: Option<HrrrDirectBatchReport>,
+    pub derived: Option<HrrrDerivedBatchReport>,
+    pub windowed: Option<HrrrWindowedBatchReport>,
+    pub total_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NonEcapeMultiDomainReport {
+    pub model: ModelId,
+    pub date_yyyymmdd: String,
+    pub cycle_utc: u8,
+    pub forecast_hour: u16,
+    pub source: SourceId,
+    pub out_dir: PathBuf,
+    pub cache_root: PathBuf,
+    pub use_cache: bool,
+    #[serde(default)]
+    pub source_mode: ProductSourceMode,
+    pub requested: NonEcapeRequestedProducts,
+    #[serde(default)]
+    pub shared_timing: NonEcapeSharedTiming,
+    #[serde(default)]
+    pub fanout_timing: NonEcapeFanoutTiming,
+    pub domains: Vec<NonEcapeDomainReport>,
+    pub total_ms: u128,
+}
+
+struct PreparedNonEcapeHour {
+    normalized: NonEcapeRequestedProducts,
+    latest: LatestRun,
+    derived_recipes: Vec<crate::derived::DerivedRecipe>,
+    precomputed_derived: Option<crate::derived::PreparedSharedDerivedFields>,
+    direct_loaded: Option<Arc<crate::runtime::LoadedBundleSet>>,
+    derived_loaded: Option<Arc<crate::runtime::LoadedBundleSet>>,
+    timing: NonEcapeSharedTiming,
+}
+
+fn non_ecape_request_from_hrrr(request: &HrrrNonEcapeHourRequest) -> NonEcapeHourRequest {
+    NonEcapeHourRequest {
+        model: ModelId::Hrrr,
+        date_yyyymmdd: request.date_yyyymmdd.clone(),
+        cycle_override_utc: request.cycle_override_utc,
+        forecast_hour: request.forecast_hour,
+        source: request.source,
+        domain: request.domain.clone(),
+        out_dir: request.out_dir.clone(),
+        cache_root: request.cache_root.clone(),
+        use_cache: request.use_cache,
+        source_mode: request.source_mode,
+        direct_recipe_slugs: request.direct_recipe_slugs.clone(),
+        derived_recipe_slugs: request.derived_recipe_slugs.clone(),
+        windowed_products: request.windowed_products.clone(),
+        output_width: request.output_width,
+        output_height: request.output_height,
+        png_compression: request.png_compression,
+    }
+}
+
+fn non_ecape_multi_request_from_hrrr(
+    request: &HrrrNonEcapeMultiDomainRequest,
+) -> NonEcapeMultiDomainRequest {
+    NonEcapeMultiDomainRequest {
+        model: ModelId::Hrrr,
+        date_yyyymmdd: request.date_yyyymmdd.clone(),
+        cycle_override_utc: request.cycle_override_utc,
+        forecast_hour: request.forecast_hour,
+        source: request.source,
+        domains: request.domains.clone(),
+        out_dir: request.out_dir.clone(),
+        cache_root: request.cache_root.clone(),
+        use_cache: request.use_cache,
+        source_mode: request.source_mode,
+        direct_recipe_slugs: request.direct_recipe_slugs.clone(),
+        derived_recipe_slugs: request.derived_recipe_slugs.clone(),
+        windowed_products: request.windowed_products.clone(),
+        output_width: request.output_width,
+        output_height: request.output_height,
+        png_compression: request.png_compression,
+        domain_jobs: request.domain_jobs,
+    }
+}
+
+fn hrrr_hour_report_from_generic(report: NonEcapeHourReport) -> HrrrNonEcapeHourReport {
+    HrrrNonEcapeHourReport {
+        date_yyyymmdd: report.date_yyyymmdd,
+        cycle_utc: report.cycle_utc,
+        forecast_hour: report.forecast_hour,
+        source: report.source,
+        domain: report.domain,
+        out_dir: report.out_dir,
+        cache_root: report.cache_root,
+        use_cache: report.use_cache,
+        source_mode: report.source_mode,
+        publication_manifest_path: report.publication_manifest_path,
+        attempt_manifest_path: report.attempt_manifest_path,
+        requested: report.requested,
+        shared_timing: report.shared_timing,
+        summary: report.summary,
+        direct: report.direct,
+        derived: report.derived,
+        windowed: report.windowed,
+        total_ms: report.total_ms,
+    }
+}
+
+fn hrrr_multi_domain_report_from_generic(
+    report: NonEcapeMultiDomainReport,
+) -> HrrrNonEcapeMultiDomainReport {
+    HrrrNonEcapeMultiDomainReport {
+        date_yyyymmdd: report.date_yyyymmdd,
+        cycle_utc: report.cycle_utc,
+        forecast_hour: report.forecast_hour,
+        source: report.source,
+        out_dir: report.out_dir,
+        cache_root: report.cache_root,
+        use_cache: report.use_cache,
+        source_mode: report.source_mode,
+        requested: report.requested,
+        shared_timing: report.shared_timing,
+        fanout_timing: report.fanout_timing,
+        domains: report
+            .domains
+            .into_iter()
+            .map(|domain| HrrrNonEcapeDomainReport {
+                domain: domain.domain,
+                publication_manifest_path: domain.publication_manifest_path,
+                attempt_manifest_path: domain.attempt_manifest_path,
+                summary: domain.summary,
+                direct: domain.direct,
+                derived: domain.derived,
+                windowed: domain.windowed,
+                total_ms: domain.total_ms,
+            })
+            .collect(),
+        total_ms: report.total_ms,
+    }
+}
+
+pub fn run_model_non_ecape_hour(
+    request: &NonEcapeHourRequest,
+) -> Result<NonEcapeHourReport, Box<dyn std::error::Error>> {
+    let multi_request = NonEcapeMultiDomainRequest {
+        model: request.model,
         date_yyyymmdd: request.date_yyyymmdd.clone(),
         cycle_override_utc: request.cycle_override_utc,
         forecast_hour: request.forecast_hour,
@@ -225,13 +446,14 @@ pub fn run_hrrr_non_ecape_hour(
         png_compression: request.png_compression,
         domain_jobs: None,
     };
-    let report = run_hrrr_non_ecape_hour_multi_domain(&multi_request)?;
+    let report = run_model_non_ecape_hour_multi_domain(&multi_request)?;
     let domain_report = report
         .domains
         .into_iter()
         .next()
         .ok_or("multi-domain runner returned no domain reports for single-domain request")?;
-    Ok(HrrrNonEcapeHourReport {
+    Ok(NonEcapeHourReport {
+        model: report.model,
         date_yyyymmdd: report.date_yyyymmdd,
         cycle_utc: report.cycle_utc,
         forecast_hour: report.forecast_hour,
@@ -253,9 +475,16 @@ pub fn run_hrrr_non_ecape_hour(
     })
 }
 
-pub fn run_hrrr_non_ecape_hour_multi_domain(
-    request: &HrrrNonEcapeMultiDomainRequest,
-) -> Result<HrrrNonEcapeMultiDomainReport, Box<dyn std::error::Error>> {
+pub fn run_hrrr_non_ecape_hour(
+    request: &HrrrNonEcapeHourRequest,
+) -> Result<HrrrNonEcapeHourReport, Box<dyn std::error::Error>> {
+    let report = run_model_non_ecape_hour(&non_ecape_request_from_hrrr(request))?;
+    Ok(hrrr_hour_report_from_generic(report))
+}
+
+pub fn run_model_non_ecape_hour_multi_domain(
+    request: &NonEcapeMultiDomainRequest,
+) -> Result<NonEcapeMultiDomainReport, Box<dyn std::error::Error>> {
     validate_requested_domains(&request.domains)?;
     let total_start = Instant::now();
     let prepared = prepare_non_ecape_hour(request)?;
@@ -271,8 +500,7 @@ pub fn run_hrrr_non_ecape_hour_multi_domain(
         let queue = Arc::new(Mutex::new(
             (0..request.domains.len()).collect::<VecDeque<usize>>(),
         ));
-        let (tx, rx) =
-            mpsc::channel::<(usize, Result<HrrrNonEcapeDomainReport, String>)>();
+        let (tx, rx) = mpsc::channel::<(usize, Result<NonEcapeDomainReport, String>)>();
         let mut ordered = vec![None; request.domains.len()];
         let request_ref = request;
         let prepared_ref = &prepared;
@@ -338,7 +566,8 @@ pub fn run_hrrr_non_ecape_hour_multi_domain(
         .map(|report| report.total_ms)
         .max()
         .unwrap_or(0);
-    Ok(HrrrNonEcapeMultiDomainReport {
+    Ok(NonEcapeMultiDomainReport {
+        model: request.model,
         date_yyyymmdd: prepared.latest.cycle.date_yyyymmdd.clone(),
         cycle_utc: prepared.latest.cycle.hour_utc,
         forecast_hour: request.forecast_hour,
@@ -363,16 +592,49 @@ pub fn run_hrrr_non_ecape_hour_multi_domain(
     })
 }
 
-fn prepare_non_ecape_hour(
+pub fn run_hrrr_non_ecape_hour_multi_domain(
     request: &HrrrNonEcapeMultiDomainRequest,
+) -> Result<HrrrNonEcapeMultiDomainReport, Box<dyn std::error::Error>> {
+    let report = run_model_non_ecape_hour_multi_domain(&non_ecape_multi_request_from_hrrr(request))?;
+    Ok(hrrr_multi_domain_report_from_generic(report))
+}
+
+fn resolve_model_run(
+    model: ModelId,
+    date: &str,
+    cycle_override: Option<u8>,
+    forecast_hour: u16,
+    source: SourceId,
+) -> Result<LatestRun, Box<dyn std::error::Error>> {
+    if model == ModelId::Hrrr {
+        return resolve_hrrr_run(date, cycle_override, forecast_hour, source);
+    }
+    match cycle_override {
+        Some(hour) => Ok(LatestRun {
+            model,
+            cycle: rustwx_core::CycleSpec::new(date, hour)?,
+            source,
+        }),
+        None => Ok(latest_available_run_at_forecast_hour(
+            model,
+            Some(source),
+            date,
+            forecast_hour,
+        )?),
+    }
+}
+
+fn prepare_non_ecape_hour(
+    request: &NonEcapeMultiDomainRequest,
 ) -> Result<PreparedNonEcapeHour, Box<dyn std::error::Error>> {
     let total_prepare_start = Instant::now();
     let normalized = normalize_requested_products_from_parts(
+        request.model,
         &request.direct_recipe_slugs,
         &request.derived_recipe_slugs,
         &request.windowed_products,
     );
-    validate_requested_work(&normalized)?;
+    validate_requested_work(request.model, &normalized)?;
 
     fs::create_dir_all(&request.out_dir)?;
     if request.use_cache {
@@ -380,7 +642,8 @@ fn prepare_non_ecape_hour(
     }
 
     let resolve_start = Instant::now();
-    let latest = resolve_hrrr_run(
+    let latest = resolve_model_run(
+        request.model,
         &request.date_yyyymmdd,
         request.cycle_override_utc,
         request.forecast_hour,
@@ -399,7 +662,8 @@ fn prepare_non_ecape_hour(
     let direct_groups = if normalized.direct_recipe_slugs.is_empty() {
         Vec::new()
     } else {
-        let direct_request = HrrrDirectBatchRequest {
+        let direct_request = DirectBatchRequest {
+            model: request.model,
             date_yyyymmdd: pinned_date,
             cycle_override_utc: pinned_cycle,
             forecast_hour: request.forecast_hour,
@@ -409,13 +673,12 @@ fn prepare_non_ecape_hour(
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
             recipe_slugs: normalized.direct_recipe_slugs.clone(),
+            product_overrides: HashMap::new(),
             output_width: request.output_width,
             output_height: request.output_height,
             png_compression: request.png_compression,
         };
-        let generic_direct =
-            crate::direct::DirectBatchRequest::from_hrrr_for_planner(&direct_request);
-        crate::direct::plan_direct_fetch_groups(&generic_direct)?
+        crate::direct::plan_direct_fetch_groups(&direct_request)?
     };
     let derived_recipes = if normalized.derived_recipe_slugs.is_empty() {
         Vec::new()
@@ -426,95 +689,206 @@ fn prepare_non_ecape_hour(
         None
     } else {
         Some(plan_native_thermo_routes(
-            ModelId::Hrrr,
+            request.model,
             &derived_recipes,
             request.source_mode,
         )?)
     };
 
-    let mut plan_builder = ExecutionPlanBuilder::new(&latest, request.forecast_hour);
-    if derived_routes
-        .as_ref()
-        .map(|routes| !routes.compute_recipes.is_empty())
-        .unwrap_or(false)
-    {
-        let pair_plan = build_severe_execution_plan(&latest, request.forecast_hour, None, None);
-        for bundle in &pair_plan.bundles {
-            for alias in &bundle.aliases {
-                let mut requirement =
-                    rustwx_core::BundleRequirement::new(alias.bundle, bundle.id.forecast_hour);
-                if let Some(ref over) = alias.native_override {
-                    requirement = requirement.with_native_override(over.clone());
-                }
-                plan_builder
-                    .require_with_logical_family(&requirement, alias.logical_family.as_deref());
-            }
+    let derived_request = (!derived_recipes.is_empty()).then(|| DerivedBatchRequest {
+        model: request.model,
+        date_yyyymmdd: latest.cycle.date_yyyymmdd.clone(),
+        cycle_override_utc: Some(latest.cycle.hour_utc),
+        forecast_hour: request.forecast_hour,
+        source: latest.source,
+        domain: planning_domain.clone(),
+        out_dir: request.out_dir.clone(),
+        cache_root: request.cache_root.clone(),
+        use_cache: request.use_cache,
+        recipe_slugs: normalized.derived_recipe_slugs.clone(),
+        surface_product_override: None,
+        pressure_product_override: None,
+        source_mode: request.source_mode,
+        output_width: request.output_width,
+        output_height: request.output_height,
+        png_compression: request.png_compression,
+    });
+
+    let mut shared_load_decode_ms = 0u128;
+    let mut derived_loaded_override: Option<Arc<crate::runtime::LoadedBundleSet>> = None;
+    if let (Some(derived_request), Some(routes)) = (derived_request.as_ref(), derived_routes.as_ref()) {
+        let special_load_start = Instant::now();
+        if let Some(loaded) = maybe_load_special_pair_for_derived(derived_request, &latest, routes)? {
+            shared_load_decode_ms += special_load_start.elapsed().as_millis();
+            derived_loaded_override = Some(Arc::new(loaded));
         }
     }
-    let mut native_products = std::collections::BTreeSet::<String>::new();
-    if let Some(routes) = &derived_routes {
-        for route in &routes.native_routes {
-            if native_products.insert(route.candidate.fetch_product.to_string()) {
-                let requirement = BundleRequirement::new(
-                    CanonicalBundleDescriptor::NativeAnalysis,
+
+    let mut main_loaded: Option<Arc<crate::runtime::LoadedBundleSet>> = None;
+    let mut direct_loaded: Option<Arc<crate::runtime::LoadedBundleSet>> = None;
+
+    if request.model == ModelId::Hrrr {
+        let mut plan_builder = ExecutionPlanBuilder::new(&latest, request.forecast_hour);
+        if derived_routes
+            .as_ref()
+            .map(|routes| !routes.compute_recipes.is_empty())
+            .unwrap_or(false)
+            && derived_loaded_override.is_none()
+        {
+            let pair_plan = build_severe_execution_plan(&latest, request.forecast_hour, None, None);
+            for bundle in &pair_plan.bundles {
+                for alias in &bundle.aliases {
+                    let mut requirement =
+                        rustwx_core::BundleRequirement::new(alias.bundle, bundle.id.forecast_hour);
+                    if let Some(ref over) = alias.native_override {
+                        requirement = requirement.with_native_override(over.clone());
+                    }
+                    plan_builder.require_with_logical_family(
+                        &requirement,
+                        alias.logical_family.as_deref(),
+                    );
+                }
+            }
+        }
+        let mut native_products = std::collections::BTreeSet::<String>::new();
+        if let Some(routes) = &derived_routes {
+            for route in &routes.native_routes {
+                if native_products.insert(route.candidate.fetch_product.to_string()) {
+                    let requirement = BundleRequirement::new(
+                        CanonicalBundleDescriptor::NativeAnalysis,
+                        request.forecast_hour,
+                    )
+                    .with_native_override(route.candidate.fetch_product);
+                    plan_builder.require_with_logical_family(
+                        &requirement,
+                        Some(&format!("thermo-native:{}", route.candidate.fetch_product)),
+                    );
+                }
+            }
+        }
+        for group in &direct_groups {
+            let requirement = rustwx_core::BundleRequirement::new(
+                rustwx_core::CanonicalBundleDescriptor::NativeAnalysis,
+                request.forecast_hour,
+            )
+            .with_native_override(group.product.clone());
+            for alias in &group.planned_family_aliases {
+                plan_builder.require_with_logical_family(&requirement, Some(alias));
+            }
+        }
+        let plan = plan_builder.build();
+        let load_start = Instant::now();
+        main_loaded = if plan.bundles.is_empty() {
+            None
+        } else {
+            Some(Arc::new(load_execution_plan(
+                plan,
+                &BundleLoaderConfig {
+                    cache_root: request.cache_root.clone(),
+                    use_cache: request.use_cache,
+                },
+            )?))
+        };
+        shared_load_decode_ms += load_start.elapsed().as_millis();
+        direct_loaded = main_loaded.clone();
+    } else {
+        if !direct_groups.is_empty() {
+            let mut direct_plan_builder = ExecutionPlanBuilder::new(&latest, request.forecast_hour);
+            for group in &direct_groups {
+                let requirement = rustwx_core::BundleRequirement::new(
+                    rustwx_core::CanonicalBundleDescriptor::NativeAnalysis,
                     request.forecast_hour,
                 )
-                .with_native_override(route.candidate.fetch_product);
-                plan_builder.require_with_logical_family(
-                    &requirement,
-                    Some(&format!("thermo-native:{}", route.candidate.fetch_product)),
-                );
+                .with_native_override(group.product.clone());
+                for alias in &group.planned_family_aliases {
+                    direct_plan_builder.require_with_logical_family(&requirement, Some(alias));
+                }
+            }
+            let direct_plan = direct_plan_builder.build();
+            let direct_load_start = Instant::now();
+            direct_loaded = if direct_plan.bundles.is_empty() {
+                None
+            } else {
+                Some(Arc::new(load_execution_plan(
+                    direct_plan,
+                    &BundleLoaderConfig {
+                        cache_root: request.cache_root.clone(),
+                        use_cache: request.use_cache,
+                    },
+                )?))
+            };
+            shared_load_decode_ms += direct_load_start.elapsed().as_millis();
+        }
+    }
+
+    let derived_loaded = if derived_recipes.is_empty() {
+        None
+    } else if let Some(loaded) = derived_loaded_override {
+        Some(loaded)
+    } else if request.model == ModelId::Hrrr {
+        main_loaded.clone()
+    } else {
+        let mut derived_plan_builder = ExecutionPlanBuilder::new(&latest, request.forecast_hour);
+        if derived_routes
+            .as_ref()
+            .map(|routes| !routes.compute_recipes.is_empty())
+            .unwrap_or(false)
+        {
+            let pair_plan = build_severe_execution_plan(&latest, request.forecast_hour, None, None);
+            for bundle in &pair_plan.bundles {
+                for alias in &bundle.aliases {
+                    let mut requirement =
+                        rustwx_core::BundleRequirement::new(alias.bundle, bundle.id.forecast_hour);
+                    if let Some(ref over) = alias.native_override {
+                        requirement = requirement.with_native_override(over.clone());
+                    }
+                    derived_plan_builder.require_with_logical_family(
+                        &requirement,
+                        alias.logical_family.as_deref(),
+                    );
+                }
             }
         }
-    }
-    for group in &direct_groups {
-        let requirement = rustwx_core::BundleRequirement::new(
-            rustwx_core::CanonicalBundleDescriptor::NativeAnalysis,
-            request.forecast_hour,
-        )
-        .with_native_override(group.product.clone());
-        for alias in &group.planned_family_aliases {
-            plan_builder.require_with_logical_family(&requirement, Some(alias));
+        let mut native_products = std::collections::BTreeSet::<String>::new();
+        if let Some(routes) = &derived_routes {
+            for route in &routes.native_routes {
+                if native_products.insert(route.candidate.fetch_product.to_string()) {
+                    let requirement = BundleRequirement::new(
+                        CanonicalBundleDescriptor::NativeAnalysis,
+                        request.forecast_hour,
+                    )
+                    .with_native_override(route.candidate.fetch_product);
+                    derived_plan_builder.require_with_logical_family(
+                        &requirement,
+                        Some(&format!("thermo-native:{}", route.candidate.fetch_product)),
+                    );
+                }
+            }
         }
-    }
-    let plan = plan_builder.build();
-    let load_start = Instant::now();
-    let loaded = if plan.bundles.is_empty() {
-        None
-    } else {
-        Some(load_execution_plan(
-            plan,
-            &BundleLoaderConfig {
-                cache_root: request.cache_root.clone(),
-                use_cache: request.use_cache,
-            },
-        )?)
-    };
-    let shared_load_decode_ms = load_start.elapsed().as_millis();
-    let shared_derived_prepare_start = Instant::now();
-    let precomputed_derived = if derived_recipes.is_empty() {
-        None
-    } else if let Some(loaded) = loaded.as_ref() {
-        let derived_request = HrrrDerivedBatchRequest {
-            date_yyyymmdd: latest.cycle.date_yyyymmdd.clone(),
-            cycle_override_utc: Some(latest.cycle.hour_utc),
-            forecast_hour: request.forecast_hour,
-            source: latest.source,
-            domain: planning_domain,
-            out_dir: request.out_dir.clone(),
-            cache_root: request.cache_root.clone(),
-            use_cache: request.use_cache,
-            recipe_slugs: normalized.derived_recipe_slugs.clone(),
-            source_mode: request.source_mode,
-            output_width: request.output_width,
-            output_height: request.output_height,
-            png_compression: request.png_compression,
+        let derived_plan = derived_plan_builder.build();
+        let derived_load_start = Instant::now();
+        let loaded = if derived_plan.bundles.is_empty() {
+            None
+        } else {
+            Some(Arc::new(load_execution_plan(
+                derived_plan,
+                &BundleLoaderConfig {
+                    cache_root: request.cache_root.clone(),
+                    use_cache: request.use_cache,
+                },
+            )?))
         };
-        prepare_shared_derived_fields(
-            &crate::derived::DerivedBatchRequest::from_hrrr(&derived_request),
-            &derived_recipes,
-            loaded,
-        )?
+        shared_load_decode_ms += derived_load_start.elapsed().as_millis();
+        loaded
+    };
+
+    let shared_derived_prepare_start = Instant::now();
+    let precomputed_derived = if derived_recipes.is_empty() || request.domains.len() <= 1 {
+        None
+    } else if let (Some(derived_request), Some(derived_loaded_ref)) =
+        (derived_request.as_ref(), derived_loaded.as_ref())
+    {
+        prepare_shared_derived_fields(derived_request, &derived_recipes, derived_loaded_ref)?
     } else {
         None
     };
@@ -525,7 +899,8 @@ fn prepare_non_ecape_hour(
         latest,
         derived_recipes,
         precomputed_derived,
-        loaded,
+        direct_loaded,
+        derived_loaded,
         timing: HrrrNonEcapeSharedTiming {
             resolve_run_ms,
             shared_load_decode_ms,
@@ -536,10 +911,10 @@ fn prepare_non_ecape_hour(
 }
 
 fn run_prepared_non_ecape_domain(
-    request: &HrrrNonEcapeMultiDomainRequest,
+    request: &NonEcapeMultiDomainRequest,
     prepared: &PreparedNonEcapeHour,
     domain: &DomainSpec,
-) -> Result<HrrrNonEcapeDomainReport, Box<dyn std::error::Error>> {
+) -> Result<NonEcapeDomainReport, Box<dyn std::error::Error>> {
     let total_start = Instant::now();
     let domain_out_dir = request.out_dir.join(&domain.slug);
     fs::create_dir_all(&domain_out_dir)?;
@@ -548,11 +923,16 @@ fn run_prepared_non_ecape_domain(
     let pinned_source = prepared.latest.source;
     let pinned_cycle_utc = prepared.latest.cycle.hour_utc;
     let run_slug = format!(
-        "rustwx_hrrr_{}_{}z_f{:03}_{}_non_ecape_hour",
-        pinned_date, pinned_cycle_utc, request.forecast_hour, domain.slug
+        "rustwx_{}_{}_{}z_f{:03}_{}_non_ecape_hour",
+        request.model.as_str().replace('-', "_"),
+        pinned_date,
+        pinned_cycle_utc,
+        request.forecast_hour,
+        domain.slug
     );
     let manifest_path = default_run_manifest_path(&domain_out_dir, &run_slug);
     let mut manifest = build_run_manifest(
+        request.model,
         &prepared.normalized,
         &domain_out_dir,
         &run_slug,
@@ -565,9 +945,11 @@ fn run_prepared_non_ecape_domain(
     manifest.mark_running();
     crate::publication::publish_run_manifest(&manifest_path, &manifest)?;
 
-    let loaded_ref = prepared.loaded.as_ref();
+    let direct_loaded_ref = prepared.direct_loaded.as_deref();
+    let derived_loaded_ref = prepared.derived_loaded.as_deref();
     let direct_request =
-        (!prepared.normalized.direct_recipe_slugs.is_empty()).then(|| HrrrDirectBatchRequest {
+        (!prepared.normalized.direct_recipe_slugs.is_empty()).then(|| DirectBatchRequest {
+            model: request.model,
             date_yyyymmdd: pinned_date.clone(),
             cycle_override_utc: pinned_cycle,
             forecast_hour: request.forecast_hour,
@@ -577,6 +959,7 @@ fn run_prepared_non_ecape_domain(
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
             recipe_slugs: prepared.normalized.direct_recipe_slugs.clone(),
+            product_overrides: HashMap::new(),
             output_width: request.output_width,
             output_height: request.output_height,
             png_compression: request.png_compression,
@@ -584,7 +967,8 @@ fn run_prepared_non_ecape_domain(
 
     let derived_request = (!prepared.normalized.derived_recipe_slugs.is_empty()).then(|| {
         (
-            HrrrDerivedBatchRequest {
+            DerivedBatchRequest {
+                model: request.model,
                 date_yyyymmdd: pinned_date.clone(),
                 cycle_override_utc: pinned_cycle,
                 forecast_hour: request.forecast_hour,
@@ -594,6 +978,8 @@ fn run_prepared_non_ecape_domain(
                 cache_root: request.cache_root.clone(),
                 use_cache: request.use_cache,
                 recipe_slugs: prepared.normalized.derived_recipe_slugs.clone(),
+                surface_product_override: None,
+                pressure_product_override: None,
                 source_mode: request.source_mode,
                 output_width: request.output_width,
                 output_height: request.output_height,
@@ -605,8 +991,9 @@ fn run_prepared_non_ecape_domain(
     let derived_latest = prepared.latest.clone();
     let precomputed_derived = prepared.precomputed_derived.as_ref();
 
-    let windowed_request =
-        (!prepared.normalized.windowed_products.is_empty()).then(|| HrrrWindowedBatchRequest {
+    let windowed_request = (request.model == ModelId::Hrrr
+        && !prepared.normalized.windowed_products.is_empty())
+        .then(|| HrrrWindowedBatchRequest {
             date_yyyymmdd: pinned_date.clone(),
             cycle_override_utc: pinned_cycle,
             forecast_hour: request.forecast_hour,
@@ -621,30 +1008,33 @@ fn run_prepared_non_ecape_domain(
         });
 
     let lane_result = run_fanout3(
-        should_run_lanes_concurrently(pinned_source),
+        should_run_lanes_concurrently(request.model, pinned_source),
         direct_request.as_ref().map(|lane_request| {
             lane("direct", move || {
-                run_hrrr_direct_batch_from_loaded(
+                run_direct_batch_from_loaded(
                     lane_request,
-                    loaded_ref.expect("planner must load bundles when direct is requested"),
+                    direct_loaded_ref.expect("planner must load bundles when direct is requested"),
+                    &lane_request.cache_root,
+                    lane_request.use_cache,
+                    None,
                 )
             })
         }),
         derived_request.as_ref().map(|(lane_request, recipes)| {
             lane("derived", move || {
-                if let Some(loaded) = loaded_ref {
+                if let Some(loaded) = derived_loaded_ref {
                     if let Some(precomputed) = precomputed_derived {
-                        run_hrrr_derived_batch_from_loaded_with_precomputed(
+                        run_model_derived_batch_from_loaded_with_precomputed(
                             lane_request,
                             recipes,
                             loaded,
                             precomputed,
                         )
                     } else {
-                        run_hrrr_derived_batch_from_loaded(lane_request, recipes, loaded)
+                        run_model_derived_batch_from_loaded(lane_request, recipes, loaded)
                     }
                 } else {
-                    run_hrrr_derived_batch_without_loaded(lane_request, recipes, &derived_latest)
+                    run_model_derived_batch_without_loaded(lane_request, recipes, &derived_latest)
                 }
             })
         }),
@@ -678,7 +1068,7 @@ fn run_prepared_non_ecape_domain(
     let (canonical_manifest_path, attempt_manifest_path) =
         finalize_and_publish_run_manifest(&mut manifest, &domain_out_dir, &run_slug)?;
 
-    Ok(HrrrNonEcapeDomainReport {
+    Ok(NonEcapeDomainReport {
         domain: domain.clone(),
         publication_manifest_path: canonical_manifest_path,
         attempt_manifest_path: Some(attempt_manifest_path),
@@ -691,23 +1081,31 @@ fn run_prepared_non_ecape_domain(
 }
 
 fn validate_requested_work(
-    request: &HrrrNonEcapeHourRequestedProducts,
+    model: ModelId,
+    request: &NonEcapeRequestedProducts,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if request.direct_recipe_slugs.is_empty()
         && request.derived_recipe_slugs.is_empty()
         && request.windowed_products.is_empty()
     {
         return Err(
-            "unified HRRR non-ECAPE hour runner needs at least one direct recipe, derived recipe, or windowed product"
+            "unified non-ECAPE hour runner needs at least one direct recipe, derived recipe, or windowed product"
                 .into(),
         );
+    }
+    if model != ModelId::Hrrr && !request.windowed_products.is_empty() {
+        return Err(format!(
+            "windowed products are only supported by the HRRR non-ECAPE runner, not {}",
+            model
+        )
+        .into());
     }
     Ok(())
 }
 
 fn validate_requested_domains(domains: &[DomainSpec]) -> Result<(), Box<dyn std::error::Error>> {
     if domains.is_empty() {
-        return Err("multi-domain HRRR hour runner needs at least one domain".into());
+        return Err("multi-domain non-ECAPE hour runner needs at least one domain".into());
     }
     let mut seen = HashSet::<&str>::new();
     for domain in domains {
@@ -723,6 +1121,7 @@ fn normalize_requested_products(
     request: &HrrrNonEcapeHourRequest,
 ) -> HrrrNonEcapeHourRequestedProducts {
     normalize_requested_products_from_parts(
+        ModelId::Hrrr,
         &request.direct_recipe_slugs,
         &request.derived_recipe_slugs,
         &request.windowed_products,
@@ -730,6 +1129,7 @@ fn normalize_requested_products(
 }
 
 fn normalize_requested_products_from_parts(
+    model: ModelId,
     direct_recipe_slugs: &[String],
     derived_recipe_slugs: &[String],
     windowed_products: &[HrrrWindowedProduct],
@@ -741,7 +1141,7 @@ fn normalize_requested_products_from_parts(
         let normalized_slug = plot_recipe(slug)
             .map(|recipe| recipe.slug)
             .unwrap_or(slug.as_str());
-        if normalized_slug == "1h_qpf" {
+        if model == ModelId::Hrrr && normalized_slug == "1h_qpf" {
             if !normalized_windowed_products.contains(&HrrrWindowedProduct::Qpf1h) {
                 normalized_windowed_products.push(HrrrWindowedProduct::Qpf1h);
             }
@@ -757,8 +1157,8 @@ fn normalize_requested_products_from_parts(
     }
 }
 
-fn should_run_lanes_concurrently(source: SourceId) -> bool {
-    !matches!(source, SourceId::Nomads)
+fn should_run_lanes_concurrently(model: ModelId, source: SourceId) -> bool {
+    model == ModelId::Hrrr && !matches!(source, SourceId::Nomads)
 }
 
 fn domain_worker_count(requested_jobs: Option<usize>, domain_count: usize) -> usize {
@@ -833,7 +1233,8 @@ fn build_summary(
 }
 
 fn build_run_manifest(
-    request: &HrrrNonEcapeHourRequestedProducts,
+    model: ModelId,
+    request: &NonEcapeRequestedProducts,
     out_dir: &std::path::Path,
     run_slug: &str,
     date_yyyymmdd: &str,
@@ -850,6 +1251,7 @@ fn build_run_manifest(
             artifacts.push(PublishedArtifactRecord::planned(
                 key,
                 expected_output_relative_path(
+                    model,
                     date_yyyymmdd,
                     cycle_utc,
                     forecast_hour,
@@ -866,6 +1268,7 @@ fn build_run_manifest(
             artifacts.push(PublishedArtifactRecord::planned(
                 key,
                 expected_output_relative_path(
+                    model,
                     date_yyyymmdd,
                     cycle_utc,
                     forecast_hour,
@@ -883,6 +1286,7 @@ fn build_run_manifest(
             artifacts.push(PublishedArtifactRecord::planned(
                 key,
                 expected_output_relative_path(
+                    model,
                     date_yyyymmdd,
                     cycle_utc,
                     forecast_hour,
@@ -893,8 +1297,13 @@ fn build_run_manifest(
         }
     }
 
+    let runner_name = if model == ModelId::Hrrr {
+        "hrrr_non_ecape_hour".to_string()
+    } else {
+        format!("{}_non_ecape_hour", model.as_str().replace('-', "_"))
+    };
     RunPublicationManifest::new(
-        "hrrr_non_ecape_hour",
+        &runner_name,
         run_slug.to_string(),
         out_dir.to_path_buf(),
     )
@@ -902,6 +1311,7 @@ fn build_run_manifest(
 }
 
 fn expected_output_relative_path(
+    model: ModelId,
     date_yyyymmdd: &str,
     cycle_utc: u8,
     forecast_hour: u16,
@@ -909,8 +1319,13 @@ fn expected_output_relative_path(
     product_slug: &str,
 ) -> PathBuf {
     PathBuf::from(format!(
-        "rustwx_hrrr_{}_{}z_f{:03}_{}_{}.png",
-        date_yyyymmdd, cycle_utc, forecast_hour, domain_slug, product_slug
+        "rustwx_{}_{}_{}z_f{:03}_{}_{}.png",
+        model.as_str().replace('-', "_"),
+        date_yyyymmdd,
+        cycle_utc,
+        forecast_hour,
+        domain_slug,
+        product_slug
     ))
 }
 
@@ -1230,7 +1645,10 @@ mod tests {
 
     #[test]
     fn validation_rejects_empty_requests() {
-        let err = validate_requested_work(&normalize_requested_products(&empty_request()))
+        let err = validate_requested_work(
+            ModelId::Hrrr,
+            &normalize_requested_products(&empty_request()),
+        )
             .expect_err("empty request should be rejected")
             .to_string();
         assert!(err.contains("at least one direct recipe"));
@@ -1462,6 +1880,7 @@ mod tests {
             windowed_products: vec![HrrrWindowedProduct::Qpf6h, HrrrWindowedProduct::Qpf12h],
         };
         let mut manifest = build_run_manifest(
+            ModelId::Hrrr,
             &requested,
             std::path::Path::new("C:\\proof\\run"),
             "rustwx_hrrr_20260415_12z_f006_conus_non_ecape_hour",
