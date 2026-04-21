@@ -225,14 +225,14 @@ fn font_size_px(scale: u32, kind: FontKind) -> f32 {
         (s, FontKind::Regular) => 12.0 + (s as f32 - 1.0) * 4.0,
         (s, FontKind::Bold) => 15.0 + (s as f32 - 1.0) * 4.0,
     };
-    base * 1.33
+    base
 }
 
 fn line_height(scale: u32, kind: FontKind) -> u32 {
     if get_font(kind).is_some() {
         font_size_px(scale, kind).ceil() as u32
     } else {
-        ((8 * scale.max(1)) as f32 * 1.33).ceil() as u32
+        (8 * scale.max(1)).max(12)
     }
 }
 
@@ -264,14 +264,70 @@ fn load_font_candidates(bold: bool) -> Option<Font<'static>> {
 
 fn font_candidates(bold: bool) -> Vec<PathBuf> {
     let mut out = Vec::new();
-
-    let env_key = if bold {
-        "WRF_RENDER_FONT_BOLD"
+    let dejavu_name = if bold {
+        "DejaVuSans-Bold.ttf"
     } else {
-        "WRF_RENDER_FONT_REGULAR"
+        "DejaVuSans.ttf"
     };
-    if let Ok(value) = env::var(env_key) {
+    let liberation_name = if bold {
+        "LiberationSans-Bold.ttf"
+    } else {
+        "LiberationSans-Regular.ttf"
+    };
+    let noto_name = if bold {
+        "NotoSans-Bold.ttf"
+    } else {
+        "NotoSans-Regular.ttf"
+    };
+    let arial_name = if bold { "arialbd.ttf" } else { "arial.ttf" };
+    let segoe_name = if bold { "segoeuib.ttf" } else { "segoeui.ttf" };
+
+    let env_keys = if bold {
+        ["RUSTWX_RENDER_FONT_BOLD", "WRF_RENDER_FONT_BOLD"]
+    } else {
+        ["RUSTWX_RENDER_FONT_REGULAR", "WRF_RENDER_FONT_REGULAR"]
+    };
+    if let Some(value) = env_keys.iter().find_map(|key| env::var(key).ok()) {
         out.push(PathBuf::from(value));
+    }
+
+    if let Ok(xdg_data_home) = env::var("XDG_DATA_HOME") {
+        out.push(
+            PathBuf::from(&xdg_data_home)
+                .join("fonts")
+                .join(dejavu_name),
+        );
+        out.push(
+            PathBuf::from(&xdg_data_home)
+                .join("fonts")
+                .join(liberation_name),
+        );
+        out.push(PathBuf::from(&xdg_data_home).join("fonts").join(noto_name));
+    }
+
+    if let Ok(home) = env::var("HOME") {
+        let home = PathBuf::from(home);
+        out.push(
+            home.join(".local")
+                .join("share")
+                .join("fonts")
+                .join(dejavu_name),
+        );
+        out.push(
+            home.join(".local")
+                .join("share")
+                .join("fonts")
+                .join(liberation_name),
+        );
+        out.push(
+            home.join(".local")
+                .join("share")
+                .join("fonts")
+                .join(noto_name),
+        );
+        out.push(home.join(".fonts").join(dejavu_name));
+        out.push(home.join(".fonts").join(liberation_name));
+        out.push(home.join(".fonts").join(noto_name));
     }
 
     if let Ok(home) = env::var("USERPROFILE") {
@@ -286,44 +342,33 @@ fn font_candidates(bold: bool) -> Vec<PathBuf> {
             .join("mpl-data")
             .join("fonts")
             .join("ttf");
-        out.push(mpl.join(if bold {
-            "DejaVuSans-Bold.ttf"
-        } else {
-            "DejaVuSans.ttf"
-        }));
+        out.push(mpl.join(dejavu_name));
         out.push(
             home.join("AppData")
                 .join("Local")
                 .join("Microsoft")
                 .join("Windows")
                 .join("Fonts")
-                .join(if bold {
-                    "DejaVuSans-Bold.ttf"
-                } else {
-                    "DejaVuSans.ttf"
-                }),
+                .join(dejavu_name),
         );
     }
 
+    out.push(PathBuf::from("/usr/share/fonts/truetype/dejavu").join(dejavu_name));
+    out.push(PathBuf::from("/usr/share/fonts/dejavu").join(dejavu_name));
+    out.push(PathBuf::from("/usr/share/fonts/truetype/liberation2").join(liberation_name));
+    out.push(PathBuf::from("/usr/share/fonts/truetype/liberation").join(liberation_name));
+    out.push(PathBuf::from("/usr/share/fonts/truetype/noto").join(noto_name));
+    out.push(PathBuf::from("/usr/share/fonts/opentype/noto").join(noto_name));
+    out.push(PathBuf::from("/usr/local/share/fonts").join(dejavu_name));
+    out.push(PathBuf::from("/usr/local/share/fonts").join(liberation_name));
+    out.push(PathBuf::from("/mnt/c/Windows/Fonts").join(arial_name));
+    out.push(PathBuf::from("/mnt/c/Windows/Fonts").join(segoe_name));
     out.push(
-        PathBuf::from(r"C:\Python313\Lib\site-packages\matplotlib\mpl-data\fonts\ttf").join(
-            if bold {
-                "DejaVuSans-Bold.ttf"
-            } else {
-                "DejaVuSans.ttf"
-            },
-        ),
+        PathBuf::from(r"C:\Python313\Lib\site-packages\matplotlib\mpl-data\fonts\ttf")
+            .join(dejavu_name),
     );
-    out.push(PathBuf::from(r"C:\Windows\Fonts").join(if bold {
-        "arialbd.ttf"
-    } else {
-        "arial.ttf"
-    }));
-    out.push(PathBuf::from(r"C:\Windows\Fonts").join(if bold {
-        "segoeuib.ttf"
-    } else {
-        "segoeui.ttf"
-    }));
+    out.push(PathBuf::from(r"C:\Windows\Fonts").join(arial_name));
+    out.push(PathBuf::from(r"C:\Windows\Fonts").join(segoe_name));
 
     out
 }

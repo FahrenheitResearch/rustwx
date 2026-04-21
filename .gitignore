@@ -1,4 +1,5 @@
 /target/
+crates/rustwx-python/dist/
 Cargo.lock
 .DS_Store
 *.pyc

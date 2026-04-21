@@ -36,6 +36,7 @@ pub struct RenderOpts {
     pub colorbar: bool,
     pub title: Option<String>,
     pub subtitle_left: Option<String>,
+    pub subtitle_center: Option<String>,
     pub subtitle_right: Option<String>,
     pub cbar_tick_step: Option<f64>,
     pub colorbar_mode: crate::colormap::LegendMode,
@@ -127,6 +128,7 @@ impl Default for RenderOpts {
             colorbar: true,
             title: None,
             subtitle_left: None,
+            subtitle_center: None,
             subtitle_right: None,
             cbar_tick_step: None,
             colorbar_mode: crate::colormap::LegendMode::Stepped,
@@ -263,8 +265,27 @@ fn compute_layout(
 ) -> Layout {
     let chrome_scale = resolve_chrome_scale(total_w, total_h, chrome_scale);
     let metrics = scaled_layout_metrics(presentation.layout, chrome_scale);
+    let text_scale = text_scale_from_chrome(chrome_scale);
+    let title_line_h = match presentation.chrome.title_anchor {
+        TitleAnchor::Center => text::bold_line_height(text_scale),
+        TitleAnchor::Left => text::regular_line_height(text_scale),
+    };
+    let subtitle_line_h = text::regular_line_height(text_scale);
+    let header_top_pad = scale_u32(3, chrome_scale);
+    let header_line_gap = scale_u32(2, chrome_scale);
+    let header_bottom_pad = scale_u32(2, chrome_scale);
     let map_x = metrics.margin_x.min(total_w.saturating_sub(1));
-    let title_h = if has_title { metrics.title_h } else { 0 };
+    let title_h = if has_title {
+        metrics.title_h.max(
+            header_top_pad
+                .saturating_add(title_line_h)
+                .saturating_add(header_line_gap)
+                .saturating_add(subtitle_line_h)
+                .saturating_add(header_bottom_pad),
+        )
+    } else {
+        0
+    };
     let footer_h = if has_cbar {
         metrics
             .footer_h
@@ -315,10 +336,16 @@ fn compute_layout(
         cbar_y,
         cbar_w,
         cbar_h,
-        title_y: title_h.saturating_sub(scale_u32(24, chrome_scale)),
-        subtitle_y: title_h.saturating_sub(scale_u32(10, chrome_scale)),
-        text_scale: text_scale_from_chrome(chrome_scale),
-        label_gap: scale_u32(14, chrome_scale),
+        title_y: if has_title { header_top_pad } else { 0 },
+        subtitle_y: if has_title {
+            header_top_pad
+                .saturating_add(title_line_h)
+                .saturating_add(header_line_gap)
+        } else {
+            0
+        },
+        text_scale,
+        label_gap: scale_u32(10, chrome_scale),
     }
 }
 
@@ -357,7 +384,7 @@ fn scaled_layout_metrics(
 }
 
 fn text_scale_from_chrome(chrome_scale: f32) -> u32 {
-    chrome_scale.round().clamp(1.0, 4.0) as u32 + 1
+    (chrome_scale.round().clamp(1.0, 4.0) as u32).max(1)
 }
 
 pub fn map_frame_aspect_ratio(total_w: u32, total_h: u32, has_cbar: bool, has_title: bool) -> f64 {
@@ -433,6 +460,74 @@ fn pick_ticks(levels: &[f64], step: Option<f64>) -> Vec<f64> {
 
 fn colorbar_levels_for_ticks(cmap: &LeveledColormap) -> &[f64] {
     cmap.legend_levels_for_display()
+}
+
+fn measure_text_width(text: &str, scale: u32, bold: bool) -> u32 {
+    if bold {
+        text::text_width_bold(text, scale)
+    } else {
+        text::text_width(text, scale)
+    }
+}
+
+fn ellipsize_text_to_width(text: &str, max_width: u32, scale: u32, bold: bool) -> String {
+    if measure_text_width(text, scale, bold) <= max_width {
+        return text.to_string();
+    }
+
+    let ellipsis = "...";
+    let ellipsis_w = measure_text_width(ellipsis, scale, bold);
+    if ellipsis_w >= max_width {
+        return ellipsis.to_string();
+    }
+
+    let mut kept = String::new();
+    for ch in text.chars() {
+        let mut candidate = kept.clone();
+        candidate.push(ch);
+        candidate.push_str(ellipsis);
+        if measure_text_width(&candidate, scale, bold) > max_width {
+            break;
+        }
+        kept.push(ch);
+    }
+
+    if kept.is_empty() {
+        ellipsis.to_string()
+    } else {
+        format!("{kept}{ellipsis}")
+    }
+}
+
+fn filter_tick_labels_to_fit(
+    ticks: &[f64],
+    lo: f64,
+    range: f64,
+    cbar_x: u32,
+    cbar_w: u32,
+    img_w: u32,
+    text_scale: u32,
+) -> Vec<(f64, i32, String)> {
+    let min_gap_px = (6 * text_scale.max(1)) as i32;
+    let mut labels = Vec::with_capacity(ticks.len());
+    let mut last_right = i32::MIN / 4;
+
+    for tick_val in ticks {
+        let frac = (tick_val - lo) / range;
+        let px = cbar_x as f64 + frac * cbar_w as f64;
+        let label = text::format_tick(*tick_val);
+        let lw = text::text_width(&label, text_scale) as i32;
+        let centered_lx = (px as i32) - (lw / 2);
+        let max_lx = (img_w as i32).saturating_sub(lw);
+        let lx = centered_lx.clamp(0, max_lx.max(0));
+        if !labels.is_empty() && lx <= last_right.saturating_add(min_gap_px) {
+            continue;
+        }
+        last_right = lx.saturating_add(lw);
+        labels.push((*tick_val, lx, label));
+    }
+
+    labels
 }
 
 fn grid_to_pixel(i: f64, j: f64, nx: usize, ny: usize, layout: &Layout) -> (f64, f64) {
@@ -648,6 +743,7 @@ fn static_base_cache_key(
     extent: Option<&MapExtent>,
     domain_frame_rect: Option<LocalRect>,
     canvas_background: Rgba,
+    map_background: Rgba,
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
     opts.width.hash(&mut hasher);
@@ -657,7 +753,7 @@ fn static_base_cache_key(
     layout.map_w.hash(&mut hasher);
     layout.map_h.hash(&mut hasher);
     hash_rgba(&mut hasher, canvas_background);
-    hash_rgba(&mut hasher, opts.presentation.map_background);
+    hash_rgba(&mut hasher, map_background);
     opts.domain_frame.is_some().hash(&mut hasher);
     if let Some(frame) = opts.domain_frame {
         frame.clear_outside.hash(&mut hasher);
@@ -679,6 +775,7 @@ fn build_static_base_image(
     extent: Option<&MapExtent>,
     domain_frame_rect: Option<LocalRect>,
     canvas_background: Rgba,
+    map_background: Rgba,
     polygon_clip_rect: (i32, i32, i32, i32),
 ) -> (RgbaImage, u128, u128) {
     let background_start = Instant::now();
@@ -692,7 +789,7 @@ fn build_static_base_image(
                 img.put_pixel(
                     layout.map_x + px,
                     layout.map_y + py,
-                    opts.presentation.map_background.to_image_rgba(),
+                    map_background.to_image_rgba(),
                 );
             }
         }
@@ -701,7 +798,7 @@ fn build_static_base_image(
         let map_bottom = layout.map_y.saturating_add(layout.map_h).min(img.height());
         for py in layout.map_y..map_bottom {
             for px in layout.map_x..map_right {
-                img.put_pixel(px, py, opts.presentation.map_background.to_image_rgba());
+                img.put_pixel(px, py, map_background.to_image_rgba());
             }
         }
     }
@@ -728,10 +825,17 @@ fn cached_static_base_image(
     extent: Option<&MapExtent>,
     domain_frame_rect: Option<LocalRect>,
     canvas_background: Rgba,
+    map_background: Rgba,
     polygon_clip_rect: (i32, i32, i32, i32),
 ) -> (RgbaImage, u128, u128) {
-    let static_base_key =
-        static_base_cache_key(opts, layout, extent, domain_frame_rect, canvas_background);
+    let static_base_key = static_base_cache_key(
+        opts,
+        layout,
+        extent,
+        domain_frame_rect,
+        canvas_background,
+        map_background,
+    );
     STATIC_BASE_CACHE.with(|cache_cell| {
         let mut cache = cache_cell.borrow_mut();
         if let Some(cached) = cache.as_ref() {
@@ -746,6 +850,7 @@ fn cached_static_base_image(
             extent,
             domain_frame_rect,
             canvas_background,
+            map_background,
             polygon_clip_rect,
         );
         *cache = Some(CachedStaticBase {
@@ -1961,14 +2066,20 @@ fn draw_chrome_and_colorbar(
     if let Some(ref t) = opts.title {
         match opts.presentation.chrome.title_anchor {
             TitleAnchor::Center => {
+                let title = ellipsize_text_to_width(
+                    t,
+                    chrome_right.saturating_sub(chrome_left).max(1),
+                    layout.text_scale,
+                    true,
+                );
                 if matches!(opts.domain_frame, Some(frame) if frame.chrome_follows_frame)
                     && domain_frame_rect.is_some()
                 {
-                    let title_w = text::text_width_bold(t, layout.text_scale) as i32;
+                    let title_w = text::text_width_bold(&title, layout.text_scale) as i32;
                     let title_x = chrome_center as i32 - title_w / 2;
                     text::draw_text_bold(
                         img,
-                        t,
+                        &title,
                         title_x,
                         title_y as i32,
                         title_color,
@@ -1977,7 +2088,7 @@ fn draw_chrome_and_colorbar(
                 } else {
                     text::draw_text_centered(
                         img,
-                        t,
+                        &title,
                         title_y as i32,
                         title_color,
                         layout.text_scale,
@@ -1985,9 +2096,15 @@ fn draw_chrome_and_colorbar(
                 }
             }
             TitleAnchor::Left => {
+                let title = ellipsize_text_to_width(
+                    t,
+                    chrome_right.saturating_sub(chrome_left).max(1),
+                    layout.text_scale,
+                    false,
+                );
                 text::draw_text(
                     img,
-                    t,
+                    &title,
                     chrome_left as i32,
                     title_y as i32,
                     title_color,
@@ -1996,10 +2113,61 @@ fn draw_chrome_and_colorbar(
             }
         }
     }
+    let subtitle_pair_gap = 8u32.saturating_mul(layout.text_scale.max(1));
+    let center_subtitle_gap = 10u32.saturating_mul(layout.text_scale.max(1));
+    let center_subtitle = opts.subtitle_center.as_ref().map(|text| {
+        let max_width = chrome_right
+            .saturating_sub(chrome_left)
+            .saturating_mul(2)
+            .checked_div(5)
+            .unwrap_or(1)
+            .max(1);
+        ellipsize_text_to_width(text, max_width, layout.text_scale, false)
+    });
+    let center_subtitle_width = center_subtitle
+        .as_ref()
+        .map(|text| text::text_width(text, layout.text_scale) as u32)
+        .unwrap_or(0);
+    let center_left_bound = if center_subtitle.is_some() {
+        chrome_center
+            .saturating_sub(center_subtitle_width / 2)
+            .saturating_sub(center_subtitle_gap)
+    } else {
+        chrome_center
+    };
+    let center_right_bound = if center_subtitle.is_some() {
+        chrome_center
+            .saturating_add(center_subtitle_width / 2)
+            .saturating_add(center_subtitle_gap)
+            .min(chrome_right)
+    } else {
+        chrome_center
+    };
+    let left_subtitle_width = if opts.subtitle_left.is_some() && opts.subtitle_right.is_some() {
+        center_left_bound
+            .saturating_sub(chrome_left)
+            .saturating_sub(subtitle_pair_gap)
+            .max(1)
+    } else if center_subtitle.is_some() {
+        center_left_bound.saturating_sub(chrome_left).max(1)
+    } else {
+        chrome_right.saturating_sub(chrome_left).max(1)
+    };
+    let right_subtitle_width = if opts.subtitle_left.is_some() && opts.subtitle_right.is_some() {
+        chrome_right
+            .saturating_sub(center_right_bound)
+            .saturating_sub(subtitle_pair_gap)
+            .max(1)
+    } else if center_subtitle.is_some() {
+        chrome_right.saturating_sub(center_right_bound).max(1)
+    } else {
+        chrome_right.saturating_sub(chrome_left).max(1)
+    };
     if let Some(ref t) = opts.subtitle_left {
+        let subtitle = ellipsize_text_to_width(t, left_subtitle_width, layout.text_scale, false);
         text::draw_text(
             img,
-            t,
+            &subtitle,
             chrome_left as i32,
             subtitle_y as i32,
             subtitle_color,
@@ -2007,10 +2175,20 @@ fn draw_chrome_and_colorbar(
         );
     }
     if let Some(ref t) = opts.subtitle_right {
+        let subtitle = ellipsize_text_to_width(t, right_subtitle_width, layout.text_scale, false);
         text::draw_text_right(
             img,
-            t,
+            &subtitle,
             chrome_right as i32,
+            subtitle_y as i32,
+            subtitle_color,
+            layout.text_scale,
+        );
+    }
+    if let Some(ref subtitle) = center_subtitle {
+        text::draw_text_centered(
+            img,
+            subtitle,
             subtitle_y as i32,
             subtitle_color,
             layout.text_scale,
@@ -2124,14 +2302,15 @@ fn draw_chrome_and_colorbar(
                 );
                 let tick_y = cbar_y.saturating_sub(layout.label_gap) as i32;
                 let label_color = opts.presentation.colorbar.label_color;
-                for tick_val in &ticks {
-                    let frac = (tick_val - lo) / range;
-                    let px = cbar_x as f64 + frac * cbar_w as f64;
-                    let label = text::format_tick(*tick_val);
-                    let lw = text::text_width(&label, layout.text_scale) as i32;
-                    let centered_lx = (px as i32) - (lw / 2);
-                    let max_lx = (img.width() as i32).saturating_sub(lw);
-                    let lx = centered_lx.clamp(0, max_lx.max(0));
+                for (_, lx, label) in filter_tick_labels_to_fit(
+                    &ticks,
+                    lo,
+                    range,
+                    cbar_x,
+                    cbar_w,
+                    img.width(),
+                    layout.text_scale,
+                ) {
                     text::draw_text(img, &label, lx, tick_y, label_color, layout.text_scale);
                 }
             }
@@ -2151,7 +2330,10 @@ fn render_to_image_profile_inner(
     let total_start = Instant::now();
     let layout_start = Instant::now();
     let has_title =
-        opts.title.is_some() || opts.subtitle_left.is_some() || opts.subtitle_right.is_some();
+        opts.title.is_some()
+            || opts.subtitle_left.is_some()
+            || opts.subtitle_center.is_some()
+            || opts.subtitle_right.is_some();
     let layout = compute_layout(
         opts.width,
         opts.height,
@@ -2210,12 +2392,18 @@ fn render_to_image_profile_inner(
     } else {
         opts.background
     };
+    let map_background = if opts.background == Rgba::WHITE {
+        opts.presentation.map_background
+    } else {
+        opts.background
+    };
     let (mut img, background_ms, polygon_fill_ms) = cached_static_base_image(
         opts,
         &layout,
         opts.map_extent.as_ref(),
         domain_frame_rect,
         canvas_background,
+        map_background,
         polygon_clip_rect,
     );
     let variable_timing = draw_variable_layers(
@@ -2433,6 +2621,7 @@ mod tests {
             colorbar: false,
             title: Some("Projected".into()),
             subtitle_left: None,
+            subtitle_center: None,
             subtitle_right: None,
             cbar_tick_step: None,
             colorbar_mode: crate::colormap::LegendMode::Stepped,
@@ -2893,8 +3082,8 @@ mod tests {
         );
 
         assert_eq!(layout.map_y, 34);
-        assert_eq!(layout.title_y, 10);
-        assert_eq!(layout.subtitle_y, 24);
+        assert_eq!(layout.title_y, 3);
+        assert_eq!(layout.subtitle_y, 17);
         assert_eq!(layout.cbar_y + layout.cbar_h, 892);
     }
 

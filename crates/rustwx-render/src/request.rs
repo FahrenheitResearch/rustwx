@@ -459,6 +459,7 @@ pub struct MapRenderRequest {
     pub colorbar: bool,
     pub title: Option<String>,
     pub subtitle_left: Option<String>,
+    pub subtitle_center: Option<String>,
     pub subtitle_right: Option<String>,
     pub cbar_tick_step: Option<f64>,
     #[serde(default)]
@@ -500,6 +501,7 @@ impl MapRenderRequest {
             colorbar: true,
             title: None,
             subtitle_left: None,
+            subtitle_center: None,
             subtitle_right: None,
             cbar_tick_step: None,
             render_density: RenderDensity::default(),

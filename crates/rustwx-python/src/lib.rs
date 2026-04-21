@@ -3,11 +3,15 @@ pub fn python_bindings_enabled() -> bool {
 }
 
 #[cfg(feature = "python")]
+mod wrf_render;
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
 #[cfg(feature = "python")]
 use rustwx_core::{CycleSpec, ModelId, ModelRunRequest, SourceId};
 #[cfg(feature = "python")]
 use rustwx_io::{FetchRequest, available_forecast_hours, probe_sources};
+#[cfg(feature = "python")]
+use wrf_render::{render_projected_map_json, render_wrf_map_json};
 
 #[cfg(feature = "python")]
 #[pyfunction]
@@ -146,5 +150,7 @@ fn rustwx_python(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> 
     module.add_function(wrap_pyfunction!(latest_run_json, module)?)?;
     module.add_function(wrap_pyfunction!(available_forecast_hours_json, module)?)?;
     module.add_function(wrap_pyfunction!(probe_sources_json, module)?)?;
+    module.add_function(wrap_pyfunction!(render_projected_map_json, module)?)?;
+    module.add_function(wrap_pyfunction!(render_wrf_map_json, module)?)?;
     Ok(())
 }
