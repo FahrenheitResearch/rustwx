@@ -262,11 +262,14 @@ impl WrfFile {
                     .collect::<Vec<_>>();
                 Ok(destagger_z(&stag, self.nz_stag, self.ny, self.nx))
             } else if self.has_var("Z") {
-                let z_stag = self.read_var("Z")?;
-                Ok(destagger_z(&z_stag, self.nz_stag, self.ny, self.nx)
-                    .into_iter()
-                    .map(|value| value * G)
-                    .collect())
+                let z = self.read_var("Z")?;
+                let nxy = self.nxy();
+                let geopotential = if z.len() == self.nz * nxy {
+                    z
+                } else {
+                    destagger_z(&z, self.nz_stag, self.ny, self.nx)
+                };
+                Ok(geopotential.into_iter().map(|value| value * G).collect())
             } else {
                 Err(WrfError::MissingVariable("PH".to_string()))
             }
@@ -1275,12 +1278,17 @@ fn rotate_to_earth(
 }
 
 fn destagger_x(values: &[f64], nz: usize, ny: usize, nx_stag: usize) -> Vec<f64> {
-    let nx = nx_stag.saturating_sub(1);
+    let actual_nx_stag = if nz == 0 || ny == 0 {
+        0
+    } else {
+        values.len() / (nz * ny)
+    };
+    let nx = nx_stag.min(actual_nx_stag).saturating_sub(1);
     let mut out = vec![0.0; nz * ny * nx];
     for k in 0..nz {
         for j in 0..ny {
             for i in 0..nx {
-                let left = k * ny * nx_stag + j * nx_stag + i;
+                let left = k * ny * actual_nx_stag + j * actual_nx_stag + i;
                 let right = left + 1;
                 out[k * ny * nx + j * nx + i] = 0.5 * (values[left] + values[right]);
             }
@@ -1290,12 +1298,17 @@ fn destagger_x(values: &[f64], nz: usize, ny: usize, nx_stag: usize) -> Vec<f64>
 }
 
 fn destagger_y(values: &[f64], nz: usize, ny_stag: usize, nx: usize) -> Vec<f64> {
-    let ny = ny_stag.saturating_sub(1);
+    let actual_ny_stag = if nz == 0 || nx == 0 {
+        0
+    } else {
+        values.len() / (nz * nx)
+    };
+    let ny = ny_stag.min(actual_ny_stag).saturating_sub(1);
     let mut out = vec![0.0; nz * ny * nx];
     for k in 0..nz {
         for j in 0..ny {
             for i in 0..nx {
-                let south = k * ny_stag * nx + j * nx + i;
+                let south = k * actual_ny_stag * nx + j * nx + i;
                 let north = south + nx;
                 out[k * ny * nx + j * nx + i] = 0.5 * (values[south] + values[north]);
             }
@@ -1305,8 +1318,9 @@ fn destagger_y(values: &[f64], nz: usize, ny_stag: usize, nx: usize) -> Vec<f64>
 }
 
 fn destagger_z(values: &[f64], nz_stag: usize, ny: usize, nx: usize) -> Vec<f64> {
-    let nz = nz_stag.saturating_sub(1);
     let nxy = ny * nx;
+    let actual_nz_stag = if nxy == 0 { 0 } else { values.len() / nxy };
+    let nz = nz_stag.min(actual_nz_stag).saturating_sub(1);
     let mut out = vec![0.0; nz * nxy];
     for k in 0..nz {
         let lower = k * nxy;
