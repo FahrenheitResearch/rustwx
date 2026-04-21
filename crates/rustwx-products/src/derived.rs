@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use rustwx_calc::{
     CalcError, EcapeVolumeInputs, FixedStpInputs, GridShape as CalcGridShape, SurfaceInputs,
     TemperatureAdvectionInputs, VolumeShape, WindGridInputs, compute_2m_apparent_temperature,
@@ -87,6 +88,7 @@ trait SurfaceFieldSet {
 
 trait PressureFieldSet {
     fn pressure_levels_hpa(&self) -> &[f64];
+    fn pressure_3d_pa(&self) -> Option<&[f64]>;
     fn temperature_c_3d(&self) -> &[f64];
     fn qvapor_kgkg_3d(&self) -> &[f64];
     fn u_ms_3d(&self) -> &[f64];
@@ -130,6 +132,9 @@ impl SurfaceFieldSet for GenericSurfaceFields {
 impl PressureFieldSet for GenericPressureFields {
     fn pressure_levels_hpa(&self) -> &[f64] {
         &self.pressure_levels_hpa
+    }
+    fn pressure_3d_pa(&self) -> Option<&[f64]> {
+        self.pressure_3d_pa.as_deref()
     }
     fn temperature_c_3d(&self) -> &[f64] {
         &self.temperature_c_3d
@@ -984,12 +989,14 @@ impl DerivedBatchRequest {
 
 pub fn supported_derived_recipe_slugs(model: ModelId) -> Vec<String> {
     match model {
-        ModelId::Hrrr | ModelId::Gfs | ModelId::EcmwfOpenData | ModelId::RrfsA => {
-            supported_derived_recipe_inventory()
-                .iter()
-                .map(|recipe| recipe.slug.to_string())
-                .collect()
-        }
+        ModelId::Hrrr
+        | ModelId::Gfs
+        | ModelId::EcmwfOpenData
+        | ModelId::RrfsA
+        | ModelId::WrfGdex => supported_derived_recipe_inventory()
+            .iter()
+            .map(|recipe| recipe.slug.to_string())
+            .collect(),
     }
 }
 
@@ -2310,10 +2317,12 @@ where
         None
     };
     let pressure_3d_pa = if requirements.needs_volume() {
-        Some(broadcast_levels_pa(
-            pressure.pressure_levels_hpa(),
-            grid.len(),
-        ))
+        Some(
+            pressure
+                .pressure_3d_pa()
+                .map(|values| values.to_vec())
+                .unwrap_or_else(|| broadcast_levels_pa(pressure.pressure_levels_hpa(), grid.len())),
+        )
     } else {
         None
     };
@@ -2514,33 +2523,25 @@ where
     if requirements.needs_grid_spacing() {
         let (dx_m, dy_m) = estimate_grid_spacing_m(surface)?;
         if requirements.temperature_advection_700mb {
-            let t700 = level_slice(
+            let t700 = pressure_level_slice_or_interp(
+                pressure,
                 pressure.temperature_c_3d(),
-                pressure.pressure_levels_hpa(),
                 700.0,
                 grid.len(),
             )
             .ok_or("missing 700 mb temperature slice in HRRR pressure bundle")?;
-            let u700 = level_slice(
-                pressure.u_ms_3d(),
-                pressure.pressure_levels_hpa(),
-                700.0,
-                grid.len(),
-            )
-            .ok_or("missing 700 mb u-wind slice in HRRR pressure bundle")?;
-            let v700 = level_slice(
-                pressure.v_ms_3d(),
-                pressure.pressure_levels_hpa(),
-                700.0,
-                grid.len(),
-            )
-            .ok_or("missing 700 mb v-wind slice in HRRR pressure bundle")?;
+            let u700 =
+                pressure_level_slice_or_interp(pressure, pressure.u_ms_3d(), 700.0, grid.len())
+                    .ok_or("missing 700 mb u-wind slice in HRRR pressure bundle")?;
+            let v700 =
+                pressure_level_slice_or_interp(pressure, pressure.v_ms_3d(), 700.0, grid.len())
+                    .ok_or("missing 700 mb v-wind slice in HRRR pressure bundle")?;
             computed.temperature_advection_700mb_cph = Some(
                 rustwx_calc::compute_temperature_advection_700mb(TemperatureAdvectionInputs {
                     grid,
-                    temperature_2d: t700,
-                    u_2d_ms: u700,
-                    v_2d_ms: v700,
+                    temperature_2d: &t700,
+                    u_2d_ms: &u700,
+                    v_2d_ms: &v700,
                     dx_m,
                     dy_m,
                 })?
@@ -2550,33 +2551,25 @@ where
             );
         }
         if requirements.temperature_advection_850mb {
-            let t850 = level_slice(
+            let t850 = pressure_level_slice_or_interp(
+                pressure,
                 pressure.temperature_c_3d(),
-                pressure.pressure_levels_hpa(),
                 850.0,
                 grid.len(),
             )
             .ok_or("missing 850 mb temperature slice in HRRR pressure bundle")?;
-            let u850 = level_slice(
-                pressure.u_ms_3d(),
-                pressure.pressure_levels_hpa(),
-                850.0,
-                grid.len(),
-            )
-            .ok_or("missing 850 mb u-wind slice in HRRR pressure bundle")?;
-            let v850 = level_slice(
-                pressure.v_ms_3d(),
-                pressure.pressure_levels_hpa(),
-                850.0,
-                grid.len(),
-            )
-            .ok_or("missing 850 mb v-wind slice in HRRR pressure bundle")?;
+            let u850 =
+                pressure_level_slice_or_interp(pressure, pressure.u_ms_3d(), 850.0, grid.len())
+                    .ok_or("missing 850 mb u-wind slice in HRRR pressure bundle")?;
+            let v850 =
+                pressure_level_slice_or_interp(pressure, pressure.v_ms_3d(), 850.0, grid.len())
+                    .ok_or("missing 850 mb v-wind slice in HRRR pressure bundle")?;
             computed.temperature_advection_850mb_cph = Some(
                 rustwx_calc::compute_temperature_advection_850mb(TemperatureAdvectionInputs {
                     grid,
-                    temperature_2d: t850,
-                    u_2d_ms: u850,
-                    v_2d_ms: v850,
+                    temperature_2d: &t850,
+                    u_2d_ms: &u850,
+                    v_2d_ms: &v850,
                     dx_m,
                     dy_m,
                 })?
@@ -3294,6 +3287,59 @@ fn level_slice<'a>(
     values_3d.get(start..end)
 }
 
+fn pressure_level_slice_or_interp<P>(
+    pressure: &P,
+    values_3d: &[f64],
+    target_hpa: f64,
+    nxy: usize,
+) -> Option<Vec<f64>>
+where
+    P: PressureFieldSet,
+{
+    if let Some(slice) = level_slice(values_3d, pressure.pressure_levels_hpa(), target_hpa, nxy) {
+        return Some(slice.to_vec());
+    }
+
+    let pressure_3d_pa = pressure.pressure_3d_pa()?;
+    let nz = pressure.pressure_levels_hpa().len();
+    if nz == 0 || values_3d.len() != pressure_3d_pa.len() || values_3d.len() != nxy * nz {
+        return None;
+    }
+
+    let log_target = target_hpa.ln();
+    Some(
+        (0..nxy)
+            .into_par_iter()
+            .map(|ij| {
+                for k in 0..nz.saturating_sub(1) {
+                    let idx0 = k * nxy + ij;
+                    let idx1 = (k + 1) * nxy + ij;
+                    let p0 = pressure_3d_pa[idx0] / 100.0;
+                    let p1 = pressure_3d_pa[idx1] / 100.0;
+                    if !p0.is_finite() || !p1.is_finite() || p0 <= 0.0 || p1 <= 0.0 {
+                        continue;
+                    }
+                    if (p0 >= target_hpa && p1 <= target_hpa)
+                        || (p0 <= target_hpa && p1 >= target_hpa)
+                    {
+                        let v0 = values_3d[idx0];
+                        let v1 = values_3d[idx1];
+                        let log0 = p0.ln();
+                        let log1 = p1.ln();
+                        let denom = log1 - log0;
+                        if denom.abs() < 1.0e-12 {
+                            return 0.5 * (v0 + v1);
+                        }
+                        let frac = (log_target - log0) / denom;
+                        return v0 + frac * (v1 - v0);
+                    }
+                }
+                f64::NAN
+            })
+            .collect(),
+    )
+}
+
 fn compute_height_agl_3d_generic<S, P>(
     surface: &S,
     pressure: &P,
@@ -3535,6 +3581,42 @@ fn range_step(start: f64, stop: f64, step: f64) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestPressureFields {
+        pressure_levels_hpa: Vec<f64>,
+        pressure_3d_pa: Option<Vec<f64>>,
+        temperature_c_3d: Vec<f64>,
+    }
+
+    impl PressureFieldSet for TestPressureFields {
+        fn pressure_levels_hpa(&self) -> &[f64] {
+            &self.pressure_levels_hpa
+        }
+
+        fn pressure_3d_pa(&self) -> Option<&[f64]> {
+            self.pressure_3d_pa.as_deref()
+        }
+
+        fn temperature_c_3d(&self) -> &[f64] {
+            &self.temperature_c_3d
+        }
+
+        fn qvapor_kgkg_3d(&self) -> &[f64] {
+            &[]
+        }
+
+        fn u_ms_3d(&self) -> &[f64] {
+            &[]
+        }
+
+        fn v_ms_3d(&self) -> &[f64] {
+            &[]
+        }
+
+        fn gh_m_3d(&self) -> &[f64] {
+            &[]
+        }
+    }
 
     #[test]
     fn canonical_depth_ehi_slugs_are_supported_and_legacy_aliases_canonicalize() {
@@ -3812,5 +3894,38 @@ mod tests {
         assert_eq!(latest.cycle.date_yyyymmdd, "20260418");
         assert_eq!(latest.cycle.hour_utc, 12);
         assert_eq!(latest.source, SourceId::Aws);
+    }
+
+    #[test]
+    fn pressure_level_slice_or_interp_prefers_exact_isobaric_slice() {
+        let pressure = TestPressureFields {
+            pressure_levels_hpa: vec![850.0, 700.0],
+            pressure_3d_pa: None,
+            temperature_c_3d: vec![12.0, 13.0, 1.0, 2.0],
+        };
+
+        let slice = pressure_level_slice_or_interp(&pressure, &pressure.temperature_c_3d, 700.0, 2)
+            .expect("exact 700 mb slice should be available");
+
+        assert_eq!(slice, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn pressure_level_slice_or_interp_interpolates_native_pressure_columns() {
+        let pressure = TestPressureFields {
+            pressure_levels_hpa: vec![900.0, 600.0],
+            pressure_3d_pa: Some(vec![90000.0, 90000.0, 60000.0, 60000.0]),
+            temperature_c_3d: vec![20.0, 24.0, 0.0, 4.0],
+        };
+
+        let slice = pressure_level_slice_or_interp(&pressure, &pressure.temperature_c_3d, 700.0, 2)
+            .expect("native-pressure interpolation should succeed");
+
+        let log_frac = (700.0_f64.ln() - 900.0_f64.ln()) / (600.0_f64.ln() - 900.0_f64.ln());
+        let expected0 = 20.0 + log_frac * (0.0 - 20.0);
+        let expected1 = 24.0 + log_frac * (4.0 - 24.0);
+
+        assert!((slice[0] - expected0).abs() < 1.0e-6);
+        assert!((slice[1] - expected1).abs() < 1.0e-6);
     }
 }

@@ -329,6 +329,11 @@ const ECMWF_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
 const RRFS_A_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 ];
+const WRF_GDEX_CYCLE_HOURS: &[u8] = &[
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+];
+const WRF_GDEX_DEFAULT_SURFACE_PRODUCT: &str = "d612005-hist2d";
+const WRF_GDEX_DEFAULT_PRESSURE_PRODUCT: &str = "d612005-hist3d";
 
 const HRRR_SOURCES: &[SourceDescriptor] = &[
     SourceDescriptor {
@@ -415,6 +420,14 @@ const RRFS_A_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
     notes: "NOAA RRFS AWS bucket",
 }];
 
+const WRF_GDEX_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
+    id: SourceId::Gdex,
+    idx_available: false,
+    priority: 1,
+    max_age_hours: None,
+    notes: "UCAR GDEX THREDDS fileServer",
+}];
+
 const MODELS: &[ModelSummary] = &[
     ModelSummary {
         id: ModelId::Hrrr,
@@ -447,6 +460,14 @@ const MODELS: &[ModelSummary] = &[
         cycle_hours_utc: RRFS_A_CYCLE_HOURS,
         max_forecast_hour: 60,
         sources: RRFS_A_SOURCES,
+    },
+    ModelSummary {
+        id: ModelId::WrfGdex,
+        description: "WRF wrfout archive on UCAR GDEX THREDDS",
+        default_product: WRF_GDEX_DEFAULT_SURFACE_PRODUCT,
+        cycle_hours_utc: WRF_GDEX_CYCLE_HOURS,
+        max_forecast_hour: 0,
+        sources: WRF_GDEX_SOURCES,
     },
 ];
 
@@ -1725,10 +1746,10 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
             matches!(model, ModelId::EcmwfOpenData)
         }
         (CanonicalField::RadarReflectivity, VerticalSelector::HeightAboveGroundMeters(1000)) => {
-            matches!(model, ModelId::Hrrr | ModelId::RrfsA)
+            matches!(model, ModelId::Hrrr | ModelId::RrfsA | ModelId::WrfGdex)
         }
         (CanonicalField::CompositeReflectivity, VerticalSelector::EntireAtmosphere) => {
-            matches!(model, ModelId::Hrrr | ModelId::RrfsA)
+            matches!(model, ModelId::Hrrr | ModelId::RrfsA | ModelId::WrfGdex)
         }
         (
             CanonicalField::UpdraftHelicity,
@@ -1736,7 +1757,7 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
                 bottom_m: 2000,
                 top_m: 5000,
             },
-        ) => matches!(model, ModelId::Hrrr | ModelId::RrfsA),
+        ) => matches!(model, ModelId::Hrrr | ModelId::RrfsA | ModelId::WrfGdex),
         (CanonicalField::SimulatedInfraredBrightnessTemperature, VerticalSelector::NominalTop) => {
             matches!(model, ModelId::Hrrr)
         }
@@ -1779,6 +1800,7 @@ pub fn supported_forecast_hours(model: ModelId, cycle_hour_utc: u8) -> Vec<u16> 
             _ => Vec::new(),
         },
         ModelId::RrfsA => (0..=60).collect(),
+        ModelId::WrfGdex => (0..=23).collect(),
     }
 }
 
@@ -1797,6 +1819,10 @@ pub fn resolve_canonical_bundle_product(
         .unwrap_or_else(|| default_canonical_bundle_product(model, bundle))
         .to_string();
     ResolvedCanonicalBundleProduct::new(bundle, native_product)
+}
+
+pub fn default_bundle_product(model: ModelId, bundle: CanonicalBundleDescriptor) -> &'static str {
+    default_canonical_bundle_product(model, bundle)
 }
 
 fn default_canonical_bundle_product(
@@ -1819,6 +1845,15 @@ fn default_canonical_bundle_product(
         (ModelId::RrfsA, CanonicalBundleDescriptor::SurfaceAnalysis) => "nat-na",
         (ModelId::RrfsA, CanonicalBundleDescriptor::PressureAnalysis) => "prs-na",
         (ModelId::RrfsA, CanonicalBundleDescriptor::NativeAnalysis) => "nat-na",
+        (ModelId::WrfGdex, CanonicalBundleDescriptor::SurfaceAnalysis) => {
+            WRF_GDEX_DEFAULT_SURFACE_PRODUCT
+        }
+        (ModelId::WrfGdex, CanonicalBundleDescriptor::PressureAnalysis) => {
+            WRF_GDEX_DEFAULT_PRESSURE_PRODUCT
+        }
+        (ModelId::WrfGdex, CanonicalBundleDescriptor::NativeAnalysis) => {
+            WRF_GDEX_DEFAULT_PRESSURE_PRODUCT
+        }
     }
 }
 
@@ -2084,6 +2119,39 @@ fn previous_day_yyyymmdd(date_yyyymmdd: &str) -> Option<String> {
     Some(format!("{:04}{:02}{:02}", new_year, new_month, new_day))
 }
 
+fn next_day_yyyymmdd(date_yyyymmdd: &str) -> Option<String> {
+    if date_yyyymmdd.len() != 8 || !date_yyyymmdd.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let year: i32 = date_yyyymmdd[..4].parse().ok()?;
+    let month: u32 = date_yyyymmdd[4..6].parse().ok()?;
+    let day: u32 = date_yyyymmdd[6..8].parse().ok()?;
+    let month_days = days_in_month(year, month);
+    let (new_year, new_month, new_day) = if day < month_days {
+        (year, month, day + 1)
+    } else if month < 12 {
+        (year, month + 1, 1)
+    } else {
+        (year + 1, 1, 1)
+    };
+    Some(format!("{:04}{:02}{:02}", new_year, new_month, new_day))
+}
+
+fn advance_yyyymmddhh(
+    date_yyyymmdd: &str,
+    hour_utc: u8,
+    forecast_hour: u16,
+) -> Option<(String, u8)> {
+    let mut date = date_yyyymmdd.to_string();
+    let total_hours = u32::from(hour_utc) + u32::from(forecast_hour);
+    let day_rollovers = total_hours / 24;
+    let valid_hour = (total_hours % 24) as u8;
+    for _ in 0..day_rollovers {
+        date = next_day_yyyymmdd(&date)?;
+    }
+    Some((date, valid_hour))
+}
+
 fn days_in_month(year: i32, month: u32) -> u32 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -2149,7 +2217,130 @@ fn build_grib_url(source: SourceId, request: &ModelRunRequest) -> Result<String,
         ModelId::Gfs => build_gfs_url(source, request),
         ModelId::EcmwfOpenData => build_ecmwf_url(source, request)?,
         ModelId::RrfsA => build_rrfs_a_url(source, request)?,
+        ModelId::WrfGdex => build_wrf_gdex_url(source, request)?,
     })
+}
+
+enum WrfGdexProduct {
+    LegacyWrfout {
+        dataset: String,
+        domain: String,
+    },
+    ClimateArchive {
+        dataset: String,
+        branch: &'static str,
+        filename_prefix: &'static str,
+        cadence_hours: Option<u8>,
+    },
+}
+
+fn parse_wrf_gdex_product(product: &str) -> Option<WrfGdexProduct> {
+    let token = normalize_token(product);
+    if let Some((dataset, suffix)) = token.split_once('_') {
+        if dataset.starts_with('d')
+            && dataset.len() == 7
+            && dataset[1..].chars().all(|ch| ch.is_ascii_digit())
+        {
+            if suffix.starts_with('d')
+                && suffix.len() == 3
+                && suffix[1..].chars().all(|ch| ch.is_ascii_digit())
+            {
+                return Some(WrfGdexProduct::LegacyWrfout {
+                    dataset: dataset.to_string(),
+                    domain: suffix.to_string(),
+                });
+            }
+            let climate = match suffix {
+                "hist2d" => Some(("hist2D", "wrf2d_d01", None)),
+                "hist3d" => Some(("hist3D", "wrf3d_d01", Some(3))),
+                "future2d" => Some(("future2D", "wrf2d_d01", None)),
+                "future3d" => Some(("future3D", "wrf3d_d01", Some(3))),
+                _ => None,
+            };
+            if let Some((branch, filename_prefix, cadence_hours)) = climate {
+                return Some(WrfGdexProduct::ClimateArchive {
+                    dataset: dataset.to_string(),
+                    branch,
+                    filename_prefix,
+                    cadence_hours,
+                });
+            }
+        }
+    }
+    if token == "d612005" {
+        return Some(WrfGdexProduct::ClimateArchive {
+            dataset: token,
+            branch: "hist2D",
+            filename_prefix: "wrf2d_d01",
+            cadence_hours: None,
+        });
+    }
+    if token.starts_with('d')
+        && token.len() == 7
+        && token[1..].chars().all(|ch| ch.is_ascii_digit())
+    {
+        return Some(WrfGdexProduct::LegacyWrfout {
+            dataset: token,
+            domain: "d01".to_string(),
+        });
+    }
+    None
+}
+
+fn build_wrf_gdex_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    if source != SourceId::Gdex {
+        return Ok(unsupported_source(source, request.model));
+    }
+    let product =
+        parse_wrf_gdex_product(&request.product).ok_or_else(|| ModelError::UnsupportedProduct {
+            model: request.model,
+            product: request.product.clone(),
+        })?;
+    let (valid_date, valid_hour) = advance_yyyymmddhh(
+        &request.cycle.date_yyyymmdd,
+        request.cycle.hour_utc,
+        request.forecast_hour,
+    )
+    .ok_or_else(|| ModelError::UnsupportedForecastHour {
+        model: request.model,
+        cycle_hour: request.cycle.hour_utc,
+        forecast_hour: request.forecast_hour,
+        reason: "wrfout archive timestamp rollover exceeded the supported date arithmetic path"
+            .to_string(),
+    })?;
+    let year = &valid_date[..4];
+    let month = &valid_date[4..6];
+    let day = &valid_date[6..8];
+    match product {
+        WrfGdexProduct::LegacyWrfout { dataset, domain } => Ok(format!(
+            "https://tds.gdex.ucar.edu/thredds/fileServer/files/{dataset}/{year}{month}/wrfout_{domain}_{year}-{month}-{day}_{:02}:00:00.nc",
+            valid_hour
+        )),
+        WrfGdexProduct::ClimateArchive {
+            dataset,
+            branch,
+            filename_prefix,
+            cadence_hours,
+        } => {
+            if let Some(cadence) = cadence_hours {
+                if valid_hour % cadence != 0 {
+                    return Err(ModelError::UnsupportedForecastHour {
+                        model: request.model,
+                        cycle_hour: request.cycle.hour_utc,
+                        forecast_hour: request.forecast_hour,
+                        reason: format!(
+                            "WRF GDEX product '{branch}' is published every {cadence} hours; requested valid time {:02}Z is off cadence",
+                            valid_hour
+                        ),
+                    });
+                }
+            }
+            Ok(format!(
+                "https://tds.gdex.ucar.edu/thredds/fileServer/files/g/{dataset}/{branch}/{year}{month}/{filename_prefix}_{year}-{month}-{day}_{:02}:00:00.nc",
+                valid_hour
+            ))
+        }
+    }
 }
 
 fn build_hrrr_url(source: SourceId, request: &ModelRunRequest) -> String {
@@ -2447,6 +2638,9 @@ fn plot_recipe_fetch_defaults(
     model: ModelId,
     fields: &[&'static GribFieldSpec],
 ) -> (&'static str, PlotRecipeFetchPolicy) {
+    if let Some(product) = wrf_gdex_recipe_product_override(model, fields) {
+        return (product, PlotRecipeFetchPolicy::WholeFile);
+    }
     let has_native = fields
         .iter()
         .any(|field| field.family == ProductFamily::Native);
@@ -2460,7 +2654,39 @@ fn plot_recipe_fetch_defaults(
         (ModelId::Gfs, _, _) => ("pgrb2.0p25", PlotRecipeFetchPolicy::WholeFile),
         (ModelId::RrfsA, _, _) => ("prs-conus", PlotRecipeFetchPolicy::WholeFile),
         (ModelId::EcmwfOpenData, _, _) => ("oper", PlotRecipeFetchPolicy::WholeFile),
+        (ModelId::WrfGdex, true, _) => (
+            WRF_GDEX_DEFAULT_PRESSURE_PRODUCT,
+            PlotRecipeFetchPolicy::WholeFile,
+        ),
+        (ModelId::WrfGdex, false, true) => (
+            WRF_GDEX_DEFAULT_SURFACE_PRODUCT,
+            PlotRecipeFetchPolicy::WholeFile,
+        ),
+        (ModelId::WrfGdex, false, false) => (
+            WRF_GDEX_DEFAULT_PRESSURE_PRODUCT,
+            PlotRecipeFetchPolicy::WholeFile,
+        ),
     }
+}
+
+fn wrf_gdex_recipe_product_override(
+    model: ModelId,
+    fields: &[&'static GribFieldSpec],
+) -> Option<&'static str> {
+    if model != ModelId::WrfGdex {
+        return None;
+    }
+    let all_cloud_cover = !fields.is_empty()
+        && fields.iter().all(|field| {
+            matches!(
+                field.key,
+                "total_cloud_cover" | "low_cloud_cover" | "middle_cloud_cover" | "high_cloud_cover"
+            )
+        });
+    if all_cloud_cover {
+        return Some(WRF_GDEX_DEFAULT_PRESSURE_PRODUCT);
+    }
+    None
 }
 
 fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<String> {
@@ -2527,6 +2753,12 @@ fn model_specific_surface_field_gap(field: &GribFieldSpec, model: ModelId) -> Op
         ),
         (_, "wind_chill_2m_agl") => Some(
             "2m Wind Chill is surface-derived rather than native; the direct/native recipe registry does not yet wire the required T2/U10/V10 dependency bundle into one renderable product".to_string(),
+        ),
+        (ModelId::WrfGdex, "wind_gust_10m_agl") => Some(
+            "10m Wind Gust is not part of the current WRF/GDEX one-off path; the wrfout adapter only exposes earth-relative 10m winds".to_string(),
+        ),
+        (ModelId::WrfGdex, "visibility_surface") => Some(
+            "Visibility is not part of the current WRF/GDEX one-off path; no verified wrfout visibility field is wired yet".to_string(),
         ),
         (_, "cloud_cover_levels") => None,
         (ModelId::Hrrr, "one_hour_qpf") => Some(
@@ -2650,8 +2882,12 @@ mod tests {
 
     #[test]
     fn built_in_models_are_real() {
-        assert_eq!(built_in_models().len(), 4);
+        assert_eq!(built_in_models().len(), 5);
         assert_eq!(model_summary(ModelId::RrfsA).default_product, "prs-conus");
+        assert_eq!(
+            model_summary(ModelId::WrfGdex).default_product,
+            WRF_GDEX_DEFAULT_SURFACE_PRODUCT
+        );
     }
 
     #[test]
@@ -2683,6 +2919,23 @@ mod tests {
         );
         assert_eq!(rrfs_pressure.family, CanonicalDataFamily::Pressure);
         assert_eq!(rrfs_pressure.native_product, "prs-na");
+
+        let wrf_surface = resolve_canonical_bundle_product(
+            ModelId::WrfGdex,
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+            None,
+        );
+        assert_eq!(wrf_surface.native_product, WRF_GDEX_DEFAULT_SURFACE_PRODUCT);
+
+        let wrf_pressure = resolve_canonical_bundle_product(
+            ModelId::WrfGdex,
+            CanonicalBundleDescriptor::PressureAnalysis,
+            None,
+        );
+        assert_eq!(
+            wrf_pressure.native_product,
+            WRF_GDEX_DEFAULT_PRESSURE_PRODUCT
+        );
     }
 
     #[test]
@@ -2945,6 +3198,7 @@ mod tests {
             ModelId::Gfs,
             ModelId::EcmwfOpenData,
             ModelId::RrfsA,
+            ModelId::WrfGdex,
         ] {
             if selectors
                 .iter()
@@ -2970,7 +3224,7 @@ mod tests {
                 let reason = &blockers[0].reason;
                 assert!(reason.contains("700 hPa temperature/height/wind selectors"));
                 match model {
-                    ModelId::EcmwfOpenData => {
+                    ModelId::EcmwfOpenData | ModelId::WrfGdex => {
                         assert!(reason.contains("whole-file structured extraction"));
                     }
                     ModelId::Hrrr | ModelId::Gfs | ModelId::RrfsA => {
@@ -3424,6 +3678,10 @@ mod tests {
             ModelId::RrfsA,
         ));
         assert!(selector_supported_for_model(
+            FieldSelector::height_agl(CanonicalField::RadarReflectivity, 1000),
+            ModelId::WrfGdex,
+        ));
+        assert!(selector_supported_for_model(
             FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel),
             ModelId::Hrrr,
         ));
@@ -3466,6 +3724,36 @@ mod tests {
             PlotRecipeFetchMode::WholeFileStructuredExtract
         );
         assert!(plan.variable_patterns().is_empty());
+    }
+
+    #[test]
+    fn wrf_gdex_pressure_recipe_prefers_whole_file_fetches() {
+        let plan =
+            plot_recipe_fetch_plan("500mb_temperature_height_winds", ModelId::WrfGdex).unwrap();
+        assert_eq!(plan.product, WRF_GDEX_DEFAULT_PRESSURE_PRODUCT);
+        assert_eq!(plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
+        assert_eq!(
+            plan.fetch_mode,
+            PlotRecipeFetchMode::WholeFileStructuredExtract
+        );
+        assert!(plan.variable_patterns().is_empty());
+    }
+
+    #[test]
+    fn wrf_gdex_native_reflectivity_recipe_uses_whole_file_structured_extract() {
+        let plan = plot_recipe_fetch_plan("composite_reflectivity", ModelId::WrfGdex).unwrap();
+        assert_eq!(plan.product, WRF_GDEX_DEFAULT_PRESSURE_PRODUCT);
+        assert_eq!(plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
+        assert_eq!(
+            plan.fetch_mode,
+            PlotRecipeFetchMode::WholeFileStructuredExtract
+        );
+        assert_eq!(
+            plan.selectors(),
+            vec![FieldSelector::entire_atmosphere(
+                CanonicalField::CompositeReflectivity
+            )]
+        );
     }
 
     #[test]
@@ -3707,6 +3995,119 @@ mod tests {
         assert_eq!(
             urls[0].grib_url,
             "https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_a/rrfs.20260414/20/rrfs.t20z.prslev.2p5km.subh.f002.hi.grib2"
+        );
+    }
+
+    #[test]
+    fn wrf_gdex_urls_match_gdex_wrfout_pattern() {
+        let request = ModelRunRequest::new(
+            ModelId::WrfGdex,
+            CycleSpec::new("20150101", 0).unwrap(),
+            0,
+            "d010047-d01",
+        )
+        .unwrap();
+        let urls = resolve_urls(&request).unwrap();
+        assert_eq!(
+            urls[0].grib_url,
+            "https://tds.gdex.ucar.edu/thredds/fileServer/files/d010047/201501/wrfout_d01_2015-01-01_00:00:00.nc"
+        );
+        assert!(urls[0].idx_url.is_none());
+    }
+
+    #[test]
+    fn wrf_gdex_urls_roll_forward_by_forecast_hour() {
+        let request = ModelRunRequest::new(
+            ModelId::WrfGdex,
+            CycleSpec::new("20150101", 0).unwrap(),
+            15,
+            "d010047-d01",
+        )
+        .unwrap();
+        let urls = resolve_urls(&request).unwrap();
+        assert_eq!(
+            urls[0].grib_url,
+            "https://tds.gdex.ucar.edu/thredds/fileServer/files/d010047/201501/wrfout_d01_2015-01-01_15:00:00.nc"
+        );
+    }
+
+    #[test]
+    fn wrf_gdex_hist2d_urls_match_osdf_pattern() {
+        let request = ModelRunRequest::new(
+            ModelId::WrfGdex,
+            CycleSpec::new("19950101", 0).unwrap(),
+            12,
+            "d612005-hist2d",
+        )
+        .unwrap();
+        let urls = resolve_urls(&request).unwrap();
+        assert_eq!(
+            urls[0].grib_url,
+            "https://tds.gdex.ucar.edu/thredds/fileServer/files/g/d612005/hist2D/199501/wrf2d_d01_1995-01-01_12:00:00.nc"
+        );
+    }
+
+    #[test]
+    fn wrf_gdex_hist3d_urls_match_osdf_pattern() {
+        let request = ModelRunRequest::new(
+            ModelId::WrfGdex,
+            CycleSpec::new("19950101", 0).unwrap(),
+            12,
+            "d612005-hist3d",
+        )
+        .unwrap();
+        let urls = resolve_urls(&request).unwrap();
+        assert_eq!(
+            urls[0].grib_url,
+            "https://tds.gdex.ucar.edu/thredds/fileServer/files/g/d612005/hist3D/199501/wrf3d_d01_1995-01-01_12:00:00.nc"
+        );
+    }
+
+    #[test]
+    fn wrf_gdex_future2d_urls_match_osdf_pattern() {
+        let request = ModelRunRequest::new(
+            ModelId::WrfGdex,
+            CycleSpec::new("20800101", 0).unwrap(),
+            0,
+            "d612005-future2d",
+        )
+        .unwrap();
+        let urls = resolve_urls(&request).unwrap();
+        assert_eq!(
+            urls[0].grib_url,
+            "https://tds.gdex.ucar.edu/thredds/fileServer/files/g/d612005/future2D/208001/wrf2d_d01_2080-01-01_00:00:00.nc"
+        );
+    }
+
+    #[test]
+    fn wrf_gdex_future3d_urls_match_osdf_pattern() {
+        let request = ModelRunRequest::new(
+            ModelId::WrfGdex,
+            CycleSpec::new("20800101", 0).unwrap(),
+            0,
+            "d612005-future3d",
+        )
+        .unwrap();
+        let urls = resolve_urls(&request).unwrap();
+        assert_eq!(
+            urls[0].grib_url,
+            "https://tds.gdex.ucar.edu/thredds/fileServer/files/g/d612005/future3D/208001/wrf3d_d01_2080-01-01_00:00:00.nc"
+        );
+    }
+
+    #[test]
+    fn wrf_gdex_hist3d_rejects_off_cadence_valid_times() {
+        let request = ModelRunRequest::new(
+            ModelId::WrfGdex,
+            CycleSpec::new("19950101", 0).unwrap(),
+            1,
+            "d612005-hist3d",
+        )
+        .unwrap();
+        let err = resolve_urls(&request).unwrap_err();
+        assert!(
+            err.to_string().contains("every 3 hours"),
+            "unexpected error: {err}"
         );
     }
 }

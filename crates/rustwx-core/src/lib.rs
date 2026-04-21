@@ -902,6 +902,7 @@ pub enum ModelId {
     Gfs,
     EcmwfOpenData,
     RrfsA,
+    WrfGdex,
 }
 
 impl ModelId {
@@ -911,6 +912,7 @@ impl ModelId {
             Self::Gfs => "gfs",
             Self::EcmwfOpenData => "ecmwf-open-data",
             Self::RrfsA => "rrfs-a",
+            Self::WrfGdex => "wrf-gdex",
         }
     }
 }
@@ -930,6 +932,7 @@ impl std::str::FromStr for ModelId {
             "gfs" => Ok(Self::Gfs),
             "ecmwf" | "ifs" | "ecmwf-open-data" | "ecmwf_open_data" => Ok(Self::EcmwfOpenData),
             "rrfs-a" | "rrfsa" | "rrfs_a" => Ok(Self::RrfsA),
+            "wrf-gdex" | "wrf_gdex" | "wrfgdex" | "wrf" => Ok(Self::WrfGdex),
             other => Err(RustwxError::UnknownModel(other.to_string())),
         }
     }
@@ -1077,6 +1080,7 @@ pub enum SourceId {
     Azure,
     Ecmwf,
     Ncei,
+    Gdex,
 }
 
 impl SourceId {
@@ -1088,6 +1092,7 @@ impl SourceId {
             Self::Azure => "azure",
             Self::Ecmwf => "ecmwf",
             Self::Ncei => "ncei",
+            Self::Gdex => "gdex",
         }
     }
 }
@@ -1109,6 +1114,7 @@ impl std::str::FromStr for SourceId {
             "azure" => Ok(Self::Azure),
             "ecmwf" => Ok(Self::Ecmwf),
             "ncei" => Ok(Self::Ncei),
+            "gdex" => Ok(Self::Gdex),
             other => Err(RustwxError::UnknownSource(other.to_string())),
         }
     }
@@ -1305,7 +1311,11 @@ mod tests {
     fn model_id_aliases_round_trip() {
         assert_eq!("rrfs_a".parse::<ModelId>().unwrap(), ModelId::RrfsA);
         assert_eq!("ecmwf".parse::<ModelId>().unwrap(), ModelId::EcmwfOpenData);
+        assert_eq!("wrf".parse::<ModelId>().unwrap(), ModelId::WrfGdex);
         assert_eq!(ModelId::Hrrr.to_string(), "hrrr");
+        assert_eq!(ModelId::WrfGdex.to_string(), "wrf-gdex");
+        assert_eq!("gdex".parse::<SourceId>().unwrap(), SourceId::Gdex);
+        assert_eq!(SourceId::Gdex.to_string(), "gdex");
     }
 
     #[test]

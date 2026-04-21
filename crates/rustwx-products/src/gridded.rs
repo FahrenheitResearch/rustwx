@@ -15,6 +15,7 @@ use rustwx_models::{
     latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
 };
 use rustwx_render::{ProjectedExtent, map_frame_aspect_ratio};
+use rustwx_wrf as wrf;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -63,6 +64,7 @@ pub(crate) struct SurfaceGridLayout {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PressureFields {
     pub pressure_levels_hpa: Vec<f64>,
+    pub pressure_3d_pa: Option<Vec<f64>>,
     pub temperature_c_3d: Vec<f64>,
     pub qvapor_kgkg_3d: Vec<f64>,
     pub u_ms_3d: Vec<f64>,
@@ -74,7 +76,13 @@ impl PressureFields {
     pub fn decoded_bytes_estimate(&self) -> usize {
         let level_count = self.pressure_levels_hpa.len();
         let volume_len = self.temperature_c_3d.len();
-        level_count * std::mem::size_of::<f64>() + volume_len * 5usize * std::mem::size_of::<f64>()
+        let pressure_3d_len = self
+            .pressure_3d_pa
+            .as_ref()
+            .map(|values| values.len())
+            .unwrap_or(0);
+        level_count * std::mem::size_of::<f64>()
+            + (volume_len * 5usize + pressure_3d_len) * std::mem::size_of::<f64>()
     }
 }
 
@@ -473,8 +481,12 @@ pub fn prepare_heavy_volume_timed(
     let height_agl_3d = compute_height_agl_3d(surface, pressure, grid, shape);
     let prepare_height_agl_ms = height_agl_start.elapsed().as_millis();
     let broadcast_start = Instant::now();
-    let pressure_3d_pa =
-        include_pressure_3d.then(|| broadcast_levels_pa(&pressure.pressure_levels_hpa, grid.len()));
+    let pressure_3d_pa = include_pressure_3d.then(|| {
+        pressure
+            .pressure_3d_pa
+            .clone()
+            .unwrap_or_else(|| broadcast_levels_pa(&pressure.pressure_levels_hpa, grid.len()))
+    });
     let broadcast_pressure_ms = if include_pressure_3d {
         broadcast_start.elapsed().as_millis()
     } else {
@@ -806,6 +818,15 @@ fn crop_pressure_fields(
         .checked_mul(source_ny)
         .and_then(|n2d| n2d.checked_mul(level_count))
         .ok_or("pressure crop expected length overflowed")?;
+    if let Some(values) = pressure.pressure_3d_pa.as_ref() {
+        if values.len() != expected_len {
+            return Err(format!(
+                "pressure field pressure_3d_pa length {} did not match expected source volume length {expected_len}",
+                values.len()
+            )
+            .into());
+        }
+    }
     for (name, values) in [
         ("temperature_c_3d", &pressure.temperature_c_3d),
         ("qvapor_kgkg_3d", &pressure.qvapor_kgkg_3d),
@@ -824,6 +845,10 @@ fn crop_pressure_fields(
 
     Ok(PressureFields {
         pressure_levels_hpa: pressure.pressure_levels_hpa.clone(),
+        pressure_3d_pa: pressure
+            .pressure_3d_pa
+            .as_ref()
+            .map(|values| crop_3d_values(values, source_nx, source_ny, level_count, crop)),
         temperature_c_3d: crop_3d_values(
             &pressure.temperature_c_3d,
             source_nx,
@@ -1132,6 +1157,22 @@ pub(crate) fn load_or_decode_pressure_cropped_with_shape(
 }
 
 fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Error>> {
+    if wrf::looks_like_wrf(bytes) {
+        let decoded = wrf::decode_surface_from_bytes(bytes, None)?;
+        return Ok(SurfaceFields {
+            lat: decoded.lat,
+            lon: decoded.lon,
+            nx: decoded.nx,
+            ny: decoded.ny,
+            psfc_pa: decoded.psfc_pa,
+            orog_m: decoded.orog_m,
+            orog_is_proxy: false,
+            t2_k: decoded.t2_k,
+            q2_kgkg: decoded.q2_kgkg,
+            u10_ms: decoded.u10_ms,
+            v10_ms: decoded.v10_ms,
+        });
+    }
     let file = Grib2File::from_bytes(bytes)?;
     let sample = file
         .messages
@@ -1174,6 +1215,9 @@ fn decode_surface_cropped(
     bytes: &[u8],
     crop: GridCrop,
 ) -> Result<SurfaceFields, Box<dyn std::error::Error>> {
+    if wrf::looks_like_wrf(bytes) {
+        return Ok(crop_surface_fields(&decode_surface(bytes)?, crop));
+    }
     let file = Grib2File::from_bytes(bytes)?;
     let sample = file
         .messages
@@ -1233,6 +1277,22 @@ fn decode_surface_cropped(
 fn decode_pressure_with_shape(
     bytes: &[u8],
 ) -> Result<(PressureFields, usize, usize), Box<dyn std::error::Error>> {
+    if wrf::looks_like_wrf(bytes) {
+        let decoded = wrf::decode_pressure_from_bytes(bytes, None)?;
+        return Ok((
+            PressureFields {
+                pressure_levels_hpa: decoded.pressure_levels_hpa,
+                pressure_3d_pa: Some(decoded.pressure_3d_pa),
+                temperature_c_3d: decoded.temperature_c_3d,
+                qvapor_kgkg_3d: decoded.qvapor_kgkg_3d,
+                u_ms_3d: decoded.u_ms_3d,
+                v_ms_3d: decoded.v_ms_3d,
+                gh_m_3d: decoded.gh_m_3d,
+            },
+            decoded.nx,
+            decoded.ny,
+        ));
+    }
     let file = Grib2File::from_bytes(bytes)?;
     let (nx, ny) = pressure_grid_shape_from_messages(&file.messages)?;
     let temperature = collect_levels(&file.messages, 0, 0, 0, 100)?;
@@ -1267,6 +1327,7 @@ fn decode_pressure_with_shape(
                 .into_iter()
                 .map(normalize_pressure_level_hpa)
                 .collect(),
+            pressure_3d_pa: None,
             temperature_c_3d: flatten(&temperature)?
                 .into_iter()
                 .map(|value| value - 273.15)
@@ -1285,6 +1346,14 @@ fn decode_pressure_cropped_with_shape(
     bytes: &[u8],
     crop: GridCrop,
 ) -> Result<(PressureFields, usize, usize), Box<dyn std::error::Error>> {
+    if wrf::looks_like_wrf(bytes) {
+        let (decoded, nx, ny) = decode_pressure_with_shape(bytes)?;
+        return Ok((
+            crop_pressure_fields(&decoded, nx, ny, crop)?,
+            crop.width(),
+            crop.height(),
+        ));
+    }
     let file = Grib2File::from_bytes(bytes)?;
     let (nx, _ny) = pressure_grid_shape_from_messages(&file.messages)?;
     let temperature = collect_levels_cropped(&file.messages, 0, 0, 0, 100, nx, crop)?;
@@ -1322,6 +1391,7 @@ fn decode_pressure_cropped_with_shape(
     Ok((
         PressureFields {
             pressure_levels_hpa,
+            pressure_3d_pa: None,
             temperature_c_3d: flatten(&temperature)?
                 .into_iter()
                 .map(|value| value - 273.15)
@@ -1933,6 +2003,7 @@ mod tests {
         };
         let pressure = PressureFields {
             pressure_levels_hpa: vec![1000.0],
+            pressure_3d_pa: None,
             temperature_c_3d: vec![20.0; len],
             qvapor_kgkg_3d: vec![0.010; len],
             u_ms_3d: vec![10.0; len],

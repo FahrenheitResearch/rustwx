@@ -1,10 +1,10 @@
-use grib_core::grib2::Grib2File;
 use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, CanonicalField, CycleSpec, FieldSelector,
     ModelId, SelectedField2D, SourceId, VerticalSelector,
 };
 use rustwx_io::{
-    extract_fields_from_grib2_partial, load_cached_selected_field, store_cached_selected_field,
+    extract_fields_partial_from_model_bytes, load_cached_selected_field,
+    store_cached_selected_field,
 };
 use rustwx_models::{
     LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
@@ -442,7 +442,22 @@ pub(crate) fn run_direct_batch_from_loaded(
             }
         };
         let (fields, unmatched, timing) =
-            extract_direct_fetch_group_from_loaded(request, group, fetched, use_cache)?;
+            match extract_direct_fetch_group_from_loaded(request, group, fetched, use_cache) {
+                Ok(result) => result,
+                Err(err) => {
+                    let reason = err.to_string();
+                    for selector in &group.selectors {
+                        missing_selectors.insert(*selector);
+                    }
+                    for recipe_slug in recipe_slugs_depending_on_group(&planned, group) {
+                        blockers.push(DirectRecipeBlocker {
+                            recipe_slug,
+                            reason: reason.clone(),
+                        });
+                    }
+                    continue;
+                }
+            };
         extracted.extend(fields.into_iter().map(|field| (field.selector, field)));
         for selector in unmatched {
             missing_selectors.insert(selector);
@@ -529,8 +544,27 @@ fn run_direct_batch_with_context(
                 continue;
             }
         };
-        let (fields, unmatched, timing) =
-            extract_direct_fetch_group_from_loaded(request, group, fetched, request.use_cache)?;
+        let (fields, unmatched, timing) = match extract_direct_fetch_group_from_loaded(
+            request,
+            group,
+            fetched,
+            request.use_cache,
+        ) {
+            Ok(result) => result,
+            Err(err) => {
+                let reason = err.to_string();
+                for selector in &group.selectors {
+                    missing_selectors.insert(*selector);
+                }
+                for recipe_slug in recipe_slugs_depending_on_group(&planned, group) {
+                    blockers.push(DirectRecipeBlocker {
+                        recipe_slug,
+                        reason: reason.clone(),
+                    });
+                }
+                continue;
+            }
+        };
         extracted.extend(fields.into_iter().map(|field| (field.selector, field)));
         for selector in unmatched {
             missing_selectors.insert(selector);
@@ -790,20 +824,18 @@ fn extract_direct_fetch_group_from_loaded(
         missing.extend(group.selectors.iter().copied());
     }
 
-    let parse_start = Instant::now();
-    let grib = if missing.is_empty() {
-        None
-    } else {
-        Some(Grib2File::from_bytes(&fetched.file.bytes)?)
-    };
-    let parse_ms = parse_start.elapsed().as_millis();
-
     // Selectors whose GRIB message wasn't present in the file go here;
     // the caller uses them to mark dependent recipes as blockers
     // instead of the whole batch tripping on the first missing message.
     let mut unmatched = Vec::<FieldSelector>::new();
-    if let Some(grib) = grib.as_ref() {
-        let partial = extract_fields_from_grib2_partial(grib, &missing)?;
+    let parse_start = Instant::now();
+    if !missing.is_empty() {
+        let partial = extract_fields_partial_from_model_bytes(
+            fetch_request.request.model,
+            &fetched.file.bytes,
+            Some(cached_result.bytes_path.as_path()),
+            &missing,
+        )?;
         if use_cache {
             for field in &partial.extracted {
                 store_cached_selected_field(&request.cache_root, fetch_request, field)?;
@@ -817,6 +849,7 @@ fn extract_direct_fetch_group_from_loaded(
         // truly-unmatched selectors from the count we actually pulled.
         let _ = fetched_count;
     }
+    let parse_ms = parse_start.elapsed().as_millis();
     let extract_ms = extract_start.elapsed().as_millis();
 
     let extract_cache_misses = missing.len().saturating_sub(unmatched.len());

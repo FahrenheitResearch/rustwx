@@ -143,6 +143,8 @@ struct Args {
     cache_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_cache: bool,
+    #[arg(long, default_value_t = false)]
+    allow_large_heavy_domain: bool,
     #[arg(long = "source-mode", alias = "thermo-path", value_enum, default_value_t = SourceModeArg::Canonical)]
     source_mode: SourceModeArg,
 }
@@ -215,6 +217,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         source_mode: args.source_mode.into(),
         direct_recipe_slugs,
         derived_recipe_slugs,
+        allow_large_heavy_domain: args.allow_large_heavy_domain,
         windowed_products: args
             .windowed_products
             .iter()

@@ -17,7 +17,7 @@ use rustwx_calc::{
     EcapeVolumeInputs, SupportedSevereFields, SurfaceInputs, compute_supported_severe_fields,
 };
 use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
-use rustwx_models::LatestRun;
+use rustwx_models::{LatestRun, default_bundle_product};
 use rustwx_render::Solar07Product;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -240,16 +240,7 @@ pub fn build_severe_execution_plan(
 }
 
 fn default_logical_family(model: ModelId, bundle: CanonicalBundleDescriptor) -> &'static str {
-    match (model, bundle) {
-        (ModelId::Hrrr, CanonicalBundleDescriptor::SurfaceAnalysis) => "sfc",
-        (ModelId::Hrrr, CanonicalBundleDescriptor::PressureAnalysis) => "prs",
-        (ModelId::Hrrr, CanonicalBundleDescriptor::NativeAnalysis) => "nat",
-        (ModelId::Gfs, _) => "pgrb2.0p25",
-        (ModelId::EcmwfOpenData, _) => "oper",
-        (ModelId::RrfsA, CanonicalBundleDescriptor::SurfaceAnalysis) => "nat-na",
-        (ModelId::RrfsA, CanonicalBundleDescriptor::PressureAnalysis) => "prs-na",
-        (ModelId::RrfsA, CanonicalBundleDescriptor::NativeAnalysis) => "nat-na",
-    }
+    default_bundle_product(model, bundle)
 }
 
 /// Reconstruct the legacy `SharedTiming` block from the loader output so
@@ -507,7 +498,10 @@ pub fn compute_severe_panel_fields_with_prepared_volume(
     let fields = compute_supported_severe_fields(
         prepared.grid,
         EcapeVolumeInputs {
-            pressure_pa: &prepared.pressure_levels_pa,
+            pressure_pa: prepared
+                .pressure_3d_pa
+                .as_deref()
+                .unwrap_or(&prepared.pressure_levels_pa),
             temperature_c: &pressure.temperature_c_3d,
             qvapor_kgkg: &pressure.qvapor_kgkg_3d,
             height_agl_m: &prepared.height_agl_3d,

@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 bincode = "1.3"
 image = { version = "0.25", default-features = false, features = ["png"] }
+rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rustwx-calc = { path = "../rustwx-calc" }
@@ -16,4 +17,5 @@ rustwx-core = { path = "../rustwx-core" }
 rustwx-io = { path = "../rustwx-io" }
 rustwx-models = { path = "../rustwx-models" }
 rustwx-render = { path = "../rustwx-render" }
+rustwx-wrf = { path = "../rustwx-wrf" }
 grib-core = { path = "../../vendor/grib-core" }

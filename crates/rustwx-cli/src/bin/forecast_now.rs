@@ -87,6 +87,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     no_cache: bool,
 
+    /// Allow large-domain heavy diagnostics on wide crops like CONUS.
+    #[arg(long, default_value_t = false)]
+    allow_large_heavy_domain: bool,
+
     /// Number of outer forecast jobs to run concurrently. A job is one
     /// independent (region, model, forecast_hour) execution bundle.
     #[arg(long, default_value_t = 1)]
@@ -375,10 +379,7 @@ fn run_forecast_job(job: ForecastJob, config: &ExecConfig) -> ForecastJobResult 
         let non_hrrr_route = select_non_hrrr_non_ecape_route(job.model, config.route_policy);
         if want_non_hrrr_non_ecape
             && matches!(non_hrrr_route, RouteSelection::Unified)
-            && matches!(
-                job.model,
-                ModelId::RrfsA | ModelId::Gfs | ModelId::EcmwfOpenData
-            )
+            && supports_unified_non_hrrr_non_ecape(job.model)
         {
             let mut outcome = run_non_hrrr_non_ecape_hour(
                 job.model,
@@ -516,6 +517,13 @@ fn select_non_hrrr_non_ecape_route(model: ModelId, policy: RoutePolicyArg) -> Ro
     }
 }
 
+fn supports_unified_non_hrrr_non_ecape(model: ModelId) -> bool {
+    matches!(
+        model,
+        ModelId::RrfsA | ModelId::Gfs | ModelId::EcmwfOpenData | ModelId::WrfGdex
+    )
+}
+
 #[derive(Debug, Serialize)]
 struct RunSummary {
     started_utc: String,
@@ -526,6 +534,7 @@ struct RunSummary {
     cycle_override_utc: Option<u8>,
     models: Vec<ModelId>,
     hours: Vec<u16>,
+    allow_large_heavy_domain: bool,
     direct_recipes: Vec<String>,
     derived_recipes: Vec<String>,
     route_policy: RoutePolicyArg,
@@ -555,6 +564,7 @@ struct ExecConfig {
     out_dir: PathBuf,
     cache_dir: PathBuf,
     no_cache: bool,
+    allow_large_heavy_domain: bool,
     skip_severe: bool,
     skip_ecape: bool,
     skip_direct: bool,
@@ -646,13 +656,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let derived_recipes = filter_heavy_derived_recipes(derived_recipes, args.skip_ecape);
 
     println!(
-        "[forecast-now] date={date} regions={:?} hours={:?} models={:?} direct={} derived={} route_policy={:?} size={}x{} job_concurrency={} render_threads={:?}",
+        "[forecast-now] date={date} regions={:?} hours={:?} models={:?} direct={} derived={} route_policy={:?} allow_large_heavy_domain={} size={}x{} job_concurrency={} render_threads={:?}",
         args.regions.iter().map(|r| r.slug()).collect::<Vec<_>>(),
         hours,
         args.models,
         direct_recipes.len(),
         derived_recipes.len(),
         args.route_policy,
+        args.allow_large_heavy_domain,
         args.width,
         args.height,
         args.job_concurrency,
@@ -719,6 +730,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         out_dir: args.out_dir.clone(),
         cache_dir: args.cache_dir.clone(),
         no_cache: args.no_cache,
+        allow_large_heavy_domain: args.allow_large_heavy_domain,
         skip_severe: args.skip_severe,
         skip_ecape: args.skip_ecape,
         skip_direct: args.skip_direct,
@@ -848,6 +860,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cycle_override_utc: args.cycle,
         models: args.models.clone(),
         hours: hours.clone(),
+        allow_large_heavy_domain: args.allow_large_heavy_domain,
         direct_recipes,
         derived_recipes,
         route_policy: args.route_policy,
@@ -883,6 +896,7 @@ mod tests {
     use super::{
         PinResolution, PinnedRunRequest, RoutePolicyArg, RouteSelection,
         filter_heavy_derived_recipes, select_non_hrrr_non_ecape_route,
+        supports_unified_non_hrrr_non_ecape,
     };
     use rustwx_core::{ModelId, SourceId};
 
@@ -922,6 +936,16 @@ mod tests {
             select_non_hrrr_non_ecape_route(ModelId::EcmwfOpenData, RoutePolicyArg::Auto),
             RouteSelection::Unified
         );
+        assert_eq!(
+            select_non_hrrr_non_ecape_route(ModelId::WrfGdex, RoutePolicyArg::Auto),
+            RouteSelection::Unified
+        );
+    }
+
+    #[test]
+    fn wrf_gdex_supports_unified_non_ecape_runner() {
+        assert!(supports_unified_non_hrrr_non_ecape(ModelId::WrfGdex));
+        assert!(!supports_unified_non_hrrr_non_ecape(ModelId::Hrrr));
     }
 }
 
@@ -1014,7 +1038,7 @@ fn run_severe_lane(
         use_cache: !config.no_cache,
         surface_product_override: None,
         pressure_product_override: None,
-        allow_large_heavy_domain: false,
+        allow_large_heavy_domain: config.allow_large_heavy_domain,
     };
     let slug = Lane::Severe.slug();
     match run_severe_batch(&request) {
@@ -1080,7 +1104,7 @@ fn run_ecape_lane(
         use_cache: !config.no_cache,
         surface_product_override: None,
         pressure_product_override: None,
-        allow_large_heavy_domain: false,
+        allow_large_heavy_domain: config.allow_large_heavy_domain,
     };
     let slug = Lane::Ecape.slug();
     match run_ecape_batch(&request) {
@@ -1161,6 +1185,7 @@ fn run_non_hrrr_non_ecape_hour(
         source_mode: config.source_mode,
         direct_recipe_slugs,
         derived_recipe_slugs,
+        allow_large_heavy_domain: config.allow_large_heavy_domain,
         windowed_products: Vec::new(),
         output_width: config.output_width,
         output_height: config.output_height,
@@ -1349,7 +1374,7 @@ fn run_derived_lane(
         surface_product_override: None,
         pressure_product_override: None,
         source_mode: config.source_mode,
-        allow_large_heavy_domain: false,
+        allow_large_heavy_domain: config.allow_large_heavy_domain,
         output_width: config.output_width,
         output_height: config.output_height,
         png_compression: rustwx_render::PngCompressionMode::Default,
@@ -1457,7 +1482,7 @@ fn run_hrrr_unified(
             use_cache: !config.no_cache,
             surface_product_override: None,
             pressure_product_override: None,
-            allow_large_heavy_domain: false,
+            allow_large_heavy_domain: config.allow_large_heavy_domain,
         };
         let slug = if !config.skip_severe && !config.skip_ecape {
             "hrrr_heavy_hour"

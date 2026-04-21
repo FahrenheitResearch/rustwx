@@ -10,6 +10,7 @@ members = [
     "crates/rustwx-python",
     "crates/rustwx-render",
     "crates/rustwx-sounding",
+    "crates/rustwx-wrf",
 ]
 exclude = [
     "vendor/ecape-rs",

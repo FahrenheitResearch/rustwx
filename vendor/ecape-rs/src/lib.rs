@@ -115,9 +115,7 @@ impl StormMotionType {
             "right_moving" | "right" | "bunkers_right" | "bunkers_rm" | "rm" => {
                 Ok(Self::RightMoving)
             }
-            "left_moving" | "left" | "bunkers_left" | "bunkers_lm" | "lm" => {
-                Ok(Self::LeftMoving)
-            }
+            "left_moving" | "left" | "bunkers_left" | "bunkers_lm" | "lm" => Ok(Self::LeftMoving),
             "mean_wind" | "meanwind" | "mean" | "mw" => Ok(Self::MeanWind),
             "user" | "user_defined" | "custom" => Ok(Self::UserDefined),
             _ => Err(ParseEcapeOptionError::new("storm_motion_type", value)),

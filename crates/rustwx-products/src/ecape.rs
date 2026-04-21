@@ -219,7 +219,10 @@ pub fn compute_ecape8_panel_fields_with_prepared_volume(
     let triplet = compute_ecape_triplet_with_failure_mask_from_parts(
         prepared.grid,
         EcapeVolumeInputs {
-            pressure_pa: &prepared.pressure_levels_pa,
+            pressure_pa: prepared
+                .pressure_3d_pa
+                .as_deref()
+                .unwrap_or(&prepared.pressure_levels_pa),
             temperature_c: &pressure.temperature_c_3d,
             qvapor_kgkg: &pressure.qvapor_kgkg_3d,
             height_agl_m: &prepared.height_agl_3d,

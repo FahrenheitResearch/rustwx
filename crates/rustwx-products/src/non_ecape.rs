@@ -216,6 +216,8 @@ pub struct NonEcapeHourRequest {
     pub direct_recipe_slugs: Vec<String>,
     pub derived_recipe_slugs: Vec<String>,
     #[serde(default)]
+    pub allow_large_heavy_domain: bool,
+    #[serde(default)]
     pub windowed_products: Vec<HrrrWindowedProduct>,
     #[serde(default = "default_output_width")]
     pub output_width: u32,
@@ -240,6 +242,8 @@ pub struct NonEcapeMultiDomainRequest {
     pub source_mode: ProductSourceMode,
     pub direct_recipe_slugs: Vec<String>,
     pub derived_recipe_slugs: Vec<String>,
+    #[serde(default)]
+    pub allow_large_heavy_domain: bool,
     #[serde(default)]
     pub windowed_products: Vec<HrrrWindowedProduct>,
     #[serde(default = "default_output_width")]
@@ -336,6 +340,7 @@ fn non_ecape_request_from_hrrr(request: &HrrrNonEcapeHourRequest) -> NonEcapeHou
         source_mode: request.source_mode,
         direct_recipe_slugs: request.direct_recipe_slugs.clone(),
         derived_recipe_slugs: request.derived_recipe_slugs.clone(),
+        allow_large_heavy_domain: false,
         windowed_products: request.windowed_products.clone(),
         output_width: request.output_width,
         output_height: request.output_height,
@@ -359,6 +364,7 @@ fn non_ecape_multi_request_from_hrrr(
         source_mode: request.source_mode,
         direct_recipe_slugs: request.direct_recipe_slugs.clone(),
         derived_recipe_slugs: request.derived_recipe_slugs.clone(),
+        allow_large_heavy_domain: false,
         windowed_products: request.windowed_products.clone(),
         output_width: request.output_width,
         output_height: request.output_height,
@@ -439,6 +445,7 @@ pub fn run_model_non_ecape_hour(
         source_mode: request.source_mode,
         direct_recipe_slugs: request.direct_recipe_slugs.clone(),
         derived_recipe_slugs: request.derived_recipe_slugs.clone(),
+        allow_large_heavy_domain: request.allow_large_heavy_domain,
         windowed_products: request.windowed_products.clone(),
         output_width: request.output_width,
         output_height: request.output_height,
@@ -711,7 +718,7 @@ fn prepare_non_ecape_hour(
         surface_product_override: None,
         pressure_product_override: None,
         source_mode: request.source_mode,
-        allow_large_heavy_domain: false,
+        allow_large_heavy_domain: request.allow_large_heavy_domain,
         output_width: request.output_width,
         output_height: request.output_height,
         png_compression: request.png_compression,
@@ -967,7 +974,7 @@ fn run_prepared_non_ecape_domain(
                 surface_product_override: None,
                 pressure_product_override: None,
                 source_mode: request.source_mode,
-                allow_large_heavy_domain: false,
+                allow_large_heavy_domain: request.allow_large_heavy_domain,
                 output_width: request.output_width,
                 output_height: request.output_height,
                 png_compression: request.png_compression,
@@ -1156,7 +1163,7 @@ fn normalize_requested_products_from_parts(
 }
 
 fn should_run_lanes_concurrently(model: ModelId, source: SourceId) -> bool {
-    model == ModelId::Hrrr && !matches!(source, SourceId::Nomads)
+    matches!(model, ModelId::Hrrr | ModelId::WrfGdex) && !matches!(source, SourceId::Nomads)
 }
 
 fn domain_worker_count(requested_jobs: Option<usize>, domain_count: usize) -> usize {
@@ -1691,6 +1698,10 @@ mod tests {
             SourceId::Nomads
         ));
         assert!(should_run_lanes_concurrently(ModelId::Hrrr, SourceId::Aws));
+        assert!(should_run_lanes_concurrently(
+            ModelId::WrfGdex,
+            SourceId::Gdex
+        ));
     }
 
     #[test]

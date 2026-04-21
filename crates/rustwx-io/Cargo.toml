@@ -15,6 +15,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 rustwx-core = { path = "../rustwx-core" }
 rustwx-models = { path = "../rustwx-models" }
+rustwx-wrf = { path = "../rustwx-wrf" }
 wx-core = { path = "../../vendor/wx-core", default-features = false, features = ["network"] }
 
 [dev-dependencies]

@@ -1104,6 +1104,7 @@ fn execute_non_hrrr_non_ecape(
         } else {
             context.derived_recipes.clone()
         },
+        allow_large_heavy_domain: false,
         windowed_products: Vec::new(),
         output_width: config.output_width,
         output_height: config.output_height,
