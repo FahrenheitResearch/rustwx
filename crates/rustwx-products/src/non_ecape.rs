@@ -1,8 +1,8 @@
 use crate::derived::{
-    DerivedBatchRequest, HrrrDerivedBatchReport, maybe_load_special_pair_for_derived,
-    plan_derived_recipes, plan_native_thermo_routes, prepare_shared_derived_fields,
-    run_model_derived_batch_from_loaded, run_model_derived_batch_from_loaded_with_precomputed,
-    run_model_derived_batch_without_loaded,
+    DerivedBatchRequest, HrrrDerivedBatchReport, is_heavy_derived_recipe_slug,
+    maybe_load_special_pair_for_derived, plan_derived_recipes, plan_native_thermo_routes,
+    prepare_shared_derived_fields, run_model_derived_batch_from_loaded,
+    run_model_derived_batch_from_loaded_with_precomputed, run_model_derived_batch_without_loaded,
 };
 use crate::direct::{DirectBatchRequest, HrrrDirectBatchReport, run_direct_batch_from_loaded};
 use crate::hrrr::{DomainSpec, resolve_hrrr_run};
@@ -709,6 +709,7 @@ fn prepare_non_ecape_hour(
         surface_product_override: None,
         pressure_product_override: None,
         source_mode: request.source_mode,
+        allow_large_heavy_domain: false,
         output_width: request.output_width,
         output_height: request.output_height,
         png_compression: request.png_compression,
@@ -980,6 +981,7 @@ fn run_prepared_non_ecape_domain(
                 surface_product_override: None,
                 pressure_product_override: None,
                 source_mode: request.source_mode,
+                allow_large_heavy_domain: false,
                 output_width: request.output_width,
                 output_height: request.output_height,
                 png_compression: request.png_compression,
@@ -1096,6 +1098,17 @@ fn validate_requested_work(
         return Err(format!(
             "windowed products are only supported by the HRRR non-ECAPE runner, not {}",
             model
+        )
+        .into());
+    }
+    if let Some(heavy_slug) = request
+        .derived_recipe_slugs
+        .iter()
+        .find(|slug| is_heavy_derived_recipe_slug(slug))
+    {
+        return Err(format!(
+            "derived recipe '{}' is a heavy ECAPE product; use derived_batch or a heavy runner instead of non_ecape_hour",
+            heavy_slug
         )
         .into());
     }
@@ -1650,6 +1663,16 @@ mod tests {
     }
 
     #[test]
+    fn validation_rejects_heavy_derived_recipes() {
+        let mut request = empty_request();
+        request.derived_recipe_slugs = vec!["sbecape".into()];
+        let err = validate_requested_work(ModelId::Hrrr, &normalize_requested_products(&request))
+            .expect_err("heavy derived recipes should be rejected by non_ecape_hour")
+            .to_string();
+        assert!(err.contains("heavy ECAPE product"));
+    }
+
+    #[test]
     fn normalization_routes_legacy_one_hour_qpf_to_windowed_lane() {
         let mut request = empty_request();
         request.direct_recipe_slugs = vec!["1h_qpf".into(), "cloud_cover".into()];
@@ -1666,8 +1689,11 @@ mod tests {
 
     #[test]
     fn nomads_runs_lanes_sequentially() {
-        assert!(!should_run_lanes_concurrently(SourceId::Nomads));
-        assert!(should_run_lanes_concurrently(SourceId::Aws));
+        assert!(!should_run_lanes_concurrently(
+            ModelId::Hrrr,
+            SourceId::Nomads
+        ));
+        assert!(should_run_lanes_concurrently(ModelId::Hrrr, SourceId::Aws));
     }
 
     #[test]
@@ -1756,6 +1782,7 @@ mod tests {
                 native_extract_ms: 0,
                 native_compare_ms: 0,
                 memory_profile: None,
+                heavy_timing: None,
             },
             recipes: vec![HrrrDerivedRenderedRecipe {
                 recipe_slug: "sbcape".into(),
@@ -1972,6 +1999,7 @@ mod tests {
                 native_extract_ms: 0,
                 native_compare_ms: 0,
                 memory_profile: None,
+                heavy_timing: None,
             },
             recipes: vec![HrrrDerivedRenderedRecipe {
                 recipe_slug: "sbcape".into(),

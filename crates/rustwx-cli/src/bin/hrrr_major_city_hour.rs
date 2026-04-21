@@ -94,7 +94,10 @@ struct Args {
     forecast_hour: u16,
     #[arg(long, default_value = "nomads")]
     source: rustwx_core::SourceId,
-    #[arg(long, default_value = "C:\\Users\\drew\\rustwx\\proof\\hrrr_major_city_hour")]
+    #[arg(
+        long,
+        default_value = "C:\\Users\\drew\\rustwx\\proof\\hrrr_major_city_hour"
+    )]
     out_dir: PathBuf,
     #[arg(long)]
     cache_dir: Option<PathBuf>,
@@ -135,24 +138,16 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         ensure_dir(&cache_root)?;
     }
 
-    let render_threads = args.render_threads.or_else(|| {
-        if args.domain_jobs > 1 {
-            Some(1)
-        } else {
-            None
-        }
-    });
+    let render_threads = args
+        .render_threads
+        .or_else(|| if args.domain_jobs > 1 { Some(1) } else { None });
     match render_threads {
-        Some(value) if value > 0 => {
-            unsafe {
-                std::env::set_var("RUSTWX_RENDER_THREADS", value.to_string());
-            }
-        }
-        _ => {
-            unsafe {
-                std::env::remove_var("RUSTWX_RENDER_THREADS");
-            }
-        }
+        Some(value) if value > 0 => unsafe {
+            std::env::set_var("RUSTWX_RENDER_THREADS", value.to_string());
+        },
+        _ => unsafe {
+            std::env::remove_var("RUSTWX_RENDER_THREADS");
+        },
     }
 
     let mut domains = Vec::<DomainSpec>::new();
@@ -214,11 +209,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     atomic_write_json(&report_path, &report)?;
 
     for domain in &report.domains {
-        println!(
-            "{} {}",
-            domain.domain.slug,
-            domain.summary.output_count
-        );
+        println!("{} {}", domain.domain.slug, domain.summary.output_count);
     }
     println!("{}", report_path.display());
     Ok(())

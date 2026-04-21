@@ -11,8 +11,8 @@ use crate::request::{ChromeScale, DomainFrame};
 use crate::text;
 use image::ExtendedColorType;
 use image::ImageEncoder;
-use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
 use image::RgbaImage;
+use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
 use image::imageops::{FilterType, resize};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -662,7 +662,8 @@ fn static_base_cache_key(
     if let Some(frame) = opts.domain_frame {
         frame.clear_outside.hash(&mut hasher);
     }
-    domain_frame_rect.map(|rect| (rect.min_x, rect.max_x, rect.min_y, rect.max_y).hash(&mut hasher));
+    domain_frame_rect
+        .map(|rect| (rect.min_x, rect.max_x, rect.min_y, rect.max_y).hash(&mut hasher));
     if let Some(extent) = extent {
         hash_extent(&mut hasher, extent);
     } else {
@@ -729,13 +730,8 @@ fn cached_static_base_image(
     canvas_background: Rgba,
     polygon_clip_rect: (i32, i32, i32, i32),
 ) -> (RgbaImage, u128, u128) {
-    let static_base_key = static_base_cache_key(
-        opts,
-        layout,
-        extent,
-        domain_frame_rect,
-        canvas_background,
-    );
+    let static_base_key =
+        static_base_cache_key(opts, layout, extent, domain_frame_rect, canvas_background);
     STATIC_BASE_CACHE.with(|cache_cell| {
         let mut cache = cache_cell.borrow_mut();
         if let Some(cached) = cache.as_ref() {
@@ -1808,7 +1804,15 @@ fn draw_variable_layers(
 ) -> VariableLayerTiming {
     let rasterize_start = Instant::now();
     let map_img = if let Some(pixel_points) = projected_pixels {
-        rasterize::rasterize_projected_grid(data, ny, nx, pixel_points, &opts.cmap, layout.map_w, layout.map_h)
+        rasterize::rasterize_projected_grid(
+            data,
+            ny,
+            nx,
+            pixel_points,
+            &opts.cmap,
+            layout.map_w,
+            layout.map_h,
+        )
     } else {
         rasterize::rasterize_grid(data, ny, nx, &opts.cmap, layout.map_w, layout.map_h)
     };
@@ -1877,13 +1881,25 @@ fn draw_variable_layers(
 
     let contour_start = Instant::now();
     for contour in &opts.contours {
-        draw_contours(img, layout, contour, projected_pixels, domain_clip_mask.as_ref());
+        draw_contours(
+            img,
+            layout,
+            contour,
+            projected_pixels,
+            domain_clip_mask.as_ref(),
+        );
     }
     let contour_ms = contour_start.elapsed().as_millis();
 
     let barb_start = Instant::now();
     for barb in &opts.barbs {
-        draw_barbs(img, layout, barb, projected_pixels, domain_clip_mask.as_ref());
+        draw_barbs(
+            img,
+            layout,
+            barb,
+            projected_pixels,
+            domain_clip_mask.as_ref(),
+        );
     }
     let barb_ms = barb_start.elapsed().as_millis();
 
@@ -1913,7 +1929,7 @@ fn draw_chrome_and_colorbar(
     projected_pixels_ref: Option<&[Option<(f64, f64)>]>,
     domain_frame_rect: Option<LocalRect>,
     domain_clip_rect: Option<LocalRect>,
-    has_title: bool,
+    _has_title: bool,
 ) -> (u128, u128) {
     let chrome_start = Instant::now();
     let (chrome_left, chrome_right, chrome_center) =
@@ -1978,17 +1994,6 @@ fn draw_chrome_and_colorbar(
             layout.text_scale,
         );
     }
-    if has_title && opts.subtitle_left.is_none() && opts.subtitle_right.is_none() {
-        let made_by = "Color Tables: Solarpower07";
-        text::draw_text_centered(
-            img,
-            made_by,
-            layout.subtitle_y as i32,
-            Rgba::new(168, 174, 184),
-            layout.text_scale,
-        );
-    }
-
     if let Some(frame) = opts.presentation.chrome.frame_color {
         let map_right = layout.map_x + layout.map_w.saturating_sub(1);
         let map_bottom = layout.map_y + layout.map_h.saturating_sub(1);
@@ -2423,6 +2428,22 @@ mod tests {
         }
     }
 
+    fn visit_rs_files(
+        root: &std::path::Path,
+        visitor: &mut impl FnMut(&std::path::Path),
+    ) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(root)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                visit_rs_files(&path, visitor)?;
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                visitor(&path);
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn supersample_scaling_expands_overlay_dimensions() {
         let mut opts = sample_projected_opts();
@@ -2487,8 +2508,8 @@ mod tests {
             RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology),
             ChromeScale::default(),
         );
-        let nx = 6usize;
-        let ny = 6usize;
+        let nx = 14usize;
+        let ny = 10usize;
         let grid = ProjectedGrid {
             x: vec![0.0; nx * ny],
             y: vec![0.0; nx * ny],
@@ -2499,8 +2520,8 @@ mod tests {
         for j in 0..ny {
             for i in 0..nx {
                 pixel_points.push(Some((
-                    36.0 + i as f64 * 20.0 + j as f64 * 5.0,
-                    16.0 + j as f64 * 16.0,
+                    28.0 + i as f64 * 12.0 + j as f64 * 0.5,
+                    10.0 + j as f64 * 8.0,
                 )));
             }
         }
@@ -2820,6 +2841,33 @@ mod tests {
         assert_eq!(
             contour_pixels, 0,
             "NaN contour data should produce no contour lines"
+        );
+    }
+
+    #[test]
+    fn crates_do_not_reintroduce_legacy_credit_footers() {
+        let crates_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..");
+        let forbidden = [
+            ["Color Tables:", " ", "Solarpower07"].concat(),
+            ["Pivotal", " Weather"].concat(),
+            ["Weather", "Bell"].concat(),
+        ];
+        let mut offenders = Vec::<String>::new();
+        visit_rs_files(&crates_root, &mut |path| {
+            if let Ok(contents) = std::fs::read_to_string(path) {
+                for term in &forbidden {
+                    if contents.contains(term) {
+                        offenders.push(format!("{} => {}", path.display(), term));
+                    }
+                }
+            }
+        })
+        .expect("crate source tree should be readable");
+        assert!(
+            offenders.is_empty(),
+            "legacy credit/footer strings remain in crates/: {offenders:?}"
         );
     }
 }

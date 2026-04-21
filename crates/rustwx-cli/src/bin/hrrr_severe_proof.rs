@@ -1,4 +1,4 @@
-//! HRRR-pinned severe-proof panel runner.
+//! HRRR-pinned severe map runner.
 //!
 //! This was the original severe-panel CLI before the generic
 //! `severe_batch` binary existed. The old version hard-coded the HRRR
@@ -8,7 +8,7 @@
 //! `hrrr_severe_proof` broken on main.
 //!
 //! We keep the bin because it's still the operator-friendly entry point
-//! for "HRRR severe proof panel right now, no cross-model flags" — now
+//! for "HRRR severe maps right now, no cross-model flags" — now
 //! it's a thin wrapper around `run_severe_batch` with the model pinned
 //! to HRRR. It shares the same manifest contract, provenance capture,
 //! and failure-path publication as every other operational runner.
@@ -33,7 +33,7 @@ use rustwx_products::shared_context::DomainSpec;
 #[derive(Debug, Parser)]
 #[command(
     name = "hrrr-severe-proof",
-    about = "Generate a RustWX HRRR severe proof panel from supported fixed-depth diagnostics"
+    about = "Generate RustWX HRRR severe maps from supported fixed-depth diagnostics"
 )]
 struct Args {
     #[arg(long, default_value = "20260414")]
@@ -52,6 +52,13 @@ struct Args {
     cache_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_cache: bool,
+    #[arg(
+        long,
+        alias = "allow-conus-heavy",
+        default_value_t = false,
+        help = "Allow very large heavy severe domains instead of refusing the run"
+    )]
+    allow_large_heavy_domain: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -62,7 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.cycle,
         args.forecast_hour,
         args.region.slug(),
-        "severe_proof_panel",
+        "severe",
     );
     let failure_out_dir = args.out_dir.clone();
     if let Err(err) = run(&args) {
@@ -100,6 +107,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         use_cache: !args.no_cache,
         surface_product_override: None,
         pressure_product_override: None,
+        allow_large_heavy_domain: args.allow_large_heavy_domain,
     };
     let report = run_severe_batch(&request)?;
 
@@ -109,7 +117,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         Some(report.cycle_utc),
         report.forecast_hour,
         &report.domain.slug,
-        "severe_proof_panel",
+        "severe",
     );
     let report_path = args.out_dir.join(format!("{stem}_report.json"));
     let timing_path = args.out_dir.join(format!("{stem}_timing.json"));
@@ -129,9 +137,11 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 "ehi": "0-1 km EHI using sbCAPE and 0-1 km SRH",
                 "effective_layer": "not derived in this proof path"
             },
+            "shared_timing": report.shared_timing,
             "timing_ms": {
                 "project": report.project_ms,
                 "compute": report.compute_ms,
+                "heavy": report.heavy_timing,
                 "render": report.render_ms,
                 "total": report.total_ms,
             }
@@ -148,30 +158,42 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 report.domain.slug.clone(),
             )
             .with_input_fetches(report.input_fetches.clone())
-            .with_artifacts(vec![
-                PublishedArtifactRecord::planned(
-                    "severe_proof_panel",
-                    relative_output_path(&args.out_dir, &report.output_path),
-                )
-                .with_state(ArtifactPublicationState::Complete)
-                .with_content_identity(report.output_identity.clone())
-                .with_input_fetch_keys(
-                    report
-                        .input_fetches
-                        .iter()
-                        .map(|fetch| fetch.fetch_key.clone())
-                        .collect(),
-                ),
-            ]);
+            .with_artifacts(build_artifacts(&args.out_dir, &report));
     let (canonical_manifest, attempt_manifest) =
         finalize_and_publish_run_manifest(&mut run_manifest, &args.out_dir, &stem)?;
 
-    println!("{}", report.output_path.display());
+    for output in &report.outputs {
+        println!("{}", output.output_path.display());
+    }
     println!("{}", report_path.display());
     println!("{}", timing_path.display());
     println!("{}", canonical_manifest.display());
     println!("{}", attempt_manifest.display());
     Ok(())
+}
+
+fn build_artifacts(
+    out_dir: &std::path::Path,
+    report: &rustwx_products::severe::SevereBatchReport,
+) -> Vec<PublishedArtifactRecord> {
+    let input_fetch_keys = report
+        .input_fetches
+        .iter()
+        .map(|fetch| fetch.fetch_key.clone())
+        .collect::<Vec<_>>();
+    report
+        .outputs
+        .iter()
+        .map(|output| {
+            PublishedArtifactRecord::planned(
+                &output.product,
+                relative_output_path(out_dir, &output.output_path),
+            )
+            .with_state(ArtifactPublicationState::Complete)
+            .with_content_identity(output.output_identity.clone())
+            .with_input_fetch_keys(input_fetch_keys.clone())
+        })
+        .collect()
 }
 
 fn relative_output_path(root: &std::path::Path, output_path: &std::path::Path) -> PathBuf {

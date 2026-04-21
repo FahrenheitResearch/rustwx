@@ -68,7 +68,10 @@ struct Args {
     hours: Vec<u16>,
     #[arg(long, default_value = "nomads")]
     source: rustwx_core::SourceId,
-    #[arg(long, default_value = "C:\\Users\\drew\\rustwx\\proof\\hrrr_us_region_hours")]
+    #[arg(
+        long,
+        default_value = "C:\\Users\\drew\\rustwx\\proof\\hrrr_us_region_hours"
+    )]
     out_dir: PathBuf,
     #[arg(long)]
     cache_dir: Option<PathBuf>,
@@ -160,7 +163,10 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let domains = conus_plus_us_split_region_domains();
-    let region_slugs = domains.iter().map(|domain| domain.slug.clone()).collect::<Vec<_>>();
+    let region_slugs = domains
+        .iter()
+        .map(|domain| domain.slug.clone())
+        .collect::<Vec<_>>();
     let domain_jobs = args.domain_jobs.max(1).min(domains.len().max(1));
     let hour_jobs = args.hour_jobs.max(1).min(hours.len().max(1));
     let render_threads = args.render_threads.or_else(|| {
@@ -171,16 +177,12 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     match render_threads {
-        Some(value) if value > 0 => {
-            unsafe {
-                std::env::set_var("RUSTWX_RENDER_THREADS", value.to_string());
-            }
-        }
-        _ => {
-            unsafe {
-                std::env::remove_var("RUSTWX_RENDER_THREADS");
-            }
-        }
+        Some(value) if value > 0 => unsafe {
+            std::env::set_var("RUSTWX_RENDER_THREADS", value.to_string());
+        },
+        _ => unsafe {
+            std::env::remove_var("RUSTWX_RENDER_THREADS");
+        },
     }
 
     let direct_recipe_slugs = if args.direct_recipes.is_empty() {
@@ -216,39 +218,41 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             let source = args.source;
             let direct_recipe_slugs = direct_recipe_slugs.clone();
             let derived_recipe_slugs = derived_recipe_slugs.clone();
-            scope.spawn(move || loop {
-                let next_hour = {
-                    let mut queue = queue.lock().expect("hour queue poisoned");
-                    queue.pop_front()
-                };
-                let Some(forecast_hour) = next_hour else {
-                    break;
-                };
+            scope.spawn(move || {
+                loop {
+                    let next_hour = {
+                        let mut queue = queue.lock().expect("hour queue poisoned");
+                        queue.pop_front()
+                    };
+                    let Some(forecast_hour) = next_hour else {
+                        break;
+                    };
 
-                let request = HrrrNonEcapeMultiDomainRequest {
-                    date_yyyymmdd: date.clone(),
-                    cycle_override_utc: cycle,
-                    forecast_hour,
-                    source,
-                    domains: domains.clone(),
-                    out_dir: out_dir.clone(),
-                    cache_root: cache_root.clone(),
-                    use_cache: !args.no_cache,
-                    source_mode,
-                    direct_recipe_slugs: direct_recipe_slugs.clone(),
-                    derived_recipe_slugs: derived_recipe_slugs.clone(),
-                    windowed_products: Vec::new(),
-                    output_width: 1200,
-                    output_height: 900,
-                    png_compression,
-                    domain_jobs: Some(domain_jobs),
-                };
+                    let request = HrrrNonEcapeMultiDomainRequest {
+                        date_yyyymmdd: date.clone(),
+                        cycle_override_utc: cycle,
+                        forecast_hour,
+                        source,
+                        domains: domains.clone(),
+                        out_dir: out_dir.clone(),
+                        cache_root: cache_root.clone(),
+                        use_cache: !args.no_cache,
+                        source_mode,
+                        direct_recipe_slugs: direct_recipe_slugs.clone(),
+                        derived_recipe_slugs: derived_recipe_slugs.clone(),
+                        windowed_products: Vec::new(),
+                        output_width: 1200,
+                        output_height: 900,
+                        png_compression,
+                        domain_jobs: Some(domain_jobs),
+                    };
 
-                let result = run_hrrr_non_ecape_hour_multi_domain(&request)
-                    .and_then(|report| write_hour_report(&out_dir, &report))
-                    .map_err(|err| err.to_string());
-                if tx.send(result).is_err() {
-                    break;
+                    let result = run_hrrr_non_ecape_hour_multi_domain(&request)
+                        .and_then(|report| write_hour_report(&out_dir, &report))
+                        .map_err(|err| err.to_string());
+                    if tx.send(result).is_err() {
+                        break;
+                    }
                 }
             });
         }
@@ -364,9 +368,10 @@ fn top_level_report_path(args: &Args) -> PathBuf {
             "rustwx_hrrr_{}_{}z_us_region_hours_report.json",
             args.date, cycle
         )),
-        None => args
-            .out_dir
-            .join(format!("rustwx_hrrr_{}_us_region_hours_report.json", args.date)),
+        None => args.out_dir.join(format!(
+            "rustwx_hrrr_{}_us_region_hours_report.json",
+            args.date
+        )),
     }
 }
 

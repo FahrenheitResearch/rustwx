@@ -1,20 +1,18 @@
 use crate::direct::build_projected_map;
 use crate::gridded::{
     PreparedHeavyVolume, PressureFields, SharedTiming, SurfaceFields, prepare_heavy_volume,
-    resolve_thermo_pair_run,
+    prepare_heavy_volume_timed, resolve_thermo_pair_run,
+};
+use crate::heavy::{
+    HeavyComputeTiming, HeavyRenderedArtifact, crop_and_guard_heavy_domain,
+    heavy_map_target_aspect_ratio, render_heavy_map_group,
 };
 use crate::planner::{BundleFetchKey, ExecutionPlan, ExecutionPlanBuilder, PlannedBundle};
-use crate::publication::{
-    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
-    fetch_identity_from_cached_result_with_aliases,
-};
+use crate::publication::{PublishedFetchIdentity, fetch_identity_from_cached_result_with_aliases};
 use crate::runtime::{
     BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
 };
-use crate::shared_context::{
-    DomainSpec, Solar07PanelField, Solar07PanelHeader, Solar07PanelLayout,
-    render_two_by_four_solar07_panel,
-};
+use crate::shared_context::{DomainSpec, Solar07PanelField};
 use rustwx_calc::{
     EcapeVolumeInputs, SupportedSevereFields, SurfaceInputs, compute_supported_severe_fields,
 };
@@ -39,6 +37,7 @@ pub struct SevereBatchRequest {
     pub use_cache: bool,
     pub surface_product_override: Option<String>,
     pub pressure_product_override: Option<String>,
+    pub allow_large_heavy_domain: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,10 +48,10 @@ pub struct SevereBatchReport {
     pub forecast_hour: u16,
     pub source: SourceId,
     pub domain: DomainSpec,
-    pub output_path: PathBuf,
-    pub output_identity: ArtifactContentIdentity,
+    pub outputs: Vec<HeavyRenderedArtifact>,
     pub input_fetches: Vec<PublishedFetchIdentity>,
     pub shared_timing: SharedTiming,
+    pub heavy_timing: HeavyComputeTiming,
     pub project_ms: u128,
     pub compute_ms: u128,
     pub render_ms: u128,
@@ -96,17 +95,13 @@ pub fn run_severe_batch(
         .map_err(|err| format!("severe surface/pressure pair unavailable: {err}"))?;
     let full_surface = &surface_decode.value;
     let full_pressure = &pressure_decode.value;
-    let layout = Solar07PanelLayout {
-        top_padding: 86,
-        ..Default::default()
-    };
     let owned_full_grid = full_surface.core_grid()?;
     let project_start = Instant::now();
     let full_projected = build_projected_map(
         &owned_full_grid.lat_deg,
         &owned_full_grid.lon_deg,
         request.domain.bounds,
-        layout.target_aspect_ratio(),
+        heavy_map_target_aspect_ratio(),
     )?;
 
     // Crop surface+pressure to the requested domain BEFORE parcel-ascent
@@ -114,25 +109,23 @@ pub fn run_severe_batch(
     // (~1.8M for HRRR) even when the user only wants a 300×300 midwest
     // panel — 20× wasted work. run_hrrr_batch_from_loaded already does
     // this; the per-model severe_batch needs the same shortcut.
-    let cropped = crate::gridded::crop_heavy_domain_for_projected_extent(
+    let heavy_domain = crop_and_guard_heavy_domain(
         full_surface,
         full_pressure,
-        &full_projected.projected_x,
-        &full_projected.projected_y,
-        &full_projected.extent,
+        &full_projected,
+        &request.domain,
         2,
+        request.allow_large_heavy_domain,
     )?;
-    let (surface, pressure, grid) = match cropped.as_ref() {
-        Some(cropped) => (&cropped.surface, &cropped.pressure, cropped.grid.clone()),
-        None => (full_surface, full_pressure, owned_full_grid),
-    };
+    let (surface, pressure, grid) =
+        heavy_domain.bind(full_surface, full_pressure, &owned_full_grid);
 
-    let projected = if cropped.is_some() {
+    let projected = if heavy_domain.cropped.is_some() {
         build_projected_map(
             &grid.lat_deg,
             &grid.lon_deg,
             request.domain.bounds,
-            layout.target_aspect_ratio(),
+            heavy_map_target_aspect_ratio(),
         )?
     } else {
         full_projected
@@ -140,31 +133,56 @@ pub fn run_severe_batch(
     let project_ms = project_start.elapsed().as_millis();
 
     let compute_start = Instant::now();
-    let fields = compute_severe_panel_fields(surface, pressure)?;
+    let (prepared, prep_timing) = prepare_heavy_volume_timed(surface, pressure, false)?;
+    let severe_fields_start = Instant::now();
+    let fields = compute_severe_panel_fields_with_prepared_volume(surface, pressure, &prepared)?;
+    let severe_fields_ms = severe_fields_start.elapsed().as_millis();
     let compute_ms = compute_start.elapsed().as_millis();
 
     let model_slug = request.model.as_str().replace('-', "_");
-    let output_path = request.out_dir.join(format!(
-        "rustwx_{}_{}_{}z_f{:03}_{}_severe_proof_panel.png",
-        model_slug,
-        request.date_yyyymmdd,
+    let subtitle_left = format!(
+        "{} {}Z F{:03}  {}",
+        request.date_yyyymmdd, loaded.latest.cycle.hour_utc, request.forecast_hour, request.model
+    );
+    let source_label = format!("source: {}", loaded.latest.source.as_str());
+    let (outputs, render_ms) = render_heavy_map_group(
+        &request.out_dir,
+        &model_slug,
+        &request.date_yyyymmdd,
         loaded.latest.cycle.hour_utc,
         request.forecast_hour,
-        request.domain.slug
-    ));
-    let render_start = Instant::now();
-    let header = Solar07PanelHeader::new(format!("{} Severe Proof Panel", request.model))
-        .with_subtitle_line(
-            "STP is fixed-layer only: sbCAPE + sbLCL + 0-1 km SRH + 0-6 km bulk shear.",
-        )
-        .with_subtitle_line(
-            "SCP stays a fixed-depth proxy here: muCAPE + 0-3 km SRH + 0-6 km shear. EHI 0-1 km uses sbCAPE + 0-1 km SRH. Effective-layer derivation is not wired yet.",
-        );
-    render_two_by_four_solar07_panel(&output_path, &grid, &projected, &fields, &header, layout)?;
-    let render_ms = render_start.elapsed().as_millis();
-    let output_identity = artifact_identity_from_path(&output_path)?;
+        &request.domain.slug,
+        "severe",
+        &grid,
+        &projected,
+        &fields,
+        &subtitle_left,
+        |field| match field.artifact_slug() {
+            "stp_fixed" => Some(format!("{source_label} | fixed-layer composite")),
+            "scp_mu_0_3km_0_6km_proxy" => Some(format!(
+                "{source_label} | proxy: MUCAPE + 0-3 km SRH + 0-6 km shear"
+            )),
+            "ehi_0_1km" => Some(format!("{source_label} | proxy: SBCAPE + 0-1 km SRH")),
+            _ => Some(source_label.clone()),
+        },
+    )?;
     let shared_timing = build_shared_timing_for_pair(&loaded, surface_planned, pressure_planned)?;
     let input_fetches = build_planned_input_fetches(&loaded);
+    let total_ms = total_start.elapsed().as_millis();
+    let heavy_timing = HeavyComputeTiming {
+        full_cells: heavy_domain.stats.full_cells,
+        cropped_cells: heavy_domain.stats.cropped_cells,
+        pressure_levels: heavy_domain.stats.pressure_levels,
+        crop_kind: heavy_domain.stats.crop_kind,
+        crop_ms: heavy_domain.crop_ms,
+        prepare_height_agl_ms: prep_timing.prepare_height_agl_ms,
+        broadcast_pressure_ms: prep_timing.broadcast_pressure_ms,
+        pressure_3d_bytes: prep_timing.pressure_3d_bytes,
+        ecape_triplet_ms: 0,
+        severe_fields_ms,
+        render_ms,
+        total_ms,
+    };
 
     Ok(SevereBatchReport {
         model: request.model,
@@ -173,14 +191,14 @@ pub fn run_severe_batch(
         forecast_hour: request.forecast_hour,
         source: loaded.latest.source,
         domain: request.domain.clone(),
-        output_path,
-        output_identity,
+        outputs,
         input_fetches,
         shared_timing,
+        heavy_timing,
         project_ms,
         compute_ms,
         render_ms,
-        total_ms: total_start.elapsed().as_millis(),
+        total_ms,
     })
 }
 
@@ -332,20 +350,24 @@ pub fn severe_panel_fields_from_supported(fields: SupportedSevereFields) -> Vec<
         Solar07PanelField::new(Solar07Product::Sbcape, "J/kg", fields.sbcape_jkg),
         Solar07PanelField::new(Solar07Product::Mlcin, "J/kg", fields.mlcin_jkg),
         Solar07PanelField::new(Solar07Product::Mucape, "J/kg", fields.mucape_jkg),
-        Solar07PanelField::new(Solar07Product::Srh01km, "m^2/s^2", fields.srh_01km_m2s2),
-        Solar07PanelField::new(Solar07Product::Srh03km, "m^2/s^2", fields.srh_03km_m2s2),
+        Solar07PanelField::new(Solar07Product::Srh01km, "m^2/s^2", fields.srh_01km_m2s2)
+            .with_artifact_slug("srh_0_1km"),
+        Solar07PanelField::new(Solar07Product::Srh03km, "m^2/s^2", fields.srh_03km_m2s2)
+            .with_artifact_slug("srh_0_3km"),
         Solar07PanelField::new(Solar07Product::StpFixed, "dimensionless", fields.stp_fixed),
         Solar07PanelField::new(
             Solar07Product::Scp,
             "dimensionless",
             fields.scp_mu_03km_06km_proxy,
         )
+        .with_artifact_slug("scp_mu_0_3km_0_6km_proxy")
         .with_title_override("SCP (MU / 0-3 KM / 0-6 KM PROXY)"),
         Solar07PanelField::new(
             Solar07Product::Ehi,
             "dimensionless",
             fields.ehi_sb_01km_proxy,
         )
+        .with_artifact_slug("ehi_0_1km")
         .with_title_override("EHI 0-1 KM"),
     ]
 }
@@ -354,7 +376,7 @@ pub fn compute_severe_panel_fields(
     surface: &SurfaceFields,
     pressure: &PressureFields,
 ) -> Result<Vec<Solar07PanelField>, Box<dyn std::error::Error>> {
-    let prepared = prepare_heavy_volume(surface, pressure, true)?;
+    let prepared = prepare_heavy_volume(surface, pressure, false)?;
     compute_severe_panel_fields_with_prepared_volume(surface, pressure, &prepared)
 }
 
@@ -482,14 +504,10 @@ pub fn compute_severe_panel_fields_with_prepared_volume(
     pressure: &PressureFields,
     prepared: &PreparedHeavyVolume,
 ) -> Result<Vec<Solar07PanelField>, Box<dyn std::error::Error>> {
-    let pressure_3d_pa = prepared
-        .pressure_3d_pa
-        .as_deref()
-        .ok_or("prepared severe volume was missing broadcast pressure data")?;
     let fields = compute_supported_severe_fields(
         prepared.grid,
         EcapeVolumeInputs {
-            pressure_pa: pressure_3d_pa,
+            pressure_pa: &prepared.pressure_levels_pa,
             temperature_c: &pressure.temperature_c_3d,
             qvapor_kgkg: &pressure.qvapor_kgkg_3d,
             height_agl_m: &prepared.height_agl_3d,

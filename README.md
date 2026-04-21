@@ -24,8 +24,8 @@ Working proof lanes:
 
 - selector-backed upper-air map plots
 - cross-model derived batch rendering for `HRRR`, `GFS`, `ECMWF open data`, and `RRFS-A`
-- cross-model ECAPE 8-panel rendering for `HRRR`, `GFS`, `ECMWF open data`, and `RRFS-A`
-- HRRR severe proof panel rendering
+- cross-model ECAPE-derived map rendering for `HRRR`, `GFS`, `ECMWF open data`, and `RRFS-A`
+- severe diagnostics exposed as regular derived maps plus bundled convenience runners
 - sounding rendering through `sharprs` with external ECAPE annotations
 - native composite reflectivity + UH proofs for HRRR and RRFS-A
 
@@ -65,7 +65,7 @@ Each crate has its own README in `crates/<crate>/README.md`.
 - full-file direct batching for `HRRR`, `GFS`, and `RRFS-A`, with one grouped
   structured-extraction pass feeding many direct plots per hour
 - generic full-file derived batching for `HRRR`, `GFS`, `ECMWF open data`, and `RRFS-A`
-- generic full-file ECAPE panel batching for `HRRR`, `GFS`, `ECMWF open data`, and `RRFS-A`
+- generic full-file ECAPE derived-map batching for `HRRR`, `GFS`, `ECMWF open data`, and `RRFS-A`
 - indexed byte-range fetch remains available for models and product paths that
   are still configured for it
 - on-disk artifact caching for fetched bytes and selector-backed field extraction
@@ -133,14 +133,39 @@ cargo run -p rustwx-cli --bin plot_recipe_proof -- `
   --region conus
 ```
 
-### Generate the HRRR ECAPE proof panel
+### Generate HRRR ECAPE maps
 
 ```powershell
-cargo run -p rustwx-cli --release --bin hrrr_ecape8 -- `
+cargo run -p rustwx-cli --release --bin hrrr_derived_batch -- `
+  --recipe sbecape,mlecape,muecape,sbncape,sbecin,mlecin,ecape_scp,ecape_ehi `
   --date 20260414 `
-  --hour 23 `
-  --forecast-hour 0 `
-  --region conus
+  --cycle 23 `
+  --forecast-hour 1 `
+  --region midwest
+```
+
+### Generate one generic ECAPE derived batch
+
+```powershell
+cargo run -p rustwx-cli --release --bin derived_batch -- `
+  --model rrfs-a `
+  --recipe sbecape,mlecape,muecape,sbncape,sbecin,mlecin,ecape_scp,ecape_ehi `
+  --date 20260414 `
+  --cycle 20 `
+  --forecast-hour 2 `
+  --source aws `
+  --region midwest
+```
+
+### Generate the ECAPE convenience bundle
+
+```powershell
+cargo run -p rustwx-cli --release --bin ecape8_batch -- `
+  --model hrrr `
+  --date 20260414 `
+  --cycle 23 `
+  --forecast-hour 1 `
+  --region midwest
 ```
 
 ### Generate one generic derived batch
@@ -155,15 +180,14 @@ cargo run -p rustwx-cli --release --bin derived_batch -- `
   --region midwest
 ```
 
-### Generate one generic ECAPE 8-panel
+### Generate severe + ECAPE maps together from one shared heavy load
 
 ```powershell
-cargo run -p rustwx-cli --release --bin ecape8_batch -- `
-  --model rrfs-a `
+cargo run -p rustwx-cli --release --bin heavy_panel_hour -- `
+  --model gfs `
   --date 20260414 `
-  --cycle 20 `
-  --forecast-hour 2 `
-  --source aws `
+  --cycle 18 `
+  --forecast-hour 12 `
   --region midwest
 ```
 
@@ -215,8 +239,8 @@ Quantity semantics are explicit where the implementation is narrower than a gene
 
 Useful starting points:
 
-- [HRRR ECAPE 8-panel](proof/rustwx_hrrr_20260414_23z_f00_conus_ecape8_panel.png)
-- [HRRR severe proof panel](proof/rustwx_hrrr_20260414_23z_f00_midwest_severe_proof_panel.png)
+- [HRRR SBECAPE map](proof/rustwx_hrrr_20260414_23z_f001_midwest_ecape_sbecape.png)
+- [HRRR fixed-layer STP map](proof/rustwx_hrrr_20260414_23z_f001_midwest_severe_stp_fixed.png)
 - [GFS CONUS 500mb temperature / height / winds](proof/rustwx_gfs_20260414_18z_f000_conus_500mb_temperature_height_winds.png)
 - [ECMWF CONUS 500mb temperature / height / winds](proof/rustwx_ecmwf_open_data_20260414_12z_f000_conus_500mb_temperature_height_winds.png)
 - [HRRR Midwest composite reflectivity + UH](proof/rustwx_hrrr_20260414_23z_f000_midwest_composite_reflectivity_uh.png)
@@ -252,6 +276,7 @@ That order matches the dependency flow.
 - broaden selector coverage and model adapters
 - unify proof binaries into a real product CLI
 - lift the generic direct/derived/ECAPE executor shape into windowed and severe products
+- make `heavy_panel_hour` the preferred shared ECAPE+severe runner for one model hour
 - finish severe-suite render plumbing
 - make ECMWF probing and fetch planning more robust
 - reduce remaining ECAPE wall time

@@ -5,6 +5,7 @@ pub mod direct;
 pub mod ecape;
 pub mod gallery;
 pub mod gridded;
+pub mod heavy;
 pub mod hrrr;
 pub mod non_ecape;
 pub mod orchestrator;

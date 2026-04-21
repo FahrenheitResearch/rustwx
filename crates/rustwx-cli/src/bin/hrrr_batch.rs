@@ -7,11 +7,10 @@ mod region;
 use clap::{Parser, ValueEnum};
 use region::RegionPreset;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
-use rustwx_products::hrrr::{HrrrBatchProduct, HrrrBatchRequest, run_hrrr_batch};
+use rustwx_products::heavy::{HeavyPanelHourRequest, run_heavy_panel_hour};
 use rustwx_products::publication::{
-    ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest,
-    artifact_identity_from_path, atomic_write_json, canonical_run_slug,
-    finalize_and_publish_run_manifest, publish_failure_manifest,
+    ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
+    canonical_run_slug, finalize_and_publish_run_manifest, publish_failure_manifest,
 };
 use rustwx_products::shared_context::DomainSpec;
 
@@ -21,19 +20,10 @@ enum ProductArg {
     Ecape8,
 }
 
-impl From<ProductArg> for HrrrBatchProduct {
-    fn from(value: ProductArg) -> Self {
-        match value {
-            ProductArg::SevereProof => HrrrBatchProduct::SevereProofPanel,
-            ProductArg::Ecape8 => HrrrBatchProduct::Ecape8Panel,
-        }
-    }
-}
-
 #[derive(Debug, Parser)]
 #[command(
     name = "hrrr-batch",
-    about = "Generate multiple RustWX HRRR proof products from one fetched/decoded timestep"
+    about = "Generate multiple RustWX HRRR heavy map products from one shared cropped heavy load"
 )]
 struct Args {
     #[arg(long, default_value = "20260414")]
@@ -60,6 +50,13 @@ struct Args {
     cache_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_cache: bool,
+    #[arg(
+        long,
+        alias = "allow-conus-heavy",
+        default_value_t = false,
+        help = "Allow very large heavy ECAPE/severe domains instead of refusing the run"
+    )]
+    allow_large_heavy_domain: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -96,7 +93,8 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         ensure_dir(&cache_root)?;
     }
 
-    let request = HrrrBatchRequest {
+    let request = HeavyPanelHourRequest {
+        model: rustwx_core::ModelId::Hrrr,
         date_yyyymmdd: args.date.clone(),
         cycle_override_utc: args.cycle,
         forecast_hour: args.forecast_hour,
@@ -105,9 +103,11 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         out_dir: args.out_dir.clone(),
         cache_root: cache_root.clone(),
         use_cache: !args.no_cache,
-        products: args.products.iter().copied().map(Into::into).collect(),
+        surface_product_override: None,
+        pressure_product_override: None,
+        allow_large_heavy_domain: args.allow_large_heavy_domain,
     };
-    let report = run_hrrr_batch(&request)?;
+    let report = run_heavy_panel_hour(&request)?;
     let report_path = args.out_dir.join(format!(
         "rustwx_hrrr_{}_{}z_f{:02}_{}_batch_report.json",
         report.date_yyyymmdd, report.cycle_utc, report.forecast_hour, report.domain.slug
@@ -117,23 +117,45 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         report.date_yyyymmdd, report.cycle_utc, report.forecast_hour, report.domain.slug
     );
     atomic_write_json(&report_path, &report)?;
-    let mut artifacts = Vec::with_capacity(report.products.len());
-    for product in &report.products {
-        let mut record = PublishedArtifactRecord::planned(
-            product.product.slug(),
-            relative_output_path(&args.out_dir, &product.output_path),
-        )
-        .with_state(ArtifactPublicationState::Complete)
-        .with_input_fetch_keys(product.input_fetch_keys.clone());
-        let content_identity = match &product.content_identity {
-            Some(identity) => identity.clone(),
-            None => artifact_identity_from_path(&product.output_path)?,
-        };
-        record = record.with_content_identity(content_identity);
-        if let Some(failure_count) = product.metadata.failure_count {
-            record = record.with_detail(format!("failure_count={failure_count}"));
-        }
-        artifacts.push(record);
+    let selected_severe = args
+        .products
+        .iter()
+        .any(|product| matches!(product, ProductArg::SevereProof));
+    let selected_ecape = args
+        .products
+        .iter()
+        .any(|product| matches!(product, ProductArg::Ecape8));
+    let input_fetch_keys = report
+        .input_fetches
+        .iter()
+        .map(|fetch| fetch.fetch_key.clone())
+        .collect::<Vec<_>>();
+    let mut artifacts = Vec::new();
+    if selected_severe {
+        artifacts.extend(report.severe.outputs.iter().map(|output| {
+            PublishedArtifactRecord::planned(
+                &output.product,
+                relative_output_path(&args.out_dir, &output.output_path),
+            )
+            .with_state(ArtifactPublicationState::Complete)
+            .with_content_identity(output.output_identity.clone())
+            .with_input_fetch_keys(input_fetch_keys.clone())
+        }));
+    }
+    if selected_ecape {
+        artifacts.extend(report.ecape.outputs.iter().map(|output| {
+            PublishedArtifactRecord::planned(
+                &output.product,
+                relative_output_path(&args.out_dir, &output.output_path),
+            )
+            .with_state(ArtifactPublicationState::Complete)
+            .with_detail(format!(
+                "failure_count={}",
+                report.ecape.failure_count.unwrap_or(0)
+            ))
+            .with_content_identity(output.output_identity.clone())
+            .with_input_fetch_keys(input_fetch_keys.clone())
+        }));
     }
     let mut run_manifest =
         RunPublicationManifest::new("hrrr_batch", run_slug.clone(), args.out_dir.clone())
@@ -150,8 +172,15 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let (canonical_manifest, attempt_manifest) =
         finalize_and_publish_run_manifest(&mut run_manifest, &args.out_dir, &run_slug)?;
 
-    for product in &report.products {
-        println!("{}", product.output_path.display());
+    if selected_severe {
+        for product in &report.severe.outputs {
+            println!("{}", product.output_path.display());
+        }
+    }
+    if selected_ecape {
+        for product in &report.ecape.outputs {
+            println!("{}", product.output_path.display());
+        }
     }
     println!("{}", report_path.display());
     println!("{}", canonical_manifest.display());

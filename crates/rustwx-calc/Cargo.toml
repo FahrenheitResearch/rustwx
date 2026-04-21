@@ -8,5 +8,6 @@ rust-version.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+rayon.workspace = true
 rustwx-core = { path = "../rustwx-core" }
 metrust = { path = "../../vendor/metrust" }

@@ -53,6 +53,12 @@ struct Args {
     no_cache: bool,
     #[arg(long = "source-mode", alias = "thermo-path", value_enum, default_value_t = SourceModeArg::Canonical)]
     source_mode: SourceModeArg,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Allow very large heavy ECAPE domains instead of refusing the run"
+    )]
+    allow_large_heavy_domain: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -137,6 +143,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         surface_product_override: args.surface_product.clone(),
         pressure_product_override: args.pressure_product.clone(),
         source_mode: args.source_mode.into(),
+        allow_large_heavy_domain: args.allow_large_heavy_domain,
         output_width: 1200,
         output_height: 900,
         png_compression: rustwx_render::PngCompressionMode::Default,

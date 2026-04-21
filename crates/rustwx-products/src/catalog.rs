@@ -5,6 +5,7 @@ use rustwx_models::{
 use rustwx_render::{ProductMaturity, ProductSemanticFlag};
 use serde::{Deserialize, Serialize};
 
+use crate::derived::is_heavy_derived_recipe_slug;
 use crate::source::{ProductSourceRoute, direct_route_for_recipe_slug};
 use crate::spec::{
     ProductSpec, blocked_derived_product_specs, direct_product_specs, heavy_product_specs,
@@ -186,6 +187,7 @@ fn build_direct_entries() -> Vec<ProductCatalogEntry> {
                 .any(|target| matches!(target.status, ProductTargetStatus::Supported))
             {
                 runners.push("direct_batch".to_string());
+                runners.push("non_ecape_hour".to_string());
             }
             if support.iter().any(|target| {
                 target.model == Some(ModelId::Hrrr)
@@ -204,6 +206,7 @@ fn build_derived_entries() -> Vec<ProductCatalogEntry> {
     let mut entries = supported_derived_product_specs()
         .into_iter()
         .map(|spec| {
+            let heavy = is_heavy_derived_recipe_slug(&spec.slug);
             let support = built_in_models()
                 .iter()
                 .map(|model| {
@@ -231,7 +234,20 @@ fn build_derived_entries() -> Vec<ProductCatalogEntry> {
                 .any(|target| target.model == Some(ModelId::Hrrr))
             {
                 runners.push("hrrr_derived_batch".to_string());
+            }
+            if !heavy
+                && support
+                    .iter()
+                    .any(|target| target.model == Some(ModelId::Hrrr))
+            {
                 runners.push("hrrr_non_ecape_hour".to_string());
+            }
+            if !heavy
+                && support
+                    .iter()
+                    .any(|target| matches!(target.status, ProductTargetStatus::Supported))
+            {
+                runners.push("non_ecape_hour".to_string());
             }
             build_catalog_entry(spec, ProductCatalogStatus::Supported, runners, support)
         })
@@ -271,7 +287,8 @@ fn build_heavy_entries() -> Vec<ProductCatalogEntry> {
         .map(|spec| {
             let (runners, support) = match spec.slug.as_str() {
                 "severe_proof_panel" => {
-                    let mut runners = vec!["severe_batch".to_string()];
+                    let mut runners =
+                        vec!["severe_batch".to_string(), "heavy_panel_hour".to_string()];
                     let support = built_in_models()
                         .iter()
                         .map(|model| ProductTargetSupport {
@@ -294,7 +311,8 @@ fn build_heavy_entries() -> Vec<ProductCatalogEntry> {
                     (runners, support)
                 }
                 "ecape8_panel" => {
-                    let mut runners = vec!["ecape8_batch".to_string()];
+                    let mut runners =
+                        vec!["ecape8_batch".to_string(), "heavy_panel_hour".to_string()];
                     let support = built_in_models()
                         .iter()
                         .map(|model| ProductTargetSupport {
@@ -344,6 +362,7 @@ fn build_windowed_entries() -> Vec<ProductCatalogEntry> {
                 vec![
                     "hrrr_windowed_batch".to_string(),
                     "hrrr_non_ecape_hour".to_string(),
+                    "non_ecape_hour".to_string(),
                 ],
                 vec![ProductTargetSupport {
                     target: ModelId::Hrrr.to_string(),
@@ -667,7 +686,7 @@ mod tests {
             .iter()
             .find(|entry| entry.slug == "ecape8_panel")
             .expect("catalog should expose ecape8 panel entry");
-        assert_eq!(ecape.title, "ECAPE 8-Panel");
+        assert_eq!(ecape.title, "ECAPE Map Set");
         assert!(ecape.runners.iter().any(|runner| runner == "ecape8_batch"));
         assert_eq!(ecape.support.len(), built_in_models().len());
         assert!(
@@ -679,6 +698,40 @@ mod tests {
     }
 
     #[test]
+    fn heavy_derived_ecape_entries_do_not_route_through_non_ecape_hour() {
+        let catalog = build_supported_products_catalog();
+        let sbecape = catalog
+            .derived
+            .iter()
+            .find(|entry| entry.slug == "sbecape")
+            .expect("catalog should expose sbecape derived entry");
+        assert!(
+            sbecape
+                .runners
+                .iter()
+                .any(|runner| runner == "derived_batch")
+        );
+        assert!(
+            sbecape
+                .runners
+                .iter()
+                .any(|runner| runner == "hrrr_derived_batch")
+        );
+        assert!(
+            !sbecape
+                .runners
+                .iter()
+                .any(|runner| runner == "non_ecape_hour")
+        );
+        assert!(
+            !sbecape
+                .runners
+                .iter()
+                .any(|runner| runner == "hrrr_non_ecape_hour")
+        );
+    }
+
+    #[test]
     fn severe_catalog_entry_is_supported_for_all_built_in_models() {
         let catalog = build_supported_products_catalog();
         let severe = catalog
@@ -686,7 +739,7 @@ mod tests {
             .iter()
             .find(|entry| entry.slug == "severe_proof_panel")
             .expect("catalog should expose severe proof panel entry");
-        assert_eq!(severe.title, "Severe Proof Panel");
+        assert_eq!(severe.title, "Severe Map Set");
         assert!(severe.runners.iter().any(|runner| runner == "severe_batch"));
         assert_eq!(severe.support.len(), built_in_models().len());
         assert!(

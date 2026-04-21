@@ -191,7 +191,11 @@ fn required_products_for_latest_probe(args: &Args) -> Vec<String> {
 
 fn bundle_requests(args: &Args) -> Vec<CanonicalBundleDescriptor> {
     if !args.bundles.is_empty() {
-        return args.bundles.iter().map(|bundle| bundle.descriptor()).collect();
+        return args
+            .bundles
+            .iter()
+            .map(|bundle| bundle.descriptor())
+            .collect();
     }
 
     match args.preset {

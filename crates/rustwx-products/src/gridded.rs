@@ -160,6 +160,13 @@ pub struct PreparedHeavyVolume {
     pub height_agl_3d: Vec<f64>,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct PreparedHeavyVolumeTiming {
+    pub prepare_height_agl_ms: u128,
+    pub broadcast_pressure_ms: u128,
+    pub pressure_3d_bytes: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct LoadedSurfaceGeometry {
     pub latest: LatestRun,
@@ -446,6 +453,15 @@ pub fn prepare_heavy_volume(
     pressure: &PressureFields,
     include_pressure_3d: bool,
 ) -> Result<PreparedHeavyVolume, Box<dyn std::error::Error>> {
+    let (prepared, _) = prepare_heavy_volume_timed(surface, pressure, include_pressure_3d)?;
+    Ok(prepared)
+}
+
+pub fn prepare_heavy_volume_timed(
+    surface: &SurfaceFields,
+    pressure: &PressureFields,
+    include_pressure_3d: bool,
+) -> Result<(PreparedHeavyVolume, PreparedHeavyVolumeTiming), Box<dyn std::error::Error>> {
     let grid = CalcGridShape::new(surface.nx, surface.ny)?;
     let shape = VolumeShape::new(grid, pressure.pressure_levels_hpa.len())?;
     let pressure_levels_pa = pressure
@@ -453,14 +469,35 @@ pub fn prepare_heavy_volume(
         .iter()
         .map(|level_hpa| level_hpa * 100.0)
         .collect::<Vec<_>>();
-    Ok(PreparedHeavyVolume {
-        grid,
-        shape,
-        pressure_levels_pa,
-        pressure_3d_pa: include_pressure_3d
-            .then(|| broadcast_levels_pa(&pressure.pressure_levels_hpa, grid.len())),
-        height_agl_3d: compute_height_agl_3d(surface, pressure, grid, shape),
-    })
+    let height_agl_start = Instant::now();
+    let height_agl_3d = compute_height_agl_3d(surface, pressure, grid, shape);
+    let prepare_height_agl_ms = height_agl_start.elapsed().as_millis();
+    let broadcast_start = Instant::now();
+    let pressure_3d_pa =
+        include_pressure_3d.then(|| broadcast_levels_pa(&pressure.pressure_levels_hpa, grid.len()));
+    let broadcast_pressure_ms = if include_pressure_3d {
+        broadcast_start.elapsed().as_millis()
+    } else {
+        0
+    };
+    let pressure_3d_bytes = pressure_3d_pa
+        .as_ref()
+        .map(|values| values.len() * std::mem::size_of::<f64>())
+        .unwrap_or(0);
+    Ok((
+        PreparedHeavyVolume {
+            grid,
+            shape,
+            pressure_levels_pa,
+            pressure_3d_pa,
+            height_agl_3d,
+        },
+        PreparedHeavyVolumeTiming {
+            prepare_height_agl_ms,
+            broadcast_pressure_ms,
+            pressure_3d_bytes,
+        },
+    ))
 }
 
 pub fn compute_height_agl_3d(

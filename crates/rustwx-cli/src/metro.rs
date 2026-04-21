@@ -32,7 +32,12 @@ pub const MAJOR_US_CITY_PRESETS: &[MetroCropPreset] = &[
     metro("az_phoenix", "Phoenix, AZ", -112.07, 33.45),
     metro("ar_little_rock", "Little Rock, AR", -92.29, 34.75),
     metro("ca_los_angeles", "Los Angeles, CA", -118.24, 34.05),
-    metro("ca_san_francisco_bay", "San Francisco Bay, CA", -122.27, 37.80),
+    metro(
+        "ca_san_francisco_bay",
+        "San Francisco Bay, CA",
+        -122.27,
+        37.80,
+    ),
     metro("ca_sacramento", "Sacramento, CA", -121.49, 38.58),
     metro("ca_san_diego", "San Diego, CA", -117.16, 32.72),
     metro("co_denver", "Denver, CO", -104.99, 39.74),
@@ -75,7 +80,12 @@ pub const MAJOR_US_CITY_PRESETS: &[MetroCropPreset] = &[
     metro("sc_charleston", "Charleston, SC", -79.93, 32.78),
     metro("sd_sioux_falls", "Sioux Falls, SD", -96.73, 43.55),
     metro("tn_nashville", "Nashville, TN", -86.78, 36.16),
-    metro("tx_dallas_fort_worth", "Dallas-Fort Worth, TX", -97.04, 32.90),
+    metro(
+        "tx_dallas_fort_worth",
+        "Dallas-Fort Worth, TX",
+        -97.04,
+        32.90,
+    ),
     metro("tx_houston", "Houston, TX", -95.37, 29.76),
     metro("tx_austin", "Austin, TX", -97.74, 30.27),
     metro("tx_san_antonio", "San Antonio, TX", -98.49, 29.42),
@@ -89,7 +99,11 @@ pub const MAJOR_US_CITY_PRESETS: &[MetroCropPreset] = &[
 ];
 
 pub fn major_us_city_domains() -> Vec<DomainSpec> {
-    MAJOR_US_CITY_PRESETS.iter().copied().map(|city| city.domain()).collect()
+    MAJOR_US_CITY_PRESETS
+        .iter()
+        .copied()
+        .map(|city| city.domain())
+        .collect()
 }
 
 const fn metro(
@@ -138,9 +152,13 @@ mod tests {
 
     #[test]
     fn new_york_city_bounds_stay_centered() {
-        let domain = MAJOR_US_CITY_PRESETS[0].domain();
+        let domain = MAJOR_US_CITY_PRESETS
+            .iter()
+            .find(|city| city.slug == "ny_new_york_city")
+            .expect("NYC preset should exist")
+            .domain();
         let (west, east, south, north) = domain.bounds;
         assert!((((west + east) / 2.0) + 74.0).abs() < 0.1);
-        assert!(((((south + north) / 2.0) - 40.71)).abs() < 0.1);
+        assert!((((south + north) / 2.0) - 40.71).abs() < 0.1);
     }
 }

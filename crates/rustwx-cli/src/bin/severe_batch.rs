@@ -19,7 +19,7 @@ use rustwx_products::shared_context::DomainSpec;
 #[derive(Debug, Parser)]
 #[command(
     name = "severe-batch",
-    about = "Generate a severe proof panel from one shared full-file thermodynamic load"
+    about = "Generate severe map products from one shared cropped heavy thermodynamic load"
 )]
 struct Args {
     #[arg(long, default_value = "hrrr")]
@@ -44,6 +44,13 @@ struct Args {
     cache_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_cache: bool,
+    #[arg(
+        long,
+        alias = "allow-conus-heavy",
+        default_value_t = false,
+        help = "Allow very large heavy severe domains instead of refusing the run"
+    )]
+    allow_large_heavy_domain: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -54,7 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.cycle,
         args.forecast_hour,
         args.region.slug(),
-        "severe_proof_panel",
+        "severe",
     );
     let failure_out_dir = args.out_dir.clone();
     if let Err(err) = run(&args) {
@@ -95,12 +102,13 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         use_cache: !args.no_cache,
         surface_product_override: args.surface_product.clone(),
         pressure_product_override: args.pressure_product.clone(),
+        allow_large_heavy_domain: args.allow_large_heavy_domain,
     };
     let report = run_severe_batch(&request)?;
 
     let model_slug = report.model.as_str().replace('-', "_");
     let stem = format!(
-        "rustwx_{}_{}_{}z_f{:03}_{}_severe_proof_panel",
+        "rustwx_{}_{}_{}z_f{:03}_{}_severe",
         model_slug,
         report.date_yyyymmdd,
         report.cycle_utc,
@@ -123,6 +131,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             "shared_timing": report.shared_timing,
             "project_ms": report.project_ms,
             "compute_ms": report.compute_ms,
+            "heavy_timing": report.heavy_timing,
             "render_ms": report.render_ms,
             "total_ms": report.total_ms,
         }),
@@ -138,30 +147,42 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 report.domain.slug.clone(),
             )
             .with_input_fetches(report.input_fetches.clone())
-            .with_artifacts(vec![
-                PublishedArtifactRecord::planned(
-                    "severe_proof_panel",
-                    relative_output_path(&args.out_dir, &report.output_path),
-                )
-                .with_state(ArtifactPublicationState::Complete)
-                .with_content_identity(report.output_identity.clone())
-                .with_input_fetch_keys(
-                    report
-                        .input_fetches
-                        .iter()
-                        .map(|fetch| fetch.fetch_key.clone())
-                        .collect(),
-                ),
-            ]);
+            .with_artifacts(build_artifacts(&args.out_dir, &report));
     let (canonical_manifest, attempt_manifest) =
         finalize_and_publish_run_manifest(&mut run_manifest, &args.out_dir, &stem)?;
 
-    println!("{}", report.output_path.display());
+    for output in &report.outputs {
+        println!("{}", output.output_path.display());
+    }
     println!("{}", manifest_path.display());
     println!("{}", timing_path.display());
     println!("{}", canonical_manifest.display());
     println!("{}", attempt_manifest.display());
     Ok(())
+}
+
+fn build_artifacts(
+    out_dir: &std::path::Path,
+    report: &rustwx_products::severe::SevereBatchReport,
+) -> Vec<PublishedArtifactRecord> {
+    let input_fetch_keys = report
+        .input_fetches
+        .iter()
+        .map(|fetch| fetch.fetch_key.clone())
+        .collect::<Vec<_>>();
+    report
+        .outputs
+        .iter()
+        .map(|output| {
+            PublishedArtifactRecord::planned(
+                &output.product,
+                relative_output_path(out_dir, &output.output_path),
+            )
+            .with_state(ArtifactPublicationState::Complete)
+            .with_content_identity(output.output_identity.clone())
+            .with_input_fetch_keys(input_fetch_keys.clone())
+        })
+        .collect()
 }
 
 fn relative_output_path(root: &std::path::Path, output_path: &std::path::Path) -> PathBuf {

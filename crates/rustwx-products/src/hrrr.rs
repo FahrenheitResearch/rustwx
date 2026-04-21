@@ -1,7 +1,9 @@
 use crate::gridded::{
     PreparedHeavyVolume as GenericPreparedHeavyVolume, PressureFields as GenericPressureFields,
-    SurfaceFields as GenericSurfaceFields, prepare_heavy_volume as prepare_generic_heavy_volume,
+    SurfaceFields as GenericSurfaceFields,
+    prepare_heavy_volume_timed as prepare_generic_heavy_volume_timed,
 };
+use crate::heavy::crop_and_guard_heavy_domain;
 use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
 };
@@ -62,6 +64,7 @@ pub struct HrrrBatchRequest {
     pub cache_root: PathBuf,
     pub use_cache: bool,
     pub products: Vec<HrrrBatchProduct>,
+    pub allow_large_heavy_domain: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,15 +206,15 @@ pub(crate) fn run_hrrr_batch_from_loaded(
         request.domain.bounds,
         crop_target_ratio,
     )?;
-    let cropped_heavy_domain = crate::gridded::crop_heavy_domain_for_projected_extent(
+    let cropped_heavy_domain = crop_and_guard_heavy_domain(
         surface_full,
         pressure_full,
-        &full_projected_for_crop.projected_x,
-        &full_projected_for_crop.projected_y,
-        &full_projected_for_crop.extent,
+        &full_projected_for_crop,
+        &request.domain,
         2,
+        request.allow_large_heavy_domain,
     )?;
-    let (surface, pressure, grid) = match cropped_heavy_domain.as_ref() {
+    let (surface, pressure, grid) = match cropped_heavy_domain.cropped.as_ref() {
         Some(cropped) => (&cropped.surface, &cropped.pressure, &cropped.grid),
         None => {
             owned_full_grid = base_grid;
@@ -253,15 +256,10 @@ pub(crate) fn run_hrrr_batch_from_loaded(
             HrrrBatchProduct::SevereProofPanel | HrrrBatchProduct::Ecape8Panel
         )
     });
-    let needs_pressure_3d = unique_products
-        .iter()
-        .any(|product| matches!(product, HrrrBatchProduct::SevereProofPanel));
     let prepared_heavy_volume = if needs_heavy {
-        Some(prepare_generic_heavy_volume(
-            surface,
-            pressure,
-            needs_pressure_3d,
-        )?)
+        let (prepared, _prep_timing) =
+            prepare_generic_heavy_volume_timed(surface, pressure, false)?;
+        Some(prepared)
     } else {
         None
     };

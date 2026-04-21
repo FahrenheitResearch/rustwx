@@ -2,8 +2,9 @@ use image::DynamicImage;
 use rustwx_core::{Field2D, LatLonGrid, ProductKey};
 pub use rustwx_render::ProjectedMap;
 use rustwx_render::{
-    Color, MapRenderRequest, PanelGridLayout, PanelPadding, ProductVisualMode, ProjectedDomain,
-    Solar07Product, draw_centered_text_line, map_frame_aspect_ratio_for_mode, render_panel_grid,
+    Color, DomainFrame, MapRenderRequest, PanelGridLayout, PanelPadding, ProductVisualMode,
+    ProjectedDomain, Solar07Product, draw_centered_text_line, map_frame_aspect_ratio_for_mode,
+    render_panel_grid,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -61,6 +62,7 @@ impl ProjectedMapProvider for PreparedProjectedContext {
 #[derive(Debug, Clone)]
 pub struct Solar07PanelField {
     pub product: Solar07Product,
+    pub artifact_slug: Option<String>,
     pub title_override: Option<String>,
     pub units: String,
     pub values: Vec<f64>,
@@ -70,15 +72,33 @@ impl Solar07PanelField {
     pub fn new<S: Into<String>>(product: Solar07Product, units: S, values: Vec<f64>) -> Self {
         Self {
             product,
+            artifact_slug: None,
             title_override: None,
             units: units.into(),
             values,
         }
     }
 
+    pub fn with_artifact_slug<S: Into<String>>(mut self, slug: S) -> Self {
+        self.artifact_slug = Some(slug.into());
+        self
+    }
+
     pub fn with_title_override<S: Into<String>>(mut self, title: S) -> Self {
         self.title_override = Some(title.into());
         self
+    }
+
+    pub fn artifact_slug(&self) -> &str {
+        self.artifact_slug
+            .as_deref()
+            .unwrap_or_else(|| self.product.slug())
+    }
+
+    pub fn display_title(&self) -> &str {
+        self.title_override
+            .as_deref()
+            .unwrap_or_else(|| self.product.display_title())
     }
 }
 
@@ -133,6 +153,40 @@ impl Solar07PanelLayout {
 
 pub fn layout_key(layout: Solar07PanelLayout) -> (u32, u32, u32) {
     (layout.panel_width, layout.panel_height, layout.top_padding)
+}
+
+pub fn build_solar07_map_request(
+    grid: &LatLonGrid,
+    projected: &ProjectedMap,
+    field_spec: &Solar07PanelField,
+    width: u32,
+    height: u32,
+    subtitle_left: Option<String>,
+    subtitle_right: Option<String>,
+) -> Result<MapRenderRequest, Box<dyn std::error::Error>> {
+    let field = Field2D::new(
+        ProductKey::named(field_spec.product.slug()),
+        field_spec.units.clone(),
+        grid.clone(),
+        field_spec.values.iter().map(|&v| v as f32).collect(),
+    )?;
+    let mut request = MapRenderRequest::for_core_solar07_product(field, field_spec.product);
+    request.width = width;
+    request.height = height;
+    request.supersample_factor = 2;
+    request.domain_frame = Some(DomainFrame::model_data_default());
+    request.visual_mode = ProductVisualMode::SevereDiagnostic;
+    request.title = Some(field_spec.display_title().to_string());
+    request.subtitle_left = subtitle_left;
+    request.subtitle_right = subtitle_right;
+    request.projected_domain = Some(ProjectedDomain {
+        x: projected.projected_x.clone(),
+        y: projected.projected_y.clone(),
+        extent: projected.extent.clone(),
+    });
+    request.projected_lines = projected.lines.clone();
+    request.projected_polygons = projected.polygons.clone();
+    Ok(request)
 }
 
 pub fn render_two_by_four_solar07_panel(
@@ -221,5 +275,12 @@ mod tests {
         let field = Solar07PanelField::new(Solar07Product::StpFixed, "dimensionless", vec![1.0])
             .with_title_override("STP (FIXED)");
         assert_eq!(field.title_override.as_deref(), Some("STP (FIXED)"));
+    }
+
+    #[test]
+    fn panel_field_keeps_artifact_slug_override() {
+        let field = Solar07PanelField::new(Solar07Product::Scp, "dimensionless", vec![1.0])
+            .with_artifact_slug("scp_mu_0_3km_0_6km_proxy");
+        assert_eq!(field.artifact_slug(), "scp_mu_0_3km_0_6km_proxy");
     }
 }

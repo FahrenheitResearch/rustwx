@@ -239,28 +239,28 @@ fn blocked_derived_product_spec(recipe: &BlockedDerivedRecipeInventoryEntry) -> 
 fn heavy_product_spec(product: HrrrBatchProduct) -> ProductSpec {
     let (title, maturity, flags, notes) = match product {
         HrrrBatchProduct::SevereProofPanel => (
-            "Severe Proof Panel",
+            "Severe Map Set",
             ProductMaturity::Proof,
             vec![
                 ProductSemanticFlag::ProofOriented,
                 ProductSemanticFlag::Proxy,
             ],
             vec![
-                "Proof-oriented bundled panel".to_string(),
-                "Generic gridded severe proof panel path for supported built-in models"
+                "Bundled severe map family".to_string(),
+                "Generic gridded severe map path for supported built-in models"
                     .to_string(),
                 "Keeps fixed-depth SCP proxy diagnostics until effective-layer SRH and EBWD are wired"
                     .to_string(),
             ],
         ),
         HrrrBatchProduct::Ecape8Panel => (
-            "ECAPE 8-Panel",
+            "ECAPE Map Set",
             ProductMaturity::Proof,
             vec![ProductSemanticFlag::ProofOriented],
             vec![
-                "Proof-oriented bundled panel".to_string(),
-                "Generic gridded ECAPE panel path for supported built-in models".to_string(),
-                "Contains experimental ECAPE SCP/EHI fields inside the panel set".to_string(),
+                "Bundled ECAPE map family".to_string(),
+                "Generic gridded ECAPE map path for supported built-in models".to_string(),
+                "Contains experimental ECAPE SCP/EHI fields inside the map set".to_string(),
             ],
         ),
     };
@@ -274,7 +274,7 @@ fn heavy_product_spec(product: HrrrBatchProduct) -> ProductSpec {
         product_metadata: Some(heavy_product_metadata(title, maturity, &flags, id)),
         maturity,
         flags: sorted_flags(&flags),
-        render_style: Some("solar07_panel_grid".to_string()),
+        render_style: Some("solar07_map_family".to_string()),
         aliases: Vec::new(),
         notes,
         blocked_reasons: Vec::new(),

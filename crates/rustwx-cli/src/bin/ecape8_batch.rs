@@ -19,7 +19,7 @@ use rustwx_products::shared_context::DomainSpec;
 #[derive(Debug, Parser)]
 #[command(
     name = "ecape8-batch",
-    about = "Generate a model-aware ECAPE 8-panel from one shared full-file thermodynamic load"
+    about = "Generate ECAPE map products from one shared cropped heavy thermodynamic load"
 )]
 struct Args {
     #[arg(long, default_value = "hrrr")]
@@ -44,6 +44,13 @@ struct Args {
     cache_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_cache: bool,
+    #[arg(
+        long,
+        alias = "allow-conus-heavy",
+        default_value_t = false,
+        help = "Allow very large heavy ECAPE domains instead of refusing the run"
+    )]
+    allow_large_heavy_domain: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -95,6 +102,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         use_cache: !args.no_cache,
         surface_product_override: args.surface_product.clone(),
         pressure_product_override: args.pressure_product.clone(),
+        allow_large_heavy_domain: args.allow_large_heavy_domain,
     };
 
     let report = run_ecape_batch(&request)?;
@@ -122,31 +130,43 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 report.domain.slug.clone(),
             )
             .with_input_fetches(report.input_fetches.clone())
-            .with_artifacts(vec![
-                PublishedArtifactRecord::planned(
-                    "ecape8_panel",
-                    relative_output_path(&args.out_dir, &report.output_path),
-                )
-                .with_state(ArtifactPublicationState::Complete)
-                .with_detail(format!("failure_count={}", report.failure_count))
-                .with_content_identity(report.output_identity.clone())
-                .with_input_fetch_keys(
-                    report
-                        .input_fetches
-                        .iter()
-                        .map(|fetch| fetch.fetch_key.clone())
-                        .collect(),
-                ),
-            ]);
+            .with_artifacts(build_artifacts(&args.out_dir, &report));
     let (canonical_manifest, attempt_manifest) =
         finalize_and_publish_run_manifest(&mut run_manifest, &args.out_dir, &stem)?;
 
-    println!("{}", report.output_path.display());
+    for output in &report.outputs {
+        println!("{}", output.output_path.display());
+    }
     println!("{}", manifest_path.display());
     println!("{}", timing_path.display());
     println!("{}", canonical_manifest.display());
     println!("{}", attempt_manifest.display());
     Ok(())
+}
+
+fn build_artifacts(
+    out_dir: &std::path::Path,
+    report: &rustwx_products::ecape::EcapeBatchReport,
+) -> Vec<PublishedArtifactRecord> {
+    let input_fetch_keys = report
+        .input_fetches
+        .iter()
+        .map(|fetch| fetch.fetch_key.clone())
+        .collect::<Vec<_>>();
+    report
+        .outputs
+        .iter()
+        .map(|output| {
+            PublishedArtifactRecord::planned(
+                &output.product,
+                relative_output_path(out_dir, &output.output_path),
+            )
+            .with_state(ArtifactPublicationState::Complete)
+            .with_detail(format!("failure_count={}", report.failure_count))
+            .with_content_identity(output.output_identity.clone())
+            .with_input_fetch_keys(input_fetch_keys.clone())
+        })
+        .collect()
 }
 
 fn relative_output_path(root: &std::path::Path, output_path: &std::path::Path) -> PathBuf {

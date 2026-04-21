@@ -19,7 +19,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Instant;
 
@@ -31,12 +31,12 @@ use region::RegionPreset;
 use rustwx_core::{ModelId, SourceId};
 use rustwx_models::model_summary;
 use rustwx_products::cache::ensure_dir;
-use rustwx_products::ecape::{run_ecape_batch, EcapeBatchRequest};
-use rustwx_products::hrrr::{run_hrrr_batch, HrrrBatchProduct, HrrrBatchRequest};
+use rustwx_products::ecape::{EcapeBatchRequest, run_ecape_batch};
+use rustwx_products::heavy::{HeavyPanelHourRequest, run_heavy_panel_hour};
 use rustwx_products::non_ecape::{
-    run_hrrr_non_ecape_hour, run_model_non_ecape_hour, HrrrNonEcapeHourRequest, NonEcapeHourRequest,
+    HrrrNonEcapeHourRequest, NonEcapeHourRequest, run_hrrr_non_ecape_hour, run_model_non_ecape_hour,
 };
-use rustwx_products::severe::{run_severe_batch, SevereBatchRequest};
+use rustwx_products::severe::{SevereBatchRequest, run_severe_batch};
 use rustwx_products::shared_context::DomainSpec;
 use rustwx_products::source::ProductSourceMode;
 use serde::Serialize;
@@ -434,7 +434,7 @@ fn run_forecast_job(job: ForecastJob, config: &ExecConfig) -> ForecastJobResult 
 /// for summary display; per-model filtering happens in
 /// `model_supported_recipe_lists`.
 fn all_supported_recipe_lists() -> (Vec<String>, Vec<String>) {
-    use rustwx_products::catalog::{build_supported_products_catalog, ProductCatalogStatus};
+    use rustwx_products::catalog::{ProductCatalogStatus, build_supported_products_catalog};
     let catalog = build_supported_products_catalog();
     let include = |status: ProductCatalogStatus| {
         matches!(
@@ -466,7 +466,7 @@ fn all_supported_recipe_lists() -> (Vec<String>, Vec<String>) {
 /// currently errors on the first unsupported slug, so per-model
 /// filtering keeps the benchmark honest.
 fn model_supported_recipe_lists(model: ModelId) -> (Vec<String>, Vec<String>) {
-    use rustwx_products::catalog::{build_supported_products_catalog, ProductTargetStatus};
+    use rustwx_products::catalog::{ProductTargetStatus, build_supported_products_catalog};
     let catalog = build_supported_products_catalog();
     let supported_for_model = |support: &[rustwx_products::catalog::ProductTargetSupport]| {
         support
@@ -781,17 +781,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let queue = Arc::clone(&queue);
             let config = Arc::clone(&config);
             let tx = tx.clone();
-            handles.push(thread::spawn(move || loop {
-                let job = {
-                    let mut queue = queue.lock().expect("forecast job queue poisoned");
-                    queue.pop_front()
-                };
-                let Some(job) = job else {
-                    break;
-                };
-                let result = run_forecast_job(job, &config);
-                if tx.send(result).is_err() {
-                    break;
+            handles.push(thread::spawn(move || {
+                loop {
+                    let job = {
+                        let mut queue = queue.lock().expect("forecast job queue poisoned");
+                        queue.pop_front()
+                    };
+                    let Some(job) = job else {
+                        break;
+                    };
+                    let result = run_forecast_job(job, &config);
+                    if tx.send(result).is_err() {
+                        break;
+                    }
                 }
             }));
         }
@@ -968,14 +970,19 @@ fn run_severe_lane(
         use_cache: !config.no_cache,
         surface_product_override: None,
         pressure_product_override: None,
+        allow_large_heavy_domain: false,
     };
     let slug = Lane::Severe.slug();
     match run_severe_batch(&request) {
         Ok(report) => {
-            let png = report.output_path.to_string_lossy().to_string();
-            println!("[ok  ] {model} f{fh:03} {slug}: {png}");
+            let outputs: Vec<String> = report
+                .outputs
+                .iter()
+                .map(|output| output.output_path.to_string_lossy().to_string())
+                .collect();
+            println!("[ok  ] {model} f{fh:03} {slug}: {} png", outputs.len());
             counts.succeeded += 1;
-            counts.outputs += 1;
+            counts.outputs += outputs.len();
             lane_outcome_from_pinned(
                 pinned,
                 model,
@@ -985,7 +992,7 @@ fn run_severe_lane(
                 true,
                 start.elapsed().as_millis(),
                 None,
-                vec![png],
+                outputs,
                 Vec::new(),
             )
         }
@@ -1029,14 +1036,19 @@ fn run_ecape_lane(
         use_cache: !config.no_cache,
         surface_product_override: None,
         pressure_product_override: None,
+        allow_large_heavy_domain: false,
     };
     let slug = Lane::Ecape.slug();
     match run_ecape_batch(&request) {
         Ok(report) => {
-            let png = report.output_path.to_string_lossy().to_string();
-            println!("[ok  ] {model} f{fh:03} {slug}: {png}");
+            let outputs: Vec<String> = report
+                .outputs
+                .iter()
+                .map(|output| output.output_path.to_string_lossy().to_string())
+                .collect();
+            println!("[ok  ] {model} f{fh:03} {slug}: {} png", outputs.len());
             counts.succeeded += 1;
-            counts.outputs += 1;
+            counts.outputs += outputs.len();
             lane_outcome_from_pinned(
                 pinned,
                 model,
@@ -1046,7 +1058,7 @@ fn run_ecape_lane(
                 true,
                 start.elapsed().as_millis(),
                 None,
-                vec![png],
+                outputs,
                 Vec::new(),
             )
         }
@@ -1293,6 +1305,7 @@ fn run_derived_lane(
         surface_product_override: None,
         pressure_product_override: None,
         source_mode: config.source_mode,
+        allow_large_heavy_domain: false,
         output_width: config.output_width,
         output_height: config.output_height,
         png_compression: rustwx_render::PngCompressionMode::Default,
@@ -1361,11 +1374,10 @@ fn run_derived_lane(
     }
 }
 
-/// HRRR-specific unified runner that reuses the existing optimized
-/// wrappers:
-///   * `run_hrrr_batch` shares one surface+pressure bundle load + one
-///     `prepare_heavy_volume` pass across the severe panel and the
-///     ECAPE8 panel.
+/// HRRR-specific unified runner that reuses the optimized wrappers:
+///   * `run_heavy_panel_hour` shares one surface+pressure bundle load +
+///     one `prepare_heavy_volume` pass across the severe and ECAPE map
+///     families.
 ///   * `run_hrrr_non_ecape_hour` shares one bundle load across direct,
 ///     derived, and windowed (windowed is skipped at f000 because the
 ///     accumulation windows aren't populated yet).
@@ -1386,17 +1398,11 @@ fn run_hrrr_unified(
 ) -> Vec<LaneOutcome> {
     let mut outcomes = Vec::new();
 
-    // severe + ECAPE via run_hrrr_batch (shared bundle + shared heavy volume)
-    let mut products = Vec::<HrrrBatchProduct>::new();
-    if !config.skip_severe {
-        products.push(HrrrBatchProduct::SevereProofPanel);
-    }
-    if !config.skip_ecape {
-        products.push(HrrrBatchProduct::Ecape8Panel);
-    }
-    if !products.is_empty() {
+    // severe + ECAPE via one shared heavy-hour pass
+    if !config.skip_severe || !config.skip_ecape {
         let start = Instant::now();
-        let request = HrrrBatchRequest {
+        let request = HeavyPanelHourRequest {
+            model: ModelId::Hrrr,
             date_yyyymmdd: pinned.date_yyyymmdd.clone(),
             cycle_override_utc: pinned.cycle_override_utc,
             forecast_hour: fh,
@@ -1405,22 +1411,38 @@ fn run_hrrr_unified(
             out_dir: config.out_dir.clone(),
             cache_root: config.cache_dir.clone(),
             use_cache: !config.no_cache,
-            products,
+            surface_product_override: None,
+            pressure_product_override: None,
+            allow_large_heavy_domain: false,
         };
         let slug = if !config.skip_severe && !config.skip_ecape {
-            "hrrr_batch_severe_ecape"
+            "hrrr_heavy_hour"
         } else if !config.skip_severe {
-            "hrrr_batch_severe"
+            "hrrr_heavy_hour_severe"
         } else {
-            "hrrr_batch_ecape"
+            "hrrr_heavy_hour_ecape"
         };
-        match run_hrrr_batch(&request) {
+        match run_heavy_panel_hour(&request) {
             Ok(report) => {
-                let outputs: Vec<String> = report
-                    .products
-                    .iter()
-                    .map(|p| p.output_path.to_string_lossy().to_string())
-                    .collect();
+                let mut outputs = Vec::new();
+                if !config.skip_severe {
+                    outputs.extend(
+                        report
+                            .severe
+                            .outputs
+                            .iter()
+                            .map(|p| p.output_path.to_string_lossy().to_string()),
+                    );
+                }
+                if !config.skip_ecape {
+                    outputs.extend(
+                        report
+                            .ecape
+                            .outputs
+                            .iter()
+                            .map(|p| p.output_path.to_string_lossy().to_string()),
+                    );
+                }
                 let dur = start.elapsed().as_millis();
                 println!(
                     "[ok  ] hrrr f{fh:03} {slug}: {} png in {:.2}s",

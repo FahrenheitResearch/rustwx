@@ -1,7 +1,10 @@
+use rayon::prelude::*;
 use rustwx_core::GridShape;
 
-use crate::ecape::{EcapeVolumeInputs, SurfaceInputs, VolumeShape, validate_inputs, validate_len};
+use crate::ecape::{EcapeVolumeInputs, SurfaceInputs, VolumeShape, validate_len};
 use crate::error::CalcError;
+
+const ZEROCNK: f64 = 273.15;
 
 #[derive(Debug, Clone, Copy)]
 pub struct WindGridInputs<'a> {
@@ -123,21 +126,25 @@ pub fn compute_cape_cin(
     parcel_type: &str,
     top_m: Option<f64>,
 ) -> Result<CapeCinOutputs, CalcError> {
-    validate_inputs(grid, volume, surface)?;
-    let (cape, cin, lcl, lfc) = metrust::calc::severe::grid::compute_cape_cin(
-        volume.pressure_pa,
-        volume.temperature_c,
-        volume.qvapor_kgkg,
-        volume.height_agl_m,
-        surface.psfc_pa,
-        surface.t2_k,
-        surface.q2_kgkg,
-        grid.nx,
-        grid.ny,
-        volume.nz,
-        parcel_type,
-        top_m,
-    );
+    validate_severe_inputs(grid, volume, surface)?;
+    let (cape, cin, lcl, lfc) = if pressure_is_levels(volume) {
+        compute_cape_cin_with_pressure_levels(grid, volume, surface, parcel_type, top_m)
+    } else {
+        metrust::calc::severe::grid::compute_cape_cin(
+            volume.pressure_pa,
+            volume.temperature_c,
+            volume.qvapor_kgkg,
+            volume.height_agl_m,
+            surface.psfc_pa,
+            surface.t2_k,
+            surface.q2_kgkg,
+            grid.nx,
+            grid.ny,
+            volume.nz,
+            parcel_type,
+            top_m,
+        )
+    };
     Ok(CapeCinOutputs {
         cape_jkg: cape,
         cin_jkg: cin,
@@ -418,7 +425,7 @@ pub fn compute_supported_severe_fields(
     volume: EcapeVolumeInputs<'_>,
     surface: SurfaceInputs<'_>,
 ) -> Result<SupportedSevereFields, CalcError> {
-    validate_inputs(grid, volume, surface)?;
+    validate_severe_inputs(grid, volume, surface)?;
 
     let sb = compute_cape_cin(grid, volume, surface, "sb", None)?;
     let ml = compute_cape_cin(grid, volume, surface, "ml", None)?;
@@ -463,6 +470,114 @@ pub fn compute_supported_severe_fields(
 pub use metrust::calc::severe::critical_angle;
 pub use metrust::calc::severe::significant_tornado_parameter;
 pub use metrust::calc::severe::supercell_composite_parameter;
+
+fn validate_severe_inputs(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+) -> Result<(), CalcError> {
+    let n2d = grid.len();
+    let n3d = n2d * volume.nz;
+    if pressure_is_levels(volume) {
+        validate_len("pressure_levels_pa", volume.pressure_pa.len(), volume.nz)?;
+    } else {
+        validate_len("pressure_pa", volume.pressure_pa.len(), n3d)?;
+    }
+    validate_len("temperature_c", volume.temperature_c.len(), n3d)?;
+    validate_len("qvapor_kgkg", volume.qvapor_kgkg.len(), n3d)?;
+    validate_len("height_agl_m", volume.height_agl_m.len(), n3d)?;
+    validate_len("u_ms", volume.u_ms.len(), n3d)?;
+    validate_len("v_ms", volume.v_ms.len(), n3d)?;
+    validate_len("psfc_pa", surface.psfc_pa.len(), n2d)?;
+    validate_len("t2_k", surface.t2_k.len(), n2d)?;
+    validate_len("q2_kgkg", surface.q2_kgkg.len(), n2d)?;
+    validate_len("u10_ms", surface.u10_ms.len(), n2d)?;
+    validate_len("v10_ms", surface.v10_ms.len(), n2d)?;
+    Ok(())
+}
+
+fn pressure_is_levels(volume: EcapeVolumeInputs<'_>) -> bool {
+    volume.pressure_pa.len() == volume.nz
+}
+
+fn extract_column(data: &[f64], nz: usize, n2d: usize, ij: usize) -> Vec<f64> {
+    (0..nz).map(|k| data[k * n2d + ij]).collect()
+}
+
+fn dewpoint_from_q(q_kgkg: f64, pressure_hpa: f64) -> f64 {
+    let q = q_kgkg.max(1.0e-10);
+    let e_hpa = (q * pressure_hpa / (0.622 + q)).max(1.0e-10);
+    let ln_e = (e_hpa / 6.112).ln();
+    (243.5 * ln_e) / (17.67 - ln_e)
+}
+
+fn compute_cape_cin_with_pressure_levels(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+    parcel_type: &str,
+    top_m: Option<f64>,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+    let n2d = grid.len();
+    let pressure_levels_hpa = volume
+        .pressure_pa
+        .iter()
+        .map(|value| *value / 100.0)
+        .collect::<Vec<_>>();
+    let pressure_needs_reverse = pressure_levels_hpa.len() > 1
+        && pressure_levels_hpa[0] < pressure_levels_hpa[pressure_levels_hpa.len() - 1];
+    let parcel_type = parcel_type.to_string();
+    let results = (0..n2d)
+        .into_par_iter()
+        .map(|ij| {
+            let mut pressure_hpa = pressure_levels_hpa.clone();
+            let mut temperature_c = extract_column(volume.temperature_c, volume.nz, n2d, ij);
+            let mut height_agl_m = extract_column(volume.height_agl_m, volume.nz, n2d, ij);
+            let qvapor_kgkg = extract_column(volume.qvapor_kgkg, volume.nz, n2d, ij);
+            let mut dewpoint_c = pressure_hpa
+                .iter()
+                .enumerate()
+                .map(|(level, &pressure_hpa)| dewpoint_from_q(qvapor_kgkg[level], pressure_hpa))
+                .collect::<Vec<_>>();
+
+            if pressure_needs_reverse {
+                pressure_hpa.reverse();
+                temperature_c.reverse();
+                dewpoint_c.reverse();
+                height_agl_m.reverse();
+            }
+
+            let psfc_hpa = surface.psfc_pa[ij] / 100.0;
+            let t2m_c = surface.t2_k[ij] - ZEROCNK;
+            let td2m_c = dewpoint_from_q(surface.q2_kgkg[ij], psfc_hpa);
+            metrust::calc::thermo::cape_cin_core(
+                &pressure_hpa,
+                &temperature_c,
+                &dewpoint_c,
+                &height_agl_m,
+                psfc_hpa,
+                t2m_c,
+                td2m_c,
+                &parcel_type,
+                100.0,
+                300.0,
+                top_m,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let mut cape = Vec::with_capacity(n2d);
+    let mut cin = Vec::with_capacity(n2d);
+    let mut lcl = Vec::with_capacity(n2d);
+    let mut lfc = Vec::with_capacity(n2d);
+    for (cape_value, cin_value, lcl_value, lfc_value) in results {
+        cape.push(cape_value);
+        cin.push(cin_value);
+        lcl.push(lcl_value);
+        lfc.push(lfc_value);
+    }
+    (cape, cin, lcl, lfc)
+}
 
 fn fixed_stp_value(sbcape_jkg: f64, lcl_m: f64, srh_1km_m2s2: f64, shear_6km_ms: f64) -> f64 {
     let cape_term = (sbcape_jkg / 1500.0).max(0.0);
@@ -694,6 +809,13 @@ mod tests {
         );
     }
 
+    fn assert_vec_close(left: &[f64], right: &[f64]) {
+        assert_eq!(left.len(), right.len(), "vector lengths differed");
+        for (lhs, rhs) in left.iter().zip(right.iter()) {
+            assert_close(*lhs, *rhs);
+        }
+    }
+
     #[test]
     fn fixed_stp_matches_operational_lcl_and_shear_gates() {
         assert_close(fixed_stp_value(1500.0, 500.0, 150.0, 20.0), 1.0);
@@ -829,6 +951,88 @@ mod tests {
         assert_eq!(supported.stp_fixed, stp_fixed);
         assert_eq!(supported.scp_mu_03km_06km_proxy, proxy.scp);
         assert_eq!(supported.ehi_sb_01km_proxy, proxy.ehi);
+    }
+
+    #[test]
+    fn cape_cin_levels_match_broadcast_pressure_path() {
+        let grid = GridShape::new(2, 1).unwrap();
+        let pressure_levels_pa = [95_000.0, 85_000.0, 70_000.0, 50_000.0];
+        let volume_levels = EcapeVolumeInputs {
+            pressure_pa: &pressure_levels_pa,
+            temperature_c: &[26.0, 24.0, 18.0, 16.0, 8.0, 6.0, -10.0, -12.0],
+            qvapor_kgkg: &[0.016, 0.015, 0.010, 0.009, 0.004, 0.0038, 0.0012, 0.0011],
+            height_agl_m: &[150.0, 200.0, 1400.0, 1500.0, 3000.0, 3200.0, 5600.0, 5800.0],
+            u_ms: &[6.0, 8.0, 12.0, 14.0, 20.0, 22.0, 28.0, 30.0],
+            v_ms: &[2.0, 3.0, 8.0, 9.0, 13.0, 14.0, 20.0, 21.0],
+            nz: 4,
+        };
+        let pressure_broadcast = [
+            95_000.0, 95_000.0, 85_000.0, 85_000.0, 70_000.0, 70_000.0, 50_000.0, 50_000.0,
+        ];
+        let volume_broadcast = EcapeVolumeInputs {
+            pressure_pa: &pressure_broadcast,
+            ..volume_levels
+        };
+        let surface = SurfaceInputs {
+            psfc_pa: &[100_000.0, 99_500.0],
+            t2_k: &[303.15, 301.15],
+            q2_kgkg: &[0.018, 0.017],
+            u10_ms: &[5.0, 6.0],
+            v10_ms: &[1.5, 2.0],
+        };
+
+        let levels = compute_cape_cin(grid, volume_levels, surface, "sb", None).unwrap();
+        let broadcast = compute_cape_cin(grid, volume_broadcast, surface, "sb", None).unwrap();
+
+        assert_vec_close(&levels.cape_jkg, &broadcast.cape_jkg);
+        assert_vec_close(&levels.cin_jkg, &broadcast.cin_jkg);
+        assert_vec_close(&levels.lcl_m, &broadcast.lcl_m);
+        assert_vec_close(&levels.lfc_m, &broadcast.lfc_m);
+    }
+
+    #[test]
+    fn supported_severe_fields_levels_match_broadcast_pressure_path() {
+        let grid = GridShape::new(2, 1).unwrap();
+        let pressure_levels_pa = [95_000.0, 85_000.0, 70_000.0, 50_000.0];
+        let volume_levels = EcapeVolumeInputs {
+            pressure_pa: &pressure_levels_pa,
+            temperature_c: &[26.0, 24.0, 18.0, 16.0, 8.0, 6.0, -10.0, -12.0],
+            qvapor_kgkg: &[0.016, 0.015, 0.010, 0.009, 0.004, 0.0038, 0.0012, 0.0011],
+            height_agl_m: &[150.0, 200.0, 1400.0, 1500.0, 3000.0, 3200.0, 5600.0, 5800.0],
+            u_ms: &[6.0, 8.0, 12.0, 14.0, 20.0, 22.0, 28.0, 30.0],
+            v_ms: &[2.0, 3.0, 8.0, 9.0, 13.0, 14.0, 20.0, 21.0],
+            nz: 4,
+        };
+        let pressure_broadcast = [
+            95_000.0, 95_000.0, 85_000.0, 85_000.0, 70_000.0, 70_000.0, 50_000.0, 50_000.0,
+        ];
+        let volume_broadcast = EcapeVolumeInputs {
+            pressure_pa: &pressure_broadcast,
+            ..volume_levels
+        };
+        let surface = SurfaceInputs {
+            psfc_pa: &[100_000.0, 99_500.0],
+            t2_k: &[303.15, 301.15],
+            q2_kgkg: &[0.018, 0.017],
+            u10_ms: &[5.0, 6.0],
+            v10_ms: &[1.5, 2.0],
+        };
+
+        let levels = compute_supported_severe_fields(grid, volume_levels, surface).unwrap();
+        let broadcast = compute_supported_severe_fields(grid, volume_broadcast, surface).unwrap();
+
+        assert_vec_close(&levels.sbcape_jkg, &broadcast.sbcape_jkg);
+        assert_vec_close(&levels.mlcin_jkg, &broadcast.mlcin_jkg);
+        assert_vec_close(&levels.mucape_jkg, &broadcast.mucape_jkg);
+        assert_vec_close(&levels.srh_01km_m2s2, &broadcast.srh_01km_m2s2);
+        assert_vec_close(&levels.srh_03km_m2s2, &broadcast.srh_03km_m2s2);
+        assert_vec_close(&levels.shear_06km_ms, &broadcast.shear_06km_ms);
+        assert_vec_close(&levels.stp_fixed, &broadcast.stp_fixed);
+        assert_vec_close(
+            &levels.scp_mu_03km_06km_proxy,
+            &broadcast.scp_mu_03km_06km_proxy,
+        );
+        assert_vec_close(&levels.ehi_sb_01km_proxy, &broadcast.ehi_sb_01km_proxy);
     }
 
     #[test]

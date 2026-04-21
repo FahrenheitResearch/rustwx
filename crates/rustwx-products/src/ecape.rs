@@ -1,18 +1,18 @@
 use crate::direct::build_projected_map;
 use crate::gridded::{
-    PressureFields, SharedTiming, SurfaceFields, prepare_heavy_volume, resolve_thermo_pair_run,
+    PressureFields, SharedTiming, SurfaceFields, prepare_heavy_volume, prepare_heavy_volume_timed,
+    resolve_thermo_pair_run,
 };
-use crate::publication::{
-    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
+use crate::heavy::{
+    HeavyComputeTiming, HeavyRenderedArtifact, crop_and_guard_heavy_domain,
+    heavy_map_target_aspect_ratio, render_heavy_map_group,
 };
+use crate::publication::PublishedFetchIdentity;
 use crate::runtime::{BundleLoaderConfig, load_execution_plan};
 use crate::severe::{
     build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
 };
-use crate::shared_context::{
-    DomainSpec, Solar07PanelField, Solar07PanelHeader, Solar07PanelLayout,
-    render_two_by_four_solar07_panel,
-};
+use crate::shared_context::{DomainSpec, Solar07PanelField};
 use rustwx_calc::{
     EcapeTripletOptions, EcapeVolumeInputs, ScpEhiInputs, SurfaceInputs, WindGridInputs,
     compute_ecape_triplet_with_failure_mask_from_parts, compute_scp_ehi,
@@ -38,6 +38,7 @@ pub struct EcapeBatchRequest {
     pub use_cache: bool,
     pub surface_product_override: Option<String>,
     pub pressure_product_override: Option<String>,
+    pub allow_large_heavy_domain: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,10 +49,10 @@ pub struct EcapeBatchReport {
     pub forecast_hour: u16,
     pub source: SourceId,
     pub domain: DomainSpec,
-    pub output_path: PathBuf,
-    pub output_identity: ArtifactContentIdentity,
+    pub outputs: Vec<HeavyRenderedArtifact>,
     pub input_fetches: Vec<PublishedFetchIdentity>,
     pub shared_timing: SharedTiming,
+    pub heavy_timing: HeavyComputeTiming,
     pub project_ms: u128,
     pub compute_ms: u128,
     pub render_ms: u128,
@@ -105,31 +106,29 @@ pub fn run_ecape_batch(
         &owned_full_grid.lat_deg,
         &owned_full_grid.lon_deg,
         request.domain.bounds,
-        Solar07PanelLayout::default().target_aspect_ratio(),
+        heavy_map_target_aspect_ratio(),
     )?;
 
     // Same rationale as severe_batch: crop before compute so ECAPE's
     // per-cell parcel ascent runs on ~300×300 midwest cells instead of
     // ~1800×1000 CONUS.
-    let cropped = crate::gridded::crop_heavy_domain_for_projected_extent(
+    let heavy_domain = crop_and_guard_heavy_domain(
         full_surface,
         full_pressure,
-        &full_projected.projected_x,
-        &full_projected.projected_y,
-        &full_projected.extent,
+        &full_projected,
+        &request.domain,
         2,
+        request.allow_large_heavy_domain,
     )?;
-    let (surface, pressure, grid) = match cropped.as_ref() {
-        Some(cropped) => (&cropped.surface, &cropped.pressure, cropped.grid.clone()),
-        None => (full_surface, full_pressure, owned_full_grid),
-    };
+    let (surface, pressure, grid) =
+        heavy_domain.bind(full_surface, full_pressure, &owned_full_grid);
 
-    let projected = if cropped.is_some() {
+    let projected = if heavy_domain.cropped.is_some() {
         build_projected_map(
             &grid.lat_deg,
             &grid.lon_deg,
             request.domain.bounds,
-            Solar07PanelLayout::default().target_aspect_ratio(),
+            heavy_map_target_aspect_ratio(),
         )?
     } else {
         full_projected
@@ -137,31 +136,53 @@ pub fn run_ecape_batch(
     let project_ms = project_start.elapsed().as_millis();
 
     let compute_start = Instant::now();
-    let (fields, failure_count) = compute_ecape8_panel_fields(surface, pressure)?;
+    let (prepared, prep_timing) = prepare_heavy_volume_timed(surface, pressure, false)?;
+    let ecape_triplet_start = Instant::now();
+    let (fields, failure_count) =
+        compute_ecape8_panel_fields_with_prepared_volume(surface, pressure, &prepared)?;
+    let ecape_triplet_ms = ecape_triplet_start.elapsed().as_millis();
     let compute_ms = compute_start.elapsed().as_millis();
 
     let model_slug = request.model.as_str().replace('-', "_");
-    let output_path = request.out_dir.join(format!(
-        "rustwx_{}_{}_{}z_f{:03}_{}_ecape8_panel.png",
-        model_slug,
-        request.date_yyyymmdd,
+    let subtitle_left = format!(
+        "{} {}Z F{:03}  {}",
+        request.date_yyyymmdd, loaded.latest.cycle.hour_utc, request.forecast_hour, request.model
+    );
+    let source_label = format!("source: {}", loaded.latest.source.as_str());
+    let (outputs, render_ms) = render_heavy_map_group(
+        &request.out_dir,
+        &model_slug,
+        &request.date_yyyymmdd,
         loaded.latest.cycle.hour_utc,
         request.forecast_hour,
-        request.domain.slug
-    ));
-    let render_start = Instant::now();
-    render_two_by_four_solar07_panel(
-        &output_path,
+        &request.domain.slug,
+        "ecape",
         &grid,
         &projected,
         &fields,
-        &Solar07PanelHeader::new(format!("{} ECAPE 8-Panel", request.model)),
-        Solar07PanelLayout::default(),
+        &subtitle_left,
+        |field| match field.artifact_slug() {
+            "ecape_scp" | "ecape_ehi" => Some(format!("{source_label} | experimental")),
+            _ => Some(source_label.clone()),
+        },
     )?;
-    let render_ms = render_start.elapsed().as_millis();
-    let output_identity = artifact_identity_from_path(&output_path)?;
     let shared_timing = build_shared_timing_for_pair(&loaded, surface_planned, pressure_planned)?;
     let input_fetches = build_planned_input_fetches(&loaded);
+    let total_ms = total_start.elapsed().as_millis();
+    let heavy_timing = HeavyComputeTiming {
+        full_cells: heavy_domain.stats.full_cells,
+        cropped_cells: heavy_domain.stats.cropped_cells,
+        pressure_levels: heavy_domain.stats.pressure_levels,
+        crop_kind: heavy_domain.stats.crop_kind,
+        crop_ms: heavy_domain.crop_ms,
+        prepare_height_agl_ms: prep_timing.prepare_height_agl_ms,
+        broadcast_pressure_ms: prep_timing.broadcast_pressure_ms,
+        pressure_3d_bytes: prep_timing.pressure_3d_bytes,
+        ecape_triplet_ms,
+        severe_fields_ms: 0,
+        render_ms,
+        total_ms,
+    };
 
     Ok(EcapeBatchReport {
         model: request.model,
@@ -170,14 +191,14 @@ pub fn run_ecape_batch(
         forecast_hour: request.forecast_hour,
         source: loaded.latest.source,
         domain: request.domain.clone(),
-        output_path,
-        output_identity,
+        outputs,
         input_fetches,
         shared_timing,
+        heavy_timing,
         project_ms,
         compute_ms,
         render_ms,
-        total_ms: total_start.elapsed().as_millis(),
+        total_ms,
         failure_count,
     })
 }

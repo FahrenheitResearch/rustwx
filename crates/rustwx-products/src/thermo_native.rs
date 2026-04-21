@@ -787,7 +787,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    fn sample_file(path: &[&str]) -> Vec<u8> {
+    fn sample_file(path: &[&str]) -> Option<Vec<u8>> {
         let mut full = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         full.pop();
         full.pop();
@@ -795,12 +795,19 @@ mod tests {
         for part in path {
             full.push(part);
         }
-        fs::read(full).expect("sample grib should exist")
+        if !full.exists() {
+            eprintln!(
+                "skipping thermo_native sample test; missing fixture {}",
+                full.display()
+            );
+            return None;
+        }
+        Some(fs::read(full).expect("sample grib should exist"))
     }
 
     #[test]
     fn hrrr_surface_cape_and_cin_extract_from_sample() {
-        let bytes = sample_file(&[
+        let Some(bytes) = sample_file(&[
             "model_samples_20260416",
             "hrrr",
             "derived",
@@ -813,7 +820,9 @@ mod tests {
             "nomads",
             "full",
             "fetch.grib2",
-        ]);
+        ]) else {
+            return;
+        };
         let sbcape = extract_native_thermo_field(ModelId::Hrrr, NativeThermoRecipe::Sbcape, &bytes)
             .unwrap()
             .unwrap();
@@ -836,7 +845,7 @@ mod tests {
 
     #[test]
     fn gfs_surface_cape_cin_and_lifted_index_extract_from_sample() {
-        let bytes = sample_file(&[
+        let Some(bytes) = sample_file(&[
             "model_samples_20260416",
             "gfs",
             "derived",
@@ -849,7 +858,9 @@ mod tests {
             "nomads",
             "full",
             "fetch.grib2",
-        ]);
+        ]) else {
+            return;
+        };
         let sbcape = extract_native_thermo_field(ModelId::Gfs, NativeThermoRecipe::Sbcape, &bytes)
             .unwrap()
             .unwrap();
@@ -868,7 +879,7 @@ mod tests {
 
     #[test]
     fn ecmwf_mucape_extracts_from_sample() {
-        let bytes = sample_file(&[
+        let Some(bytes) = sample_file(&[
             "model_samples_20260416",
             "ecmwf_open_data",
             "derived",
@@ -881,7 +892,9 @@ mod tests {
             "ecmwf",
             "full",
             "fetch.grib2",
-        ]);
+        ]) else {
+            return;
+        };
         let mucape =
             extract_native_thermo_field(ModelId::EcmwfOpenData, NativeThermoRecipe::Mucape, &bytes)
                 .unwrap()

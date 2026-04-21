@@ -15,17 +15,19 @@ use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::derived::{
     DerivedBatchRequest, run_derived_batch, supported_derived_recipe_slugs,
 };
-use rustwx_products::direct::{DirectBatchRequest, run_direct_batch, supported_direct_recipe_slugs};
+use rustwx_products::direct::{
+    DirectBatchRequest, run_direct_batch, supported_direct_recipe_slugs,
+};
 use rustwx_products::ecape::{EcapeBatchRequest, run_ecape_batch};
-use rustwx_products::hrrr::{HrrrBatchProduct, HrrrBatchRequest, run_hrrr_batch};
+use rustwx_products::heavy::{HeavyPanelHourRequest, run_heavy_panel_hour};
 use rustwx_products::non_ecape::{HrrrNonEcapeHourRequest, run_hrrr_non_ecape_hour};
 use rustwx_products::publication::{
     ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
     finalize_and_publish_run_manifest, publish_failure_manifest,
 };
+use rustwx_products::severe::{SevereBatchRequest, run_severe_batch};
 use rustwx_products::shared_context::DomainSpec;
 use rustwx_products::source::ProductSourceMode;
-use rustwx_products::severe::{SevereBatchRequest, run_severe_batch};
 use rustwx_render::PngCompressionMode;
 use serde::{Deserialize, Serialize};
 
@@ -35,7 +37,11 @@ use serde::{Deserialize, Serialize};
     about = "Persistent-ish production scheduler skeleton for rustwx operational lanes"
 )]
 struct Args {
-    #[arg(long, value_delimiter = ',', default_value = "hrrr,gfs,ecmwf-open-data,rrfs-a")]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "hrrr,gfs,ecmwf-open-data,rrfs-a"
+    )]
     models: Vec<ModelId>,
     #[arg(long, default_value = "0-6")]
     hours: String,
@@ -446,7 +452,9 @@ fn run(args: &Args, date_yyyymmdd: &str) -> Result<(), Box<dyn std::error::Error
 
     let runner_label = format!("production_runner_{}", utc_timestamp().replace(':', "-"));
     let state_path = config.out_dir.join("production_runner_state.json");
-    let iteration_report_path = config.out_dir.join("production_runner_iteration_latest.json");
+    let iteration_report_path = config
+        .out_dir
+        .join("production_runner_iteration_latest.json");
     let mut state = load_or_initialize_state(&state_path, &runner_label);
 
     let mut iteration = state.iteration;
@@ -460,7 +468,14 @@ fn run(args: &Args, date_yyyymmdd: &str) -> Result<(), Box<dyn std::error::Error
             }
         }
         iteration += 1;
-        let report = run_iteration(iteration, &config, &args.models, &args.regions, &hours, &mut state)?;
+        let report = run_iteration(
+            iteration,
+            &config,
+            &args.models,
+            &args.regions,
+            &hours,
+            &mut state,
+        )?;
         atomic_write_json(&iteration_report_path, &report)?;
         persist_state(&state_path, &mut state, iteration, &report.events)?;
         publish_iteration_manifest(
@@ -714,16 +729,36 @@ fn build_jobs(
                 }
 
                 if !config.skip_severe {
-                    jobs.push(simple_job(model, &region_slug, forecast_hour, ProductionLane::Severe));
+                    jobs.push(simple_job(
+                        model,
+                        &region_slug,
+                        forecast_hour,
+                        ProductionLane::Severe,
+                    ));
                 }
                 if !config.skip_ecape {
-                    jobs.push(simple_job(model, &region_slug, forecast_hour, ProductionLane::Ecape));
+                    jobs.push(simple_job(
+                        model,
+                        &region_slug,
+                        forecast_hour,
+                        ProductionLane::Ecape,
+                    ));
                 }
                 if !config.skip_direct {
-                    jobs.push(simple_job(model, &region_slug, forecast_hour, ProductionLane::Direct));
+                    jobs.push(simple_job(
+                        model,
+                        &region_slug,
+                        forecast_hour,
+                        ProductionLane::Direct,
+                    ));
                 }
                 if !config.skip_derived {
-                    jobs.push(simple_job(model, &region_slug, forecast_hour, ProductionLane::Derived));
+                    jobs.push(simple_job(
+                        model,
+                        &region_slug,
+                        forecast_hour,
+                        ProductionLane::Derived,
+                    ));
                 }
             }
         }
@@ -883,14 +918,7 @@ fn execute_hrrr_heavy(
     context: &JobExecutionContext,
     config: &RunnerConfig,
 ) -> JobExecutionResult {
-    let mut products = Vec::new();
-    if !config.skip_severe {
-        products.push(HrrrBatchProduct::SevereProofPanel);
-    }
-    if !config.skip_ecape {
-        products.push(HrrrBatchProduct::Ecape8Panel);
-    }
-    if products.is_empty() {
+    if config.skip_severe && config.skip_ecape {
         return JobExecutionResult {
             lifecycle: JobLifecycleState::SkippedFresh,
             outputs: Vec::new(),
@@ -898,7 +926,8 @@ fn execute_hrrr_heavy(
         };
     }
 
-    let request = HrrrBatchRequest {
+    let request = HeavyPanelHourRequest {
+        model: ModelId::Hrrr,
         date_yyyymmdd: context.latest.cycle.date_yyyymmdd.clone(),
         cycle_override_utc: Some(context.latest.cycle.hour_utc),
         forecast_hour: job.key.forecast_hour,
@@ -907,17 +936,45 @@ fn execute_hrrr_heavy(
         out_dir: config.out_dir.join(&job.key.region_slug),
         cache_root: config.cache_dir.clone(),
         use_cache: config.use_cache,
-        products,
+        surface_product_override: None,
+        pressure_product_override: None,
+        allow_large_heavy_domain: false,
     };
-    match run_hrrr_batch(&request) {
+    match run_heavy_panel_hour(&request) {
         Ok(report) => JobExecutionResult {
             lifecycle: JobLifecycleState::Succeeded,
-            outputs: report
-                .products
-                .iter()
-                .map(|item| item.output_path.to_string_lossy().to_string())
-                .collect(),
-            detail: Some(format!("{} heavy product(s)", report.products.len())),
+            outputs: {
+                let mut outputs = Vec::new();
+                if !config.skip_severe {
+                    outputs.extend(
+                        report
+                            .severe
+                            .outputs
+                            .iter()
+                            .map(|item| item.output_path.to_string_lossy().to_string()),
+                    );
+                }
+                if !config.skip_ecape {
+                    outputs.extend(
+                        report
+                            .ecape
+                            .outputs
+                            .iter()
+                            .map(|item| item.output_path.to_string_lossy().to_string()),
+                    );
+                }
+                outputs
+            },
+            detail: Some(format!(
+                "{} heavy map(s)",
+                if config.skip_severe {
+                    report.ecape.outputs.len()
+                } else if config.skip_ecape {
+                    report.severe.outputs.len()
+                } else {
+                    report.severe.outputs.len() + report.ecape.outputs.len()
+                }
+            )),
         },
         Err(err) => JobExecutionResult {
             lifecycle: JobLifecycleState::Failed,
@@ -1015,12 +1072,17 @@ fn execute_severe(
         use_cache: config.use_cache,
         surface_product_override: None,
         pressure_product_override: None,
+        allow_large_heavy_domain: false,
     };
     match run_severe_batch(&request) {
         Ok(report) => JobExecutionResult {
             lifecycle: JobLifecycleState::Succeeded,
-            outputs: vec![report.output_path.to_string_lossy().to_string()],
-            detail: Some("severe panel complete".to_string()),
+            outputs: report
+                .outputs
+                .iter()
+                .map(|output| output.output_path.to_string_lossy().to_string())
+                .collect(),
+            detail: Some(format!("{} severe map(s)", report.outputs.len())),
         },
         Err(err) => JobExecutionResult {
             lifecycle: JobLifecycleState::Failed,
@@ -1047,12 +1109,17 @@ fn execute_ecape(
         use_cache: config.use_cache,
         surface_product_override: None,
         pressure_product_override: None,
+        allow_large_heavy_domain: false,
     };
     match run_ecape_batch(&request) {
         Ok(report) => JobExecutionResult {
             lifecycle: JobLifecycleState::Succeeded,
-            outputs: vec![report.output_path.to_string_lossy().to_string()],
-            detail: Some("ecape panel complete".to_string()),
+            outputs: report
+                .outputs
+                .iter()
+                .map(|output| output.output_path.to_string_lossy().to_string())
+                .collect(),
+            detail: Some(format!("{} ecape map(s)", report.outputs.len())),
         },
         Err(err) => JobExecutionResult {
             lifecycle: JobLifecycleState::Failed,
@@ -1142,6 +1209,7 @@ fn execute_derived(
         surface_product_override: None,
         pressure_product_override: None,
         source_mode: config.source_mode,
+        allow_large_heavy_domain: false,
         output_width: config.output_width,
         output_height: config.output_height,
         png_compression: config.png_compression,
@@ -1376,10 +1444,7 @@ fn desired_run_slug(job: &ProductionJob, freshness: &JobFreshness) -> Option<Str
     freshness.desired_cycle_utc.map(|cycle_utc| {
         format!(
             "{}:{}:{:02}z:f{:03}",
-            job.key.model,
-            freshness.desired_date_yyyymmdd,
-            cycle_utc,
-            job.key.forecast_hour
+            job.key.model, freshness.desired_date_yyyymmdd, cycle_utc, job.key.forecast_hour
         )
     })
 }
