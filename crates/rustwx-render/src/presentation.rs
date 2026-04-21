@@ -337,8 +337,8 @@ mod tests {
 fn common_chrome(title_anchor: TitleAnchor, frame_color: Option<Rgba>) -> ChromeStyle {
     ChromeStyle {
         title_anchor,
-        title_color: Rgba::new(28, 34, 43),
-        subtitle_color: Rgba::new(88, 98, 112),
+        title_color: Rgba::BLACK,
+        subtitle_color: Rgba::BLACK,
         frame_color,
     }
 }
@@ -348,17 +348,17 @@ fn common_colorbar() -> ColorbarPresentation {
         frame_color: Rgba::new(92, 100, 112),
         divider_color: Rgba::with_alpha(255, 255, 255, 70),
         tick_color: Rgba::new(92, 100, 112),
-        label_color: Rgba::new(48, 54, 64),
+        label_color: Rgba::BLACK,
     }
 }
 
 fn normal_layout() -> LayoutMetrics {
     LayoutMetrics {
         margin_x: 18,
-        title_h: 72,
-        footer_h: 66,
+        title_h: 34,
+        footer_h: 30,
         colorbar_h: 12,
-        colorbar_gap: 20,
+        colorbar_gap: 8,
         colorbar_margin_x: 86,
     }
 }
@@ -366,10 +366,10 @@ fn normal_layout() -> LayoutMetrics {
 fn compact_layout() -> LayoutMetrics {
     LayoutMetrics {
         margin_x: 8,
-        title_h: 38,
-        footer_h: 40,
+        title_h: 28,
+        footer_h: 24,
         colorbar_h: 10,
-        colorbar_gap: 14,
+        colorbar_gap: 8,
         colorbar_margin_x: 42,
     }
 }

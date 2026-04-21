@@ -31,6 +31,7 @@ use region::RegionPreset;
 use rustwx_core::{ModelId, SourceId};
 use rustwx_models::model_summary;
 use rustwx_products::cache::ensure_dir;
+use rustwx_products::derived::is_heavy_derived_recipe_slug;
 use rustwx_products::ecape::{EcapeBatchRequest, run_ecape_batch};
 use rustwx_products::heavy::{HeavyPanelHourRequest, run_heavy_panel_hour};
 use rustwx_products::non_ecape::{
@@ -139,8 +140,7 @@ struct Args {
 
     /// Route policy for direct+derived non-ECAPE work.
     ///
-    /// `auto` keeps the safe default: HRRR uses its unified optimized path,
-    /// while non-HRRR models stay on split direct+derived execution.
+    /// `auto` uses the unified non-ECAPE path for every supported model.
     /// `unified` forces the generic non-ECAPE path for non-HRRR models.
     /// `split` forces per-lane direct+derived execution for non-HRRR models.
     #[arg(long, value_enum, default_value_t = RoutePolicyArg::Auto)]
@@ -496,13 +496,23 @@ fn filter_recipes_for_model(requested: &[String], supported: &[String]) -> Vec<S
         .collect()
 }
 
+fn filter_heavy_derived_recipes(recipes: Vec<String>, skip_ecape: bool) -> Vec<String> {
+    if !skip_ecape {
+        return recipes;
+    }
+    recipes
+        .into_iter()
+        .filter(|slug| !is_heavy_derived_recipe_slug(slug))
+        .collect()
+}
+
 fn select_non_hrrr_non_ecape_route(model: ModelId, policy: RoutePolicyArg) -> RouteSelection {
     if matches!(model, ModelId::Hrrr) {
         return RouteSelection::HrrrUnified;
     }
     match policy {
-        RoutePolicyArg::Auto | RoutePolicyArg::Split => RouteSelection::Split,
-        RoutePolicyArg::Unified => RouteSelection::Unified,
+        RoutePolicyArg::Auto | RoutePolicyArg::Unified => RouteSelection::Unified,
+        RoutePolicyArg::Split => RouteSelection::Split,
     }
 }
 
@@ -633,6 +643,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(default_derived_recipes),
         )
     };
+    let derived_recipes = filter_heavy_derived_recipes(derived_recipes, args.skip_ecape);
 
     println!(
         "[forecast-now] date={date} regions={:?} hours={:?} models={:?} direct={} derived={} route_policy={:?} size={}x{} job_concurrency={} render_threads={:?}",
@@ -728,7 +739,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("model pin should be computed before execution");
 
             let (direct_for_model, derived_for_model) = if args.all_supported {
-                model_supported_recipe_lists(model)
+                let (supported_direct, supported_derived) = model_supported_recipe_lists(model);
+                (
+                    supported_direct,
+                    filter_heavy_derived_recipes(supported_derived, args.skip_ecape),
+                )
             } else {
                 let (supported_direct, supported_derived) = model_supported_recipe_lists(model);
                 let direct_for_model = if args.direct_recipes.is_some() {
@@ -865,8 +880,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PinResolution, PinnedRunRequest};
-    use rustwx_core::SourceId;
+    use super::{
+        PinResolution, PinnedRunRequest, RoutePolicyArg, RouteSelection,
+        filter_heavy_derived_recipes, select_non_hrrr_non_ecape_route,
+    };
+    use rustwx_core::{ModelId, SourceId};
 
     #[test]
     fn pinned_request_uses_resolved_cycle_date() {
@@ -878,6 +896,32 @@ mod tests {
         };
         assert_eq!(pinned.date_yyyymmdd, "20260417");
         assert_eq!(pinned.cycle_override_utc, Some(12));
+    }
+
+    #[test]
+    fn skip_ecape_filters_heavy_derived_recipes() {
+        let recipes = vec![
+            "sbcape".to_string(),
+            "sbecape".to_string(),
+            "stp_fixed".to_string(),
+        ];
+        let filtered = filter_heavy_derived_recipes(recipes, true);
+        assert_eq!(
+            filtered,
+            vec!["sbcape".to_string(), "stp_fixed".to_string()]
+        );
+    }
+
+    #[test]
+    fn auto_route_uses_unified_non_hrrr_path() {
+        assert_eq!(
+            select_non_hrrr_non_ecape_route(ModelId::Gfs, RoutePolicyArg::Auto),
+            RouteSelection::Unified
+        );
+        assert_eq!(
+            select_non_hrrr_non_ecape_route(ModelId::EcmwfOpenData, RoutePolicyArg::Auto),
+            RouteSelection::Unified
+        );
     }
 }
 

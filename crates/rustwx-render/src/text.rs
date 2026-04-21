@@ -62,6 +62,14 @@ pub fn text_width_bold(text: &str, scale: u32) -> u32 {
     measure_text(text, scale, FontKind::Bold)
 }
 
+pub(crate) fn regular_line_height(scale: u32) -> u32 {
+    line_height(scale, FontKind::Regular)
+}
+
+pub(crate) fn bold_line_height(scale: u32) -> u32 {
+    line_height(scale, FontKind::Bold)
+}
+
 pub fn format_tick(value: f64) -> String {
     if value == value.floor() {
         format!("{}", value as i64)
@@ -209,13 +217,22 @@ fn blend_pixel(img: &mut RgbaImage, x: i32, y: i32, color: Rgba) {
 }
 
 fn font_size_px(scale: u32, kind: FontKind) -> f32 {
-    match (scale.max(1), kind) {
+    let base = match (scale.max(1), kind) {
         (1, FontKind::Regular) => 12.0,
         (1, FontKind::Bold) => 15.0,
         (2, FontKind::Regular) => 16.0,
         (2, FontKind::Bold) => 19.0,
         (s, FontKind::Regular) => 12.0 + (s as f32 - 1.0) * 4.0,
         (s, FontKind::Bold) => 15.0 + (s as f32 - 1.0) * 4.0,
+    };
+    base * 1.33
+}
+
+fn line_height(scale: u32, kind: FontKind) -> u32 {
+    if get_font(kind).is_some() {
+        font_size_px(scale, kind).ceil() as u32
+    } else {
+        ((8 * scale.max(1)) as f32 * 1.33).ceil() as u32
     }
 }
 

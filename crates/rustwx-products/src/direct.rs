@@ -870,11 +870,18 @@ fn render_direct_recipes(
     fetch_truth_by_actual_product: &HashMap<String, DirectFetchRuntimeInfo>,
     shared_context: Option<&dyn ProjectedMapProvider>,
 ) -> Result<Vec<DirectRenderedRecipe>, Box<dyn std::error::Error>> {
+    if planned.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let contour_layer_cache = Arc::new(Mutex::new(HashMap::new()));
     let barb_layer_cache = Arc::new(Mutex::new(HashMap::new()));
     let barb_stride_cache = Arc::new(Mutex::new(HashMap::new()));
     let projected_map_cache = Arc::new(Mutex::new(HashMap::new()));
     let prepared_projected_maps = build_prepared_projected_maps(request, planned, extracted)?;
+    if prepared_projected_maps.is_empty() {
+        return Ok(Vec::new());
+    }
     let worker_count = render_worker_count(planned.len());
     if worker_count <= 1 {
         return planned
@@ -1067,15 +1074,14 @@ fn build_prepared_projected_maps(
     planned: &[PlannedDirectRecipe],
     extracted: &HashMap<FieldSelector, SelectedField2D>,
 ) -> Result<PreparedProjectedMaps, Box<dyn std::error::Error>> {
-    let sample_field = planned
-        .iter()
-        .find_map(|item| {
-            item.recipe
-                .filled
-                .selector
-                .and_then(|selector| extracted.get(&selector))
-        })
-        .ok_or("direct projected-map preparation missing a filled field")?;
+    let Some(sample_field) = planned.iter().find_map(|item| {
+        item.recipe
+            .filled
+            .selector
+            .and_then(|selector| extracted.get(&selector))
+    }) else {
+        return Ok(Arc::new(HashMap::new()));
+    };
 
     let mut keys = std::collections::BTreeSet::<(u32, u32, u8)>::new();
     for item in planned {
@@ -2055,6 +2061,28 @@ mod tests {
             "blocker reason should mention the missing filled selector; got: {}",
             blockers[0].reason
         );
+    }
+
+    #[test]
+    fn empty_renderable_batch_returns_without_projected_map_failure() {
+        let request = sample_direct_request(ModelId::Hrrr);
+        let latest = LatestRun {
+            model: ModelId::Hrrr,
+            cycle: rustwx_core::CycleSpec::new("20260414", 23).unwrap(),
+            source: SourceId::Nomads,
+        };
+
+        let rendered = render_direct_recipes(
+            &request,
+            &latest,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+        )
+        .expect("empty renderable batches should not fail projected-map prep");
+
+        assert!(rendered.is_empty());
     }
 
     fn sample_direct_request(model: ModelId) -> DirectBatchRequest {

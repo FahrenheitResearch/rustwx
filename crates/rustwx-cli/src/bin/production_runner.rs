@@ -20,7 +20,9 @@ use rustwx_products::direct::{
 };
 use rustwx_products::ecape::{EcapeBatchRequest, run_ecape_batch};
 use rustwx_products::heavy::{HeavyPanelHourRequest, run_heavy_panel_hour};
-use rustwx_products::non_ecape::{HrrrNonEcapeHourRequest, run_hrrr_non_ecape_hour};
+use rustwx_products::non_ecape::{
+    HrrrNonEcapeHourRequest, NonEcapeHourRequest, run_hrrr_non_ecape_hour, run_model_non_ecape_hour,
+};
 use rustwx_products::publication::{
     ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
     finalize_and_publish_run_manifest, publish_failure_manifest,
@@ -137,6 +139,7 @@ enum ProductionLane {
     HrrrNonEcape,
     Severe,
     Ecape,
+    NonHrrrNonEcape,
     Direct,
     Derived,
 }
@@ -148,6 +151,7 @@ impl ProductionLane {
             Self::HrrrNonEcape => "hrrr_non_ecape",
             Self::Severe => "severe",
             Self::Ecape => "ecape",
+            Self::NonHrrrNonEcape => "non_hrrr_non_ecape",
             Self::Direct => "direct",
             Self::Derived => "derived",
         }
@@ -159,8 +163,9 @@ impl ProductionLane {
             Self::HrrrNonEcape => 1,
             Self::Severe => 2,
             Self::Ecape => 3,
-            Self::Direct => 4,
-            Self::Derived => 5,
+            Self::NonHrrrNonEcape => 4,
+            Self::Direct => 5,
+            Self::Derived => 6,
         }
     }
 }
@@ -701,6 +706,18 @@ fn build_jobs(
             for &forecast_hour in hours {
                 let region_slug = region.slug().to_string();
                 if model == ModelId::Hrrr {
+                    let has_non_ecape_work = (!config.skip_direct
+                        && config
+                            .direct_recipes
+                            .get(&model)
+                            .map(|recipes| !recipes.is_empty())
+                            .unwrap_or(false))
+                        || (!config.skip_derived
+                            && config
+                                .derived_recipes
+                                .get(&model)
+                                .map(|recipes| !recipes.is_empty())
+                                .unwrap_or(false));
                     if !config.skip_severe || !config.skip_ecape {
                         jobs.push(ProductionJob {
                             key: ProductionJobKey {
@@ -713,7 +730,7 @@ fn build_jobs(
                             priority: ProductionLane::HrrrHeavy.priority(),
                         });
                     }
-                    if !config.skip_direct || !config.skip_derived {
+                    if has_non_ecape_work {
                         jobs.push(ProductionJob {
                             key: ProductionJobKey {
                                 model,
@@ -728,6 +745,18 @@ fn build_jobs(
                     continue;
                 }
 
+                let has_non_ecape_work = (!config.skip_direct
+                    && config
+                        .direct_recipes
+                        .get(&model)
+                        .map(|recipes| !recipes.is_empty())
+                        .unwrap_or(false))
+                    || (!config.skip_derived
+                        && config
+                            .derived_recipes
+                            .get(&model)
+                            .map(|recipes| !recipes.is_empty())
+                            .unwrap_or(false));
                 if !config.skip_severe {
                     jobs.push(simple_job(
                         model,
@@ -744,20 +773,12 @@ fn build_jobs(
                         ProductionLane::Ecape,
                     ));
                 }
-                if !config.skip_direct {
+                if has_non_ecape_work {
                     jobs.push(simple_job(
                         model,
                         &region_slug,
                         forecast_hour,
-                        ProductionLane::Direct,
-                    ));
-                }
-                if !config.skip_derived {
-                    jobs.push(simple_job(
-                        model,
-                        &region_slug,
-                        forecast_hour,
-                        ProductionLane::Derived,
+                        ProductionLane::NonHrrrNonEcape,
                     ));
                 }
             }
@@ -791,6 +812,7 @@ fn simple_job(
                 MemoryClass::Heavy
             }
             ProductionLane::HrrrNonEcape => MemoryClass::Warm,
+            ProductionLane::NonHrrrNonEcape => MemoryClass::Warm,
             ProductionLane::Direct | ProductionLane::Derived => MemoryClass::Light,
         },
         priority: lane.priority(),
@@ -906,6 +928,7 @@ fn execute_job(
     match job.key.lane {
         ProductionLane::HrrrHeavy => execute_hrrr_heavy(job, context, config),
         ProductionLane::HrrrNonEcape => execute_hrrr_non_ecape(job, context, config),
+        ProductionLane::NonHrrrNonEcape => execute_non_hrrr_non_ecape(job, context, config),
         ProductionLane::Severe => execute_severe(job, context, config),
         ProductionLane::Ecape => execute_ecape(job, context, config),
         ProductionLane::Direct => execute_direct(job, context, config),
@@ -1015,6 +1038,78 @@ fn execute_hrrr_non_ecape(
         png_compression: config.png_compression,
     };
     match run_hrrr_non_ecape_hour(&request) {
+        Ok(report) => JobExecutionResult {
+            lifecycle: if report.summary.output_count > 0 {
+                JobLifecycleState::Succeeded
+            } else {
+                JobLifecycleState::Deferred
+            },
+            outputs: report
+                .summary
+                .output_paths
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect(),
+            detail: Some(format!(
+                "{} output(s), {} blocker(s)",
+                report.summary.output_count,
+                report
+                    .windowed
+                    .as_ref()
+                    .map(|windowed| windowed.blockers.len())
+                    .unwrap_or(0)
+                    + report
+                        .direct
+                        .as_ref()
+                        .map(|direct| direct.blockers.len())
+                        .unwrap_or(0)
+                    + report
+                        .derived
+                        .as_ref()
+                        .map(|derived| derived.blockers.len())
+                        .unwrap_or(0)
+            )),
+        },
+        Err(err) => JobExecutionResult {
+            lifecycle: JobLifecycleState::Failed,
+            outputs: Vec::new(),
+            detail: Some(err.to_string()),
+        },
+    }
+}
+
+fn execute_non_hrrr_non_ecape(
+    job: &ProductionJob,
+    context: &JobExecutionContext,
+    config: &RunnerConfig,
+) -> JobExecutionResult {
+    let request = NonEcapeHourRequest {
+        model: job.key.model,
+        date_yyyymmdd: context.latest.cycle.date_yyyymmdd.clone(),
+        cycle_override_utc: Some(context.latest.cycle.hour_utc),
+        forecast_hour: job.key.forecast_hour,
+        source: context.latest.source,
+        domain: domain_from_region_slug(&job.key.region_slug),
+        out_dir: config.out_dir.join(&job.key.region_slug),
+        cache_root: config.cache_dir.clone(),
+        use_cache: config.use_cache,
+        source_mode: config.source_mode,
+        direct_recipe_slugs: if config.skip_direct {
+            Vec::new()
+        } else {
+            context.direct_recipes.clone()
+        },
+        derived_recipe_slugs: if config.skip_derived {
+            Vec::new()
+        } else {
+            context.derived_recipes.clone()
+        },
+        windowed_products: Vec::new(),
+        output_width: config.output_width,
+        output_height: config.output_height,
+        png_compression: config.png_compression,
+    };
+    match run_model_non_ecape_hour(&request) {
         Ok(report) => JobExecutionResult {
             lifecycle: if report.summary.output_count > 0 {
                 JobLifecycleState::Succeeded
@@ -1348,9 +1443,22 @@ fn build_derived_recipe_map(args: &Args) -> BTreeMap<ModelId, Vec<String>> {
                 .filter(|slug| supported.contains(slug))
                 .collect()
         };
-        map.insert(model, unique_vec(recipes));
+        map.insert(
+            model,
+            filter_heavy_derived_recipes(unique_vec(recipes), args.skip_ecape),
+        );
     }
     map
+}
+
+fn filter_heavy_derived_recipes(recipes: Vec<String>, skip_ecape: bool) -> Vec<String> {
+    if !skip_ecape {
+        return recipes;
+    }
+    recipes
+        .into_iter()
+        .filter(|slug| !rustwx_products::derived::is_heavy_derived_recipe_slug(slug))
+        .collect()
 }
 
 fn default_direct_recipes() -> Vec<String> {
@@ -1528,4 +1636,69 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
     let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     Some(era * 146_097 + doe - 719_468)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustwx_render::PngCompressionMode;
+
+    #[test]
+    fn skip_ecape_filters_heavy_derived_recipes_in_maps() {
+        let filtered = filter_heavy_derived_recipes(
+            vec![
+                "sbcape".to_string(),
+                "sbecape".to_string(),
+                "stp_fixed".to_string(),
+            ],
+            true,
+        );
+        assert_eq!(
+            filtered,
+            vec!["sbcape".to_string(), "stp_fixed".to_string()]
+        );
+    }
+
+    #[test]
+    fn non_hrrr_build_jobs_collapse_direct_and_derived_into_unified_lane() {
+        let mut direct_recipes = BTreeMap::new();
+        direct_recipes.insert(ModelId::Gfs, vec!["composite_reflectivity".to_string()]);
+        let mut derived_recipes = BTreeMap::new();
+        derived_recipes.insert(ModelId::Gfs, vec!["sbcape".to_string()]);
+        let config = RunnerConfig {
+            date_yyyymmdd: "20260414".to_string(),
+            cycle_override_utc: Some(12),
+            source_override: Some(SourceId::Nomads),
+            out_dir: PathBuf::from("out"),
+            cache_dir: PathBuf::from("cache"),
+            use_cache: false,
+            source_mode: ProductSourceMode::Canonical,
+            png_compression: PngCompressionMode::Default,
+            output_width: 1200,
+            output_height: 900,
+            skip_severe: false,
+            skip_ecape: false,
+            skip_direct: false,
+            skip_derived: false,
+            direct_recipes,
+            derived_recipes,
+            token_budget: TokenBudget {
+                light: 1,
+                warm: 1,
+                heavy: 1,
+            },
+            failure_cooldown_seconds: 900,
+        };
+
+        let jobs = build_jobs(&config, &[ModelId::Gfs], &[RegionPreset::Conus], &[0]);
+        assert_eq!(jobs.len(), 3);
+        assert!(
+            jobs.iter()
+                .any(|job| job.key.lane == ProductionLane::NonHrrrNonEcape)
+        );
+        assert!(!jobs.iter().any(|job| matches!(
+            job.key.lane,
+            ProductionLane::Direct | ProductionLane::Derived
+        )));
+    }
 }

@@ -56,7 +56,7 @@ use crate::overlay::{
 };
 use crate::render::{
     RenderOpts, encode_rgba_png_profile_with_options, render_to_image as native_render_to_image,
-    render_to_png, render_to_png_profile_with_options,
+    render_to_png, trim_vertical_canvas_whitespace,
 };
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -198,12 +198,8 @@ impl RustRenderer {
         request: &MapRenderRequest,
         output_path: P,
     ) -> Result<(), RustwxRenderError> {
-        let bytes = self.render_png(request)?;
-        let path = output_path.as_ref();
-        std::fs::write(path, bytes).map_err(|source| RustwxRenderError::WriteFile {
-            path: path.display().to_string(),
-            source,
-        })
+        self.save_png_profile_with_options(request, output_path, &PngWriteOptions::default())
+            .map(|_| ())
     }
 
     pub fn save_png_profile<P: AsRef<Path>>(
@@ -223,12 +219,25 @@ impl RustRenderer {
         let total_start = Instant::now();
         let (bytes, state_timing, png_timing) =
             with_render_state_profile(request, |data, ny, nx, opts| {
-                Ok(render_to_png_profile_with_options(
-                    data,
-                    ny,
-                    nx,
-                    opts,
-                    png_options,
+                let (image, mut image_timing) = render_to_image_profile(data, ny, nx, opts);
+                let trim_start = Instant::now();
+                let trimmed =
+                    trim_vertical_canvas_whitespace(&image, opts.presentation.canvas_background);
+                let trim_ms = trim_start.elapsed().as_millis();
+                image_timing.postprocess_ms = image_timing.postprocess_ms.saturating_add(trim_ms);
+                image_timing.total_ms = image_timing.total_ms.saturating_add(trim_ms);
+                let render_to_image_ms = image_timing.total_ms;
+                let (bytes, png_encode_ms) =
+                    encode_rgba_png_profile_with_options(&trimmed, png_options);
+                Ok((
+                    bytes,
+                    RenderPngTiming {
+                        image_timing,
+                        render_to_image_ms,
+                        png_encode_ms,
+                        png_write_ms: 0,
+                        total_ms: render_to_image_ms.saturating_add(png_encode_ms),
+                    },
                 ))
             })?;
         let path = output_path.as_ref();

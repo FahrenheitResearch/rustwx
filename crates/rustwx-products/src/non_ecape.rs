@@ -1,10 +1,12 @@
 use crate::derived::{
-    DerivedBatchRequest, HrrrDerivedBatchReport, is_heavy_derived_recipe_slug,
-    maybe_load_special_pair_for_derived, plan_derived_recipes, plan_native_thermo_routes,
-    prepare_shared_derived_fields, run_model_derived_batch_from_loaded,
+    DerivedBatchRequest, HrrrDerivedBatchReport, PlannedDerivedSourceRoutes,
+    is_heavy_derived_recipe_slug, maybe_load_special_pair_for_derived, plan_derived_recipes,
+    plan_native_thermo_routes, prepare_shared_derived_fields, run_model_derived_batch_from_loaded,
     run_model_derived_batch_from_loaded_with_precomputed, run_model_derived_batch_without_loaded,
 };
-use crate::direct::{DirectBatchRequest, HrrrDirectBatchReport, run_direct_batch_from_loaded};
+use crate::direct::{
+    DirectBatchRequest, FetchGroup, HrrrDirectBatchReport, run_direct_batch_from_loaded,
+};
 use crate::hrrr::{DomainSpec, resolve_hrrr_run};
 use crate::orchestrator::{lane, run_fanout3};
 use crate::planner::ExecutionPlanBuilder;
@@ -731,54 +733,15 @@ fn prepare_non_ecape_hour(
     let mut main_loaded: Option<Arc<crate::runtime::LoadedBundleSet>> = None;
     let mut direct_loaded: Option<Arc<crate::runtime::LoadedBundleSet>> = None;
 
-    if request.model == ModelId::Hrrr {
-        let mut plan_builder = ExecutionPlanBuilder::new(&latest, request.forecast_hour);
-        if derived_routes
-            .as_ref()
-            .map(|routes| !routes.compute_recipes.is_empty())
-            .unwrap_or(false)
-            && derived_loaded_override.is_none()
-        {
-            let pair_plan = build_severe_execution_plan(&latest, request.forecast_hour, None, None);
-            for bundle in &pair_plan.bundles {
-                for alias in &bundle.aliases {
-                    let mut requirement =
-                        rustwx_core::BundleRequirement::new(alias.bundle, bundle.id.forecast_hour);
-                    if let Some(ref over) = alias.native_override {
-                        requirement = requirement.with_native_override(over.clone());
-                    }
-                    plan_builder
-                        .require_with_logical_family(&requirement, alias.logical_family.as_deref());
-                }
-            }
-        }
-        let mut native_products = std::collections::BTreeSet::<String>::new();
-        if let Some(routes) = &derived_routes {
-            for route in &routes.native_routes {
-                if native_products.insert(route.candidate.fetch_product.to_string()) {
-                    let requirement = BundleRequirement::new(
-                        CanonicalBundleDescriptor::NativeAnalysis,
-                        request.forecast_hour,
-                    )
-                    .with_native_override(route.candidate.fetch_product);
-                    plan_builder.require_with_logical_family(
-                        &requirement,
-                        Some(&format!("thermo-native:{}", route.candidate.fetch_product)),
-                    );
-                }
-            }
-        }
-        for group in &direct_groups {
-            let requirement = rustwx_core::BundleRequirement::new(
-                rustwx_core::CanonicalBundleDescriptor::NativeAnalysis,
-                request.forecast_hour,
-            )
-            .with_native_override(group.product.clone());
-            for alias in &group.planned_family_aliases {
-                plan_builder.require_with_logical_family(&requirement, Some(alias));
-            }
-        }
-        let plan = plan_builder.build();
+    let build_shared_loaded = request.model == ModelId::Hrrr || derived_loaded_override.is_none();
+    if build_shared_loaded {
+        let plan = build_shared_non_ecape_execution_plan(
+            &latest,
+            request.forecast_hour,
+            &direct_groups,
+            derived_routes.as_ref(),
+            derived_loaded_override.is_none(),
+        );
         let load_start = Instant::now();
         main_loaded = if plan.bundles.is_empty() {
             None
@@ -827,59 +790,8 @@ fn prepare_non_ecape_hour(
         None
     } else if let Some(loaded) = derived_loaded_override {
         Some(loaded)
-    } else if request.model == ModelId::Hrrr {
-        main_loaded.clone()
     } else {
-        let mut derived_plan_builder = ExecutionPlanBuilder::new(&latest, request.forecast_hour);
-        if derived_routes
-            .as_ref()
-            .map(|routes| !routes.compute_recipes.is_empty())
-            .unwrap_or(false)
-        {
-            let pair_plan = build_severe_execution_plan(&latest, request.forecast_hour, None, None);
-            for bundle in &pair_plan.bundles {
-                for alias in &bundle.aliases {
-                    let mut requirement =
-                        rustwx_core::BundleRequirement::new(alias.bundle, bundle.id.forecast_hour);
-                    if let Some(ref over) = alias.native_override {
-                        requirement = requirement.with_native_override(over.clone());
-                    }
-                    derived_plan_builder
-                        .require_with_logical_family(&requirement, alias.logical_family.as_deref());
-                }
-            }
-        }
-        let mut native_products = std::collections::BTreeSet::<String>::new();
-        if let Some(routes) = &derived_routes {
-            for route in &routes.native_routes {
-                if native_products.insert(route.candidate.fetch_product.to_string()) {
-                    let requirement = BundleRequirement::new(
-                        CanonicalBundleDescriptor::NativeAnalysis,
-                        request.forecast_hour,
-                    )
-                    .with_native_override(route.candidate.fetch_product);
-                    derived_plan_builder.require_with_logical_family(
-                        &requirement,
-                        Some(&format!("thermo-native:{}", route.candidate.fetch_product)),
-                    );
-                }
-            }
-        }
-        let derived_plan = derived_plan_builder.build();
-        let derived_load_start = Instant::now();
-        let loaded = if derived_plan.bundles.is_empty() {
-            None
-        } else {
-            Some(Arc::new(load_execution_plan(
-                derived_plan,
-                &BundleLoaderConfig {
-                    cache_root: request.cache_root.clone(),
-                    use_cache: request.use_cache,
-                },
-            )?))
-        };
-        shared_load_decode_ms += derived_load_start.elapsed().as_millis();
-        loaded
+        main_loaded.clone()
     };
 
     let shared_derived_prepare_start = Instant::now();
@@ -908,6 +820,80 @@ fn prepare_non_ecape_hour(
             total_prepare_ms: total_prepare_start.elapsed().as_millis(),
         },
     })
+}
+
+fn build_shared_non_ecape_execution_plan(
+    latest: &LatestRun,
+    forecast_hour: u16,
+    direct_groups: &[FetchGroup],
+    derived_routes: Option<&PlannedDerivedSourceRoutes>,
+    include_pair_compute: bool,
+) -> crate::planner::ExecutionPlan {
+    let mut plan_builder = ExecutionPlanBuilder::new(latest, forecast_hour);
+    if include_pair_compute
+        && derived_routes
+            .map(|routes| !routes.compute_recipes.is_empty())
+            .unwrap_or(false)
+    {
+        add_pair_requirements(&mut plan_builder, latest, forecast_hour);
+    }
+    if let Some(routes) = derived_routes {
+        add_native_route_requirements(&mut plan_builder, forecast_hour, routes);
+    }
+    add_direct_fetch_group_requirements(&mut plan_builder, forecast_hour, direct_groups);
+    plan_builder.build()
+}
+
+fn add_pair_requirements(
+    plan_builder: &mut ExecutionPlanBuilder,
+    latest: &LatestRun,
+    forecast_hour: u16,
+) {
+    let pair_plan = build_severe_execution_plan(latest, forecast_hour, None, None);
+    for bundle in &pair_plan.bundles {
+        for alias in &bundle.aliases {
+            let mut requirement =
+                rustwx_core::BundleRequirement::new(alias.bundle, bundle.id.forecast_hour);
+            if let Some(ref over) = alias.native_override {
+                requirement = requirement.with_native_override(over.clone());
+            }
+            plan_builder.require_with_logical_family(&requirement, alias.logical_family.as_deref());
+        }
+    }
+}
+
+fn add_native_route_requirements(
+    plan_builder: &mut ExecutionPlanBuilder,
+    forecast_hour: u16,
+    routes: &PlannedDerivedSourceRoutes,
+) {
+    let mut native_products = std::collections::BTreeSet::<String>::new();
+    for route in &routes.native_routes {
+        if native_products.insert(route.candidate.fetch_product.to_string()) {
+            let requirement =
+                BundleRequirement::new(CanonicalBundleDescriptor::NativeAnalysis, forecast_hour)
+                    .with_native_override(route.candidate.fetch_product);
+            plan_builder.require_with_logical_family(
+                &requirement,
+                Some(&format!("thermo-native:{}", route.candidate.fetch_product)),
+            );
+        }
+    }
+}
+
+fn add_direct_fetch_group_requirements(
+    plan_builder: &mut ExecutionPlanBuilder,
+    forecast_hour: u16,
+    direct_groups: &[FetchGroup],
+) {
+    for group in direct_groups {
+        let requirement =
+            BundleRequirement::new(CanonicalBundleDescriptor::NativeAnalysis, forecast_hour)
+                .with_native_override(group.product.clone());
+        for alias in &group.planned_family_aliases {
+            plan_builder.require_with_logical_family(&requirement, Some(alias));
+        }
+    }
 }
 
 fn run_prepared_non_ecape_domain(
@@ -1585,7 +1571,10 @@ mod tests {
     use crate::derived::{
         HrrrDerivedRecipeTiming, HrrrDerivedRenderedRecipe, HrrrDerivedSharedTiming,
     };
-    use crate::direct::{HrrrDirectRecipeTiming, HrrrDirectRenderedRecipe};
+    use crate::direct::{
+        DirectBatchRequest, HrrrDirectRecipeTiming, HrrrDirectRenderedRecipe,
+        plan_direct_fetch_groups,
+    };
     use crate::hrrr::HrrrFetchRuntimeInfo;
     use crate::windowed::{
         HrrrWindowedBlocker, HrrrWindowedHourFetchInfo, HrrrWindowedProductMetadata,
@@ -1613,6 +1602,14 @@ mod tests {
             output_width: 1200,
             output_height: 900,
             png_compression: PngCompressionMode::Default,
+        }
+    }
+
+    fn latest_global(model: ModelId) -> LatestRun {
+        LatestRun {
+            model,
+            cycle: rustwx_core::CycleSpec::new("20260415", 12).unwrap(),
+            source: SourceId::Aws,
         }
     }
 
@@ -1694,6 +1691,83 @@ mod tests {
             SourceId::Nomads
         ));
         assert!(should_run_lanes_concurrently(ModelId::Hrrr, SourceId::Aws));
+    }
+
+    #[test]
+    fn shared_non_ecape_plan_collapses_gfs_direct_and_pair_to_one_fetch_key() {
+        let latest = latest_global(ModelId::Gfs);
+        let direct_request = DirectBatchRequest {
+            model: ModelId::Gfs,
+            date_yyyymmdd: latest.cycle.date_yyyymmdd.clone(),
+            cycle_override_utc: Some(latest.cycle.hour_utc),
+            forecast_hour: 12,
+            source: latest.source,
+            domain: domain(),
+            out_dir: PathBuf::from("C:\\temp\\proof"),
+            cache_root: PathBuf::from("C:\\temp\\proof\\cache"),
+            use_cache: true,
+            recipe_slugs: vec!["mslp_10m_winds".into()],
+            product_overrides: HashMap::new(),
+            output_width: 1200,
+            output_height: 900,
+            png_compression: PngCompressionMode::Default,
+        };
+        let direct_groups = plan_direct_fetch_groups(&direct_request).unwrap();
+        let derived_recipes = plan_derived_recipes(&["sbcape".to_string()]).unwrap();
+        let derived_routes =
+            plan_native_thermo_routes(ModelId::Gfs, &derived_recipes, ProductSourceMode::Canonical)
+                .unwrap();
+
+        let plan = build_shared_non_ecape_execution_plan(
+            &latest,
+            12,
+            &direct_groups,
+            Some(&derived_routes),
+            true,
+        );
+
+        assert_eq!(plan.fetch_keys().len(), 1);
+        assert_eq!(plan.fetch_keys()[0].native_product, "pgrb2.0p25");
+    }
+
+    #[test]
+    fn shared_non_ecape_plan_collapses_ecmwf_direct_and_pair_to_one_fetch_key() {
+        let latest = latest_global(ModelId::EcmwfOpenData);
+        let direct_request = DirectBatchRequest {
+            model: ModelId::EcmwfOpenData,
+            date_yyyymmdd: latest.cycle.date_yyyymmdd.clone(),
+            cycle_override_utc: Some(latest.cycle.hour_utc),
+            forecast_hour: 6,
+            source: latest.source,
+            domain: domain(),
+            out_dir: PathBuf::from("C:\\temp\\proof"),
+            cache_root: PathBuf::from("C:\\temp\\proof\\cache"),
+            use_cache: true,
+            recipe_slugs: vec!["500mb_height_winds".into()],
+            product_overrides: HashMap::new(),
+            output_width: 1200,
+            output_height: 900,
+            png_compression: PngCompressionMode::Default,
+        };
+        let direct_groups = plan_direct_fetch_groups(&direct_request).unwrap();
+        let derived_recipes = plan_derived_recipes(&["sbcape".to_string()]).unwrap();
+        let derived_routes = plan_native_thermo_routes(
+            ModelId::EcmwfOpenData,
+            &derived_recipes,
+            ProductSourceMode::Canonical,
+        )
+        .unwrap();
+
+        let plan = build_shared_non_ecape_execution_plan(
+            &latest,
+            6,
+            &direct_groups,
+            Some(&derived_routes),
+            true,
+        );
+
+        assert_eq!(plan.fetch_keys().len(), 1);
+        assert_eq!(plan.fetch_keys()[0].native_product, "oper");
     }
 
     #[test]

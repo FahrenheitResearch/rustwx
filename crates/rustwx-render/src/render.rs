@@ -13,7 +13,7 @@ use image::ExtendedColorType;
 use image::ImageEncoder;
 use image::RgbaImage;
 use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
-use image::imageops::{FilterType, resize};
+use image::imageops::{FilterType, crop_imm, resize};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
@@ -315,8 +315,8 @@ fn compute_layout(
         cbar_y,
         cbar_w,
         cbar_h,
-        title_y: scale_u32(2, chrome_scale),
-        subtitle_y: title_h.saturating_sub(scale_u32(18, chrome_scale)),
+        title_y: title_h.saturating_sub(scale_u32(24, chrome_scale)),
+        subtitle_y: title_h.saturating_sub(scale_u32(10, chrome_scale)),
         text_scale: text_scale_from_chrome(chrome_scale),
         label_gap: scale_u32(14, chrome_scale),
     }
@@ -357,7 +357,7 @@ fn scaled_layout_metrics(
 }
 
 fn text_scale_from_chrome(chrome_scale: f32) -> u32 {
-    chrome_scale.round().clamp(1.0, 4.0) as u32
+    chrome_scale.round().clamp(1.0, 4.0) as u32 + 1
 }
 
 pub fn map_frame_aspect_ratio(total_w: u32, total_h: u32, has_cbar: bool, has_title: bool) -> f64 {
@@ -1101,6 +1101,27 @@ fn chrome_anchor_bounds(
     let right = layout.map_x + layout.map_w;
     let center = left + right.saturating_sub(left) / 2;
     (left, right, center)
+}
+
+fn chrome_anchor_rows(
+    layout: &Layout,
+    frame: Option<DomainFrame>,
+    frame_rect: Option<LocalRect>,
+) -> (u32, u32) {
+    if matches!(frame, Some(frame) if frame.chrome_follows_frame) {
+        if let Some(rect) = frame_rect {
+            let frame_top = layout.map_y + rect.min_y;
+            let subtitle_h = text::regular_line_height(layout.text_scale);
+            let title_h = text::bold_line_height(layout.text_scale);
+            let subtitle_gap = 6u32.saturating_mul(layout.text_scale.max(1));
+            let title_gap = 4u32.saturating_mul(layout.text_scale.max(1));
+            let subtitle_y = frame_top.saturating_sub(subtitle_h.saturating_add(subtitle_gap));
+            let title_y = subtitle_y.saturating_sub(title_h.saturating_add(title_gap));
+            return (title_y, subtitle_y);
+        }
+    }
+
+    (layout.title_y, layout.subtitle_y)
 }
 
 fn colorbar_anchor_rect(
@@ -1934,6 +1955,7 @@ fn draw_chrome_and_colorbar(
     let chrome_start = Instant::now();
     let (chrome_left, chrome_right, chrome_center) =
         chrome_anchor_bounds(layout, opts.domain_frame, domain_frame_rect);
+    let (title_y, subtitle_y) = chrome_anchor_rows(layout, opts.domain_frame, domain_frame_rect);
     let title_color = opts.presentation.chrome.title_color;
     let subtitle_color = opts.presentation.chrome.subtitle_color;
     if let Some(ref t) = opts.title {
@@ -1948,7 +1970,7 @@ fn draw_chrome_and_colorbar(
                         img,
                         t,
                         title_x,
-                        layout.title_y as i32,
+                        title_y as i32,
                         title_color,
                         layout.text_scale,
                     );
@@ -1956,7 +1978,7 @@ fn draw_chrome_and_colorbar(
                     text::draw_text_centered(
                         img,
                         t,
-                        layout.title_y as i32,
+                        title_y as i32,
                         title_color,
                         layout.text_scale,
                     );
@@ -1967,7 +1989,7 @@ fn draw_chrome_and_colorbar(
                     img,
                     t,
                     chrome_left as i32,
-                    layout.title_y as i32,
+                    title_y as i32,
                     title_color,
                     layout.text_scale,
                 );
@@ -1979,7 +2001,7 @@ fn draw_chrome_and_colorbar(
             img,
             t,
             chrome_left as i32,
-            layout.subtitle_y as i32,
+            subtitle_y as i32,
             subtitle_color,
             layout.text_scale,
         );
@@ -1989,7 +2011,7 @@ fn draw_chrome_and_colorbar(
             img,
             t,
             chrome_right as i32,
-            layout.subtitle_y as i32,
+            subtitle_y as i32,
             subtitle_color,
             layout.text_scale,
         );
@@ -2262,6 +2284,42 @@ pub fn render_to_image_profile(
 
 pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) -> RgbaImage {
     render_to_image_profile(data, ny, nx, opts).0
+}
+
+fn row_is_canvas_background(img: &RgbaImage, y: u32, background: Rgba) -> bool {
+    let bg = background.to_image_rgba().0;
+    (0..img.width()).all(|x| {
+        let px = img.get_pixel(x, y).0;
+        let diff = px[0].abs_diff(bg[0]) as u16
+            + px[1].abs_diff(bg[1]) as u16
+            + px[2].abs_diff(bg[2]) as u16
+            + px[3].abs_diff(bg[3]) as u16;
+        diff <= 6
+    })
+}
+
+pub(crate) fn trim_vertical_canvas_whitespace(img: &RgbaImage, background: Rgba) -> RgbaImage {
+    if img.height() <= 2 {
+        return img.clone();
+    }
+
+    let first_non_bg = (0..img.height()).find(|&y| !row_is_canvas_background(img, y, background));
+    let last_non_bg = (0..img.height()).rfind(|&y| !row_is_canvas_background(img, y, background));
+
+    let (Some(first), Some(last)) = (first_non_bg, last_non_bg) else {
+        return img.clone();
+    };
+
+    let top_pad = 2u32;
+    let bottom_pad = 2u32;
+    let crop_top = first.saturating_sub(top_pad);
+    let crop_bottom = (last.saturating_add(bottom_pad)).min(img.height().saturating_sub(1));
+    let crop_h = crop_bottom.saturating_sub(crop_top).saturating_add(1);
+    if crop_top == 0 && crop_h == img.height() {
+        return img.clone();
+    }
+
+    crop_imm(img, 0, crop_top, img.width(), crop_h).to_image()
 }
 
 pub fn encode_rgba_png_profile_with_options(
@@ -2659,6 +2717,46 @@ mod tests {
     }
 
     #[test]
+    fn domain_frame_text_rows_anchor_just_above_rect() {
+        let (layout, _, _, rect) = slanted_projected_fixture();
+        let frame = sample_domain_frame(crate::request::Color::BLACK);
+
+        let (title_y, subtitle_y) = chrome_anchor_rows(&layout, Some(frame), Some(rect));
+        let frame_top = layout.map_y + rect.min_y;
+        let max_gap = text::regular_line_height(layout.text_scale)
+            .saturating_add(6u32.saturating_mul(layout.text_scale.max(1)));
+
+        assert!(title_y < subtitle_y);
+        assert!(subtitle_y < frame_top);
+        assert!(frame_top.saturating_sub(subtitle_y) <= max_gap);
+    }
+
+    #[test]
+    fn trim_vertical_canvas_whitespace_crops_outer_blank_rows() {
+        let mut img = RgbaImage::from_pixel(
+            6,
+            10,
+            RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology)
+                .canvas_background
+                .to_image_rgba(),
+        );
+        for y in 3..7 {
+            for x in 0..6 {
+                img.put_pixel(x, y, Rgba::BLACK.to_image_rgba());
+            }
+        }
+
+        let trimmed = trim_vertical_canvas_whitespace(
+            &img,
+            RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology).canvas_background,
+        );
+
+        assert_eq!(trimmed.width(), 6);
+        assert!(trimmed.height() < 10);
+        assert!(trimmed.height() >= 4);
+    }
+
+    #[test]
     fn bucketed_contours_match_legacy_when_projected_corner_is_missing() {
         let layout = contour_test_layout();
         let overlay = ContourOverlay {
@@ -2732,7 +2830,7 @@ mod tests {
     #[test]
     fn map_frame_aspect_ratio_matches_wide_render_layout() {
         let ratio = map_frame_aspect_ratio(1200, 900, true, true);
-        assert!(ratio > 1.4);
+        assert!(ratio > 1.35);
         assert!(ratio < 1.7);
     }
 
@@ -2781,6 +2879,23 @@ mod tests {
         assert!(bigger.cbar_h > base.cbar_h);
         assert!(bigger.text_scale > base.text_scale);
         assert!(bigger.label_gap > base.label_gap);
+    }
+
+    #[test]
+    fn filled_layout_keeps_header_and_legend_tight_to_map() {
+        let layout = compute_layout(
+            1200,
+            900,
+            true,
+            true,
+            RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology),
+            ChromeScale::Fixed(1.0),
+        );
+
+        assert_eq!(layout.map_y, 34);
+        assert_eq!(layout.title_y, 10);
+        assert_eq!(layout.subtitle_y, 24);
+        assert_eq!(layout.cbar_y + layout.cbar_h, 892);
     }
 
     #[test]
