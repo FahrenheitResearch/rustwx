@@ -11,11 +11,11 @@ use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId,
 };
 use rustwx_render::{
-    Color, DerivedProductStyle, DomainFrame, ExtendMode, MapRenderRequest, PngCompressionMode,
-    PngWriteOptions, ProductVisualMode, ProjectedContourLineStyle, ProjectedDomain,
-    ProjectedExtent, ProjectedMap, RenderImageTiming, RenderStateTiming, Solar07Palette,
-    Solar07Product, WindBarbLayer, build_projected_contour_geometry_profile,
-    map_frame_aspect_ratio, save_png_profile_with_options,
+    Color, DerivedProductStyle, DomainFrame, ExtendMode, LevelDensity, MapRenderRequest,
+    PngCompressionMode, PngWriteOptions, ProductVisualMode, ProjectedContourLineStyle,
+    ProjectedDomain, ProjectedExtent, ProjectedMap, RenderImageTiming, RenderStateTiming,
+    Solar07Palette, Solar07Product, WindBarbLayer, build_projected_contour_geometry_profile,
+    densify_discrete_scale, map_frame_aspect_ratio, save_png_profile_with_options,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -73,12 +73,18 @@ fn default_png_compression() -> PngCompressionMode {
     PngCompressionMode::Default
 }
 
+fn default_native_fill_level_multiplier() -> usize {
+    1
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeContourRenderMode {
     #[default]
     Automatic,
+    Signature,
     LegacyRaster,
+    ExperimentalAllProjected,
 }
 
 trait SurfaceFieldSet {
@@ -417,6 +423,10 @@ pub struct DerivedBatchRequest {
     pub source_mode: ProductSourceMode,
     #[serde(default)]
     pub allow_large_heavy_domain: bool,
+    #[serde(default)]
+    pub contour_mode: NativeContourRenderMode,
+    #[serde(default = "default_native_fill_level_multiplier")]
+    pub native_fill_level_multiplier: usize,
     #[serde(default = "default_output_width")]
     pub output_width: u32,
     #[serde(default = "default_output_height")]
@@ -440,6 +450,10 @@ pub struct HrrrDerivedBatchRequest {
     pub source_mode: ProductSourceMode,
     #[serde(default)]
     pub allow_large_heavy_domain: bool,
+    #[serde(default)]
+    pub contour_mode: NativeContourRenderMode,
+    #[serde(default = "default_native_fill_level_multiplier")]
+    pub native_fill_level_multiplier: usize,
     #[serde(default = "default_output_width")]
     pub output_width: u32,
     #[serde(default = "default_output_height")]
@@ -1016,6 +1030,8 @@ impl DerivedBatchRequest {
             pressure_product_override: None,
             source_mode: request.source_mode,
             allow_large_heavy_domain: request.allow_large_heavy_domain,
+            contour_mode: request.contour_mode,
+            native_fill_level_multiplier: request.native_fill_level_multiplier,
             output_width: request.output_width,
             output_height: request.output_height,
             png_compression: request.png_compression,
@@ -1556,7 +1572,8 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
             request.output_width,
             request.output_height,
             native_field.values.clone(),
-            NativeContourRenderMode::Automatic,
+            request.contour_mode,
+            request.native_fill_level_multiplier,
         )?;
         let save_timing = save_png_profile_with_options(
             &render_artifact.request,
@@ -1962,6 +1979,7 @@ fn build_native_render_artifact(
     output_height: u32,
     values: Vec<f64>,
     contour_mode: NativeContourRenderMode,
+    native_fill_level_multiplier: usize,
 ) -> Result<HrrrDerivedLiveArtifact, Box<dyn std::error::Error>> {
     let (field, mut request) = match recipe {
         DerivedRecipe::Sbcape => {
@@ -2020,7 +2038,12 @@ fn build_native_render_artifact(
     });
     request.projected_lines = projected.lines.clone();
     request.projected_polygons = projected.polygons.clone();
-    maybe_apply_native_contour_fill_for_mode(recipe, &mut request, contour_mode)?;
+    maybe_apply_native_contour_fill_for_mode(
+        recipe,
+        &mut request,
+        contour_mode,
+        native_fill_level_multiplier,
+    )?;
     Ok(HrrrDerivedLiveArtifact {
         recipe_slug: recipe.slug().to_string(),
         title: recipe.title().to_string(),
@@ -2040,6 +2063,7 @@ pub fn build_hrrr_live_derived_artifact(
     pressure: &GenericPressureFields,
     grid: &rustwx_core::LatLonGrid,
     projected: &ProjectedMap,
+    domain_bounds: (f64, f64, f64, f64),
     date_yyyymmdd: &str,
     cycle_utc: u8,
     forecast_hour: u16,
@@ -2051,11 +2075,13 @@ pub fn build_hrrr_live_derived_artifact(
         pressure,
         grid,
         projected,
+        domain_bounds,
         date_yyyymmdd,
         cycle_utc,
         forecast_hour,
         source,
         NativeContourRenderMode::Automatic,
+        1,
     )
 }
 
@@ -2065,28 +2091,42 @@ pub fn build_hrrr_live_derived_artifact_with_render_mode(
     pressure: &GenericPressureFields,
     grid: &rustwx_core::LatLonGrid,
     projected: &ProjectedMap,
+    domain_bounds: (f64, f64, f64, f64),
     date_yyyymmdd: &str,
     cycle_utc: u8,
     forecast_hour: u16,
     source: SourceId,
     contour_mode: NativeContourRenderMode,
+    native_fill_level_multiplier: usize,
 ) -> Result<HrrrDerivedLiveArtifact, Box<dyn std::error::Error>> {
     let recipe =
         DerivedRecipe::parse(recipe_slug).map_err(|err| format!("{recipe_slug}: {err}"))?;
-    let computed = compute_derived_fields_generic(surface, pressure, &[recipe])?;
-    build_render_artifact_with_contour_mode(
-        recipe,
+    with_prepared_live_derived_domain(
+        surface,
+        pressure,
         grid,
         projected,
-        date_yyyymmdd,
-        cycle_utc,
-        forecast_hour,
-        source,
-        ModelId::Hrrr,
+        domain_bounds,
         OUTPUT_WIDTH,
         OUTPUT_HEIGHT,
-        &computed,
-        contour_mode,
+        |surface, pressure, grid, projected| {
+            let computed = compute_derived_fields_generic(surface, pressure, &[recipe])?;
+            build_render_artifact_with_contour_mode(
+                recipe,
+                grid,
+                projected,
+                date_yyyymmdd,
+                cycle_utc,
+                forecast_hour,
+                source,
+                ModelId::Hrrr,
+                OUTPUT_WIDTH,
+                OUTPUT_HEIGHT,
+                &computed,
+                contour_mode,
+                native_fill_level_multiplier,
+            )
+        },
     )
 }
 
@@ -2096,6 +2136,7 @@ pub fn build_hrrr_live_derived_artifact_profiled(
     pressure: &GenericPressureFields,
     grid: &rustwx_core::LatLonGrid,
     projected: &ProjectedMap,
+    domain_bounds: (f64, f64, f64, f64),
     date_yyyymmdd: &str,
     cycle_utc: u8,
     forecast_hour: u16,
@@ -2105,26 +2146,80 @@ pub fn build_hrrr_live_derived_artifact_profiled(
     let total_start = Instant::now();
     let recipe =
         DerivedRecipe::parse(recipe_slug).map_err(|err| format!("{recipe_slug}: {err}"))?;
-    let compute_start = Instant::now();
-    let computed = compute_derived_fields_generic(surface, pressure, &[recipe])?;
-    let compute_fields_ms = compute_start.elapsed().as_millis();
-    let (artifact, mut timing) = build_render_artifact_with_contour_mode_profiled(
-        recipe,
+    with_prepared_live_derived_domain(
+        surface,
+        pressure,
         grid,
         projected,
-        date_yyyymmdd,
-        cycle_utc,
-        forecast_hour,
-        source,
-        ModelId::Hrrr,
+        domain_bounds,
         OUTPUT_WIDTH,
         OUTPUT_HEIGHT,
-        &computed,
-        contour_mode,
+        |surface, pressure, grid, projected| {
+            let compute_start = Instant::now();
+            let computed = compute_derived_fields_generic(surface, pressure, &[recipe])?;
+            let compute_fields_ms = compute_start.elapsed().as_millis();
+            let (artifact, mut timing) = build_render_artifact_with_contour_mode_profiled(
+                recipe,
+                grid,
+                projected,
+                date_yyyymmdd,
+                cycle_utc,
+                forecast_hour,
+                source,
+                ModelId::Hrrr,
+                OUTPUT_WIDTH,
+                OUTPUT_HEIGHT,
+                &computed,
+                contour_mode,
+                1,
+            )?;
+            timing.compute_fields_ms = compute_fields_ms;
+            timing.total_ms = total_start.elapsed().as_millis();
+            Ok(ProfiledHrrrDerivedLiveArtifact { artifact, timing })
+        },
+    )
+}
+
+fn with_prepared_live_derived_domain<T>(
+    surface: &GenericSurfaceFields,
+    pressure: &GenericPressureFields,
+    grid: &rustwx_core::LatLonGrid,
+    projected: &ProjectedMap,
+    domain_bounds: (f64, f64, f64, f64),
+    output_width: u32,
+    output_height: u32,
+    build: impl FnOnce(
+        &GenericSurfaceFields,
+        &GenericPressureFields,
+        &rustwx_core::LatLonGrid,
+        &ProjectedMap,
+    ) -> Result<T, Box<dyn std::error::Error>>,
+) -> Result<T, Box<dyn std::error::Error>> {
+    let cropped = crate::gridded::crop_heavy_domain_for_projected_extent(
+        surface,
+        pressure,
+        &projected.projected_x,
+        &projected.projected_y,
+        &projected.extent,
+        2,
     )?;
-    timing.compute_fields_ms = compute_fields_ms;
-    timing.total_ms = total_start.elapsed().as_millis();
-    Ok(ProfiledHrrrDerivedLiveArtifact { artifact, timing })
+    if let Some(cropped) = cropped {
+        let cropped_projected = build_projected_map_with_projection(
+            &cropped.grid.lat_deg,
+            &cropped.grid.lon_deg,
+            cropped.surface.projection.as_ref(),
+            domain_bounds,
+            map_frame_aspect_ratio(output_width, output_height, true, true),
+        )?;
+        build(
+            &cropped.surface,
+            &cropped.pressure,
+            &cropped.grid,
+            &cropped_projected,
+        )
+    } else {
+        build(surface, pressure, grid, projected)
+    }
 }
 
 pub(crate) fn plan_derived_recipes(
@@ -2720,6 +2815,8 @@ fn build_render_artifact(
     output_width: u32,
     output_height: u32,
     computed: &DerivedComputedFields,
+    contour_mode: NativeContourRenderMode,
+    native_fill_level_multiplier: usize,
 ) -> Result<HrrrDerivedLiveArtifact, Box<dyn std::error::Error>> {
     build_render_artifact_with_contour_mode(
         recipe,
@@ -2733,7 +2830,8 @@ fn build_render_artifact(
         output_width,
         output_height,
         computed,
-        NativeContourRenderMode::Automatic,
+        contour_mode,
+        native_fill_level_multiplier,
     )
 }
 
@@ -2750,6 +2848,7 @@ fn build_render_artifact_with_contour_mode(
     output_height: u32,
     computed: &DerivedComputedFields,
     contour_mode: NativeContourRenderMode,
+    native_fill_level_multiplier: usize,
 ) -> Result<HrrrDerivedLiveArtifact, Box<dyn std::error::Error>> {
     let (field, mut request) = match recipe {
         DerivedRecipe::Sbcape => solar07_request(
@@ -3003,7 +3102,12 @@ fn build_render_artifact_with_contour_mode(
     });
     request.projected_lines = projected.lines.clone();
     request.projected_polygons = projected.polygons.clone();
-    maybe_apply_native_contour_fill_for_mode(recipe, &mut request, contour_mode)?;
+    maybe_apply_native_contour_fill_for_mode(
+        recipe,
+        &mut request,
+        contour_mode,
+        native_fill_level_multiplier,
+    )?;
     if matches!(recipe, DerivedRecipe::ThetaE2m10mWinds) {
         let u_kt = computed_surface_u10(computed, recipe)?;
         let v_kt = computed_surface_v10(computed, recipe)?;
@@ -3037,6 +3141,7 @@ fn build_render_artifact_with_contour_mode_profiled(
     output_height: u32,
     computed: &DerivedComputedFields,
     contour_mode: NativeContourRenderMode,
+    native_fill_level_multiplier: usize,
 ) -> Result<(HrrrDerivedLiveArtifact, DerivedLiveArtifactBuildTiming), Box<dyn std::error::Error>> {
     let total_start = Instant::now();
     let request_base_build_start = Instant::now();
@@ -3294,8 +3399,12 @@ fn build_render_artifact_with_contour_mode_profiled(
     request.projected_polygons = projected.polygons.clone();
     let request_base_build_ms = request_base_build_start.elapsed().as_millis();
 
-    let native_contour_timing =
-        maybe_apply_native_contour_fill_for_mode_profiled(recipe, &mut request, contour_mode)?;
+    let native_contour_timing = maybe_apply_native_contour_fill_for_mode_profiled(
+        recipe,
+        &mut request,
+        contour_mode,
+        native_fill_level_multiplier,
+    )?;
 
     let mut wind_overlay_build_ms = 0;
     if matches!(recipe, DerivedRecipe::ThetaE2m10mWinds) {
@@ -3410,6 +3519,28 @@ fn native_contour_product_config(recipe: DerivedRecipe) -> Option<NativeContourP
     }
 }
 
+fn signature_contour_recipe_enabled(recipe: DerivedRecipe) -> bool {
+    matches!(
+        recipe,
+        DerivedRecipe::StpFixed
+            | DerivedRecipe::Srh01km
+            | DerivedRecipe::Srh03km
+            | DerivedRecipe::Ehi01km
+            | DerivedRecipe::Ehi03km
+            | DerivedRecipe::Mlcape
+            | DerivedRecipe::Sbcape
+            | DerivedRecipe::LapseRate700500
+            | DerivedRecipe::BulkShear01km
+            | DerivedRecipe::BulkShear06km
+            | DerivedRecipe::ThetaE2m10mWinds
+            | DerivedRecipe::ApparentTemperature2m
+            | DerivedRecipe::HeatIndex2m
+            | DerivedRecipe::LiftedIndex
+            | DerivedRecipe::TemperatureAdvection700mb
+            | DerivedRecipe::TemperatureAdvection850mb
+    )
+}
+
 pub fn native_contour_line_levels_for_recipe_slug(
     recipe_slug: &str,
 ) -> Result<Option<Vec<f64>>, String> {
@@ -3421,27 +3552,59 @@ fn maybe_apply_native_contour_fill_for_mode(
     recipe: DerivedRecipe,
     request: &mut MapRenderRequest,
     contour_mode: NativeContourRenderMode,
+    native_fill_level_multiplier: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    maybe_apply_native_contour_fill_for_mode_profiled(recipe, request, contour_mode).map(|_| ())
+    maybe_apply_native_contour_fill_for_mode_profiled(
+        recipe,
+        request,
+        contour_mode,
+        native_fill_level_multiplier,
+    )
+    .map(|_| ())
 }
 
 fn maybe_apply_native_contour_fill_for_mode_profiled(
     recipe: DerivedRecipe,
     request: &mut MapRenderRequest,
     contour_mode: NativeContourRenderMode,
+    native_fill_level_multiplier: usize,
 ) -> Result<NativeContourBuildTiming, Box<dyn std::error::Error>> {
     let total_start = Instant::now();
     if matches!(contour_mode, NativeContourRenderMode::LegacyRaster) {
         return Ok(NativeContourBuildTiming::default());
     }
-    let Some(config) = native_contour_product_config(recipe) else {
-        return Ok(NativeContourBuildTiming::default());
-    };
     let Some(projected_domain) = request.projected_domain.as_ref() else {
         return Ok(NativeContourBuildTiming::default());
     };
-    request.scale = config.scale;
-    request.cbar_tick_step = config.tick_step;
+    let config = match contour_mode {
+        NativeContourRenderMode::Automatic => match native_contour_product_config(recipe) {
+            Some(config) => config,
+            None => return Ok(NativeContourBuildTiming::default()),
+        },
+        NativeContourRenderMode::Signature => {
+            if !signature_contour_recipe_enabled(recipe) {
+                return Ok(NativeContourBuildTiming::default());
+            }
+            native_contour_product_config(recipe).unwrap_or_else(|| NativeContourProductConfig {
+                scale: request.scale.clone(),
+                line_levels: &[],
+                line_style: ProjectedContourLineStyle::default(),
+                tick_step: request.cbar_tick_step,
+            })
+        }
+        NativeContourRenderMode::ExperimentalAllProjected => native_contour_product_config(recipe)
+            .unwrap_or_else(|| NativeContourProductConfig {
+                scale: request.scale.clone(),
+                line_levels: &[],
+                line_style: ProjectedContourLineStyle::default(),
+                tick_step: request.cbar_tick_step,
+            }),
+        NativeContourRenderMode::LegacyRaster => unreachable!(),
+    };
+    request.scale = densify_native_contour_scale(config.scale, native_fill_level_multiplier);
+    if config.tick_step.is_some() {
+        request.cbar_tick_step = config.tick_step;
+    }
     let (geometry, geometry_timing) = build_projected_contour_geometry_profile(
         &request.field,
         projected_domain,
@@ -3461,6 +3624,23 @@ fn maybe_apply_native_contour_fill_for_mode_profiled(
         line_topology_ms: geometry_timing.line_topology_ms,
         line_geometry_ms: geometry_timing.line_geometry_ms,
     })
+}
+
+fn densify_native_contour_scale(
+    scale: rustwx_render::ColorScale,
+    native_fill_level_multiplier: usize,
+) -> rustwx_render::ColorScale {
+    if native_fill_level_multiplier <= 1 {
+        return scale;
+    }
+    let discrete = scale.resolved_discrete();
+    rustwx_render::ColorScale::Discrete(densify_discrete_scale(
+        &discrete,
+        LevelDensity {
+            multiplier: native_fill_level_multiplier,
+            min_source_level_count: 2,
+        },
+    ))
 }
 
 fn heavy_ecape_subtitle_right(recipe: DerivedRecipe, source: SourceId) -> String {
@@ -3510,6 +3690,12 @@ fn render_derived_heavy_recipe(
         Some(heavy_ecape_subtitle_right(recipe, source)),
     )?;
     render_request.title = Some(recipe.title().to_string());
+    maybe_apply_native_contour_fill_for_mode(
+        recipe,
+        &mut render_request,
+        request.contour_mode,
+        request.native_fill_level_multiplier,
+    )?;
     let save_timing =
         save_png_profile_with_options(&render_request, &output_path, &request.png_write_options())?;
     let render_ms = render_start.elapsed().as_millis();
@@ -4049,6 +4235,8 @@ fn render_derived_output_recipe(
         request.output_width,
         request.output_height,
         computed,
+        request.contour_mode,
+        request.native_fill_level_multiplier,
     )
     .map_err(thread_render_error)?;
     let save_timing = save_png_profile_with_options(
@@ -4300,6 +4488,7 @@ mod tests {
             900,
             values.clone(),
             NativeContourRenderMode::Automatic,
+            1,
         )
         .unwrap();
         assert!(!native.request.projected_data_polygons.is_empty());
@@ -4325,11 +4514,129 @@ mod tests {
             900,
             values,
             NativeContourRenderMode::LegacyRaster,
+            1,
         )
         .unwrap();
         assert!(legacy.request.projected_data_polygons.is_empty());
         assert!(
             legacy
+                .request
+                .field
+                .values
+                .iter()
+                .any(|value| value.is_finite())
+        );
+    }
+
+    #[test]
+    fn experimental_contour_mode_can_promote_nonconfigured_derived_products() {
+        let grid = sample_native_contour_grid();
+        let projected = sample_projected_map();
+        let values = vec![-9.0, -6.0, -3.0, -2.0, 0.0, 2.0, 4.0, 7.0, 10.0];
+
+        let automatic = build_native_render_artifact(
+            DerivedRecipe::LiftedIndex,
+            &grid,
+            &projected,
+            "20260414",
+            23,
+            0,
+            SourceId::Nomads,
+            ModelId::Hrrr,
+            1200,
+            900,
+            values.clone(),
+            NativeContourRenderMode::Automatic,
+            1,
+        )
+        .unwrap();
+        assert!(automatic.request.projected_data_polygons.is_empty());
+
+        let experimental = build_native_render_artifact(
+            DerivedRecipe::LiftedIndex,
+            &grid,
+            &projected,
+            "20260414",
+            23,
+            0,
+            SourceId::Nomads,
+            ModelId::Hrrr,
+            1200,
+            900,
+            values,
+            NativeContourRenderMode::ExperimentalAllProjected,
+            1,
+        )
+        .unwrap();
+        assert!(!experimental.request.projected_data_polygons.is_empty());
+        assert!(
+            experimental
+                .request
+                .field
+                .values
+                .iter()
+                .all(|value| value.is_nan())
+        );
+    }
+
+    #[test]
+    fn signature_contour_mode_promotes_selected_signature_products() {
+        let grid = sample_native_contour_grid();
+        let projected = sample_projected_map();
+        let values = vec![-9.0, -6.0, -3.0, -2.0, 0.0, 2.0, 4.0, 7.0, 10.0];
+
+        let signature = build_native_render_artifact(
+            DerivedRecipe::LiftedIndex,
+            &grid,
+            &projected,
+            "20260414",
+            23,
+            0,
+            SourceId::Nomads,
+            ModelId::Hrrr,
+            1200,
+            900,
+            values,
+            NativeContourRenderMode::Signature,
+            1,
+        )
+        .unwrap();
+        assert!(!signature.request.projected_data_polygons.is_empty());
+        assert!(
+            signature
+                .request
+                .field
+                .values
+                .iter()
+                .all(|value| value.is_nan())
+        );
+    }
+
+    #[test]
+    fn signature_contour_mode_keeps_non_signature_products_rasterized() {
+        let grid = sample_native_contour_grid();
+        let projected = sample_projected_map();
+        let values = vec![-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 1.0, 0.0, -1.0];
+
+        let signature = build_native_render_artifact(
+            DerivedRecipe::Mucin,
+            &grid,
+            &projected,
+            "20260414",
+            23,
+            0,
+            SourceId::Nomads,
+            ModelId::Hrrr,
+            1200,
+            900,
+            values,
+            NativeContourRenderMode::Signature,
+            1,
+        )
+        .unwrap();
+        assert!(signature.request.projected_data_polygons.is_empty());
+        assert!(
+            signature
                 .request
                 .field
                 .values
@@ -4488,6 +4795,8 @@ mod tests {
             pressure_product_override: None,
             source_mode: ProductSourceMode::Fastest,
             allow_large_heavy_domain: false,
+            contour_mode: NativeContourRenderMode::Automatic,
+            native_fill_level_multiplier: 1,
             output_width: OUTPUT_WIDTH,
             output_height: OUTPUT_HEIGHT,
             png_compression: PngCompressionMode::Default,

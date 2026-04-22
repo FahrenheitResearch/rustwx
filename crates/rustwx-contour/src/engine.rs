@@ -72,8 +72,40 @@ impl ContourEngine {
                 continue;
             };
 
-            for bin in bins.bins() {
-                let fragments = self.band_fragments_for_cell(&sample, *bin);
+            let (min_value, max_value) = sample.value_range_including_center();
+            let mut sole_active_bin = None;
+            let mut active_bin_count = 0usize;
+            for &bin in bins.bins() {
+                if !bin_overlaps_value_range(bin, min_value, max_value) {
+                    continue;
+                }
+                active_bin_count += 1;
+                if sole_active_bin.is_none() {
+                    sole_active_bin = Some(bin);
+                }
+                if active_bin_count > 1 {
+                    break;
+                }
+            }
+
+            if let Some(bin) = sole_active_bin
+                .filter(|bin| active_bin_count == 1 && sample.all_values_in_bin(*bin))
+            {
+                if let Some(polygon) = sample.full_cell_polygon() {
+                    polygons.push(BandPolygon {
+                        bin_index: bin.index,
+                        cell,
+                        polygon,
+                    });
+                }
+                continue;
+            }
+
+            for &bin in bins.bins() {
+                if !bin_overlaps_value_range(bin, min_value, max_value) {
+                    continue;
+                }
+                let fragments = self.band_fragments_for_cell(&sample, bin);
                 for polygon in merge_fragments(fragments) {
                     polygons.push(BandPolygon {
                         bin_index: bin.index,
@@ -246,6 +278,33 @@ impl CellSample {
             [self.corners[3], self.corners[0], self.center],
         ]
     }
+
+    fn value_range_including_center(&self) -> (f64, f64) {
+        let mut min_value = self.center.value;
+        let mut max_value = self.center.value;
+        for corner in &self.corners {
+            min_value = min_value.min(corner.value);
+            max_value = max_value.max(corner.value);
+        }
+        (min_value, max_value)
+    }
+
+    fn all_values_in_bin(&self, bin: LevelBin) -> bool {
+        bin.contains(self.center.value)
+            && self.corners.iter().all(|corner| bin.contains(corner.value))
+    }
+
+    fn full_cell_polygon(&self) -> Option<Polygon> {
+        let ring = sanitize_ring(self.corners.iter().map(|corner| corner.point).collect());
+        if ring.len() < 3 {
+            return None;
+        }
+        let polygon = Polygon {
+            exterior: Ring { vertices: ring },
+            holes: Vec::new(),
+        };
+        (polygon.area() > GEOMETRY_EPSILON).then_some(polygon)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -391,6 +450,26 @@ fn is_inside(value: f64, boundary: f64, rule: ClipRule) -> bool {
         ClipRule::UpperExclusive => value < boundary,
         ClipRule::UpperInclusive => value <= boundary,
     }
+}
+
+fn bin_overlaps_value_range(bin: LevelBin, min_value: f64, max_value: f64) -> bool {
+    let lower_ok = match bin.lower {
+        LevelBound::NegInfinity => true,
+        LevelBound::Finite(boundary) => max_value >= boundary,
+        LevelBound::PosInfinity => false,
+    };
+    let upper_ok = match bin.upper {
+        LevelBound::NegInfinity => false,
+        LevelBound::Finite(boundary) => {
+            if bin.upper_inclusive {
+                min_value <= boundary
+            } else {
+                min_value < boundary
+            }
+        }
+        LevelBound::PosInfinity => true,
+    };
+    lower_ok && upper_ok
 }
 
 fn interpolate(a: SamplePoint, b: SamplePoint, boundary: f64) -> SamplePoint {

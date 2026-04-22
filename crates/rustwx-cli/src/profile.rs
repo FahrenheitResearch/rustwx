@@ -358,6 +358,7 @@ fn profile_map_mode(
             pressure,
             grid,
             projected,
+            request.domain.bounds,
             &request.date_yyyymmdd,
             request.cycle_utc,
             request.forecast_hour,

@@ -30,6 +30,8 @@ struct Args {
     region: RegionPreset,
     #[arg(long = "product", value_delimiter = ',', num_args = 1..)]
     products: Vec<String>,
+    #[arg(long, default_value_t = 1)]
+    native_fill_level_multiplier: usize,
     #[arg(long, default_value_t = 5)]
     rust_runs: usize,
     #[arg(long, default_value_t = 5)]
@@ -65,6 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cache_root,
         use_cache: !args.no_cache,
         product_slugs: products,
+        native_fill_level_multiplier: args.native_fill_level_multiplier.max(1),
         rust_runs: args.rust_runs,
         python_runs: args.python_runs,
         python_executable: args.python,

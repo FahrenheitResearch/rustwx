@@ -60,6 +60,7 @@ pub use solar07::{
 use crate::color::Rgba;
 pub use crate::colormap::{
     ColormapBuildOptions, LegendControls, LegendMode, LevelDensity, RenderDensity,
+    densify_discrete_scale,
 };
 use crate::colormap::{Extend, LeveledColormap};
 use crate::overlay::{

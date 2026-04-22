@@ -32,6 +32,8 @@ pub struct WeatherNativeBenchmarkRequest {
     pub cache_root: PathBuf,
     pub use_cache: bool,
     pub product_slugs: Vec<String>,
+    #[serde(default = "default_native_fill_level_multiplier")]
+    pub native_fill_level_multiplier: usize,
     pub rust_runs: usize,
     pub python_runs: usize,
     pub python_executable: String,
@@ -156,6 +158,10 @@ fn default_png_compression() -> PngCompressionMode {
     PngCompressionMode::Default
 }
 
+fn default_native_fill_level_multiplier() -> usize {
+    1
+}
+
 pub fn default_benchmark_products() -> Vec<String> {
     vec![
         "stp_fixed".to_string(),
@@ -251,11 +257,13 @@ fn run_benchmark_case(
         &loaded.pressure_decode.value,
         &loaded.grid,
         projected,
+        request.domain.bounds,
         &request.date_yyyymmdd,
         request.cycle_utc,
         request.forecast_hour,
         request.source,
         NativeContourRenderMode::Automatic,
+        request.native_fill_level_multiplier,
     )?;
     let native_request_build_ms = native_build_start.elapsed().as_millis();
 
@@ -266,11 +274,13 @@ fn run_benchmark_case(
         &loaded.pressure_decode.value,
         &loaded.grid,
         projected,
+        request.domain.bounds,
         &request.date_yyyymmdd,
         request.cycle_utc,
         request.forecast_hour,
         request.source,
         NativeContourRenderMode::LegacyRaster,
+        1,
     )?;
     let legacy_request_build_ms = legacy_build_start.elapsed().as_millis();
 
@@ -448,12 +458,13 @@ fn render_summary_markdown(summary: &WeatherNativeBenchmarkSummary) -> String {
     let mut markdown = String::new();
     markdown.push_str("# Weather-native benchmark summary\n\n");
     markdown.push_str(&format!(
-        "- model: `{}`\n- date/cycle: `{}` `{}`Z f{:03}\n- domain: `{}`\n- stage timing: load={} ms, projected_map={} ms\n\n",
+        "- model: `{}`\n- date/cycle: `{}` `{}`Z f{:03}\n- domain: `{}`\n- native fill level multiplier: `{}`\n- stage timing: load={} ms, projected_map={} ms\n\n",
         summary.model,
         summary.request.date_yyyymmdd,
         summary.request.cycle_utc,
         summary.request.forecast_hour,
         summary.request.domain.slug,
+        summary.request.native_fill_level_multiplier,
         summary.stage_timing.data_load_ms,
         summary.stage_timing.projected_map_build_ms,
     ));

@@ -1,10 +1,13 @@
 use std::fs;
 use std::path::PathBuf;
 
+#[path = "../contour_mode.rs"]
+mod contour_mode;
 #[path = "../region.rs"]
 mod region;
 
 use clap::Parser;
+use contour_mode::ContourModeArg;
 use region::RegionPreset;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::direct::{HrrrDirectBatchRequest, run_hrrr_direct_batch};
@@ -38,6 +41,10 @@ struct Args {
     cache_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_cache: bool,
+    #[arg(long, value_enum, default_value_t = ContourModeArg::Automatic)]
+    contour_mode: ContourModeArg,
+    #[arg(long, default_value_t = 1)]
+    native_fill_level_multiplier: usize,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -84,6 +91,8 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         cache_root: cache_root.clone(),
         use_cache: !args.no_cache,
         recipe_slugs: args.recipes.clone(),
+        contour_mode: args.contour_mode.into(),
+        native_fill_level_multiplier: args.native_fill_level_multiplier.max(1),
         output_width: 1200,
         output_height: 900,
         png_compression: rustwx_render::PngCompressionMode::Default,

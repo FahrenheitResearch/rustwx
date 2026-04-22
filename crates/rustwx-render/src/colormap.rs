@@ -1,4 +1,5 @@
 use crate::color::{Rgba, lerp_rgba};
+use crate::request::DiscreteColorScale;
 use serde::{Deserialize, Serialize};
 
 const PALETTE_RESOLUTION_MULTIPLIER: usize = 8;
@@ -299,14 +300,39 @@ impl LeveledColormap {
     }
 }
 
+pub fn densify_discrete_scale(
+    scale: &DiscreteColorScale,
+    density: LevelDensity,
+) -> DiscreteColorScale {
+    let dense_levels = densify_levels_with_density(&scale.levels, density);
+    if dense_levels == scale.levels {
+        return scale.clone();
+    }
+
+    let palette = scale
+        .colors
+        .iter()
+        .copied()
+        .map(Into::into)
+        .collect::<Vec<Rgba>>();
+    let dense_palette = densify_palette_with_multiplier(&palette, PALETTE_RESOLUTION_MULTIPLIER);
+
+    DiscreteColorScale {
+        levels: dense_levels,
+        colors: dense_palette.into_iter().map(Into::into).collect(),
+        extend: scale.extend,
+        mask_below: scale.mask_below,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         ColormapBuildOptions, LEVEL_RESOLUTION_MULTIPLIER, LevelDensity, LeveledColormap,
-        PALETTE_RESOLUTION_MULTIPLIER, densify_levels_with_density,
+        PALETTE_RESOLUTION_MULTIPLIER, densify_discrete_scale, densify_levels_with_density,
         densify_palette_with_multiplier,
     };
-    use crate::color::Rgba;
+    use crate::{Color, DiscreteColorScale, ExtendMode, color::Rgba};
 
     #[test]
     fn palette_densification_increases_internal_resolution_eightfold() {
@@ -421,5 +447,24 @@ mod tests {
         );
         assert_eq!(cmap.under_color, Some(Rgba::new(0, 0, 0)));
         assert_eq!(cmap.over_color, Some(Rgba::new(70, 70, 70)));
+    }
+
+    #[test]
+    fn densify_discrete_scale_inserts_intermediate_intervals() {
+        let scale = DiscreteColorScale {
+            levels: vec![0.0, 2.0, 4.0],
+            colors: vec![Color::rgba(0, 0, 0, 255), Color::rgba(255, 255, 255, 255)],
+            extend: ExtendMode::Neither,
+            mask_below: None,
+        };
+        let dense = densify_discrete_scale(
+            &scale,
+            LevelDensity {
+                multiplier: 2,
+                min_source_level_count: 2,
+            },
+        );
+        assert_eq!(dense.levels, vec![0.0, 1.0, 2.0, 3.0, 4.0]);
+        assert!(dense.colors.len() >= dense.levels.len() - 1);
     }
 }

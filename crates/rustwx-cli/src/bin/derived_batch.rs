@@ -1,10 +1,13 @@
 use std::fs;
 use std::path::PathBuf;
 
+#[path = "../contour_mode.rs"]
+mod contour_mode;
 #[path = "../region.rs"]
 mod region;
 
 use clap::{Parser, ValueEnum};
+use contour_mode::ContourModeArg;
 use region::RegionPreset;
 use rustwx_core::{ModelId, SourceId};
 use rustwx_models::model_summary;
@@ -59,6 +62,10 @@ struct Args {
         help = "Allow very large heavy ECAPE domains instead of refusing the run"
     )]
     allow_large_heavy_domain: bool,
+    #[arg(long, value_enum, default_value_t = ContourModeArg::Automatic)]
+    contour_mode: ContourModeArg,
+    #[arg(long, default_value_t = 1)]
+    native_fill_level_multiplier: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -144,6 +151,8 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         pressure_product_override: args.pressure_product.clone(),
         source_mode: args.source_mode.into(),
         allow_large_heavy_domain: args.allow_large_heavy_domain,
+        contour_mode: args.contour_mode.into(),
+        native_fill_level_multiplier: args.native_fill_level_multiplier.max(1),
         output_width: 1200,
         output_height: 900,
         png_compression: rustwx_render::PngCompressionMode::Default,

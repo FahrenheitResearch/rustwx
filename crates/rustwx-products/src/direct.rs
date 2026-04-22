@@ -1,3 +1,4 @@
+use crate::derived::NativeContourRenderMode;
 use grib_core::grib2::Grib2File;
 use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, CanonicalField, CycleSpec, FieldSelector,
@@ -11,11 +12,12 @@ use rustwx_models::{
     latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan,
 };
 use rustwx_render::{
-    Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode, MapRenderRequest,
-    PanelGridLayout, PanelPadding, PngCompressionMode, PngWriteOptions, ProductVisualMode,
-    ProjectedDomain, ProjectedMap, RenderImageTiming, RenderStateTiming, WindBarbLayer,
-    draw_centered_text_line, map_frame_aspect_ratio_for_mode, render_panel_grid,
-    save_png_profile_with_options, save_rgba_png_profile_with_options,
+    Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode, LevelDensity,
+    MapRenderRequest, PanelGridLayout, PanelPadding, PngCompressionMode, PngWriteOptions,
+    ProductVisualMode, ProjectedContourLineStyle, ProjectedDomain, ProjectedMap, RenderImageTiming,
+    RenderStateTiming, WindBarbLayer, build_projected_contour_geometry_profile,
+    densify_discrete_scale, draw_centered_text_line, map_frame_aspect_ratio_for_mode,
+    render_panel_grid, save_png_profile_with_options, save_rgba_png_profile_with_options,
     solar07::{Solar07Palette, solar07_palette},
 };
 use serde::{Deserialize, Serialize};
@@ -61,6 +63,10 @@ fn default_png_compression() -> PngCompressionMode {
     PngCompressionMode::Default
 }
 
+fn default_native_fill_level_multiplier() -> usize {
+    1
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectBatchRequest {
     pub model: ModelId,
@@ -74,6 +80,10 @@ pub struct DirectBatchRequest {
     pub use_cache: bool,
     pub recipe_slugs: Vec<String>,
     pub product_overrides: HashMap<String, String>,
+    #[serde(default)]
+    pub contour_mode: NativeContourRenderMode,
+    #[serde(default = "default_native_fill_level_multiplier")]
+    pub native_fill_level_multiplier: usize,
     #[serde(default = "default_output_width")]
     pub output_width: u32,
     #[serde(default = "default_output_height")]
@@ -93,6 +103,10 @@ pub struct HrrrDirectBatchRequest {
     pub cache_root: PathBuf,
     pub use_cache: bool,
     pub recipe_slugs: Vec<String>,
+    #[serde(default)]
+    pub contour_mode: NativeContourRenderMode,
+    #[serde(default = "default_native_fill_level_multiplier")]
+    pub native_fill_level_multiplier: usize,
     #[serde(default = "default_output_width")]
     pub output_width: u32,
     #[serde(default = "default_output_height")]
@@ -310,6 +324,8 @@ impl DirectBatchRequest {
             use_cache: request.use_cache,
             recipe_slugs: request.recipe_slugs.clone(),
             product_overrides: HashMap::new(),
+            contour_mode: request.contour_mode,
+            native_fill_level_multiplier: request.native_fill_level_multiplier,
             output_width: request.output_width,
             output_height: request.output_height,
             png_compression: request.png_compression,
@@ -1247,6 +1263,8 @@ fn render_direct_recipe(
             contour_layer_cache,
             barb_layer_cache,
             barb_stride_cache,
+            request.contour_mode,
+            request.native_fill_level_multiplier,
         )?;
         let request_build_ms = request_build_start.elapsed().as_millis();
         render_request.subtitle_left = Some(format!(
@@ -1417,6 +1435,8 @@ fn render_direct_composite_panel(
             contour_layer_cache,
             barb_layer_cache,
             barb_stride_cache,
+            request.contour_mode,
+            request.native_fill_level_multiplier,
         )?;
         build_timing.field_prepare_ms += panel_timing.field_prepare_ms;
         build_timing.contour_prepare_ms += panel_timing.contour_prepare_ms;
@@ -1487,6 +1507,8 @@ fn build_render_request(
     contour_layer_cache: &SharedContourLayerCache,
     barb_layer_cache: &SharedBarbLayerCache,
     barb_stride_cache: &SharedBarbStrideCache,
+    contour_mode: NativeContourRenderMode,
+    native_fill_level_multiplier: usize,
 ) -> Result<(MapRenderRequest, DirectRequestBuildTiming), Box<dyn std::error::Error>> {
     let mut timing = DirectRequestBuildTiming::default();
     let field_prepare_start = Instant::now();
@@ -1541,7 +1563,77 @@ fn build_render_request(
         barb_stride_cache,
     );
     timing.barb_prepare_ms = barb_prepare_start.elapsed().as_millis();
+    if !overlay_only {
+        let contour_fill_start = Instant::now();
+        maybe_apply_experimental_projected_contours(
+            recipe,
+            &mut request,
+            contour_mode,
+            native_fill_level_multiplier,
+        )?;
+        timing.contour_prepare_ms += contour_fill_start.elapsed().as_millis();
+    }
     Ok((request, timing))
+}
+
+fn maybe_apply_experimental_projected_contours(
+    recipe: &PlotRecipe,
+    request: &mut MapRenderRequest,
+    contour_mode: NativeContourRenderMode,
+    native_fill_level_multiplier: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let enabled = match contour_mode {
+        NativeContourRenderMode::Automatic | NativeContourRenderMode::LegacyRaster => false,
+        NativeContourRenderMode::ExperimentalAllProjected => true,
+        NativeContourRenderMode::Signature => signature_contour_direct_recipe_enabled(recipe),
+    };
+    if !enabled {
+        return Ok(());
+    }
+    let Some(projected_domain) = request.projected_domain.as_ref() else {
+        return Ok(());
+    };
+    request.scale =
+        densify_direct_native_contour_scale(request.scale.clone(), native_fill_level_multiplier);
+    let (geometry, _) = build_projected_contour_geometry_profile(
+        &request.field,
+        projected_domain,
+        &request.scale,
+        &[],
+        ProjectedContourLineStyle::default(),
+    )?;
+    request.projected_data_polygons.extend(geometry.fills);
+    request.projected_lines.extend(geometry.lines);
+    request.field.values.fill(f32::NAN);
+    Ok(())
+}
+
+fn signature_contour_direct_recipe_enabled(recipe: &PlotRecipe) -> bool {
+    matches!(
+        recipe.slug,
+        "mslp_10m_winds"
+            | "200mb_height_winds"
+            | "200mb_absolute_vorticity_height_winds"
+            | "300mb_temperature_height_winds"
+            | "700mb_height_winds"
+    )
+}
+
+fn densify_direct_native_contour_scale(
+    scale: ColorScale,
+    native_fill_level_multiplier: usize,
+) -> ColorScale {
+    if native_fill_level_multiplier <= 1 {
+        return scale;
+    }
+    let discrete = scale.resolved_discrete();
+    ColorScale::Discrete(densify_discrete_scale(
+        &discrete,
+        LevelDensity {
+            multiplier: native_fill_level_multiplier,
+            min_source_level_count: 2,
+        },
+    ))
 }
 
 fn visual_mode_for_direct_recipe(
@@ -2122,10 +2214,20 @@ mod tests {
             use_cache: false,
             recipe_slugs: Vec::new(),
             product_overrides: HashMap::new(),
+            contour_mode: NativeContourRenderMode::Automatic,
+            native_fill_level_multiplier: 1,
             output_width: OUTPUT_WIDTH,
             output_height: OUTPUT_HEIGHT,
             png_compression: PngCompressionMode::Default,
         }
+    }
+
+    #[test]
+    fn signature_contour_direct_recipe_list_is_curated() {
+        let mslp_recipe = plot_recipe("mslp_10m_winds").unwrap();
+        let temperature_recipe = plot_recipe("2m_temperature").unwrap();
+        assert!(signature_contour_direct_recipe_enabled(mslp_recipe));
+        assert!(!signature_contour_direct_recipe_enabled(temperature_recipe));
     }
 
     /// Test-only equivalent of the legacy `build_direct_fetch_request`

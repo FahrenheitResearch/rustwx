@@ -312,10 +312,11 @@ fn build_wind_grid(
     )?)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct SampleStencil {
-    indices: Vec<usize>,
-    weights: Vec<f64>,
+    len: u8,
+    indices: [usize; INTERPOLATED_NEIGHBOR_COUNT],
+    weights: [f64; INTERPOLATED_NEIGHBOR_COUNT],
 }
 
 fn build_sample_stencils(
@@ -336,38 +337,85 @@ fn sample_stencil_for_point(
     point: GeoPoint,
     interpolation: HorizontalInterpolation,
 ) -> SampleStencil {
-    let mut nearest = candidates
-        .iter()
-        .map(|&idx| (idx, geographic_distance_score(surface, idx, point)))
-        .collect::<Vec<_>>();
-    nearest.sort_by(|left, right| left.1.partial_cmp(&right.1).unwrap_or(Ordering::Equal));
-
     let keep = match interpolation {
         HorizontalInterpolation::Nearest => 1,
-        HorizontalInterpolation::Bilinear => INTERPOLATED_NEIGHBOR_COUNT.min(nearest.len()),
+        HorizontalInterpolation::Bilinear => INTERPOLATED_NEIGHBOR_COUNT,
     };
-    let nearest = &nearest[..keep.max(1)];
+    let keep = keep.max(1);
+    let mut nearest = [(usize::MAX, f64::INFINITY); INTERPOLATED_NEIGHBOR_COUNT];
+    let mut nearest_len = 0usize;
+    for &idx in candidates {
+        let distance = geographic_distance_score(surface, idx, point);
+        insert_best_candidate(&mut nearest, &mut nearest_len, keep, idx, distance);
+    }
+    let nearest_len = nearest_len.max(1);
 
     if nearest[0].1 <= 1.0e-12 || matches!(interpolation, HorizontalInterpolation::Nearest) {
+        let mut indices = [0usize; INTERPOLATED_NEIGHBOR_COUNT];
+        indices[0] = nearest[0].0;
         return SampleStencil {
-            indices: vec![nearest[0].0],
-            weights: vec![1.0],
+            len: 1,
+            indices,
+            weights: [1.0, 0.0, 0.0, 0.0],
         };
     }
 
-    let mut weights = nearest
-        .iter()
-        .map(|(_, distance)| 1.0 / distance.max(1.0e-12))
-        .collect::<Vec<_>>();
-    let weight_sum = weights.iter().sum::<f64>().max(1.0e-12);
-    for weight in &mut weights {
+    let mut indices = [0usize; INTERPOLATED_NEIGHBOR_COUNT];
+    let mut weights = [0.0; INTERPOLATED_NEIGHBOR_COUNT];
+    let mut weight_sum = 0.0;
+    for slot in 0..nearest_len {
+        indices[slot] = nearest[slot].0;
+        weights[slot] = 1.0 / nearest[slot].1.max(1.0e-12);
+        weight_sum += weights[slot];
+    }
+    let weight_sum = weight_sum.max(1.0e-12);
+    for weight in &mut weights[..nearest_len] {
         *weight /= weight_sum;
     }
 
     SampleStencil {
-        indices: nearest.iter().map(|(idx, _)| *idx).collect(),
+        len: nearest_len as u8,
+        indices,
         weights,
     }
+}
+
+fn insert_best_candidate(
+    nearest: &mut [(usize, f64); INTERPOLATED_NEIGHBOR_COUNT],
+    nearest_len: &mut usize,
+    keep: usize,
+    idx: usize,
+    distance: f64,
+) {
+    let keep = keep.min(INTERPOLATED_NEIGHBOR_COUNT).max(1);
+    let mut insert_at = *nearest_len;
+    for slot in 0..*nearest_len {
+        match distance
+            .partial_cmp(&nearest[slot].1)
+            .unwrap_or(Ordering::Equal)
+        {
+            Ordering::Less => {
+                insert_at = slot;
+                break;
+            }
+            Ordering::Equal if idx < nearest[slot].0 => {
+                insert_at = slot;
+                break;
+            }
+            Ordering::Equal | Ordering::Greater => {}
+        }
+    }
+    if insert_at >= keep {
+        return;
+    }
+
+    let old_len = *nearest_len;
+    let new_len = (old_len + 1).min(keep);
+    for slot in (insert_at..new_len.saturating_sub(1)).rev() {
+        nearest[slot + 1] = nearest[slot];
+    }
+    nearest[insert_at] = (idx, distance);
+    *nearest_len = new_len;
 }
 
 fn geographic_distance_score(surface: &SurfaceFields, idx: usize, point: GeoPoint) -> f64 {
@@ -388,7 +436,9 @@ fn sample_weighted_level(values: &[f64], level_offset: usize, stencil: &SampleSt
 fn sample_weighted_indices(values: &[f64], base_offset: usize, stencil: &SampleStencil) -> f64 {
     let mut weighted_sum = 0.0;
     let mut weight_sum = 0.0;
-    for (&idx, &weight) in stencil.indices.iter().zip(stencil.weights.iter()) {
+    for slot in 0..stencil.len as usize {
+        let idx = stencil.indices[slot];
+        let weight = stencil.weights[slot];
         let value = values[base_offset + idx];
         if value.is_finite() {
             weighted_sum += value * weight;
@@ -516,7 +566,7 @@ mod tests {
         .build_layout()
         .unwrap();
 
-        let artifact = build_pressure_cross_section_from_parts(
+        let artifact = build_pressure_cross_section_from_parts_profiled(
             &surface,
             &pressure,
             ModelId::Hrrr,
@@ -526,7 +576,8 @@ mod tests {
             &layout,
             CrossSectionProduct::ThetaE,
         )
-        .unwrap();
+        .unwrap()
+        .artifact;
 
         assert_eq!(artifact.style.product(), CrossSectionProduct::ThetaE);
         assert_eq!(artifact.section.n_points(), 3);
@@ -560,5 +611,40 @@ mod tests {
 
         assert_eq!(values.len(), 1);
         assert!((values[0] - 19.438_444_924_406_05).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn sample_stencil_keeps_four_best_candidates_in_distance_order() {
+        let surface = SurfaceFields {
+            lat: vec![35.0, 35.0, 35.0, 36.0, 36.0, 36.0],
+            lon: vec![-101.0, -100.0, -99.0, -101.0, -100.0, -99.0],
+            nx: 3,
+            ny: 2,
+            projection: None,
+            psfc_pa: vec![100000.0; 6],
+            orog_m: vec![0.0; 6],
+            orog_is_proxy: false,
+            t2_k: vec![290.0; 6],
+            q2_kgkg: vec![0.010; 6],
+            u10_ms: vec![5.0; 6],
+            v10_ms: vec![2.0; 6],
+        };
+        let point = GeoPoint::new(35.2, -100.1).unwrap();
+        let stencil = sample_stencil_for_point(
+            &surface,
+            &[0usize, 1, 2, 3, 4, 5],
+            point,
+            HorizontalInterpolation::Bilinear,
+        );
+
+        assert_eq!(stencil.len, 4);
+        assert_eq!(stencil.indices[0], 1);
+        assert!(
+            stencil.weights[..stencil.len as usize]
+                .iter()
+                .all(|weight| weight.is_finite() && *weight > 0.0)
+        );
+        let weight_sum = stencil.weights[..stencil.len as usize].iter().sum::<f64>();
+        assert!((weight_sum - 1.0).abs() < 1.0e-9);
     }
 }
