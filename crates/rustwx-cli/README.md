@@ -26,6 +26,10 @@ Current top-level commands:
   - Standalone real-data HRRR cross-section proof runner.
   - Supports `temperature`, `relative_humidity`, `theta_e`, and `wind_speed` through the shared `rustwx_cli::cross_section_proof` module.
   - Exposes optional `--palette` overrides on top of the public `rustwx-cross-section` palette catalog.
+- `weather_native_bench`
+  - Release-mode benchmark/profiling runner for the native contour map lane.
+  - Compares Rust native contour render timings against forced legacy raster renders and Python `matplotlib/cartopy` equivalents on the same cached HRRR fields.
+  - Current default benchmark set is `stp_fixed`, `sbcape`, and `srh_0_1km`; writes PNGs plus summary JSON/Markdown under `proof/bench/`.
 - `hrrr_derived_batch` / `derived_batch`
   - Best lane for iterating derived weather-native maps.
   - Native projected contour-filled derived products are currently `stp_fixed`, `sbcape`, `mlcape`, `srh_0_1km`, `srh_0_3km`, `ehi_0_1km`, and `ehi_0_3km`.
@@ -65,6 +69,10 @@ cargo run -p rustwx-cli --release --bin hrrr_temperature_xsection -- --date 2026
 
 ```powershell
 cargo run -p rustwx-cli --release --bin hrrr_temperature_xsection -- --product wind-speed --date 20260414 --cycle 23 --forecast-hour 0 --out-dir proof
+```
+
+```powershell
+cargo run -p rustwx-cli --release --bin weather_native_bench -- --date 20260414 --cycle 23 --forecast-hour 0 --region southern-plains --product stp_fixed,sbcape,srh_0_1km --rust-runs 5 --python-runs 3 --out-dir proof
 ```
 
 ```powershell

@@ -10,6 +10,10 @@ This directory holds end-to-end proof outputs for the current engine direction. 
   - It also runs the bounded HRRR cross-section proof lane and writes a suite summary plus a hook-style cross-section JSON.
 - `hrrr_temperature_xsection` is the standalone real-data HRRR temperature cross-section proof runner.
   - Despite the legacy binary name, it now supports multiple pressure-section products with `--product temperature|relative-humidity|theta-e|wind-speed`.
+- `weather_native_bench` is the bounded native-contour benchmark/profiling runner.
+  - It compares Rust native contour renders, forced legacy raster renders, and Python `matplotlib/cartopy` equivalents on the same cached HRRR fields.
+  - Current default benchmark set is `stp_fixed`, `sbcape`, and `srh_0_1km`.
+  - It writes a summary JSON/Markdown plus the Rust and Python comparison PNGs under `proof/bench/`.
 
 ## What is implemented
 
@@ -31,6 +35,10 @@ This directory holds end-to-end proof outputs for the current engine direction. 
 - `proof/rustwx_hrrr_20260414_23z_f000_amarillo_chicago_rh_cross_section.png`
 - `proof/rustwx_hrrr_20260414_23z_f000_amarillo_chicago_theta_e_cross_section.png`
 - `proof/rustwx_hrrr_20260414_23z_f000_amarillo_chicago_wind_speed_cross_section.png`
+- `proof/bench/rustwx_hrrr_20260414_23z_f000_southern_plains_weather_native_benchmark_summary.md`
+- `proof/bench/stp_fixed_rust_native.png`
+- `proof/bench/stp_fixed_rust_legacy.png`
+- `proof/bench/stp_fixed_python_matplotlib.png`
 - If you want a widened rerun that is already checked in, inspect `proof/southern_plains/`.
 
 ## Generate and inspect
@@ -56,6 +64,11 @@ cargo run -p rustwx-cli --release --bin hrrr_temperature_xsection -- --product t
 ```
 
 ```powershell
+cargo run -p rustwx-cli --release --bin weather_native_bench -- --date 20260414 --cycle 23 --forecast-hour 0 --region southern-plains --product stp_fixed,sbcape,srh_0_1km --rust-runs 5 --python-runs 3 --out-dir proof
+```
+
+```powershell
 Get-Content proof/rustwx_hrrr_20260414_23z_f000_suite_native_proof_summary.json
 Get-Content proof/rustwx_hrrr_20260414_23z_f000_suite_native_proof_cross_section_hook.json
+Get-Content proof/bench/rustwx_hrrr_20260414_23z_f000_southern_plains_weather_native_benchmark_summary.md
 ```

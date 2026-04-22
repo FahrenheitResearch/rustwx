@@ -325,6 +325,8 @@ drives those plotted map contours or filled bands.
 
 The fast path for upper-air plots is already heavily in Rust. On this machine, a cached Rust upper-air proof plot is sub-second, while a Python `matplotlib/cartopy` equivalent on the same cached GFS subset was about an order of magnitude slower.
 
+For the native contour lane, the current benchmark/profiling harness lives in `weather_native_bench` and writes summary artifacts under `proof/bench/`. The latest southern-plains HRRR benchmark compares Rust native contour renders, forced legacy raster renders, and Python `matplotlib/cartopy` equivalents for `stp_fixed`, `sbcape`, and `srh_0_1km`.
+
 The remaining expensive path is not upper-air rendering. It is full-grid severe/ECAPE computation, especially when solving SB/ML/MU parcel variants over large domains.
 
 ## Review guidance
