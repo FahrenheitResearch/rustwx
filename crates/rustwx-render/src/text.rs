@@ -7,6 +7,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+const SOURCE_SANS_3_REGULAR: &[u8] = include_bytes!("../assets/fonts/SourceSans3-Regular.ttf");
+const SOURCE_SANS_3_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/SourceSans3-Semibold.ttf");
+
 struct FontSet {
     regular: Option<Font<'static>>,
     bold: Option<Font<'static>>,
@@ -287,14 +290,6 @@ fn font_size_px(scale: u32, size_factor: f32, kind: FontKind) -> f32 {
     base * size_factor.clamp(0.65, 2.0)
 }
 
-fn line_height(scale: u32, size_factor: f32, kind: FontKind) -> u32 {
-    if get_font(kind).is_some() {
-        font_size_px(scale, size_factor, kind).ceil() as u32
-    } else {
-        (8 * effective_bitmap_scale(scale, size_factor)).max(12)
-    }
-}
-
 fn effective_bitmap_scale(scale: u32, size_factor: f32) -> u32 {
     ((scale.max(1) as f32) * size_factor.clamp(0.65, 2.0))
         .round()
@@ -311,20 +306,49 @@ fn get_font(kind: FontKind) -> Option<&'static Font<'static>> {
 
 fn load_fonts() -> FontSet {
     FontSet {
-        regular: load_font_candidates(false),
-        bold: load_font_candidates(true),
+        regular: load_font(false),
+        bold: load_font(true),
     }
+}
+
+fn load_font(bold: bool) -> Option<Font<'static>> {
+    load_font_override(bold)
+        .or_else(|| load_embedded_font(bold))
+        .or_else(|| load_font_candidates(bold))
+}
+
+fn load_font_override(bold: bool) -> Option<Font<'static>> {
+    let env_keys = if bold {
+        ["RUSTWX_RENDER_FONT_BOLD", "WRF_RENDER_FONT_BOLD"]
+    } else {
+        ["RUSTWX_RENDER_FONT_REGULAR", "WRF_RENDER_FONT_REGULAR"]
+    };
+    env_keys
+        .iter()
+        .find_map(|key| env::var(key).ok())
+        .and_then(|value| load_font_from_path(PathBuf::from(value)))
+}
+
+fn load_embedded_font(bold: bool) -> Option<Font<'static>> {
+    let bytes = if bold {
+        SOURCE_SANS_3_SEMIBOLD
+    } else {
+        SOURCE_SANS_3_REGULAR
+    };
+    Font::try_from_bytes(bytes)
 }
 
 fn load_font_candidates(bold: bool) -> Option<Font<'static>> {
     for path in font_candidates(bold) {
-        if let Ok(bytes) = fs::read(&path) {
-            if let Some(font) = Font::try_from_vec(bytes) {
-                return Some(font);
-            }
+        if let Some(font) = load_font_from_path(path) {
+            return Some(font);
         }
     }
     None
+}
+
+fn load_font_from_path(path: PathBuf) -> Option<Font<'static>> {
+    fs::read(path).ok().and_then(Font::try_from_vec)
 }
 
 fn font_candidates(bold: bool) -> Vec<PathBuf> {
@@ -346,15 +370,6 @@ fn font_candidates(bold: bool) -> Vec<PathBuf> {
     };
     let arial_name = if bold { "arialbd.ttf" } else { "arial.ttf" };
     let segoe_name = if bold { "segoeuib.ttf" } else { "segoeui.ttf" };
-
-    let env_keys = if bold {
-        ["RUSTWX_RENDER_FONT_BOLD", "WRF_RENDER_FONT_BOLD"]
-    } else {
-        ["RUSTWX_RENDER_FONT_REGULAR", "WRF_RENDER_FONT_REGULAR"]
-    };
-    if let Some(value) = env_keys.iter().find_map(|key| env::var(key).ok()) {
-        out.push(PathBuf::from(value));
-    }
 
     if let Ok(xdg_data_home) = env::var("XDG_DATA_HOME") {
         out.push(
@@ -432,8 +447,40 @@ fn font_candidates(bold: bool) -> Vec<PathBuf> {
         PathBuf::from(r"C:\Python313\Lib\site-packages\matplotlib\mpl-data\fonts\ttf")
             .join(dejavu_name),
     );
-    out.push(PathBuf::from(r"C:\Windows\Fonts").join(arial_name));
     out.push(PathBuf::from(r"C:\Windows\Fonts").join(segoe_name));
+    out.push(PathBuf::from(r"C:\Windows\Fonts").join(arial_name));
 
     out
+}
+
+fn line_height(scale: u32, size_factor: f32, kind: FontKind) -> u32 {
+    if let Some(font) = get_font(kind) {
+        let px = font_size_px(scale, size_factor, kind);
+        let scale = Scale::uniform(px);
+        let metrics = font.v_metrics(scale);
+        (metrics.ascent - metrics.descent + metrics.line_gap)
+            .ceil()
+            .max(px.ceil()) as u32
+    } else {
+        (8 * effective_bitmap_scale(scale, size_factor)).max(12)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FontKind, get_font, line_height, load_embedded_font, text_width};
+
+    #[test]
+    fn embedded_source_sans_fonts_load() {
+        assert!(load_embedded_font(false).is_some());
+        assert!(load_embedded_font(true).is_some());
+    }
+
+    #[test]
+    fn renderer_has_outline_fonts_available_by_default() {
+        assert!(get_font(FontKind::Regular).is_some());
+        assert!(get_font(FontKind::Bold).is_some());
+        assert!(text_width("RustWX", 1) > 0);
+        assert!(line_height(1, 1.0, FontKind::Regular) >= 12);
+    }
 }

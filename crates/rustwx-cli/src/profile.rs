@@ -6,7 +6,13 @@ use crate::cross_section_proof::{
 use image::RgbaImage;
 use rustwx_core::{ModelId, SourceId};
 use rustwx_cross_section::{RenderedCrossSection, render_scalar_section_profile};
+use rustwx_products::artifact_bundle::{
+    ArtifactBundleArtifact, ArtifactBundleAuxiliaryOutput, ArtifactBundleManifest,
+    ArtifactBundleRole, ArtifactBundleRunContext, default_artifact_bundle_manifest_path,
+    publish_artifact_bundle_manifest,
+};
 use rustwx_products::cache::ensure_dir;
+use rustwx_products::cross_section::PressureCrossSectionFacts;
 use rustwx_products::derived::{
     DerivedLiveArtifactBuildTiming, NativeContourRenderMode,
     build_hrrr_live_derived_artifact_profiled,
@@ -19,6 +25,7 @@ use rustwx_render::{
     save_rgba_png_profile_with_options,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
@@ -142,6 +149,7 @@ pub struct CrossSectionProfileSummary {
     pub product_slug: String,
     pub product_label: String,
     pub palette_slug: String,
+    pub facts: PressureCrossSectionFacts,
     pub run_count: usize,
     pub output_png: PathBuf,
     pub runs: Vec<CrossSectionProfileRunRecord>,
@@ -159,6 +167,7 @@ pub struct WeatherNativeProfileSummary {
     pub cross_sections: Vec<CrossSectionProfileSummary>,
     pub summary_json: PathBuf,
     pub summary_markdown: PathBuf,
+    pub bundle_manifest: PathBuf,
 }
 
 impl WeatherNativeProfileRequest {
@@ -240,14 +249,13 @@ pub fn run_weather_native_profile(
         )?);
     }
 
-    let summary_json = profile_root.join(format!(
-        "rustwx_hrrr_{}_{}z_f{:03}_{}_weather_native_profile_summary.json",
+    let profile_stem = format!(
+        "rustwx_hrrr_{}_{}z_f{:03}_{}_weather_native_profile",
         request.date_yyyymmdd, request.cycle_utc, request.forecast_hour, request.domain.slug
-    ));
-    let summary_markdown = profile_root.join(format!(
-        "rustwx_hrrr_{}_{}z_f{:03}_{}_weather_native_profile_summary.md",
-        request.date_yyyymmdd, request.cycle_utc, request.forecast_hour, request.domain.slug
-    ));
+    );
+    let summary_json = profile_root.join(format!("{profile_stem}_summary.json"));
+    let summary_markdown = profile_root.join(format!("{profile_stem}_summary.md"));
+    let bundle_manifest = default_artifact_bundle_manifest_path(&profile_root, &profile_stem);
 
     let summary = WeatherNativeProfileSummary {
         runner: "weather_native_profile",
@@ -280,10 +288,132 @@ pub fn run_weather_native_profile(
         cross_sections,
         summary_json: relative_path(&request.out_dir, &summary_json),
         summary_markdown: relative_path(&request.out_dir, &summary_markdown),
+        bundle_manifest: relative_path(&request.out_dir, &bundle_manifest),
     };
     fs::write(&summary_json, serde_json::to_vec_pretty(&summary)?)?;
     fs::write(&summary_markdown, render_summary_markdown(&summary))?;
+    publish_artifact_bundle_manifest(
+        &bundle_manifest,
+        &build_profile_bundle_manifest(request, &summary, &summary_json, &summary_markdown)?,
+    )?;
     Ok(summary)
+}
+
+fn build_profile_bundle_manifest(
+    request: &WeatherNativeProfileRequest,
+    summary: &WeatherNativeProfileSummary,
+    summary_json: &Path,
+    summary_markdown: &Path,
+) -> Result<ArtifactBundleManifest, Box<dyn Error>> {
+    let mut manifest = ArtifactBundleManifest::new(
+        "weather_native_profile",
+        format!(
+            "{} {}z f{:03} {}",
+            summary.request.date_yyyymmdd.as_str(),
+            summary.request.cycle_utc,
+            summary.request.forecast_hour,
+            summary.request.domain.slug.as_str()
+        ),
+        &request.out_dir,
+    )
+    .with_build_provenance(
+        rustwx_products::publication_provenance::capture_default_build_provenance(),
+    )
+    .with_run_context(
+        ArtifactBundleRunContext::new(summary.runner)
+            .with_model(summary.model.to_string())
+            .with_cycle_metadata(
+                summary.request.date_yyyymmdd.clone(),
+                summary.request.cycle_utc,
+                summary.request.forecast_hour,
+            )
+            .with_source(summary.request.source.to_string())
+            .with_domain_slug(summary.request.domain.slug.clone()),
+    );
+    manifest.insert_metadata_value("stage_timing", serde_json::to_value(&summary.stage_timing)?);
+    manifest.insert_metadata_value("map_case_count", json!(summary.map_cases.len()));
+    manifest.insert_metadata_value("cross_section_count", json!(summary.cross_sections.len()));
+    manifest.insert_metadata_value(
+        "map_products",
+        serde_json::to_value(&summary.request.map_products)?,
+    );
+    manifest.insert_metadata_value(
+        "cross_section_products",
+        serde_json::to_value(&summary.request.cross_section_products)?,
+    );
+    manifest.insert_metadata_value(
+        "output_size",
+        json!({
+            "width": summary.request.output_width,
+            "height": summary.request.output_height,
+        }),
+    );
+
+    let summary_json_aux = ArtifactBundleAuxiliaryOutput::new(
+        "profile_summary_json",
+        relative_path(&request.out_dir, summary_json),
+    )
+    .with_media_type("application/json");
+    let summary_markdown_aux = ArtifactBundleAuxiliaryOutput::new(
+        "profile_summary_markdown",
+        relative_path(&request.out_dir, summary_markdown),
+    )
+    .with_media_type("text/markdown");
+
+    let mut summary_json_artifact = ArtifactBundleArtifact::from_existing_path(
+        "profile_summary_json",
+        ArtifactBundleRole::Stats,
+        "application/json",
+        &request.out_dir,
+        summary_json,
+    )?;
+    summary_json_artifact.insert_metadata_value("flow", json!("weather_native_profile"));
+    summary_json_artifact.insert_stat_value("map_case_count", json!(summary.map_cases.len()));
+    summary_json_artifact
+        .insert_stat_value("cross_section_count", json!(summary.cross_sections.len()));
+    manifest.push_artifact(summary_json_artifact);
+
+    let mut summary_markdown_artifact = ArtifactBundleArtifact::from_existing_path(
+        "profile_summary_markdown",
+        ArtifactBundleRole::Metadata,
+        "text/markdown",
+        &request.out_dir,
+        summary_markdown,
+    )?;
+    summary_markdown_artifact.insert_metadata_value("flow", json!("weather_native_profile"));
+    manifest.push_artifact(summary_markdown_artifact);
+
+    for case in &summary.map_cases {
+        manifest.push_artifact(build_map_profile_bundle_artifact(
+            &request.out_dir,
+            case,
+            &case.native,
+            "native",
+            Some(case.native_speedup_over_legacy),
+            &summary_json_aux,
+            &summary_markdown_aux,
+        )?);
+        manifest.push_artifact(build_map_profile_bundle_artifact(
+            &request.out_dir,
+            case,
+            &case.legacy,
+            "legacy",
+            None,
+            &summary_json_aux,
+            &summary_markdown_aux,
+        )?);
+    }
+
+    for case in &summary.cross_sections {
+        manifest.push_artifact(build_cross_section_profile_bundle_artifact(
+            &request.out_dir,
+            case,
+            &summary_json_aux,
+            &summary_markdown_aux,
+        )?);
+    }
+
+    Ok(manifest)
 }
 
 fn run_map_profile_case(
@@ -563,6 +693,7 @@ fn run_cross_section_profile_case(
         product_slug: cross_request.product.slug().to_string(),
         product_label: cross_request.product.display_name().to_string(),
         palette_slug: scene.palette_slug,
+        facts: scene.facts,
         run_count,
         output_png: relative_path(&request.out_dir, &output_png),
         runs,
@@ -652,6 +783,75 @@ fn relative_path(root: &Path, path: &Path) -> PathBuf {
         .unwrap_or_else(|_| path.to_path_buf())
 }
 
+fn build_map_profile_bundle_artifact(
+    output_root: &Path,
+    case: &MapProfileCaseSummary,
+    mode: &MapRenderModeProfileSummary,
+    mode_slug: &str,
+    speedup_over_legacy: Option<f64>,
+    summary_json_aux: &ArtifactBundleAuxiliaryOutput,
+    summary_markdown_aux: &ArtifactBundleAuxiliaryOutput,
+) -> Result<ArtifactBundleArtifact, Box<dyn Error>> {
+    let output_path = output_root.join(&mode.output_png);
+    let mut artifact = ArtifactBundleArtifact::from_existing_path(
+        format!("map:{}:{mode_slug}", case.recipe_slug),
+        ArtifactBundleRole::PrimaryImage,
+        "image/png",
+        output_root,
+        &output_path,
+    )?;
+    artifact.insert_metadata_value("flow", json!("map_profile"));
+    artifact.insert_metadata_value("recipe_slug", json!(case.recipe_slug.as_str()));
+    artifact.insert_metadata_value("title", json!(case.title.as_str()));
+    artifact.insert_metadata_value("units", json!(case.units.as_str()));
+    artifact.insert_metadata_value("render_mode", json!(mode.mode.as_str()));
+    artifact.insert_stat_value("run_count", json!(mode.run_count));
+    artifact.insert_stat_value("median_total_ms", json!(mode.median_total_ms));
+    artifact.insert_stat_value(
+        "component_hotspots",
+        serde_json::to_value(&mode.component_hotspots)?,
+    );
+    if let Some(speedup) = speedup_over_legacy {
+        artifact.insert_stat_value("speedup_over_legacy", json!(speedup));
+    }
+    artifact.push_auxiliary_output(summary_json_aux.clone());
+    artifact.push_auxiliary_output(summary_markdown_aux.clone());
+    Ok(artifact)
+}
+
+fn build_cross_section_profile_bundle_artifact(
+    output_root: &Path,
+    case: &CrossSectionProfileSummary,
+    summary_json_aux: &ArtifactBundleAuxiliaryOutput,
+    summary_markdown_aux: &ArtifactBundleAuxiliaryOutput,
+) -> Result<ArtifactBundleArtifact, Box<dyn Error>> {
+    let output_path = output_root.join(&case.output_png);
+    let mut artifact = ArtifactBundleArtifact::from_existing_path(
+        format!("cross_section:{}:{}", case.route_slug, case.product_slug),
+        ArtifactBundleRole::PrimaryImage,
+        "image/png",
+        output_root,
+        &output_path,
+    )?;
+    artifact.insert_metadata_value("flow", json!("cross_section_profile"));
+    artifact.insert_metadata_value("route_slug", json!(case.route_slug.as_str()));
+    artifact.insert_metadata_value("route_label", json!(case.route_label.as_str()));
+    artifact.insert_metadata_value("product_slug", json!(case.product_slug.as_str()));
+    artifact.insert_metadata_value("product_label", json!(case.product_label.as_str()));
+    artifact.insert_metadata_value("palette_slug", json!(case.palette_slug.as_str()));
+    artifact.insert_stat_value("run_count", json!(case.run_count));
+    artifact.insert_stat_value("median_total_ms", json!(case.median_total_ms));
+    artifact.insert_stat_value("route_distance_km", json!(case.route_distance_km));
+    artifact.insert_stat_value("facts", serde_json::to_value(&case.facts)?);
+    artifact.insert_stat_value(
+        "component_hotspots",
+        serde_json::to_value(&case.component_hotspots)?,
+    );
+    artifact.push_auxiliary_output(summary_json_aux.clone());
+    artifact.push_auxiliary_output(summary_markdown_aux.clone());
+    Ok(artifact)
+}
+
 fn render_summary_markdown(summary: &WeatherNativeProfileSummary) -> String {
     let mut markdown = String::new();
     markdown.push_str("# Weather-native component profile summary\n\n");
@@ -737,7 +937,36 @@ fn render_summary_markdown(summary: &WeatherNativeProfileSummary) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{component_stats, median_u128};
+    use super::{
+        ComponentTimingStat, CrossSectionProfileSummary, MapProfileCaseSummary,
+        MapRenderModeProfileSummary, ProfileStageTiming, WeatherNativeProfileRequest,
+        WeatherNativeProfileRequestSummary, WeatherNativeProfileSummary,
+        build_profile_bundle_manifest, component_stats, median_u128, relative_path,
+    };
+    use rustwx_core::SourceId;
+    use rustwx_products::shared_context::DomainSpec;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process;
+
+    fn sample_profile_request(out_dir: PathBuf) -> WeatherNativeProfileRequest {
+        WeatherNativeProfileRequest {
+            date_yyyymmdd: "20260422".to_string(),
+            cycle_utc: 18,
+            forecast_hour: 6,
+            source: SourceId::Nomads,
+            domain: DomainSpec::new("southern_plains", (-107.0, -91.0, 30.0, 40.0)),
+            out_dir: out_dir.clone(),
+            cache_root: out_dir.join("cache"),
+            use_cache: true,
+            map_products: vec!["mlcape".to_string()],
+            cross_section_requests: Vec::new(),
+            runs: 3,
+            output_width: 1200,
+            output_height: 900,
+            png_compression: rustwx_render::PngCompressionMode::Default,
+        }
+    }
 
     #[test]
     fn median_u128_picks_middle_value() {
@@ -754,5 +983,130 @@ mod tests {
         assert_eq!(stats[0].median_ms, 11);
         assert_eq!(stats[1].component, "png_encode");
         assert_eq!(stats[1].median_ms, 3);
+    }
+
+    #[test]
+    fn profile_bundle_manifest_collects_map_cross_section_and_summary_outputs() {
+        let root = std::env::temp_dir().join(format!("rustwx_profile_bundle_{}", process::id()));
+        let profile_root = root.join("profile");
+        fs::create_dir_all(&profile_root).unwrap();
+
+        let native_png = profile_root.join("mlcape_native.png");
+        let legacy_png = profile_root.join("mlcape_legacy.png");
+        let cross_png = profile_root.join("amarillo_temperature_cross.png");
+        let summary_json = profile_root.join("summary.json");
+        let summary_markdown = profile_root.join("summary.md");
+        fs::write(&native_png, b"native-png").unwrap();
+        fs::write(&legacy_png, b"legacy-png").unwrap();
+        fs::write(&cross_png, b"cross-png").unwrap();
+
+        let request = sample_profile_request(root.clone());
+        let summary = WeatherNativeProfileSummary {
+            runner: "weather_native_profile",
+            model: rustwx_core::ModelId::Hrrr,
+            request: WeatherNativeProfileRequestSummary {
+                date_yyyymmdd: "20260422".to_string(),
+                cycle_utc: 18,
+                forecast_hour: 6,
+                source: SourceId::Nomads,
+                domain: DomainSpec::new("southern_plains", (-107.0, -91.0, 30.0, 40.0)),
+                out_dir: root.clone(),
+                cache_root: root.join("cache"),
+                use_cache: true,
+                map_products: vec!["mlcape".to_string()],
+                cross_section_products: vec!["temperature".to_string()],
+                runs: 3,
+                output_width: 1200,
+                output_height: 900,
+                png_compression: rustwx_render::PngCompressionMode::Default,
+            },
+            stage_timing: ProfileStageTiming {
+                data_load_ms: 12,
+                projected_map_build_ms: 8,
+            },
+            map_cases: vec![MapProfileCaseSummary {
+                recipe_slug: "mlcape".to_string(),
+                title: "MLCAPE".to_string(),
+                units: "J/kg".to_string(),
+                native: MapRenderModeProfileSummary {
+                    mode: "native".to_string(),
+                    run_count: 3,
+                    output_png: relative_path(&root, &native_png),
+                    runs: Vec::new(),
+                    median_total_ms: 55,
+                    component_hotspots: vec![ComponentTimingStat {
+                        component: "contour_draw".to_string(),
+                        median_ms: 14,
+                        mean_ms: 14.0,
+                        share_of_total_pct: 25.0,
+                    }],
+                },
+                legacy: MapRenderModeProfileSummary {
+                    mode: "legacy".to_string(),
+                    run_count: 3,
+                    output_png: relative_path(&root, &legacy_png),
+                    runs: Vec::new(),
+                    median_total_ms: 70,
+                    component_hotspots: vec![ComponentTimingStat {
+                        component: "rasterize".to_string(),
+                        median_ms: 18,
+                        mean_ms: 18.0,
+                        share_of_total_pct: 25.7,
+                    }],
+                },
+                native_speedup_over_legacy: 70.0 / 55.0,
+            }],
+            cross_sections: vec![CrossSectionProfileSummary {
+                route_slug: "amarillo_chicago".to_string(),
+                route_label: "Amarillo to Chicago".to_string(),
+                route_distance_km: 1160.0,
+                product_slug: "temperature".to_string(),
+                product_label: "Temperature".to_string(),
+                palette_slug: "temperature".to_string(),
+                facts: rustwx_products::cross_section::PressureCrossSectionFacts::default(),
+                run_count: 3,
+                output_png: relative_path(&root, &cross_png),
+                runs: Vec::new(),
+                median_total_ms: 42,
+                component_hotspots: vec![ComponentTimingStat {
+                    component: "scalar_field".to_string(),
+                    median_ms: 11,
+                    mean_ms: 11.0,
+                    share_of_total_pct: 26.2,
+                }],
+            }],
+            summary_json: relative_path(&root, &summary_json),
+            summary_markdown: relative_path(&root, &summary_markdown),
+            bundle_manifest: PathBuf::from("profile/bundle.json"),
+        };
+        fs::write(&summary_json, serde_json::to_vec_pretty(&summary).unwrap()).unwrap();
+        fs::write(&summary_markdown, "# profile summary\n").unwrap();
+
+        let manifest =
+            build_profile_bundle_manifest(&request, &summary, &summary_json, &summary_markdown)
+                .unwrap();
+
+        assert_eq!(manifest.bundle_kind, "weather_native_profile");
+        assert_eq!(manifest.artifacts.len(), 5);
+        assert_eq!(
+            manifest
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.artifact_key == "map:mlcape:native")
+                .unwrap()
+                .auxiliary_outputs
+                .len(),
+            2
+        );
+        assert!(manifest.artifacts.iter().any(|artifact| {
+            artifact.artifact_key == "cross_section:amarillo_chicago:temperature"
+                && artifact.relative_path == PathBuf::from("profile/amarillo_temperature_cross.png")
+        }));
+        assert!(manifest.artifacts.iter().any(|artifact| {
+            artifact.artifact_key == "profile_summary_json"
+                && artifact.role == rustwx_products::artifact_bundle::ArtifactBundleRole::Stats
+        }));
+
+        let _ = fs::remove_dir_all(root);
     }
 }

@@ -52,6 +52,9 @@ The renderer boundary is intentionally narrow:
 - verification should stay layered: isolated render checks in `crates/rustwx-render/verify`, then end-to-end proof artifacts under `proof/`
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the current engine split and the next integration steps.
+For the current typed backend contracts around structured queries, comparison stats,
+artifact bundles, and named assets, see
+[docs/weather_intelligence_backend.md](docs/weather_intelligence_backend.md).
 
 ## Workspace layout
 

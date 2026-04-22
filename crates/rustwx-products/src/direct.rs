@@ -8,18 +8,17 @@ use rustwx_io::{
     extract_fields_from_grib2_partial, load_cached_selected_field, store_cached_selected_field,
 };
 use rustwx_models::{
-    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan, LatestRun,
-    ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
+    LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
+    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan,
 };
 use rustwx_render::{
-    build_projected_contour_geometry_profile, densify_discrete_scale, draw_centered_text_line,
-    map_frame_aspect_ratio_for_mode, render_panel_grid, save_png_profile_with_options,
-    save_rgba_png_profile_with_options,
-    solar07::{solar07_palette, Solar07Palette},
     Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode, LevelDensity,
     MapRenderRequest, PanelGridLayout, PanelPadding, PngCompressionMode, PngWriteOptions,
     ProductVisualMode, ProjectedContourLineStyle, ProjectedDomain, ProjectedMap, RenderImageTiming,
-    RenderStateTiming, WindBarbLayer,
+    RenderStateTiming, WindBarbLayer, build_projected_contour_geometry_profile,
+    densify_discrete_scale, draw_centered_text_line, map_frame_aspect_ratio_for_mode,
+    render_panel_grid, save_png_profile_with_options, save_rgba_png_profile_with_options,
+    solar07::{Solar07Palette, solar07_palette},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -29,18 +28,18 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
-use crate::custom_poi::{apply_custom_poi_overlay, CustomPoiOverlay};
-use crate::places::{default_major_place_label_overlay_for_domain, PlaceLabelOverlay};
+use crate::custom_poi::{CustomPoiOverlay, apply_custom_poi_overlay};
+use crate::places::{PlaceLabelOverlay, default_major_place_label_overlay_for_domain};
 use crate::planner::{ExecutionPlan, ExecutionPlanBuilder};
 use crate::publication::{
-    artifact_identity_from_path, fetch_identity_from_cached_result_with_aliases,
-    ArtifactContentIdentity, PublishedFetchIdentity,
+    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
+    fetch_identity_from_cached_result_with_aliases,
 };
 use crate::runtime::{
-    load_execution_plan, BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet,
+    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
 };
 use crate::shared_context::{DomainSpec, ProjectedMapProvider};
-use crate::source::{direct_route_for_recipe_slug, ProductSourceRoute};
+use crate::source::{ProductSourceRoute, direct_route_for_recipe_slug};
 use crate::spec::direct_product_specs;
 
 const OUTPUT_WIDTH: u32 = 1200;
@@ -250,6 +249,23 @@ struct DirectRequestBuildTiming {
     barb_prepare_ms: u128,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct DirectSampledProductField {
+    pub recipe_slug: String,
+    pub title: String,
+    pub source_route: ProductSourceRoute,
+    pub field_selector: Option<FieldSelector>,
+    pub field: rustwx_core::Field2D,
+    pub input_fetches: Vec<PublishedFetchIdentity>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DirectSampledProductSet {
+    pub latest: LatestRun,
+    pub fields: Vec<DirectSampledProductField>,
+    pub blockers: Vec<DirectRecipeBlocker>,
+}
+
 fn direct_data_layer_draw_ms(image_timing: &RenderImageTiming) -> u128 {
     image_timing.polygon_fill_ms
         + image_timing.projected_pixel_ms
@@ -362,6 +378,35 @@ impl DirectBatchRequest {
     }
 }
 
+fn sampling_direct_request(
+    model: ModelId,
+    source: SourceId,
+    forecast_hour: u16,
+    cache_root: &std::path::Path,
+    use_cache: bool,
+) -> DirectBatchRequest {
+    DirectBatchRequest {
+        model,
+        date_yyyymmdd: String::new(),
+        cycle_override_utc: None,
+        forecast_hour,
+        source,
+        domain: DomainSpec::new("sampling", (-180.0, 180.0, -90.0, 90.0)),
+        out_dir: PathBuf::new(),
+        cache_root: cache_root.to_path_buf(),
+        use_cache,
+        recipe_slugs: Vec::new(),
+        product_overrides: HashMap::new(),
+        contour_mode: NativeContourRenderMode::Automatic,
+        native_fill_level_multiplier: 1,
+        output_width: OUTPUT_WIDTH,
+        output_height: OUTPUT_HEIGHT,
+        png_compression: PngCompressionMode::Default,
+        custom_poi_overlay: None,
+        place_label_overlay: None,
+    }
+}
+
 /// Plan the direct lane's fetch groups without running the loader. The
 /// unified non-ECAPE-hour runner uses this to build a single execution
 /// plan that covers direct + derived (+ severe/ECAPE if requested).
@@ -411,6 +456,140 @@ pub fn run_hrrr_direct_batch(
     request: &HrrrDirectBatchRequest,
 ) -> Result<HrrrDirectBatchReport, Box<dyn std::error::Error>> {
     run_direct_batch(&DirectBatchRequest::from_hrrr(request))
+}
+
+pub(crate) fn required_direct_fetch_products(
+    model: ModelId,
+    recipe_slugs: &[String],
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let planned = plan_direct_recipes(model, recipe_slugs)?;
+    let request =
+        sampling_direct_request(model, SourceId::Aws, 0, std::path::Path::new("."), false);
+    Ok(group_direct_fetches(&request, &planned)
+        .into_iter()
+        .map(|group| group.product)
+        .collect())
+}
+
+pub(crate) fn load_direct_sampled_fields_from_latest(
+    latest: &LatestRun,
+    forecast_hour: u16,
+    cache_root: &std::path::Path,
+    use_cache: bool,
+    recipe_slugs: &[String],
+) -> Result<DirectSampledProductSet, Box<dyn std::error::Error>> {
+    let request = sampling_direct_request(
+        latest.model,
+        latest.source,
+        forecast_hour,
+        cache_root,
+        use_cache,
+    );
+    let planned = plan_direct_recipes(latest.model, recipe_slugs)?;
+    if planned.is_empty() {
+        return Ok(DirectSampledProductSet {
+            latest: latest.clone(),
+            fields: Vec::new(),
+            blockers: Vec::new(),
+        });
+    }
+
+    let groups = group_direct_fetches(&request, &planned);
+    let plan = build_direct_execution_plan(latest, forecast_hour, &groups);
+    let loaded = load_execution_plan(
+        plan,
+        &BundleLoaderConfig::new(cache_root.to_path_buf(), use_cache),
+    )?;
+
+    let mut extracted = HashMap::<FieldSelector, SelectedField2D>::new();
+    let mut missing_selectors = HashSet::<FieldSelector>::new();
+    let mut blockers = Vec::<DirectRecipeBlocker>::new();
+    let mut fetches_by_product = HashMap::<String, PublishedFetchIdentity>::new();
+
+    for group in &groups {
+        let fetched = match find_loaded_bytes_for_group(&loaded, group) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                let reason = err.to_string();
+                for selector in &group.selectors {
+                    missing_selectors.insert(*selector);
+                }
+                for recipe_slug in recipe_slugs_depending_on_group(&planned, group) {
+                    blockers.push(DirectRecipeBlocker {
+                        recipe_slug,
+                        reason: reason.clone(),
+                    });
+                }
+                continue;
+            }
+        };
+        let (fields, unmatched, timing) =
+            extract_direct_fetch_group_from_loaded(&request, group, fetched, use_cache)?;
+        extracted.extend(fields.into_iter().map(|field| (field.selector, field)));
+        for selector in unmatched {
+            missing_selectors.insert(selector);
+        }
+        fetches_by_product.insert(group.product.clone(), timing.input_fetch.clone());
+    }
+
+    let (renderable, selector_blockers) =
+        partition_recipes_by_selector_availability(&planned, &missing_selectors);
+    blockers.extend(selector_blockers);
+
+    let mut fields = Vec::new();
+    for item in renderable {
+        if composite_panel_spec(item.recipe.slug).is_some() {
+            blockers.push(DirectRecipeBlocker {
+                recipe_slug: item.recipe.slug.to_string(),
+                reason: "composite direct recipe does not expose a single sampled filled field"
+                    .to_string(),
+            });
+            continue;
+        }
+        let Some(filled_selector) = item.recipe.filled.selector else {
+            blockers.push(DirectRecipeBlocker {
+                recipe_slug: item.recipe.slug.to_string(),
+                reason: "direct recipe is missing a filled selector binding".to_string(),
+            });
+            continue;
+        };
+        let Some(filled) = extracted.get(&filled_selector) else {
+            blockers.push(DirectRecipeBlocker {
+                recipe_slug: item.recipe.slug.to_string(),
+                reason: format!(
+                    "direct recipe '{}' was renderable but missing selector {}",
+                    item.recipe.slug,
+                    filled_selector.key()
+                ),
+            });
+            continue;
+        };
+        let field = render_filled_field(item.recipe, filled, &extracted)?;
+        let canonical_product = canonical_fetch_product_for_selectors(
+            &request,
+            item.plan.product.as_ref(),
+            &item.plan.selectors(),
+        );
+        let input_fetches = fetches_by_product
+            .get(&canonical_product)
+            .cloned()
+            .into_iter()
+            .collect();
+        fields.push(DirectSampledProductField {
+            recipe_slug: item.recipe.slug.to_string(),
+            title: item.recipe.title.to_string(),
+            source_route: direct_route_for_recipe_slug(item.recipe.slug),
+            field_selector: Some(filled_selector),
+            field,
+            input_fetches,
+        });
+    }
+
+    Ok(DirectSampledProductSet {
+        latest: loaded.latest.clone(),
+        fields,
+        blockers,
+    })
 }
 
 /// Planner-loaded entry point used by `hrrr_non_ecape_hour`. Direct
@@ -2442,12 +2621,16 @@ mod tests {
             groups[0].fetch_mode,
             PlotRecipeFetchMode::WholeFileStructuredExtract
         );
-        assert!(groups[0]
-            .selectors
-            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500)));
-        assert!(groups[0]
-            .selectors
-            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700)));
+        assert!(
+            groups[0]
+                .selectors
+                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500))
+        );
+        assert!(
+            groups[0]
+                .selectors
+                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700))
+        );
         assert!(groups[0].variable_patterns.is_empty());
     }
 
@@ -2626,14 +2809,18 @@ mod tests {
         let groups = group_direct_fetches(&request, &planned);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].product, "sfc");
-        assert!(groups[0]
-            .selectors
-            .contains(&FieldSelector::entire_atmosphere(
-                CanonicalField::LowCloudCover
-            )));
-        assert!(groups[0]
-            .selectors
-            .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow)));
+        assert!(
+            groups[0]
+                .selectors
+                .contains(&FieldSelector::entire_atmosphere(
+                    CanonicalField::LowCloudCover
+                ))
+        );
+        assert!(
+            groups[0]
+                .selectors
+                .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow))
+        );
     }
 
     #[test]

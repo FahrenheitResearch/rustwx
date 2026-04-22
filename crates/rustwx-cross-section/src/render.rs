@@ -1,4 +1,6 @@
+use rusttype::{Font, Scale, point};
 use rustwx_contour::{ContourEngine, ContourLevels, RectilinearGrid, ScalarField2D};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use crate::data::{ScalarSection, SectionMetadata};
@@ -7,6 +9,24 @@ use crate::palette::CrossSectionPalette;
 use crate::style::{CrossSectionProduct, CrossSectionStyle};
 use crate::vertical::{VerticalAxis, VerticalKind, VerticalUnits};
 use crate::wind::DecomposedWindGrid;
+
+const SOURCE_SANS_3_REGULAR: &[u8] =
+    include_bytes!("../../rustwx-render/assets/fonts/SourceSans3-Regular.ttf");
+const SOURCE_SANS_3_SEMIBOLD: &[u8] =
+    include_bytes!("../../rustwx-render/assets/fonts/SourceSans3-Semibold.ttf");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CrossSectionFontKind {
+    Regular,
+    Semibold,
+}
+
+struct CrossSectionFontSet {
+    regular: Option<Font<'static>>,
+    semibold: Option<Font<'static>>,
+}
+
+static CROSS_SECTION_FONTS: OnceLock<CrossSectionFontSet> = OnceLock::new();
 
 /// Simple RGBA color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,6 +312,14 @@ pub struct CrossSectionRenderTiming {
 struct OverlayContourTiming {
     topology_ms: u128,
     draw_ms: u128,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct WindVectorGeometry {
+    start: (f64, f64),
+    end: (f64, f64),
+    head_left: (f64, f64),
+    head_right: (f64, f64),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -766,13 +794,18 @@ impl Canvas {
             );
         }
 
+        if let Some(font) = cross_section_font(scale) {
+            self.draw_ttf_text(x, y, text, color, scale, font);
+            return;
+        }
+
         let mut cursor_x = x;
         let mut cursor_y = y;
-        let scale = scale.max(1) as i32;
+        let bitmap_scale = scale.max(1) as i32;
         for ch in text.chars() {
             if ch == '\n' {
                 cursor_x = x;
-                cursor_y += 8 * scale;
+                cursor_y += 8 * bitmap_scale;
                 continue;
             }
 
@@ -780,11 +813,11 @@ impl Canvas {
             for (row_index, row) in glyph.iter().enumerate() {
                 for col in 0..5 {
                     if (row >> (4 - col)) & 1 == 1 {
-                        for sy in 0..scale {
-                            for sx in 0..scale {
+                        for sy in 0..bitmap_scale {
+                            for sx in 0..bitmap_scale {
                                 self.blend_pixel(
-                                    cursor_x + col * scale + sx,
-                                    cursor_y + row_index as i32 * scale + sy,
+                                    cursor_x + col * bitmap_scale + sx,
+                                    cursor_y + row_index as i32 * bitmap_scale + sy,
                                     color,
                                 );
                             }
@@ -792,7 +825,51 @@ impl Canvas {
                     }
                 }
             }
-            cursor_x += 6 * scale;
+            cursor_x += 6 * bitmap_scale;
+        }
+    }
+
+    fn draw_ttf_text(
+        &mut self,
+        x: i32,
+        y: i32,
+        text: &str,
+        color: Color,
+        scale: u32,
+        font: &Font<'static>,
+    ) {
+        let kind = font_kind_for_scale(scale);
+        let scale = Scale::uniform(cross_section_font_size_px(scale, kind));
+        let v_metrics = font.v_metrics(scale);
+        let line_height = cross_section_line_height_px(scale, font).max(1.0).ceil() as i32;
+
+        for (line_index, line) in text.split('\n').enumerate() {
+            let baseline_y = y + line_index as i32 * line_height;
+            let glyphs = font.layout(
+                line,
+                scale,
+                point(x as f32, baseline_y as f32 + v_metrics.ascent),
+            );
+
+            for glyph in glyphs {
+                if let Some(bb) = glyph.pixel_bounding_box() {
+                    glyph.draw(|gx, gy, coverage| {
+                        let px = bb.min.x + gx as i32;
+                        let py = bb.min.y + gy as i32;
+                        let alpha = ((color.a as f32) * coverage).round().clamp(0.0, 255.0) as u8;
+                        self.blend_pixel(
+                            px,
+                            py,
+                            Color {
+                                r: color.r,
+                                g: color.g,
+                                b: color.b,
+                                a: alpha,
+                            },
+                        );
+                    });
+                }
+            }
         }
     }
 }
@@ -1053,71 +1130,109 @@ fn draw_section_wind_vector(
     style: WindOverlayStyle,
     plot: &PlotRect,
 ) {
-    let sign = if along_ms < 0.0 { -1.0 } else { 1.0 };
+    let Some(geometry) =
+        resolve_section_wind_vector_geometry(center, along_ms, left_ms, speed_ms, style)
+    else {
+        return;
+    };
+    let halo = contour_halo_color(style.color).with_alpha(90);
+    canvas.draw_line(
+        geometry.start,
+        geometry.end,
+        halo,
+        style.line_width + 2,
+        Some(plot),
+    );
+    canvas.draw_line(
+        geometry.start,
+        geometry.end,
+        style.color,
+        style.line_width,
+        Some(plot),
+    );
+    canvas.draw_line(
+        geometry.end,
+        geometry.head_left,
+        halo,
+        style.line_width + 2,
+        Some(plot),
+    );
+    canvas.draw_line(
+        geometry.end,
+        geometry.head_left,
+        style.color,
+        style.line_width,
+        Some(plot),
+    );
+    canvas.draw_line(
+        geometry.end,
+        geometry.head_right,
+        halo,
+        style.line_width + 2,
+        Some(plot),
+    );
+    canvas.draw_line(
+        geometry.end,
+        geometry.head_right,
+        style.color,
+        style.line_width,
+        Some(plot),
+    );
+}
+
+fn resolve_section_wind_vector_geometry(
+    center: (f64, f64),
+    along_ms: f32,
+    left_ms: f32,
+    speed_ms: f32,
+    style: WindOverlayStyle,
+) -> Option<WindVectorGeometry> {
+    if !(along_ms.is_finite() && left_ms.is_finite() && speed_ms.is_finite()) {
+        return None;
+    }
+
+    let vector_norm = f64::from(along_ms).hypot(f64::from(left_ms));
+    if vector_norm < 0.001 {
+        return None;
+    }
+
     let normalized_speed =
         (speed_ms / style.max_speed_ms.max(style.min_speed_ms + 1.0)).clamp(0.0, 1.0);
     let shaft_length =
         style.base_length_px + (style.max_length_px - style.base_length_px) * normalized_speed;
-    let start = (center.0 - sign * shaft_length as f64 * 0.5, center.1);
-    let end = (center.0 + sign * shaft_length as f64 * 0.5, center.1);
-    let halo = contour_halo_color(style.color).with_alpha(90);
-    canvas.draw_line(start, end, halo, style.line_width + 2, Some(plot));
-    canvas.draw_line(start, end, style.color, style.line_width, Some(plot));
-
-    let head_dx = sign * style.arrow_head_px as f64;
-    let head_dy = style.arrow_head_px as f64 * 0.7;
-    canvas.draw_line(
-        end,
-        (end.0 - head_dx, end.1 - head_dy),
-        halo,
-        style.line_width + 2,
-        Some(plot),
+    let unit_x = f64::from(along_ms) / vector_norm;
+    let unit_y = -f64::from(left_ms) / vector_norm;
+    let half_length = shaft_length as f64 * 0.5;
+    let start = (
+        center.0 - unit_x * half_length,
+        center.1 - unit_y * half_length,
     );
-    canvas.draw_line(
-        end,
-        (end.0 - head_dx, end.1 - head_dy),
-        style.color,
-        style.line_width,
-        Some(plot),
-    );
-    canvas.draw_line(
-        end,
-        (end.0 - head_dx, end.1 + head_dy),
-        halo,
-        style.line_width + 2,
-        Some(plot),
-    );
-    canvas.draw_line(
-        end,
-        (end.0 - head_dx, end.1 + head_dy),
-        style.color,
-        style.line_width,
-        Some(plot),
+    let end = (
+        center.0 + unit_x * half_length,
+        center.1 + unit_y * half_length,
     );
 
-    let cross_ratio = (left_ms.abs() / speed_ms.max(0.1)).clamp(0.0, 1.0);
-    if cross_ratio >= 0.2 {
-        let tick_length = (style.cross_tick_px * cross_ratio).max(2.0) as f64;
-        let tick_end_y = if left_ms >= 0.0 {
-            center.1 - tick_length
-        } else {
-            center.1 + tick_length
-        };
-        canvas.draw_line(
-            center,
-            (center.0, tick_end_y),
-            halo,
-            style.line_width + 2,
-            Some(plot),
-        );
-        canvas.draw_line(
-            center,
-            (center.0, tick_end_y),
-            style.color,
-            style.line_width,
-            Some(plot),
-        );
-    }
+    let head_length = style.arrow_head_px.max(2.0) as f64;
+    let head_half_width = (style.cross_tick_px.max(2.0) * 0.5) as f64;
+    let back_x = -unit_x * head_length;
+    let back_y = -unit_y * head_length;
+    let perp_x = -unit_y;
+    let perp_y = unit_x;
+    let head_left = (
+        end.0 + back_x + perp_x * head_half_width,
+        end.1 + back_y + perp_y * head_half_width,
+    );
+    let head_right = (
+        end.0 + back_x - perp_x * head_half_width,
+        end.1 + back_y - perp_y * head_half_width,
+    );
+
+    Some(WindVectorGeometry {
+        start,
+        end,
+        head_left,
+        head_right,
+    })
 }
 
 fn draw_highlight_label(
@@ -1993,7 +2108,7 @@ fn format_scalar_value(value: f32) -> String {
 fn badge_rect(x: i32, y: i32, text: &str, scale: u32) -> (u32, u32, u32, u32) {
     let pad_x = 4 * scale.max(1);
     let width = measure_text_width(text, scale) + pad_x * 2;
-    let height = 7 * scale.max(1) + 4;
+    let height = text_line_height(scale) + 4;
     (x.max(0) as u32, y.max(0) as u32, width, height)
 }
 
@@ -2026,7 +2141,83 @@ fn draw_badge(
 }
 
 fn measure_text_width(text: &str, scale: u32) -> u32 {
+    if let Some(font) = cross_section_font(scale) {
+        let font_kind = font_kind_for_scale(scale);
+        let scale = Scale::uniform(cross_section_font_size_px(scale, font_kind));
+        let v_metrics = font.v_metrics(scale);
+        return text
+            .split('\n')
+            .map(|line| {
+                let glyphs: Vec<_> = font
+                    .layout(line, scale, point(0.0, v_metrics.ascent))
+                    .collect();
+                glyphs
+                    .iter()
+                    .rev()
+                    .find_map(|glyph| glyph.pixel_bounding_box().map(|bb| bb.max.x.max(0) as u32))
+                    .or_else(|| {
+                        glyphs.last().map(|glyph| {
+                            let end =
+                                glyph.position().x + glyph.unpositioned().h_metrics().advance_width;
+                            end.max(0.0).ceil() as u32
+                        })
+                    })
+                    .unwrap_or(0)
+            })
+            .max()
+            .unwrap_or(0);
+    }
+
     text.chars().count() as u32 * 6 * scale.max(1)
+}
+
+fn text_line_height(scale: u32) -> u32 {
+    if let Some(font) = cross_section_font(scale) {
+        let font_kind = font_kind_for_scale(scale);
+        let scale = Scale::uniform(cross_section_font_size_px(scale, font_kind));
+        return cross_section_line_height_px(scale, font).ceil() as u32;
+    }
+
+    8 * scale.max(1)
+}
+
+fn font_kind_for_scale(scale: u32) -> CrossSectionFontKind {
+    if scale >= 2 {
+        CrossSectionFontKind::Semibold
+    } else {
+        CrossSectionFontKind::Regular
+    }
+}
+
+fn cross_section_font(scale: u32) -> Option<&'static Font<'static>> {
+    let fonts = CROSS_SECTION_FONTS.get_or_init(load_cross_section_fonts);
+    match font_kind_for_scale(scale) {
+        CrossSectionFontKind::Regular => fonts.regular.as_ref(),
+        CrossSectionFontKind::Semibold => fonts.semibold.as_ref().or(fonts.regular.as_ref()),
+    }
+}
+
+fn load_cross_section_fonts() -> CrossSectionFontSet {
+    CrossSectionFontSet {
+        regular: Font::try_from_bytes(SOURCE_SANS_3_REGULAR),
+        semibold: Font::try_from_bytes(SOURCE_SANS_3_SEMIBOLD),
+    }
+}
+
+fn cross_section_font_size_px(scale: u32, kind: CrossSectionFontKind) -> f32 {
+    match (scale.max(1), kind) {
+        (1, CrossSectionFontKind::Regular) => 14.0,
+        (1, CrossSectionFontKind::Semibold) => 16.0,
+        (2, CrossSectionFontKind::Regular) => 18.0,
+        (2, CrossSectionFontKind::Semibold) => 22.0,
+        (level, CrossSectionFontKind::Regular) => 14.0 + (level as f32 - 1.0) * 4.0,
+        (level, CrossSectionFontKind::Semibold) => 16.0 + (level as f32 - 1.0) * 4.5,
+    }
+}
+
+fn cross_section_line_height_px(scale: Scale, font: &Font<'static>) -> f32 {
+    let v_metrics = font.v_metrics(scale);
+    (v_metrics.ascent - v_metrics.descent + v_metrics.line_gap).max(scale.y + 2.0)
 }
 
 fn glyph_rows(ch: char) -> [u8; 7] {
@@ -2116,6 +2307,64 @@ mod tests {
             .unwrap()
     }
 
+    fn count_exact_pixels(
+        canvas: &Canvas,
+        color: Color,
+        x_min: u32,
+        x_max: u32,
+        y_min: u32,
+        y_max: u32,
+    ) -> usize {
+        let mut count = 0usize;
+        for y in y_min..=y_max.min(canvas.height.saturating_sub(1)) {
+            for x in x_min..=x_max.min(canvas.width.saturating_sub(1)) {
+                let idx = ((y * canvas.width + x) * 4) as usize;
+                if canvas.rgba[idx..idx + 4] == [color.r, color.g, color.b, 255] {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    fn count_nontransparent_pixels(
+        canvas: &Canvas,
+        x_min: u32,
+        x_max: u32,
+        y_min: u32,
+        y_max: u32,
+    ) -> usize {
+        let mut count = 0usize;
+        for y in y_min..=y_max.min(canvas.height.saturating_sub(1)) {
+            for x in x_min..=x_max.min(canvas.width.saturating_sub(1)) {
+                let idx = ((y * canvas.width + x) * 4) as usize;
+                if canvas.rgba[idx + 3] > 0 {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    fn count_exact_pixels_excluding_row(
+        canvas: &Canvas,
+        color: Color,
+        x_min: u32,
+        x_max: u32,
+        y_min: u32,
+        y_max: u32,
+        excluded_y: u32,
+    ) -> usize {
+        let mut count = 0usize;
+        for y in y_min..=y_max.min(canvas.height.saturating_sub(1)) {
+            if y == excluded_y {
+                continue;
+            }
+            count += count_exact_pixels(canvas, color, x_min, x_max, y, y);
+        }
+        count
+    }
+
     #[test]
     fn renderer_emits_header_text_legend_and_terrain_fill() {
         let image = render_scalar_section(
@@ -2193,6 +2442,22 @@ mod tests {
     }
 
     #[test]
+    fn wind_vector_geometry_uses_section_relative_angle() {
+        let style = WindOverlayStyle::default();
+
+        let up_right = resolve_section_wind_vector_geometry((100.0, 60.0), 12.0, 12.0, 17.0, style)
+            .expect("nonzero wind should produce drawable geometry");
+        assert!(up_right.end.0 > 100.0);
+        assert!(up_right.end.1 < 60.0);
+
+        let down_left =
+            resolve_section_wind_vector_geometry((100.0, 60.0), -12.0, -12.0, 17.0, style)
+                .expect("nonzero wind should produce drawable geometry");
+        assert!(down_left.end.0 < 100.0);
+        assert!(down_left.end.1 > 60.0);
+    }
+
+    #[test]
     fn renderer_draws_section_relative_wind_vectors() {
         let section = sample_section();
         let wind = decompose_wind_grid(
@@ -2245,5 +2510,88 @@ mod tests {
             .filter(|px| px[0] == 28 && px[1] == 34 && px[2] == 43)
             .count();
         assert!(vector_pixels > 30);
+    }
+
+    #[test]
+    fn wind_vector_arrowheads_flip_with_along_section_sign() {
+        let mut positive_canvas = Canvas::new(80, 40, Color::TRANSPARENT, Color::TRANSPARENT);
+        let mut negative_canvas = Canvas::new(80, 40, Color::TRANSPARENT, Color::TRANSPARENT);
+        let plot = PlotRect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 40,
+        };
+        let style = WindOverlayStyle {
+            min_speed_ms: 0.0,
+            max_speed_ms: 20.0,
+            base_length_px: 10.0,
+            max_length_px: 10.0,
+            arrow_head_px: 4.0,
+            line_width: 1,
+            color: Color::rgb(230, 30, 30),
+            ..Default::default()
+        };
+
+        draw_section_wind_vector(
+            &mut positive_canvas,
+            (40.0, 20.0),
+            10.0,
+            0.0,
+            20.0,
+            style,
+            &plot,
+        );
+        draw_section_wind_vector(
+            &mut negative_canvas,
+            (40.0, 20.0),
+            -10.0,
+            0.0,
+            20.0,
+            style,
+            &plot,
+        );
+
+        let positive_right_head =
+            count_exact_pixels_excluding_row(&positive_canvas, style.color, 41, 45, 16, 24, 20);
+        let positive_left_head =
+            count_exact_pixels_excluding_row(&positive_canvas, style.color, 35, 39, 16, 24, 20);
+        let negative_right_head =
+            count_exact_pixels_excluding_row(&negative_canvas, style.color, 41, 45, 16, 24, 20);
+        let negative_left_head =
+            count_exact_pixels_excluding_row(&negative_canvas, style.color, 35, 39, 16, 24, 20);
+
+        assert!(positive_right_head > 0);
+        assert_eq!(positive_left_head, 0);
+        assert_eq!(negative_right_head, 0);
+        assert!(negative_left_head > 0);
+    }
+
+    #[test]
+    fn canvas_text_helper_renders_multiline_text_with_shadow_offset() {
+        let mut canvas = Canvas::new(48, 28, Color::TRANSPARENT, Color::TRANSPARENT);
+        let text_color = Color::rgb(245, 245, 245);
+        let shadow_color = Color::rgb(12, 18, 24);
+
+        canvas.draw_text(2, 2, "A\nA", text_color, 1, Some(shadow_color));
+
+        let top_line_pixels = count_nontransparent_pixels(&canvas, 0, 47, 0, 13);
+        let bottom_line_pixels = count_nontransparent_pixels(&canvas, 0, 47, 14, 27);
+        let shadow_pixels = count_nontransparent_pixels(&canvas, 5, 25, 5, 25);
+
+        assert!(top_line_pixels > 0);
+        assert!(bottom_line_pixels > 0);
+        assert!(shadow_pixels > 0);
+    }
+
+    #[test]
+    fn badge_rect_uses_text_width_padding_and_scale() {
+        let (x, y, width, height) = badge_rect(-3, 5, "AB", 2);
+
+        assert_eq!(x, 0);
+        assert_eq!(y, 5);
+        assert_eq!(width, measure_text_width("AB", 2) + 16);
+        assert_eq!(height, text_line_height(2) + 4);
+        assert_eq!(measure_badge_width("AB", 2), width);
     }
 }

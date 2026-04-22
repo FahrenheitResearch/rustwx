@@ -1,5 +1,7 @@
+pub mod artifact_bundle;
 pub mod cache;
 pub mod catalog;
+pub mod comparison;
 pub mod cross_section;
 pub mod custom_poi;
 pub mod derived;
@@ -9,6 +11,8 @@ pub mod gallery;
 pub mod gridded;
 pub mod heavy;
 pub mod hrrr;
+pub mod intelligence;
+pub mod named_geometry;
 pub mod non_ecape;
 pub mod orchestrator;
 pub mod places;
@@ -16,6 +20,7 @@ pub mod planner;
 pub mod publication;
 pub mod publication_provenance;
 pub mod runtime;
+pub mod sampling;
 pub mod severe;
 pub mod shared_context;
 pub mod source;
@@ -24,9 +29,13 @@ pub mod thermo_native;
 pub mod windowed;
 pub mod windowed_decoder;
 
+pub use named_geometry::{
+    NamedGeoBounds, NamedGeoPoint, NamedGeometry, NamedGeometryAsset, NamedGeometryCatalog,
+    NamedGeometryKind, NamedGeometrySelector,
+};
 pub use shared_context::{
-    layout_key, render_two_by_four_solar07_panel, DomainSpec, PreparedProjectedContext,
-    ProjectedMap, ProjectedMapProvider, Solar07PanelField, Solar07PanelHeader, Solar07PanelLayout,
+    DomainSpec, PreparedProjectedContext, ProjectedMap, ProjectedMapProvider, Solar07PanelField,
+    Solar07PanelHeader, Solar07PanelLayout, layout_key, render_two_by_four_solar07_panel,
 };
 
 pub(crate) fn apply_place_label_overlay_with_density_styling(
@@ -156,9 +165,11 @@ mod tests {
         let domain = DomainSpec::new("california_square", CALIFORNIA_SQUARE);
         let selected = overlay.selected_places_for_domain(&domain);
 
-        assert!(selected
-            .iter()
-            .any(|place| !is_major_catalog_place(place.slug.as_str())));
+        assert!(
+            selected
+                .iter()
+                .any(|place| !is_major_catalog_place(place.slug.as_str()))
+        );
 
         let mut request = sample_place_label_request();
         let grid_lat_deg = request.field.grid.lat_deg.clone();
@@ -231,12 +242,14 @@ mod tests {
         assert!(request.projected_place_labels.iter().any(|label| {
             label.priority == rustwx_render::ProjectedPlaceLabelPriority::Auxiliary
         }));
-        assert!(selected
-            .iter()
-            .zip(request.projected_place_labels.iter())
-            .filter(|(place, _)| is_major_catalog_place(place.slug.as_str()))
-            .all(|(_, label)| {
-                label.priority == rustwx_render::ProjectedPlaceLabelPriority::Primary
-            }));
+        assert!(
+            selected
+                .iter()
+                .zip(request.projected_place_labels.iter())
+                .filter(|(place, _)| is_major_catalog_place(place.slug.as_str()))
+                .all(|(_, label)| {
+                    label.priority == rustwx_render::ProjectedPlaceLabelPriority::Primary
+                })
+        );
     }
 }

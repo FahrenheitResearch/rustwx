@@ -1594,14 +1594,18 @@ mod tests {
         .expect("overlay should project");
 
         assert_eq!(request.projected_place_labels.len(), 2);
-        assert!(request
-            .projected_place_labels
-            .iter()
-            .all(|label| label.x.is_finite() && label.y.is_finite()));
-        assert!(request
-            .projected_place_labels
-            .iter()
-            .all(|label| { !label.label.as_deref().unwrap_or_default().contains(',') }));
+        assert!(
+            request
+                .projected_place_labels
+                .iter()
+                .all(|label| label.x.is_finite() && label.y.is_finite())
+        );
+        assert!(
+            request
+                .projected_place_labels
+                .iter()
+                .all(|label| { !label.label.as_deref().unwrap_or_default().contains(',') })
+        );
 
         let los_angeles = request
             .projected_place_labels
@@ -1675,9 +1679,11 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(!slugs.is_empty());
-        assert!(slugs
-            .iter()
-            .all(|slug| { matches!(*slug, "ca_los_angeles" | "ca_san_diego") }));
+        assert!(
+            slugs
+                .iter()
+                .all(|slug| { matches!(*slug, "ca_los_angeles" | "ca_san_diego") })
+        );
     }
 
     #[test]
@@ -1713,9 +1719,11 @@ mod tests {
         let dense = PlaceLabelOverlay::major_us_cities()
             .with_density(PlaceLabelDensityTier::Dense)
             .selected_places_for_domain(&domain);
-        assert!(dense
-            .iter()
-            .any(|place| place_catalog_tier_for_slug(&place.slug) == PlaceCatalogTier::Micro));
+        assert!(
+            dense
+                .iter()
+                .any(|place| place_catalog_tier_for_slug(&place.slug) == PlaceCatalogTier::Micro)
+        );
     }
 
     #[test]

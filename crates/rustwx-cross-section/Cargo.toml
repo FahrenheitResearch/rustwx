@@ -9,3 +9,4 @@ description = "Foundational cross-section geometry, metadata, and lightweight re
 
 [dependencies]
 rustwx-contour = { path = "../rustwx-contour" }
+rusttype = "0.9"

@@ -917,6 +917,38 @@ mod tests {
     }
 
     #[test]
+    fn compare_stats_separate_pass_review_and_reject_verdicts() {
+        let native = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+
+        let pass =
+            compare_native_vs_derived("lifted_index", &native, &[1.5, 2.5, 3.5, 4.5, 5.5]).unwrap();
+        let review =
+            compare_native_vs_derived("lifted_index", &native, &[2.25, 3.25, 4.25, 5.25, 6.25])
+                .unwrap();
+        let reject =
+            compare_native_vs_derived("lifted_index", &native, &[5.0, 4.0, 3.0, 2.0, 1.0]).unwrap();
+
+        assert_eq!(pass.verdict, NativeComparisonVerdict::Pass);
+        assert_eq!(review.verdict, NativeComparisonVerdict::Review);
+        assert_eq!(reject.verdict, NativeComparisonVerdict::Reject);
+        assert!(pass.mean_abs_diff < review.mean_abs_diff);
+        assert!(reject.correlation_r < 0.0);
+    }
+
+    #[test]
+    fn compare_stats_ignore_non_finite_points() {
+        let native = vec![10.0, f64::NAN, 30.0, f64::INFINITY];
+        let derived = vec![10.5, 20.0, 29.5, 40.0];
+        let stats = compare_native_vs_derived("lifted_index", &native, &derived).unwrap();
+
+        assert_eq!(stats.valid_points, 2);
+        assert_eq!(stats.domain_mean_native, 20.0);
+        assert_eq!(stats.domain_mean_derived, 20.0);
+        assert_eq!(stats.native.min, 10.0);
+        assert_eq!(stats.native.max, 30.0);
+    }
+
+    #[test]
     fn rrfs_exposes_all_supported_native_thermo_candidates() {
         let supported = [
             "sbcape",

@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 use rustwx_calc::{
@@ -9,9 +10,10 @@ use rustwx_calc::{
 use rustwx_core::{CycleSpec, ModelId, SourceId};
 use rustwx_cross_section::{
     CrossSectionProduct, CrossSectionStyle, DecomposedWindGrid, GeoPoint, HorizontalInterpolation,
-    ScalarSection, SectionLayout, SectionMetadata, TerrainProfile, VerticalAxis, WindOverlayBundle,
-    WindOverlayStyle, decompose_wind_grid,
+    ScalarSection, SectionLayout, SectionMetadata, TerrainProfile, VerticalAxis, VerticalKind,
+    VerticalScale, VerticalUnits, WindOverlayBundle, WindOverlayStyle, decompose_wind_grid,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::gridded::{LoadedModelTimestep, PressureFields, SurfaceFields};
 
@@ -56,6 +58,205 @@ pub struct PressureCrossSectionBuildTiming {
 pub struct ProfiledPressureCrossSectionArtifact {
     pub artifact: PressureCrossSectionArtifact,
     pub timing: PressureCrossSectionBuildTiming,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PressureCrossSectionFacts {
+    pub route: PressureCrossSectionRouteFacts,
+    pub metadata: PressureCrossSectionMetadataFacts,
+    pub scalar: PressureCrossSectionScalarFacts,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terrain: Option<PressureCrossSectionTerrainFacts>,
+    pub wind: PressureCrossSectionWindFacts,
+}
+
+impl PressureCrossSectionFacts {
+    pub fn from_artifact(layout: &SectionLayout, artifact: &PressureCrossSectionArtifact) -> Self {
+        summarize_pressure_cross_section_artifact(layout, artifact)
+    }
+
+    pub fn global_minimum(&self) -> Option<&PressureCrossSectionValueFact> {
+        self.scalar.global_minimum()
+    }
+
+    pub fn global_maximum(&self) -> Option<&PressureCrossSectionValueFact> {
+        self.scalar.global_maximum()
+    }
+
+    pub fn lowest_visible_level_minimum(&self) -> Option<&PressureCrossSectionValueFact> {
+        self.scalar.lowest_visible_level_minimum()
+    }
+
+    pub fn lowest_visible_level_maximum(&self) -> Option<&PressureCrossSectionValueFact> {
+        self.scalar.lowest_visible_level_maximum()
+    }
+
+    pub fn strongest_wind_speed(&self) -> Option<&PressureCrossSectionValueFact> {
+        self.wind.strongest_speed()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PressureCrossSectionRouteFacts {
+    pub total_distance_km: f64,
+    pub sample_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean_sample_spacing_km: Option<f64>,
+    pub start: PressureCrossSectionRouteSample,
+    pub midpoint: PressureCrossSectionRouteSample,
+    pub end: PressureCrossSectionRouteSample,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PressureCrossSectionRouteSample {
+    pub sample_index: usize,
+    pub distance_km: f64,
+    pub latitude_deg: f64,
+    pub longitude_deg: f64,
+    pub bearing_deg: f64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PressureCrossSectionMetadataFacts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_units: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_label: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attributes: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PressureCrossSectionScalarFacts {
+    pub vertical_kind: String,
+    pub vertical_units: String,
+    pub vertical_scale: String,
+    pub level_count: usize,
+    pub top_level: f64,
+    pub bottom_level: f64,
+    pub finite_value_count: usize,
+    pub missing_value_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_minimum: Option<PressureCrossSectionValueFact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_maximum: Option<PressureCrossSectionValueFact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lowest_visible_level_minimum: Option<PressureCrossSectionValueFact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lowest_visible_level_maximum: Option<PressureCrossSectionValueFact>,
+}
+
+impl PressureCrossSectionScalarFacts {
+    pub fn global_minimum(&self) -> Option<&PressureCrossSectionValueFact> {
+        self.global_minimum.as_ref()
+    }
+
+    pub fn global_maximum(&self) -> Option<&PressureCrossSectionValueFact> {
+        self.global_maximum.as_ref()
+    }
+
+    pub fn lowest_visible_level_minimum(&self) -> Option<&PressureCrossSectionValueFact> {
+        self.lowest_visible_level_minimum.as_ref()
+    }
+
+    pub fn lowest_visible_level_maximum(&self) -> Option<&PressureCrossSectionValueFact> {
+        self.lowest_visible_level_maximum.as_ref()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PressureCrossSectionValueFact {
+    pub value: f64,
+    pub level_index: usize,
+    pub vertical_value: f64,
+    pub sample_index: usize,
+    pub distance_km: f64,
+    pub latitude_deg: f64,
+    pub longitude_deg: f64,
+    pub bearing_deg: f64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PressureCrossSectionTerrainFacts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_pressure_minimum: Option<PressureCrossSectionProfileValueFact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_pressure_maximum: Option<PressureCrossSectionProfileValueFact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_height_minimum_m: Option<PressureCrossSectionProfileValueFact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_height_maximum_m: Option<PressureCrossSectionProfileValueFact>,
+}
+
+impl PressureCrossSectionTerrainFacts {
+    pub fn surface_pressure_minimum(&self) -> Option<&PressureCrossSectionProfileValueFact> {
+        self.surface_pressure_minimum.as_ref()
+    }
+
+    pub fn surface_pressure_maximum(&self) -> Option<&PressureCrossSectionProfileValueFact> {
+        self.surface_pressure_maximum.as_ref()
+    }
+
+    pub fn surface_height_minimum_m(&self) -> Option<&PressureCrossSectionProfileValueFact> {
+        self.surface_height_minimum_m.as_ref()
+    }
+
+    pub fn surface_height_maximum_m(&self) -> Option<&PressureCrossSectionProfileValueFact> {
+        self.surface_height_maximum_m.as_ref()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PressureCrossSectionProfileValueFact {
+    pub value: f64,
+    pub sample_index: usize,
+    pub distance_km: f64,
+    pub latitude_deg: f64,
+    pub longitude_deg: f64,
+    pub bearing_deg: f64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PressureCrossSectionWindFacts {
+    pub units: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strongest_speed: Option<PressureCrossSectionValueFact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strongest_tailwind: Option<PressureCrossSectionValueFact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strongest_headwind: Option<PressureCrossSectionValueFact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strongest_left_crosswind: Option<PressureCrossSectionValueFact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strongest_right_crosswind: Option<PressureCrossSectionValueFact>,
+}
+
+impl PressureCrossSectionWindFacts {
+    pub fn strongest_speed(&self) -> Option<&PressureCrossSectionValueFact> {
+        self.strongest_speed.as_ref()
+    }
+
+    pub fn strongest_tailwind(&self) -> Option<&PressureCrossSectionValueFact> {
+        self.strongest_tailwind.as_ref()
+    }
+
+    pub fn strongest_headwind(&self) -> Option<&PressureCrossSectionValueFact> {
+        self.strongest_headwind.as_ref()
+    }
+
+    pub fn strongest_left_crosswind(&self) -> Option<&PressureCrossSectionValueFact> {
+        self.strongest_left_crosswind.as_ref()
+    }
+
+    pub fn strongest_right_crosswind(&self) -> Option<&PressureCrossSectionValueFact> {
+        self.strongest_right_crosswind.as_ref()
+    }
 }
 
 /// Optional fields that future native/hybrid cross-section builders can forward
@@ -108,6 +309,15 @@ pub fn build_pressure_cross_section(
     product: CrossSectionProduct,
 ) -> Result<PressureCrossSectionArtifact, Box<dyn std::error::Error>> {
     build_pressure_cross_section_profiled(loaded, layout, product).map(|profiled| profiled.artifact)
+}
+
+pub fn build_pressure_cross_section_facts(
+    loaded: &LoadedModelTimestep,
+    layout: &SectionLayout,
+    product: CrossSectionProduct,
+) -> Result<PressureCrossSectionFacts, Box<dyn std::error::Error>> {
+    let artifact = build_pressure_cross_section(loaded, layout, product)?;
+    Ok(summarize_pressure_cross_section_artifact(layout, &artifact))
 }
 
 pub fn build_pressure_cross_section_profiled(
@@ -260,6 +470,20 @@ fn build_pressure_cross_section_from_parts_profiled(
             total_ms: total_start.elapsed().as_millis(),
         },
     })
+}
+
+pub fn summarize_pressure_cross_section_artifact(
+    layout: &SectionLayout,
+    artifact: &PressureCrossSectionArtifact,
+) -> PressureCrossSectionFacts {
+    let masked_section = artifact.section.masked_with_terrain();
+    PressureCrossSectionFacts {
+        route: summarize_route_facts(layout),
+        metadata: summarize_metadata_facts(masked_section.metadata()),
+        scalar: summarize_scalar_facts(layout, &masked_section),
+        terrain: summarize_terrain_facts(layout, masked_section.terrain()),
+        wind: summarize_wind_facts(layout, &masked_section, &artifact.wind_overlay.grid),
+    }
 }
 
 pub fn build_pressure_cross_section_product_values(
@@ -501,6 +725,350 @@ fn build_section_metadata(
     metadata
 }
 
+fn summarize_route_facts(layout: &SectionLayout) -> PressureCrossSectionRouteFacts {
+    let sample_count = layout.sampled_path.samples.len();
+    let midpoint_index = sample_count.saturating_sub(1) / 2;
+    PressureCrossSectionRouteFacts {
+        total_distance_km: layout.sampled_path.total_distance_km,
+        sample_count,
+        mean_sample_spacing_km: (sample_count >= 2)
+            .then_some(layout.sampled_path.total_distance_km / (sample_count as f64 - 1.0)),
+        start: route_sample_fact(layout, 0),
+        midpoint: route_sample_fact(layout, midpoint_index),
+        end: route_sample_fact(layout, sample_count.saturating_sub(1)),
+    }
+}
+
+fn summarize_metadata_facts(metadata: &SectionMetadata) -> PressureCrossSectionMetadataFacts {
+    PressureCrossSectionMetadataFacts {
+        title: metadata.title.clone(),
+        field_name: metadata.field_name.clone(),
+        field_units: metadata.field_units.clone(),
+        source: metadata.source.clone(),
+        valid_label: metadata.valid_label.clone(),
+        attributes: metadata.attributes.clone(),
+    }
+}
+
+fn summarize_scalar_facts(
+    layout: &SectionLayout,
+    section: &ScalarSection,
+) -> PressureCrossSectionScalarFacts {
+    let axis = section.vertical_axis();
+    let mut finite_value_count = 0usize;
+    let mut global_minimum = None::<PressureCrossSectionValueFact>;
+    let mut global_maximum = None::<PressureCrossSectionValueFact>;
+
+    for level_index in 0..section.n_levels() {
+        for point_index in 0..section.n_points() {
+            let Some(value) = section.value(level_index, point_index) else {
+                continue;
+            };
+            if !value.is_finite() {
+                continue;
+            }
+            finite_value_count = finite_value_count.saturating_add(1);
+            let fact = section_value_fact(layout, axis, point_index, level_index, value as f64);
+            update_value_minimum(&mut global_minimum, fact.clone());
+            update_value_maximum(&mut global_maximum, fact);
+        }
+    }
+
+    let mut lowest_visible_level_minimum = None::<PressureCrossSectionValueFact>;
+    let mut lowest_visible_level_maximum = None::<PressureCrossSectionValueFact>;
+    for point_index in 0..section.n_points() {
+        let mut best_level_index = None::<usize>;
+        let mut best_plot_fraction = f64::NEG_INFINITY;
+        for (level_index, &vertical_value) in axis.levels().iter().enumerate() {
+            let Some(value) = section.value(level_index, point_index) else {
+                continue;
+            };
+            if !value.is_finite() {
+                continue;
+            }
+            let Some(plot_fraction) = axis.plot_fraction_of_value(vertical_value) else {
+                continue;
+            };
+            if plot_fraction > best_plot_fraction {
+                best_plot_fraction = plot_fraction;
+                best_level_index = Some(level_index);
+            }
+        }
+
+        let Some(level_index) = best_level_index else {
+            continue;
+        };
+        let value = section
+            .value(level_index, point_index)
+            .expect("section dimensions should stay internally consistent")
+            as f64;
+        let fact = section_value_fact(layout, axis, point_index, level_index, value);
+        update_value_minimum(&mut lowest_visible_level_minimum, fact.clone());
+        update_value_maximum(&mut lowest_visible_level_maximum, fact);
+    }
+
+    PressureCrossSectionScalarFacts {
+        vertical_kind: vertical_kind_slug(axis.kind()).to_string(),
+        vertical_units: vertical_units_slug(axis.units()).to_string(),
+        vertical_scale: vertical_scale_slug(axis.scale()).to_string(),
+        level_count: axis.len(),
+        top_level: axis.plot_top(),
+        bottom_level: axis.plot_bottom(),
+        finite_value_count,
+        missing_value_count: section.values().len().saturating_sub(finite_value_count),
+        global_minimum,
+        global_maximum,
+        lowest_visible_level_minimum,
+        lowest_visible_level_maximum,
+    }
+}
+
+fn summarize_terrain_facts(
+    layout: &SectionLayout,
+    terrain: Option<&TerrainProfile>,
+) -> Option<PressureCrossSectionTerrainFacts> {
+    let terrain = terrain?;
+    Some(PressureCrossSectionTerrainFacts {
+        surface_pressure_minimum: profile_minimum_fact(layout, terrain.surface_pressure_hpa()),
+        surface_pressure_maximum: profile_maximum_fact(layout, terrain.surface_pressure_hpa()),
+        surface_height_minimum_m: profile_minimum_fact(layout, terrain.surface_height_m()),
+        surface_height_maximum_m: profile_maximum_fact(layout, terrain.surface_height_m()),
+    })
+}
+
+fn summarize_wind_facts(
+    layout: &SectionLayout,
+    section: &ScalarSection,
+    wind: &DecomposedWindGrid,
+) -> PressureCrossSectionWindFacts {
+    let mut facts = PressureCrossSectionWindFacts {
+        units: "m/s".to_string(),
+        ..PressureCrossSectionWindFacts::default()
+    };
+    let axis = section.vertical_axis();
+
+    for level_index in 0..wind.n_levels() {
+        for point_index in 0..wind.n_points() {
+            if !section
+                .value(level_index, point_index)
+                .map(|value| value.is_finite())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            if let Some(value) = wind.speed_value(level_index, point_index) {
+                if value.is_finite() {
+                    update_value_maximum(
+                        &mut facts.strongest_speed,
+                        section_value_fact(layout, axis, point_index, level_index, value as f64),
+                    );
+                }
+            }
+
+            if let Some(value) = wind.along_section_value(level_index, point_index) {
+                if value.is_finite() {
+                    let fact =
+                        section_value_fact(layout, axis, point_index, level_index, value as f64);
+                    if value > 0.0 {
+                        update_value_maximum(&mut facts.strongest_tailwind, fact);
+                    } else if value < 0.0 {
+                        update_value_minimum(&mut facts.strongest_headwind, fact);
+                    }
+                }
+            }
+
+            if let Some(value) = wind.left_of_section_value(level_index, point_index) {
+                if value.is_finite() {
+                    let fact =
+                        section_value_fact(layout, axis, point_index, level_index, value as f64);
+                    if value > 0.0 {
+                        update_value_maximum(&mut facts.strongest_left_crosswind, fact);
+                    } else if value < 0.0 {
+                        update_value_minimum(&mut facts.strongest_right_crosswind, fact);
+                    }
+                }
+            }
+        }
+    }
+
+    facts
+}
+
+fn route_sample_fact(
+    layout: &SectionLayout,
+    point_index: usize,
+) -> PressureCrossSectionRouteSample {
+    let sample = layout.sampled_path.samples[point_index];
+    PressureCrossSectionRouteSample {
+        sample_index: point_index,
+        distance_km: sample.distance_km,
+        latitude_deg: sample.point.lat_deg,
+        longitude_deg: sample.point.lon_deg,
+        bearing_deg: sample.bearing_deg,
+    }
+}
+
+fn section_value_fact(
+    layout: &SectionLayout,
+    axis: &VerticalAxis,
+    point_index: usize,
+    level_index: usize,
+    value: f64,
+) -> PressureCrossSectionValueFact {
+    let route_sample = route_sample_fact(layout, point_index);
+    PressureCrossSectionValueFact {
+        value,
+        level_index,
+        vertical_value: axis.levels()[level_index],
+        sample_index: route_sample.sample_index,
+        distance_km: route_sample.distance_km,
+        latitude_deg: route_sample.latitude_deg,
+        longitude_deg: route_sample.longitude_deg,
+        bearing_deg: route_sample.bearing_deg,
+    }
+}
+
+fn profile_value_fact(
+    layout: &SectionLayout,
+    point_index: usize,
+    value: f64,
+) -> PressureCrossSectionProfileValueFact {
+    let route_sample = route_sample_fact(layout, point_index);
+    PressureCrossSectionProfileValueFact {
+        value,
+        sample_index: route_sample.sample_index,
+        distance_km: route_sample.distance_km,
+        latitude_deg: route_sample.latitude_deg,
+        longitude_deg: route_sample.longitude_deg,
+        bearing_deg: route_sample.bearing_deg,
+    }
+}
+
+fn profile_minimum_fact(
+    layout: &SectionLayout,
+    values: Option<&[f64]>,
+) -> Option<PressureCrossSectionProfileValueFact> {
+    let values = values?;
+    let mut minimum = None::<PressureCrossSectionProfileValueFact>;
+    for (point_index, &value) in values.iter().enumerate() {
+        if !value.is_finite() {
+            continue;
+        }
+        update_profile_minimum(&mut minimum, profile_value_fact(layout, point_index, value));
+    }
+    minimum
+}
+
+fn profile_maximum_fact(
+    layout: &SectionLayout,
+    values: Option<&[f64]>,
+) -> Option<PressureCrossSectionProfileValueFact> {
+    let values = values?;
+    let mut maximum = None::<PressureCrossSectionProfileValueFact>;
+    for (point_index, &value) in values.iter().enumerate() {
+        if !value.is_finite() {
+            continue;
+        }
+        update_profile_maximum(&mut maximum, profile_value_fact(layout, point_index, value));
+    }
+    maximum
+}
+
+fn update_value_minimum(
+    target: &mut Option<PressureCrossSectionValueFact>,
+    candidate: PressureCrossSectionValueFact,
+) {
+    if target
+        .as_ref()
+        .map(|current| {
+            candidate.value < current.value
+                || equivalent_value_fact(candidate.value, current.value)
+                    && candidate.sample_index < current.sample_index
+        })
+        .unwrap_or(true)
+    {
+        *target = Some(candidate);
+    }
+}
+
+fn update_value_maximum(
+    target: &mut Option<PressureCrossSectionValueFact>,
+    candidate: PressureCrossSectionValueFact,
+) {
+    if target
+        .as_ref()
+        .map(|current| {
+            candidate.value > current.value
+                || equivalent_value_fact(candidate.value, current.value)
+                    && candidate.sample_index < current.sample_index
+        })
+        .unwrap_or(true)
+    {
+        *target = Some(candidate);
+    }
+}
+
+fn update_profile_minimum(
+    target: &mut Option<PressureCrossSectionProfileValueFact>,
+    candidate: PressureCrossSectionProfileValueFact,
+) {
+    if target
+        .as_ref()
+        .map(|current| {
+            candidate.value < current.value
+                || equivalent_value_fact(candidate.value, current.value)
+                    && candidate.sample_index < current.sample_index
+        })
+        .unwrap_or(true)
+    {
+        *target = Some(candidate);
+    }
+}
+
+fn update_profile_maximum(
+    target: &mut Option<PressureCrossSectionProfileValueFact>,
+    candidate: PressureCrossSectionProfileValueFact,
+) {
+    if target
+        .as_ref()
+        .map(|current| {
+            candidate.value > current.value
+                || equivalent_value_fact(candidate.value, current.value)
+                    && candidate.sample_index < current.sample_index
+        })
+        .unwrap_or(true)
+    {
+        *target = Some(candidate);
+    }
+}
+
+fn equivalent_value_fact(left: f64, right: f64) -> bool {
+    (left - right).abs() <= f64::EPSILON
+}
+
+fn vertical_kind_slug(kind: VerticalKind) -> &'static str {
+    match kind {
+        VerticalKind::Pressure => "pressure",
+        VerticalKind::Height => "height",
+    }
+}
+
+fn vertical_units_slug(units: VerticalUnits) -> &'static str {
+    match units {
+        VerticalUnits::Hectopascals => "hpa",
+        VerticalUnits::Meters => "meters",
+        VerticalUnits::Kilometers => "kilometers",
+    }
+}
+
+fn vertical_scale_slug(scale: VerticalScale) -> &'static str {
+    match scale {
+        VerticalScale::Linear => "linear",
+        VerticalScale::Logarithmic => "logarithmic",
+    }
+}
+
 fn build_wind_grid(
     u_ms: &[f64],
     v_ms: &[f64],
@@ -711,7 +1279,10 @@ fn normalized_longitude_delta(delta_deg: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustwx_cross_section::{CrossSectionRequest, SamplingStrategy, SectionPath};
+    use rustwx_cross_section::{
+        CrossSectionRequest, CrossSectionStyle, SamplingStrategy, ScalarSection, SectionPath,
+        TerrainProfile, VerticalAxis, WindOverlayBundle, WindOverlayStyle, decompose_wind_grid,
+    };
 
     fn sample_surface_fields() -> SurfaceFields {
         SurfaceFields {
@@ -760,6 +1331,57 @@ mod tests {
         .unwrap()
     }
 
+    fn below_ground_extrema_fixture() -> (SectionLayout, PressureCrossSectionArtifact) {
+        let layout = CrossSectionRequest::new(
+            SectionPath::endpoints(
+                GeoPoint::new(35.0, -100.0).unwrap(),
+                GeoPoint::new(36.0, -99.0).unwrap(),
+            )
+            .unwrap(),
+        )
+        .with_sampling(SamplingStrategy::Count(2))
+        .build_layout()
+        .unwrap();
+        let terrain = TerrainProfile::new(layout.sampled_path.distances_km())
+            .unwrap()
+            .with_surface_pressure_hpa(vec![950.0, 950.0])
+            .unwrap()
+            .with_surface_height_m(vec![150.0, 250.0])
+            .unwrap();
+        let section = ScalarSection::new(
+            layout.sampled_path.distances_km(),
+            VerticalAxis::pressure_hpa(vec![1000.0, 900.0]).unwrap(),
+            vec![999.0, 999.0, 10.0, 20.0],
+        )
+        .unwrap()
+        .with_metadata(
+            SectionMetadata::new()
+                .field("temperature", "C")
+                .with_attribute("route_label", "MASK TEST"),
+        )
+        .with_terrain(terrain)
+        .unwrap();
+        let wind_overlay = WindOverlayBundle::new(
+            decompose_wind_grid(
+                &[0.0, 0.0, 5.0, 7.0],
+                &[0.0, 0.0, 0.0, 0.0],
+                2,
+                2,
+                &[45.0, 45.0],
+            )
+            .unwrap(),
+            WindOverlayStyle::default(),
+        );
+        (
+            layout,
+            PressureCrossSectionArtifact {
+                section,
+                style: CrossSectionStyle::new(CrossSectionProduct::Temperature),
+                wind_overlay,
+            },
+        )
+    }
+
     #[test]
     fn supported_product_list_matches_current_pressure_section_lane() {
         assert!(supports_pressure_cross_section_product(
@@ -798,6 +1420,77 @@ mod tests {
         assert!(!supports_pressure_cross_section_product(
             CrossSectionProduct::Smoke
         ));
+    }
+
+    #[test]
+    fn pressure_cross_section_facts_capture_route_and_extrema_metadata() {
+        let surface = sample_surface_fields();
+        let pressure = sample_pressure_fields();
+        let layout = sample_layout();
+        let artifact = build_pressure_cross_section_from_parts_profiled(
+            &surface,
+            &pressure,
+            ModelId::Hrrr,
+            SourceId::Nomads,
+            &CycleSpec::new("20260414", 23).unwrap(),
+            0,
+            &layout,
+            CrossSectionProduct::Temperature,
+        )
+        .unwrap()
+        .artifact;
+
+        let facts = summarize_pressure_cross_section_artifact(&layout, &artifact);
+
+        assert_eq!(facts.route.sample_count, 3);
+        assert_eq!(facts.route.start.sample_index, 0);
+        assert_eq!(facts.route.midpoint.sample_index, 1);
+        assert_eq!(facts.route.end.sample_index, 2);
+        assert!(facts.route.total_distance_km > 100.0);
+        assert_eq!(facts.metadata.field_name.as_deref(), Some("temperature"));
+        assert_eq!(facts.metadata.field_units.as_deref(), Some("C"));
+        assert_eq!(
+            facts
+                .metadata
+                .attributes
+                .get("route_label")
+                .map(String::as_str),
+            Some("TEST ROUTE")
+        );
+        assert_eq!(facts.scalar.vertical_kind, "pressure");
+        assert_eq!(facts.scalar.vertical_units, "hpa");
+        assert_eq!(facts.scalar.level_count, 2);
+        assert!(facts.global_minimum().is_some());
+        assert!(facts.global_maximum().is_some());
+        assert!(facts.global_maximum().unwrap().value >= facts.global_minimum().unwrap().value);
+        assert!(facts.lowest_visible_level_minimum().is_some());
+        assert!(facts.lowest_visible_level_maximum().is_some());
+        let terrain = facts.terrain.as_ref().expect("terrain facts should exist");
+        assert!(terrain.surface_pressure_minimum().is_some());
+        assert!(terrain.surface_height_maximum_m().is_some());
+        assert_eq!(facts.wind.units, "m/s");
+        assert!(facts.strongest_wind_speed().is_some());
+    }
+
+    #[test]
+    fn pressure_cross_section_facts_ignore_below_ground_extrema() {
+        let (layout, artifact) = below_ground_extrema_fixture();
+
+        let facts = PressureCrossSectionFacts::from_artifact(&layout, &artifact);
+
+        assert_eq!(facts.global_minimum().unwrap().value, 10.0);
+        assert_eq!(facts.global_maximum().unwrap().value, 20.0);
+        assert_eq!(facts.lowest_visible_level_maximum().unwrap().value, 20.0);
+        assert_eq!(facts.wind.strongest_speed().unwrap().value, 7.0);
+        assert_eq!(
+            facts
+                .terrain
+                .as_ref()
+                .and_then(|terrain| terrain.surface_pressure_minimum())
+                .unwrap()
+                .value,
+            950.0
+        );
     }
 
     #[test]

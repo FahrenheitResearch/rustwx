@@ -110,6 +110,125 @@ impl LatLonGrid {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GeoPoint {
+    pub lat_deg: f64,
+    pub lon_deg: f64,
+}
+
+impl GeoPoint {
+    pub const fn new(lat_deg: f64, lon_deg: f64) -> Self {
+        Self { lat_deg, lon_deg }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GeoBounds {
+    pub west_lon_deg: f64,
+    pub east_lon_deg: f64,
+    pub south_lat_deg: f64,
+    pub north_lat_deg: f64,
+}
+
+impl GeoBounds {
+    pub const fn new(
+        west_lon_deg: f64,
+        east_lon_deg: f64,
+        south_lat_deg: f64,
+        north_lat_deg: f64,
+    ) -> Self {
+        Self {
+            west_lon_deg,
+            east_lon_deg,
+            south_lat_deg,
+            north_lat_deg,
+        }
+    }
+
+    pub fn contains(self, point: GeoPoint) -> bool {
+        point.lon_deg >= self.west_lon_deg
+            && point.lon_deg <= self.east_lon_deg
+            && point.lat_deg >= self.south_lat_deg
+            && point.lat_deg <= self.north_lat_deg
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GeoPolygon {
+    pub exterior: Vec<GeoPoint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub holes: Vec<Vec<GeoPoint>>,
+}
+
+impl GeoPolygon {
+    pub fn new(exterior: Vec<GeoPoint>, holes: Vec<Vec<GeoPoint>>) -> Self {
+        Self { exterior, holes }
+    }
+
+    pub fn bounds(&self) -> Option<GeoBounds> {
+        let mut iter = self.exterior.iter().copied();
+        let first = iter.next()?;
+        let mut west = first.lon_deg;
+        let mut east = first.lon_deg;
+        let mut south = first.lat_deg;
+        let mut north = first.lat_deg;
+        for point in iter {
+            west = west.min(point.lon_deg);
+            east = east.max(point.lon_deg);
+            south = south.min(point.lat_deg);
+            north = north.max(point.lat_deg);
+        }
+        Some(GeoBounds::new(west, east, south, north))
+    }
+
+    pub fn contains(&self, point: GeoPoint) -> bool {
+        if self.exterior.len() < 3 || !point_in_ring(point, &self.exterior) {
+            return false;
+        }
+        !self.holes.iter().any(|ring| point_in_ring(point, ring))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldPointSampleMethod {
+    Nearest,
+    InverseDistance4,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FieldPointSampleContribution {
+    pub grid_index: usize,
+    pub location: GeoPoint,
+    pub weight: f64,
+    pub value: Option<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FieldPointSample {
+    pub point: GeoPoint,
+    pub method: FieldPointSampleMethod,
+    pub value: Option<f32>,
+    pub contributors: Vec<FieldPointSampleContribution>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldAreaSummaryMethod {
+    CellCentersWithinPolygon,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FieldAreaSummary {
+    pub method: FieldAreaSummaryMethod,
+    pub included_cell_count: usize,
+    pub valid_cell_count: usize,
+    pub missing_cell_count: usize,
+    pub min: Option<f32>,
+    pub max: Option<f32>,
+    pub mean: Option<f64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeStamp {
     pub iso8601_utc: String,
@@ -646,6 +765,18 @@ impl SelectedField2D {
             values: self.values,
         }
     }
+
+    pub fn sample_point(
+        &self,
+        point: GeoPoint,
+        method: FieldPointSampleMethod,
+    ) -> FieldPointSample {
+        sample_field_point(&self.grid, &self.values, point, method)
+    }
+
+    pub fn summarize_polygon(&self, polygon: &GeoPolygon) -> FieldAreaSummary {
+        summarize_field_polygon(&self.grid, &self.values, polygon)
+    }
 }
 
 impl From<SelectedField2D> for Field2D {
@@ -883,6 +1014,255 @@ impl Field2D {
             values,
         })
     }
+
+    pub fn sample_point(
+        &self,
+        point: GeoPoint,
+        method: FieldPointSampleMethod,
+    ) -> FieldPointSample {
+        sample_field_point(&self.grid, &self.values, point, method)
+    }
+
+    pub fn summarize_polygon(&self, polygon: &GeoPolygon) -> FieldAreaSummary {
+        summarize_field_polygon(&self.grid, &self.values, polygon)
+    }
+}
+
+fn sample_field_point(
+    grid: &LatLonGrid,
+    values: &[f32],
+    point: GeoPoint,
+    method: FieldPointSampleMethod,
+) -> FieldPointSample {
+    let keep = match method {
+        FieldPointSampleMethod::Nearest => 1usize,
+        FieldPointSampleMethod::InverseDistance4 => 4usize,
+    };
+    let mut nearest = Vec::<(usize, f64)>::new();
+    for idx in 0..grid.shape.len() {
+        let distance = geographic_distance_score(grid, idx, point);
+        insert_best_sample_candidate(&mut nearest, keep, idx, distance);
+    }
+    if nearest.is_empty() {
+        return FieldPointSample {
+            point,
+            method,
+            value: None,
+            contributors: Vec::new(),
+        };
+    }
+
+    let exact_match = nearest[0].1 <= 1.0e-12;
+    let mut contributions = if exact_match || matches!(method, FieldPointSampleMethod::Nearest) {
+        vec![point_sample_contribution(grid, values, nearest[0].0, 1.0)]
+    } else {
+        let mut weights = nearest
+            .iter()
+            .map(|(_, distance)| 1.0 / distance.max(1.0e-12))
+            .collect::<Vec<_>>();
+        let weight_sum = weights.iter().sum::<f64>().max(1.0e-12);
+        for weight in &mut weights {
+            *weight /= weight_sum;
+        }
+        nearest
+            .iter()
+            .zip(weights.iter())
+            .map(|((idx, _), weight)| point_sample_contribution(grid, values, *idx, *weight))
+            .collect::<Vec<_>>()
+    };
+
+    let finite_weight_sum = contributions
+        .iter()
+        .filter(|entry| entry.value.map(|value| value.is_finite()).unwrap_or(false))
+        .map(|entry| entry.weight)
+        .sum::<f64>();
+    let value = if finite_weight_sum <= 0.0 {
+        None
+    } else {
+        for contribution in &mut contributions {
+            if contribution
+                .value
+                .map(|sample| sample.is_finite())
+                .unwrap_or(false)
+            {
+                contribution.weight /= finite_weight_sum;
+            } else {
+                contribution.weight = 0.0;
+            }
+        }
+        Some(
+            contributions
+                .iter()
+                .filter_map(|entry| entry.value.map(|sample| sample as f64 * entry.weight))
+                .sum::<f64>() as f32,
+        )
+    };
+
+    FieldPointSample {
+        point,
+        method,
+        value,
+        contributors: contributions,
+    }
+}
+
+fn summarize_field_polygon(
+    grid: &LatLonGrid,
+    values: &[f32],
+    polygon: &GeoPolygon,
+) -> FieldAreaSummary {
+    let Some(bounds) = polygon.bounds() else {
+        return FieldAreaSummary {
+            method: FieldAreaSummaryMethod::CellCentersWithinPolygon,
+            included_cell_count: 0,
+            valid_cell_count: 0,
+            missing_cell_count: 0,
+            min: None,
+            max: None,
+            mean: None,
+        };
+    };
+
+    let mut included_cell_count = 0usize;
+    let mut valid_cell_count = 0usize;
+    let mut missing_cell_count = 0usize;
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    let mut sum = 0.0f64;
+
+    for idx in 0..grid.shape.len() {
+        let point = GeoPoint::new(grid.lat_deg[idx] as f64, grid.lon_deg[idx] as f64);
+        if !bounds.contains(point) || !polygon.contains(point) {
+            continue;
+        }
+        included_cell_count += 1;
+        let value = values[idx];
+        if value.is_finite() {
+            valid_cell_count += 1;
+            min = min.min(value);
+            max = max.max(value);
+            sum += value as f64;
+        } else {
+            missing_cell_count += 1;
+        }
+    }
+
+    FieldAreaSummary {
+        method: FieldAreaSummaryMethod::CellCentersWithinPolygon,
+        included_cell_count,
+        valid_cell_count,
+        missing_cell_count,
+        min: (valid_cell_count > 0).then_some(min),
+        max: (valid_cell_count > 0).then_some(max),
+        mean: (valid_cell_count > 0).then_some(sum / valid_cell_count as f64),
+    }
+}
+
+fn point_sample_contribution(
+    grid: &LatLonGrid,
+    values: &[f32],
+    idx: usize,
+    weight: f64,
+) -> FieldPointSampleContribution {
+    FieldPointSampleContribution {
+        grid_index: idx,
+        location: GeoPoint::new(grid.lat_deg[idx] as f64, grid.lon_deg[idx] as f64),
+        weight,
+        value: values.get(idx).copied(),
+    }
+}
+
+fn insert_best_sample_candidate(
+    nearest: &mut Vec<(usize, f64)>,
+    keep: usize,
+    idx: usize,
+    distance: f64,
+) {
+    let keep = keep.max(1);
+    let insert_at = nearest
+        .iter()
+        .position(|&(existing_idx, existing_distance)| {
+            distance < existing_distance
+                || ((distance - existing_distance).abs() <= 1.0e-12 && idx < existing_idx)
+        })
+        .unwrap_or(nearest.len());
+    if insert_at >= keep {
+        return;
+    }
+    nearest.insert(insert_at, (idx, distance));
+    if nearest.len() > keep {
+        nearest.truncate(keep);
+    }
+}
+
+fn geographic_distance_score(grid: &LatLonGrid, idx: usize, point: GeoPoint) -> f64 {
+    let cos_lat = point.lat_deg.to_radians().cos().abs().max(0.2);
+    let dlat = grid.lat_deg[idx] as f64 - point.lat_deg;
+    let dlon = normalized_longitude_delta(grid.lon_deg[idx] as f64 - point.lon_deg) * cos_lat;
+    dlat * dlat + dlon * dlon
+}
+
+fn point_in_ring(point: GeoPoint, ring: &[GeoPoint]) -> bool {
+    if ring.len() < 3 {
+        return false;
+    }
+    let point_x = 0.0f64;
+    let point_y = point.lat_deg;
+    let mut inside = false;
+    let mut previous = *ring.last().expect("ring length checked");
+
+    for current in ring {
+        let current_x = normalized_longitude_delta(current.lon_deg - point.lon_deg);
+        let current_y = current.lat_deg;
+        let previous_x = normalized_longitude_delta(previous.lon_deg - point.lon_deg);
+        let previous_y = previous.lat_deg;
+
+        if point_on_segment(
+            point_x, point_y, current_x, current_y, previous_x, previous_y,
+        ) {
+            return true;
+        }
+
+        let intersects = ((current_y > point_y) != (previous_y > point_y))
+            && (point_x
+                < (previous_x - current_x) * (point_y - current_y) / (previous_y - current_y)
+                    + current_x);
+        if intersects {
+            inside = !inside;
+        }
+        previous = *current;
+    }
+    inside
+}
+
+fn point_on_segment(
+    point_x: f64,
+    point_y: f64,
+    start_x: f64,
+    start_y: f64,
+    end_x: f64,
+    end_y: f64,
+) -> bool {
+    let cross = (point_y - start_y) * (end_x - start_x) - (point_x - start_x) * (end_y - start_y);
+    if cross.abs() > 1.0e-9 {
+        return false;
+    }
+    let min_x = start_x.min(end_x) - 1.0e-9;
+    let max_x = start_x.max(end_x) + 1.0e-9;
+    let min_y = start_y.min(end_y) - 1.0e-9;
+    let max_y = start_y.max(end_y) + 1.0e-9;
+    point_x >= min_x && point_x <= max_x && point_y >= min_y && point_y <= max_y
+}
+
+fn normalized_longitude_delta(delta_deg: f64) -> f64 {
+    let mut delta = delta_deg;
+    while delta <= -180.0 {
+        delta += 360.0;
+    }
+    while delta > 180.0 {
+        delta -= 360.0;
+    }
+    delta
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2046,5 +2426,111 @@ mod tests {
                 actual: 3
             })
         ));
+    }
+
+    #[test]
+    fn field_point_sampling_uses_nearest_and_inverse_distance_modes() {
+        let grid = LatLonGrid::new(
+            GridShape::new(2, 2).unwrap(),
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 1.0, 0.0, 1.0],
+        )
+        .unwrap();
+        let field = Field2D::new(
+            ProductKey::named("sample"),
+            "unitless",
+            grid,
+            vec![0.0, 10.0, 20.0, 30.0],
+        )
+        .unwrap();
+
+        let nearest =
+            field.sample_point(GeoPoint::new(0.95, 0.95), FieldPointSampleMethod::Nearest);
+        assert_eq!(nearest.value, Some(30.0));
+        assert_eq!(nearest.contributors.len(), 1);
+        assert_eq!(nearest.contributors[0].grid_index, 3);
+
+        let blended = field.sample_point(
+            GeoPoint::new(0.5, 0.5),
+            FieldPointSampleMethod::InverseDistance4,
+        );
+        assert_eq!(blended.contributors.len(), 4);
+        assert!((blended.value.expect("blended value") - 15.0).abs() < 1.0e-5);
+        let total_weight = blended
+            .contributors
+            .iter()
+            .map(|entry| entry.weight)
+            .sum::<f64>();
+        assert!((total_weight - 1.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn field_polygon_summary_counts_finite_cells_inside_polygon() {
+        let grid = LatLonGrid::new(
+            GridShape::new(3, 2).unwrap(),
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![0.0, 1.0, 2.0, 0.0, 1.0, 2.0],
+        )
+        .unwrap();
+        let field = Field2D::new(
+            ProductKey::named("sample"),
+            "unitless",
+            grid,
+            vec![1.0, 2.0, f32::NAN, 4.0, 5.0, 6.0],
+        )
+        .unwrap();
+        let polygon = GeoPolygon::new(
+            vec![
+                GeoPoint::new(-0.5, -0.5),
+                GeoPoint::new(-0.5, 1.5),
+                GeoPoint::new(1.5, 1.5),
+                GeoPoint::new(1.5, -0.5),
+            ],
+            Vec::new(),
+        );
+
+        let summary = field.summarize_polygon(&polygon);
+        assert_eq!(summary.included_cell_count, 4);
+        assert_eq!(summary.valid_cell_count, 4);
+        assert_eq!(summary.missing_cell_count, 0);
+        assert_eq!(summary.min, Some(1.0));
+        assert_eq!(summary.max, Some(5.0));
+        assert_eq!(summary.mean, Some(3.0));
+    }
+
+    #[test]
+    fn polygon_holes_exclude_cells_from_area_summary() {
+        let grid = LatLonGrid::new(
+            GridShape::new(3, 1).unwrap(),
+            vec![0.0, 0.0, 0.0],
+            vec![0.0, 1.0, 2.0],
+        )
+        .unwrap();
+        let field = Field2D::new(
+            ProductKey::named("sample"),
+            "unitless",
+            grid,
+            vec![10.0, 20.0, 30.0],
+        )
+        .unwrap();
+        let polygon = GeoPolygon::new(
+            vec![
+                GeoPoint::new(-1.0, -1.0),
+                GeoPoint::new(-1.0, 3.0),
+                GeoPoint::new(1.0, 3.0),
+                GeoPoint::new(1.0, -1.0),
+            ],
+            vec![vec![
+                GeoPoint::new(-0.5, 0.5),
+                GeoPoint::new(-0.5, 1.5),
+                GeoPoint::new(0.5, 1.5),
+                GeoPoint::new(0.5, 0.5),
+            ]],
+        );
+
+        let summary = field.summarize_polygon(&polygon);
+        assert_eq!(summary.included_cell_count, 2);
+        assert_eq!(summary.valid_cell_count, 2);
+        assert_eq!(summary.mean, Some(20.0));
     }
 }

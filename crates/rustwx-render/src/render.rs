@@ -12,11 +12,11 @@ use crate::request::{
     ChromeScale, DomainFrame, ProjectedLabelPlacement, ProjectedPlaceLabelPriority,
 };
 use crate::text;
-use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
-use image::imageops::{crop_imm, resize, FilterType};
 use image::ExtendedColorType;
 use image::ImageEncoder;
 use image::RgbaImage;
+use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
+use image::imageops::{FilterType, crop_imm, resize};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
@@ -1791,11 +1791,7 @@ fn contour_cell_intersections(
     emit_interp_point(&mut pts, &mut count, p2, p3, level);
     emit_interp_point(&mut pts, &mut count, p3, p0, level);
 
-    if count >= 2 {
-        Some((pts, count))
-    } else {
-        None
-    }
+    if count >= 2 { Some((pts, count)) } else { None }
 }
 
 fn maybe_draw_contour_label(

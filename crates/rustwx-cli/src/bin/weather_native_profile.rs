@@ -93,7 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cycle: args.cycle,
                 forecast_hour: args.forecast_hour,
                 source: args.source,
-                route,
+                route: route.clone(),
                 product,
                 palette: None,
                 sample_count: args.sample_count,
@@ -127,5 +127,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let summary = run_weather_native_profile(&request)?;
     println!("{}", summary.summary_json.display());
     println!("{}", summary.summary_markdown.display());
+    println!("{}", summary.bundle_manifest.display());
     Ok(())
 }

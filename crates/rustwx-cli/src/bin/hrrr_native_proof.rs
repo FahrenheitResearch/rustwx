@@ -883,6 +883,7 @@ mod tests {
         default_custom_derived_recipes, default_custom_direct_recipes, resolve_custom_recipe_slugs,
         selected_suite_case_definitions, validate_args,
     };
+    use rustwx_products::cross_section::PressureCrossSectionFacts;
     use std::collections::HashSet;
     use std::path::PathBuf;
 
@@ -926,6 +927,7 @@ mod tests {
             start_lon: -101.8313,
             end_lat: 41.8781,
             end_lon: -87.6298,
+            facts: PressureCrossSectionFacts::default(),
         }
     }
 

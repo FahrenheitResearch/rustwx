@@ -9,6 +9,60 @@ pub struct GeoPoint {
     pub lon_deg: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GeoBounds {
+    pub west_lon_deg: f64,
+    pub east_lon_deg: f64,
+    pub south_lat_deg: f64,
+    pub north_lat_deg: f64,
+}
+
+impl GeoBounds {
+    pub fn new(
+        west_lon_deg: f64,
+        east_lon_deg: f64,
+        south_lat_deg: f64,
+        north_lat_deg: f64,
+    ) -> Result<Self, CrossSectionError> {
+        if !west_lon_deg.is_finite()
+            || !east_lon_deg.is_finite()
+            || !south_lat_deg.is_finite()
+            || !north_lat_deg.is_finite()
+            || south_lat_deg < -90.0
+            || north_lat_deg > 90.0
+            || south_lat_deg >= north_lat_deg
+            || west_lon_deg >= east_lon_deg
+        {
+            return Err(CrossSectionError::InvalidCoordinate);
+        }
+        Ok(Self {
+            west_lon_deg,
+            east_lon_deg,
+            south_lat_deg,
+            north_lat_deg,
+        })
+    }
+
+    pub fn center(self) -> Result<GeoPoint, CrossSectionError> {
+        GeoPoint::new(
+            (self.south_lat_deg + self.north_lat_deg) * 0.5,
+            (self.west_lon_deg + self.east_lon_deg) * 0.5,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepresentativeRouteStrategy {
+    LongestAxisMidline,
+    FarthestPair,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RepresentativeRoute {
+    pub start: GeoPoint,
+    pub end: GeoPoint,
+}
+
 impl GeoPoint {
     /// Creates a validated point and normalizes longitude into [-180, 180).
     pub fn new(lat_deg: f64, lon_deg: f64) -> Result<Self, CrossSectionError> {
@@ -35,6 +89,93 @@ impl GeoPoint {
 
     fn lon_rad(self) -> f64 {
         self.lon_deg.to_radians()
+    }
+}
+
+pub fn representative_route_for_bounds(
+    bounds: GeoBounds,
+    strategy: RepresentativeRouteStrategy,
+) -> Result<RepresentativeRoute, CrossSectionError> {
+    match strategy {
+        RepresentativeRouteStrategy::LongestAxisMidline => {
+            let center = bounds.center()?;
+            let west = GeoPoint::new(center.lat_deg, bounds.west_lon_deg)?;
+            let east = GeoPoint::new(center.lat_deg, bounds.east_lon_deg)?;
+            let south = GeoPoint::new(bounds.south_lat_deg, center.lon_deg)?;
+            let north = GeoPoint::new(bounds.north_lat_deg, center.lon_deg)?;
+
+            let width_km = haversine_distance_km(west, east);
+            let height_km = haversine_distance_km(south, north);
+            if width_km >= height_km {
+                Ok(RepresentativeRoute {
+                    start: west,
+                    end: east,
+                })
+            } else {
+                Ok(RepresentativeRoute {
+                    start: south,
+                    end: north,
+                })
+            }
+        }
+        RepresentativeRouteStrategy::FarthestPair => representative_route_for_cluster(
+            &[
+                GeoPoint::new(bounds.south_lat_deg, bounds.west_lon_deg)?,
+                GeoPoint::new(bounds.south_lat_deg, bounds.east_lon_deg)?,
+                GeoPoint::new(bounds.north_lat_deg, bounds.west_lon_deg)?,
+                GeoPoint::new(bounds.north_lat_deg, bounds.east_lon_deg)?,
+            ],
+            RepresentativeRouteStrategy::FarthestPair,
+        ),
+    }
+}
+
+pub fn representative_route_for_cluster(
+    points: &[GeoPoint],
+    strategy: RepresentativeRouteStrategy,
+) -> Result<RepresentativeRoute, CrossSectionError> {
+    if points.len() < 2 {
+        return Err(CrossSectionError::TooFewWaypoints);
+    }
+
+    match strategy {
+        RepresentativeRouteStrategy::LongestAxisMidline => {
+            let mut west = f64::INFINITY;
+            let mut east = f64::NEG_INFINITY;
+            let mut south = f64::INFINITY;
+            let mut north = f64::NEG_INFINITY;
+            for point in points {
+                west = west.min(point.lon_deg);
+                east = east.max(point.lon_deg);
+                south = south.min(point.lat_deg);
+                north = north.max(point.lat_deg);
+            }
+            representative_route_for_bounds(
+                GeoBounds::new(west, east, south, north)?,
+                RepresentativeRouteStrategy::LongestAxisMidline,
+            )
+        }
+        RepresentativeRouteStrategy::FarthestPair => {
+            let mut best: Option<(usize, usize, f64)> = None;
+            for i in 0..points.len() {
+                for j in i + 1..points.len() {
+                    let distance = haversine_distance_km(points[i], points[j]);
+                    if best
+                        .map(|(_, _, best_distance)| distance > best_distance)
+                        .unwrap_or(true)
+                    {
+                        best = Some((i, j, distance));
+                    }
+                }
+            }
+            let Some((start_index, end_index, _)) = best else {
+                return Err(CrossSectionError::DegeneratePath);
+            };
+            Ok(RepresentativeRoute {
+                start: points[start_index],
+                end: points[end_index],
+            })
+        }
     }
 }
 
@@ -308,5 +449,30 @@ mod tests {
         assert!(sampled.len() >= 2);
         assert_eq!(sampled.samples.first().unwrap().point, path.waypoints()[0]);
         assert_eq!(sampled.samples.last().unwrap().point, path.waypoints()[1]);
+    }
+
+    #[test]
+    fn representative_bounds_route_uses_long_axis_midline() {
+        let route = representative_route_for_bounds(
+            GeoBounds::new(-109.0, -90.0, 25.0, 40.5).unwrap(),
+            RepresentativeRouteStrategy::LongestAxisMidline,
+        )
+        .unwrap();
+        assert!((route.start.lat_deg - route.end.lat_deg).abs() < 1.0e-6);
+        assert!(route.start.lon_deg < route.end.lon_deg);
+    }
+
+    #[test]
+    fn representative_cluster_route_uses_farthest_pair() {
+        let points = [
+            GeoPoint::new(37.8044, -122.2712).unwrap(),
+            GeoPoint::new(38.5816, -121.4944).unwrap(),
+            GeoPoint::new(39.5296, -119.8138).unwrap(),
+        ];
+        let route =
+            representative_route_for_cluster(&points, RepresentativeRouteStrategy::FarthestPair)
+                .unwrap();
+        assert_eq!(route.start, points[0]);
+        assert_eq!(route.end, points[2]);
     }
 }

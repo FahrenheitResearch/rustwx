@@ -283,4 +283,11 @@ mod tests {
             .with_artifact_slug("scp_mu_0_3km_0_6km_proxy");
         assert_eq!(field.artifact_slug(), "scp_mu_0_3km_0_6km_proxy");
     }
+
+    #[test]
+    fn panel_field_default_artifact_slug_stays_on_product_slug() {
+        let field = Solar07PanelField::new(Solar07Product::StpFixed, "dimensionless", vec![1.0])
+            .with_title_override("STP (fixed layer)");
+        assert_eq!(field.artifact_slug(), Solar07Product::StpFixed.slug());
+    }
 }

@@ -68,8 +68,9 @@ mod wind;
 pub use data::{ScalarSection, SectionMetadata, TerrainProfile};
 pub use error::CrossSectionError;
 pub use geo::{
-    GeoPoint, SampledPath, SectionPath, haversine_distance_km, initial_bearing_deg,
-    intermediate_point,
+    GeoBounds, GeoPoint, RepresentativeRoute, RepresentativeRouteStrategy, SampledPath,
+    SectionPath, haversine_distance_km, initial_bearing_deg, intermediate_point,
+    representative_route_for_bounds, representative_route_for_cluster,
 };
 pub use palette::{ALL_CROSS_SECTION_PALETTES, CrossSectionPalette, PaletteStop};
 pub use render::{

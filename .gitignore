@@ -14,6 +14,16 @@ proof/full_hour_compare/
 proof/full_hour_compare_dense2/
 proof/signature_bench/
 proof/smoke_fire/
+proof/california_camera/
+proof/california_camera_smokecheck/
+proof/cross_section_catalog/
+proof/cross_section_refresh/
+proof/place_label_density_tiers/
+proof/place_label_density_tiers_v2/
+proof/place_labels/
+proof/place_labels_cities_full/
+proof/place_labels_regions_full/
+proof/weather_tools/
 proof/*.grib2
 proof/*.idx
 proof/*.bin
