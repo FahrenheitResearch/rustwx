@@ -1,0 +1,160 @@
+{
+  "schema_version": 4,
+  "run_kind": "hrrr_non_ecape_hour",
+  "run_label": "rustwx_hrrr_20260414_23z_f000_conus_non_ecape_hour",
+  "output_root": "proof\\conus",
+  "attempt_id": "38499809c30eb830",
+  "attempt_started_unix_ms": 1776817642545,
+  "build_provenance": {
+    "rustwx": {
+      "name": "rustwx",
+      "path": "C:\\Users\\drew\\rustwx-next\\rustwx",
+      "git_sha": "af71170be1bfbefb6e50a7bed2d6ab936ff545a0",
+      "git_ref": "refs/heads/weather-native-plot-engine",
+      "dirty": true
+    },
+    "siblings": [
+      {
+        "name": "metrust",
+        "path": "C:\\Users\\drew\\rustwx-next\\rustwx\\vendor/metrust",
+        "dirty": true
+      },
+      {
+        "name": "wx-core",
+        "path": "C:\\Users\\drew\\rustwx-next\\rustwx\\vendor/wx-core",
+        "dirty": true
+      },
+      {
+        "name": "wx-field",
+        "path": "C:\\Users\\drew\\rustwx-next\\rustwx\\vendor/wx-field",
+        "dirty": true
+      },
+      {
+        "name": "wx-math",
+        "path": "C:\\Users\\drew\\rustwx-next\\rustwx\\vendor/wx-math",
+        "dirty": true
+      },
+      {
+        "name": "wx-radar",
+        "path": "C:\\Users\\drew\\rustwx-next\\rustwx\\vendor/wx-radar",
+        "dirty": true
+      },
+      {
+        "name": "grib-core",
+        "path": "C:\\Users\\drew\\rustwx-next\\rustwx\\vendor/grib-core",
+        "dirty": true
+      },
+      {
+        "name": "sharprs",
+        "path": "C:\\Users\\drew\\rustwx-next\\rustwx\\vendor/sharprs",
+        "dirty": true
+      }
+    ],
+    "cargo_lock_sha256": "caa3cd04acb4d5338857582b3de8567477e1256f7b07029156f9d1902b41be91",
+    "toolchain": {
+      "profile": "debug",
+      "target_triple": "x86_64-windows",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)"
+    }
+  },
+  "state": "complete",
+  "started_unix_ms": 1776817642545,
+  "finished_unix_ms": 1776817757218,
+  "detail": null,
+  "input_fetches": [
+    {
+      "fetch_key": "hrrr:20260414:23z:f000:prs->prs",
+      "planned_family": "prs",
+      "request": {
+        "model": "Hrrr",
+        "cycle": {
+          "date_yyyymmdd": "20260414",
+          "hour_utc": 23
+        },
+        "forecast_hour": 0,
+        "product": "prs"
+      },
+      "source_override": "Nomads",
+      "resolved_source": "Nomads",
+      "resolved_url": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/hrrr.20260414/conus/hrrr.t23z.wrfprsf00.grib2",
+      "resolved_family": "prs",
+      "bytes_len": 404234490,
+      "bytes_sha256": "84678c21b8e72622e16b3672c67f1479ab5803ae975d56c624002cf1e77e9954"
+    },
+    {
+      "fetch_key": "hrrr:20260414:23z:f000:sfc->sfc",
+      "planned_family": "sfc",
+      "request": {
+        "model": "Hrrr",
+        "cycle": {
+          "date_yyyymmdd": "20260414",
+          "hour_utc": 23
+        },
+        "forecast_hour": 0,
+        "product": "sfc"
+      },
+      "source_override": "Nomads",
+      "resolved_source": "Nomads",
+      "resolved_url": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/hrrr.20260414/conus/hrrr.t23z.wrfsfcf00.grib2",
+      "resolved_family": "sfc",
+      "bytes_len": 148308302,
+      "bytes_sha256": "f005e1c4d797ef4b18882f312938770e9ec21a2f43fe5aa96686546cf3c7503f"
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact_key": "direct:mslp_10m_winds",
+      "relative_path": "rustwx_hrrr_20260414_23z_f000_conus_mslp_10m_winds.png",
+      "state": "complete",
+      "detail": "source_route=direct_native_exact planned_family=sfc fetched_family=sfc resolved_source=nomads resolved_url=https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/hrrr.20260414/conus/hrrr.t23z.wrfsfcf00.grib2",
+      "content_identity": {
+        "bytes_len": 751155,
+        "sha256": "6fae71a179b819ea016fd6852f85d332716fea4b43ba8181e0dff43ef3c0fdb6"
+      },
+      "input_fetch_keys": [
+        "hrrr:20260414:23z:f000:sfc->sfc"
+      ]
+    },
+    {
+      "artifact_key": "direct:500mb_temperature_height_winds",
+      "relative_path": "rustwx_hrrr_20260414_23z_f000_conus_500mb_temperature_height_winds.png",
+      "state": "complete",
+      "detail": "source_route=direct_native_exact planned_family=prs fetched_family=prs resolved_source=nomads resolved_url=https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/hrrr.20260414/conus/hrrr.t23z.wrfprsf00.grib2",
+      "content_identity": {
+        "bytes_len": 1120270,
+        "sha256": "6a1a53479897608d3af3a3eba60d8775b584105d3a16819c622033869e4ff67a"
+      },
+      "input_fetch_keys": [
+        "hrrr:20260414:23z:f000:prs->prs"
+      ]
+    },
+    {
+      "artifact_key": "derived:sbcape",
+      "relative_path": "rustwx_hrrr_20260414_23z_f000_conus_sbcape.png",
+      "state": "complete",
+      "detail": "source_mode=canonical source_route=canonical_derived shared_surface planned_family=sfc fetched_family=sfc resolved_source=nomads; shared_pressure planned_family=prs fetched_family=prs resolved_source=nomads",
+      "content_identity": {
+        "bytes_len": 967814,
+        "sha256": "028e750d8351bae7470047b694e381df9f085dbd02280ddc1fc8e49524f1d71c"
+      },
+      "input_fetch_keys": [
+        "hrrr:20260414:23z:f000:prs->prs",
+        "hrrr:20260414:23z:f000:sfc->sfc"
+      ]
+    },
+    {
+      "artifact_key": "derived:stp_fixed",
+      "relative_path": "rustwx_hrrr_20260414_23z_f000_conus_stp_fixed.png",
+      "state": "complete",
+      "detail": "source_mode=canonical source_route=canonical_derived shared_surface planned_family=sfc fetched_family=sfc resolved_source=nomads; shared_pressure planned_family=prs fetched_family=prs resolved_source=nomads",
+      "content_identity": {
+        "bytes_len": 441940,
+        "sha256": "ac966410590a6f633eda58a297e4a74324d482ce6a0ed1815beb71ec7c1d9999"
+      },
+      "input_fetch_keys": [
+        "hrrr:20260414:23z:f000:prs->prs",
+        "hrrr:20260414:23z:f000:sfc->sfc"
+      ]
+    }
+  ]
+}

@@ -2,6 +2,7 @@ mod color;
 mod colorbar;
 mod colormap;
 mod colormaps;
+mod contour_fill;
 mod draw;
 mod error;
 mod features;
@@ -16,16 +17,25 @@ mod request;
 pub mod solar07;
 mod text;
 
+pub use contour_fill::{
+    ProjectedContourGeometry, ProjectedContourLineStyle, build_projected_contour_geometry,
+};
 pub use error::RustwxRenderError;
 pub use features::{
-    BasemapStyle, StyledLonLatLayer, StyledLonLatPolygonLayer, load_styled_conus_features_for,
+    BasemapStyle, StyledLonLatLayer, StyledLonLatPolygonLayer, load_styled_basemap_features,
+    load_styled_basemap_features_for, load_styled_basemap_polygons,
+    load_styled_basemap_polygons_for, load_styled_conus_features_for,
     load_styled_conus_polygons_for,
 };
 pub use image::RgbaImage;
 pub use panel::{PanelGridLayout, PanelPadding, compose_panel_images, render_panel_grid};
 pub use presentation::{LineworkRole, PolygonRole, ProductVisualMode, RenderPresentation};
-pub use projected_map::{ProjectedMap, build_projected_map};
-pub use projection::LambertConformal;
+pub use projected_map::{
+    GeographicBounds, ProjectedBasemap, ProjectedBasemapBuildOptions, ProjectedDomainBuildOptions,
+    ProjectedFrameSource, ProjectedMap, ProjectedMapBuildOptions, build_projected_domain,
+    build_projected_map, build_projected_map_with_options,
+};
+pub use projection::{LambertConformal, ProjectionSpec};
 pub use render::{
     PngCompressionMode, PngWriteOptions, RenderImageTiming, RenderPngTiming,
     map_frame_aspect_ratio, map_frame_aspect_ratio_for_mode, render_to_image_profile,
@@ -38,8 +48,8 @@ pub use request::{
     ProjectedPolygonFill, WindBarbLayer, WindBarbStyle,
 };
 pub use rustwx_core::{
-    Field2D as CoreField2D, GridShape as CoreGridShape, LatLonGrid as CoreLatLonGrid,
-    ProductKey as CoreProductKey,
+    Field2D as CoreField2D, GridProjection as CoreGridProjection, GridShape as CoreGridShape,
+    LatLonGrid as CoreLatLonGrid, ProductKey as CoreProductKey,
 };
 pub use solar07::{
     DerivedProductStyle, DerivedScalePreset, ECAPE_SEVERE_PANEL_PRODUCTS,
@@ -159,6 +169,12 @@ impl RenderScratch {
         }
 
         for poly in opts.projected_polygons.drain(..) {
+            for ring in poly.rings {
+                self.reclaim_point_buffer(ring);
+            }
+        }
+
+        for poly in opts.projected_data_polygons.drain(..) {
             for ring in poly.rings {
                 self.reclaim_point_buffer(ring);
             }
@@ -410,6 +426,20 @@ fn with_render_state_profile<T>(
         }
         let projected_polygons_ms = projected_polygons_start.elapsed().as_millis();
 
+        let mut projected_data_polygons = Vec::with_capacity(request.projected_data_polygons.len());
+        for poly in &request.projected_data_polygons {
+            let rings = poly
+                .rings
+                .iter()
+                .map(|ring| scratch.fill_point_buffer(ring))
+                .collect();
+            projected_data_polygons.push(ProjectedPolygon {
+                rings,
+                color: poly.color.into(),
+                role: poly.role,
+            });
+        }
+
         let contour_start = Instant::now();
         let mut contours = Vec::with_capacity(request.contours.len());
         for layer in &request.contours {
@@ -466,6 +496,7 @@ fn with_render_state_profile<T>(
             }),
             projected_grid,
             projected_polygons,
+            projected_data_polygons,
             projected_lines,
             contours,
             barbs,
@@ -490,10 +521,7 @@ fn with_render_state_profile<T>(
 }
 
 fn build_colormap(scale: &ColorScale, options: ColormapBuildOptions) -> LeveledColormap {
-    let discrete = match scale {
-        ColorScale::Solar07(preset) => preset.scale(),
-        ColorScale::Discrete(scale) => scale.clone(),
-    };
+    let discrete = scale.resolved_discrete();
 
     let colors: Vec<Rgba> = discrete.colors.into_iter().map(Into::into).collect();
     LeveledColormap::from_palette_with_options(
@@ -669,6 +697,7 @@ mod tests {
             domain_frame: None,
             projected_domain: None,
             projected_polygons: Vec::new(),
+            projected_data_polygons: Vec::new(),
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),
@@ -728,6 +757,7 @@ mod tests {
             domain_frame: None,
             projected_domain: None,
             projected_polygons: Vec::new(),
+            projected_data_polygons: Vec::new(),
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),

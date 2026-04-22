@@ -49,6 +49,7 @@ pub struct RenderOpts {
     /// data overlays on top; ordering within the list is bottom-to-top.
     /// Typical stack: ocean → land → lakes.
     pub projected_polygons: Vec<ProjectedPolygon>,
+    pub projected_data_polygons: Vec<ProjectedPolygon>,
     pub projected_lines: Vec<ProjectedPolyline>,
     pub contours: Vec<ContourOverlay>,
     pub barbs: Vec<BarbOverlay>,
@@ -138,6 +139,7 @@ impl Default for RenderOpts {
             map_extent: None,
             projected_grid: None,
             projected_polygons: vec![],
+            projected_data_polygons: vec![],
             projected_lines: vec![],
             contours: vec![],
             barbs: vec![],
@@ -470,6 +472,11 @@ fn measure_text_width(text: &str, scale: u32, bold: bool) -> u32 {
     }
 }
 
+fn centered_text_left(text: &str, center_x: u32, scale: u32, bold: bool) -> i32 {
+    let width = measure_text_width(text, scale, bold) as i32;
+    center_x as i32 - width / 2
+}
+
 fn ellipsize_text_to_width(text: &str, max_width: u32, scale: u32, bold: bool) -> String {
     if measure_text_width(text, scale, bold) <= max_width {
         return text.to_string();
@@ -505,10 +512,17 @@ fn filter_tick_labels_to_fit(
     range: f64,
     cbar_x: u32,
     cbar_w: u32,
+    label_left_bound: u32,
+    label_right_bound: u32,
     img_w: u32,
     text_scale: u32,
 ) -> Vec<(f64, i32, String)> {
     let min_gap_px = (6 * text_scale.max(1)) as i32;
+    let min_x = label_left_bound.min(img_w.saturating_sub(1)) as i32;
+    let max_x = label_right_bound.min(img_w) as i32;
+    if max_x <= min_x {
+        return Vec::new();
+    }
     let mut labels = Vec::with_capacity(ticks.len());
     let mut last_right = i32::MIN / 4;
 
@@ -517,9 +531,12 @@ fn filter_tick_labels_to_fit(
         let px = cbar_x as f64 + frac * cbar_w as f64;
         let label = text::format_tick(*tick_val);
         let lw = text::text_width(&label, text_scale) as i32;
+        if lw >= max_x.saturating_sub(min_x) {
+            continue;
+        }
         let centered_lx = (px as i32) - (lw / 2);
-        let max_lx = (img_w as i32).saturating_sub(lw);
-        let lx = centered_lx.clamp(0, max_lx.max(0));
+        let max_lx = max_x.saturating_sub(lw);
+        let lx = centered_lx.clamp(min_x, max_lx.max(min_x));
         if !labels.is_empty() && lx <= last_right.saturating_add(min_gap_px) {
             continue;
         }
@@ -1926,8 +1943,20 @@ fn draw_variable_layers(
     layout: &Layout,
     projected_pixels: Option<&[Option<(f64, f64)>]>,
     domain_frame_rect: Option<LocalRect>,
+    polygon_clip_rect: (i32, i32, i32, i32),
     canvas_background: Rgba,
 ) -> VariableLayerTiming {
+    if let Some(ref extent) = opts.map_extent {
+        draw_projected_polygons(
+            img,
+            layout,
+            extent,
+            &opts.projected_data_polygons,
+            opts.presentation,
+            Some(polygon_clip_rect),
+        );
+    }
+
     let rasterize_start = Instant::now();
     let map_img = if let Some(pixel_points) = projected_pixels {
         rasterize::rasterize_projected_grid(
@@ -2072,28 +2101,14 @@ fn draw_chrome_and_colorbar(
                     layout.text_scale,
                     true,
                 );
-                if matches!(opts.domain_frame, Some(frame) if frame.chrome_follows_frame)
-                    && domain_frame_rect.is_some()
-                {
-                    let title_w = text::text_width_bold(&title, layout.text_scale) as i32;
-                    let title_x = chrome_center as i32 - title_w / 2;
-                    text::draw_text_bold(
-                        img,
-                        &title,
-                        title_x,
-                        title_y as i32,
-                        title_color,
-                        layout.text_scale,
-                    );
-                } else {
-                    text::draw_text_centered(
-                        img,
-                        &title,
-                        title_y as i32,
-                        title_color,
-                        layout.text_scale,
-                    );
-                }
+                text::draw_text_bold(
+                    img,
+                    &title,
+                    centered_text_left(&title, chrome_center, layout.text_scale, true),
+                    title_y as i32,
+                    title_color,
+                    layout.text_scale,
+                );
             }
             TitleAnchor::Left => {
                 let title = ellipsize_text_to_width(
@@ -2186,9 +2201,10 @@ fn draw_chrome_and_colorbar(
         );
     }
     if let Some(ref subtitle) = center_subtitle {
-        text::draw_text_centered(
+        text::draw_text(
             img,
             subtitle,
+            centered_text_left(subtitle, chrome_center, layout.text_scale, false),
             subtitle_y as i32,
             subtitle_color,
             layout.text_scale,
@@ -2308,6 +2324,8 @@ fn draw_chrome_and_colorbar(
                     range,
                     cbar_x,
                     cbar_w,
+                    cbar_x,
+                    cbar_x.saturating_add(cbar_w),
                     img.width(),
                     layout.text_scale,
                 ) {
@@ -2329,11 +2347,10 @@ fn render_to_image_profile_inner(
 ) -> (RgbaImage, RenderImageTiming) {
     let total_start = Instant::now();
     let layout_start = Instant::now();
-    let has_title =
-        opts.title.is_some()
-            || opts.subtitle_left.is_some()
-            || opts.subtitle_center.is_some()
-            || opts.subtitle_right.is_some();
+    let has_title = opts.title.is_some()
+        || opts.subtitle_left.is_some()
+        || opts.subtitle_center.is_some()
+        || opts.subtitle_right.is_some();
     let layout = compute_layout(
         opts.width,
         opts.height,
@@ -2415,6 +2432,7 @@ fn render_to_image_profile_inner(
         &layout,
         projected_pixels.as_deref(),
         domain_frame_rect,
+        polygon_clip_rect,
         canvas_background,
     );
     let (chrome_ms, colorbar_ms) = draw_chrome_and_colorbar(
@@ -2636,6 +2654,7 @@ mod tests {
             }),
             projected_grid: Some(sample_projected_grid()),
             projected_polygons: Vec::new(),
+            projected_data_polygons: Vec::new(),
             projected_lines: Vec::new(),
             contours: Vec::new(),
             barbs: Vec::new(),
@@ -3044,6 +3063,18 @@ mod tests {
             colorbar_levels_for_ticks(&cmap),
             cmap.legend_levels.as_slice()
         );
+    }
+
+    #[test]
+    fn colorbar_tick_labels_clamp_to_requested_bounds() {
+        let labels =
+            filter_tick_labels_to_fit(&[0.0, 50.0, 100.0], 0.0, 100.0, 80, 120, 80, 200, 400, 1);
+        assert!(!labels.is_empty());
+        for (_, lx, label) in labels {
+            let width = text::text_width(&label, 1) as i32;
+            assert!(lx >= 80);
+            assert!(lx + width <= 200);
+        }
     }
 
     #[test]

@@ -1,0 +1,65 @@
+{
+  "schema_version": 4,
+  "run_kind": "hrrr_native_proof",
+  "run_label": "rustwx_hrrr_20260414_23z_f000_suite_native_proof",
+  "output_root": "proof",
+  "attempt_id": "c842da8d3e6f1246",
+  "attempt_started_unix_ms": 1776816973568,
+  "build_provenance": {
+    "rustwx": {
+      "name": "rustwx",
+      "path": "C:\\Users\\drew\\rustwx-next\\rustwx",
+      "git_sha": "af71170be1bfbefb6e50a7bed2d6ab936ff545a0",
+      "git_ref": "refs/heads/weather-native-plot-engine",
+      "dirty": true
+    },
+    "siblings": [
+      {
+        "name": "metrust",
+        "path": "C:\\Users\\drew\\rustwx-next\\rustwx\\vendor/metrust",
+        "dirty": true
+      },
+      {
+        "name": "wx-core",
+        "path": "C:\\Users\\drew\\rustwx-next\\rustwx\\vendor/wx-core",
+        "dirty": true
+      },
+      {
+        "name": "wx-field",
+        "path": "C:\\Users\\drew\\rustwx-next\\rustwx\\vendor/wx-field",
+        "dirty": true
+      },
+      {
+        "name": "wx-math",
+        "path": "C:\\Users\\drew\\rustwx-next\\rustwx\\vendor/wx-math",
+        "dirty": true
+      },
+      {
+        "name": "wx-radar",
+        "path": "C:\\Users\\drew\\rustwx-next\\rustwx\\vendor/wx-radar",
+        "dirty": true
+      },
+      {
+        "name": "grib-core",
+        "path": "C:\\Users\\drew\\rustwx-next\\rustwx\\vendor/grib-core",
+        "dirty": true
+      },
+      {
+        "name": "sharprs",
+        "path": "C:\\Users\\drew\\rustwx-next\\rustwx\\vendor/sharprs",
+        "dirty": true
+      }
+    ],
+    "cargo_lock_sha256": "caa3cd04acb4d5338857582b3de8567477e1256f7b07029156f9d1902b41be91",
+    "toolchain": {
+      "profile": "debug",
+      "target_triple": "x86_64-windows",
+      "rustc_version": "rustc 1.94.0 (4a4ef493e 2026-03-02)"
+    }
+  },
+  "state": "failed",
+  "started_unix_ms": 1776816973568,
+  "finished_unix_ms": 1776816973967,
+  "detail": "suite child for 'southern_plains_severe' exited with status exit code: 2",
+  "artifacts": []
+}

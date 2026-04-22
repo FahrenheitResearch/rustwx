@@ -7,13 +7,16 @@ mod windowed;
 pub use derived::{
     EhiLayerOutputs, SurfaceThermoOutputs, TemperatureAdvectionInputs,
     compute_2m_apparent_temperature, compute_2m_dewpoint, compute_2m_heat_index,
-    compute_2m_relative_humidity, compute_2m_theta_e, compute_2m_wind_chill, compute_ehi_01km,
-    compute_ehi_03km, compute_ehi_layers, compute_lapse_rate_0_3km, compute_lapse_rate_700_500,
-    compute_lifted_index, compute_mlcape, compute_mlcape_cin, compute_mlcin, compute_mucape,
-    compute_mucape_cin, compute_mucin, compute_sbcape, compute_sbcape_cin, compute_sbcin,
-    compute_sblcl, compute_shear_01km, compute_shear_06km, compute_srh_01km, compute_srh_03km,
-    compute_surface_thermo, compute_temperature_advection, compute_temperature_advection_700mb,
+    compute_2m_relative_humidity, compute_2m_theta_e, compute_2m_wind_chill,
+    compute_dewpoint_from_pressure_and_mixing_ratio, compute_ehi_01km, compute_ehi_03km,
+    compute_ehi_layers, compute_lapse_rate_0_3km, compute_lapse_rate_700_500, compute_lifted_index,
+    compute_mlcape, compute_mlcape_cin, compute_mlcin, compute_mucape, compute_mucape_cin,
+    compute_mucin, compute_relative_humidity_from_pressure_temperature_and_mixing_ratio,
+    compute_sbcape, compute_sbcape_cin, compute_sbcin, compute_sblcl, compute_shear_01km,
+    compute_shear_06km, compute_srh_01km, compute_srh_03km, compute_surface_thermo,
+    compute_temperature_advection, compute_temperature_advection_700mb,
     compute_temperature_advection_850mb,
+    compute_theta_e_from_pressure_temperature_and_mixing_ratio,
 };
 pub use ecape::{
     EcapeFields, EcapeFieldsWithFailureMask, EcapeGridInputs, EcapeOptions, EcapeTripletFields,

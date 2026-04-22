@@ -1,6 +1,7 @@
 use crate::RustwxRenderError;
 use crate::colormap::{LegendControls, RenderDensity};
 use crate::presentation::{LineworkRole, PolygonRole, ProductVisualMode};
+use crate::projected_map::{ProjectedBasemap, ProjectedMap};
 use rustwx_core as core;
 use serde::{Deserialize, Serialize};
 
@@ -303,6 +304,15 @@ pub enum ColorScale {
     Discrete(DiscreteColorScale),
 }
 
+impl ColorScale {
+    pub fn resolved_discrete(&self) -> DiscreteColorScale {
+        match self {
+            Self::Solar07(preset) => preset.scale(),
+            Self::Discrete(scale) => scale.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectedExtent {
     pub x_min: f64,
@@ -479,6 +489,9 @@ pub struct MapRenderRequest {
     /// data raster; ordering within the list is bottom-to-top.
     #[serde(default)]
     pub projected_polygons: Vec<ProjectedPolygonFill>,
+    /// Dynamic projected fill polygons drawn during the variable-data pass.
+    #[serde(default)]
+    pub projected_data_polygons: Vec<ProjectedPolygonFill>,
     pub projected_lines: Vec<ProjectedLineOverlay>,
     pub contours: Vec<ContourLayer>,
     pub wind_barbs: Vec<WindBarbLayer>,
@@ -512,6 +525,7 @@ impl MapRenderRequest {
             domain_frame: None,
             projected_domain: None,
             projected_polygons: Vec::new(),
+            projected_data_polygons: Vec::new(),
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),
@@ -611,6 +625,39 @@ impl MapRenderRequest {
             });
         self.product_metadata = Some(metadata.with_provenance(provenance.clone()));
         self.semantics = Some(provenance.into());
+        self
+    }
+
+    pub fn set_projected_domain(&mut self, domain: ProjectedDomain) -> &mut Self {
+        self.projected_domain = Some(domain);
+        self
+    }
+
+    pub fn with_projected_domain(mut self, domain: ProjectedDomain) -> Self {
+        self.projected_domain = Some(domain);
+        self
+    }
+
+    pub fn apply_projected_basemap(&mut self, basemap: &ProjectedBasemap) -> &mut Self {
+        self.projected_lines = basemap.lines.clone();
+        self.projected_polygons = basemap.polygons.clone();
+        self
+    }
+
+    pub fn with_projected_basemap(mut self, basemap: &ProjectedBasemap) -> Self {
+        self.apply_projected_basemap(basemap);
+        self
+    }
+
+    pub fn apply_projected_map(&mut self, projected: &ProjectedMap) -> &mut Self {
+        self.projected_domain = Some(projected.domain());
+        self.projected_lines = projected.lines.clone();
+        self.projected_polygons = projected.polygons.clone();
+        self
+    }
+
+    pub fn with_projected_map(mut self, projected: &ProjectedMap) -> Self {
+        self.apply_projected_map(projected);
         self
     }
 
@@ -942,6 +989,43 @@ mod tests {
         assert_eq!(semantics.maturity, ProductMaturity::Proof);
         assert!(semantics.has_flag(ProductSemanticFlag::ProofOriented));
         assert!(semantics.has_flag(ProductSemanticFlag::Proxy));
+    }
+
+    #[test]
+    fn projected_map_helpers_apply_domain_and_basemap_together() {
+        let projected = ProjectedMap {
+            projected_x: vec![0.0, 1.0, 2.0],
+            projected_y: vec![0.0, 1.0, 2.0],
+            extent: ProjectedExtent {
+                x_min: 0.0,
+                x_max: 2.0,
+                y_min: 0.0,
+                y_max: 2.0,
+            },
+            lines: vec![ProjectedLineOverlay {
+                points: vec![(0.0, 0.0), (1.0, 1.0)],
+                color: Color::BLACK,
+                width: 2,
+                role: LineworkRole::Generic,
+            }],
+            polygons: vec![ProjectedPolygonFill {
+                rings: vec![vec![(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]],
+                color: Color::WHITE,
+                role: PolygonRole::Generic,
+            }],
+        };
+
+        let request =
+            MapRenderRequest::contour_only(sample_render_field()).with_projected_map(&projected);
+        assert_eq!(
+            request
+                .projected_domain
+                .as_ref()
+                .map(|domain| domain.x.clone()),
+            Some(vec![0.0, 1.0, 2.0])
+        );
+        assert_eq!(request.projected_lines.len(), 1);
+        assert_eq!(request.projected_polygons.len(), 1);
     }
 
     #[test]

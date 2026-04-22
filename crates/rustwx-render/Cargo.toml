@@ -11,6 +11,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 serde.workspace = true
 thiserror.workspace = true
 rustwx-core = { path = "../rustwx-core" }
+rustwx-contour = { path = "../rustwx-contour" }
 font8x8 = "0.3"
 rusttype = "0.9"
 shapefile = "0.7"

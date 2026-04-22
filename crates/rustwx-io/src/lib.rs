@@ -6,11 +6,13 @@ pub use cache::{
     store_cached_fetch, store_cached_selected_field,
 };
 
-use grib_core::grib2::{Grib2File, Grib2Message, flip_rows, grid_latlon, unpack_message};
+use grib_core::grib2::{
+    Grib2File, Grib2Message, GridDefinition, flip_rows, grid_latlon, unpack_message,
+};
 use rayon::prelude::*;
 use rustwx_core::{
-    CanonicalField, FieldSelector, GridShape, LatLonGrid, ModelId, ModelRunRequest, ModelTimestep,
-    ResolvedUrl, SelectedField2D, SourceId, VerticalSelector,
+    CanonicalField, FieldSelector, GridProjection, GridShape, LatLonGrid, ModelId, ModelRunRequest,
+    ModelTimestep, ResolvedUrl, SelectedField2D, SourceId, VerticalSelector,
 };
 use rustwx_models::{latest_available_run, model_summary, resolve_urls};
 use serde::Serialize;
@@ -78,6 +80,35 @@ pub struct FetchResult {
     pub source: SourceId,
     pub url: String,
     pub bytes: Vec<u8>,
+}
+
+pub fn grid_projection_from_grib2_grid(grid: &GridDefinition) -> Option<GridProjection> {
+    match grid.template {
+        0 | 1 | 40 => Some(GridProjection::Geographic),
+        10 => Some(GridProjection::Mercator {
+            latitude_of_true_scale_deg: grid.latin1,
+            central_meridian_deg: normalize_longitude(longitude_midpoint(grid.lon1, grid.lon2)),
+        }),
+        20 => Some(GridProjection::PolarStereographic {
+            true_latitude_deg: if grid.lad != 0.0 {
+                grid.lad
+            } else {
+                grid.latin1
+            },
+            central_meridian_deg: normalize_longitude(grid.lov),
+            south_pole_on_projection_plane: (grid.projection_center_flag & 1) != 0,
+        }),
+        30 => Some(GridProjection::LambertConformal {
+            standard_parallel_1_deg: grid.latin1,
+            standard_parallel_2_deg: if grid.latin2 != 0.0 {
+                grid.latin2
+            } else {
+                grid.latin1
+            },
+            central_meridian_deg: normalize_longitude(grid.lov),
+        }),
+        template => Some(GridProjection::Other { template }),
+    }
 }
 
 pub fn client() -> Result<DownloadClient, IoError> {
@@ -1027,8 +1058,11 @@ fn build_selected_field(
         lon.into_iter().map(|value| value as f32).collect(),
     )?;
     let values = values.into_iter().map(|value| value as f32).collect();
-
-    SelectedField2D::new(selector, units, grid, values).map_err(Into::into)
+    let mut field = SelectedField2D::new(selector, units, grid, values)?;
+    if let Some(projection) = grid_projection_from_grib2_grid(&message.grid) {
+        field = field.with_projection(projection);
+    }
+    Ok(field)
 }
 
 // GRIB2 Code Table 4.5 level type 100 (isobaric surface) always encodes the
@@ -1038,6 +1072,15 @@ fn build_selected_field(
 // which made GFS and RRFS-A pick the wrong 700 mb RH message (flat brown).
 fn normalize_pressure_level_hpa(level_value_pa: f64) -> f64 {
     level_value_pa / 100.0
+}
+
+fn longitude_midpoint(west_deg: f64, east_deg: f64) -> f64 {
+    let west = normalize_longitude(west_deg);
+    let mut east = normalize_longitude(east_deg);
+    if east < west {
+        east += 360.0;
+    }
+    west + (east - west) / 2.0
 }
 
 fn normalize_longitude(lon: f64) -> f64 {
@@ -1144,6 +1187,41 @@ mod tests {
             bitmap: None,
             raw_data,
         }
+    }
+
+    #[test]
+    fn projection_metadata_is_inferred_from_grib_grid_templates() {
+        let lambert = GridDefinition {
+            template: 30,
+            latin1: 38.5,
+            latin2: 38.5,
+            lov: 262.5,
+            ..Default::default()
+        };
+        assert_eq!(
+            grid_projection_from_grib2_grid(&lambert),
+            Some(GridProjection::LambertConformal {
+                standard_parallel_1_deg: 38.5,
+                standard_parallel_2_deg: 38.5,
+                central_meridian_deg: -97.5,
+            })
+        );
+
+        let polar = GridDefinition {
+            template: 20,
+            lad: 60.0,
+            lov: 210.0,
+            projection_center_flag: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            grid_projection_from_grib2_grid(&polar),
+            Some(GridProjection::PolarStereographic {
+                true_latitude_deg: 60.0,
+                central_meridian_deg: -150.0,
+                south_pole_on_projection_plane: true,
+            })
+        );
     }
 
     fn sample_pressure_subset_path() -> PathBuf {

@@ -1,5 +1,5 @@
 use crate::{FetchRequest, FetchResult, IoError};
-use rustwx_core::{FieldSelector, GridShape, LatLonGrid, SelectedField2D};
+use rustwx_core::{FieldSelector, GridProjection, GridShape, LatLonGrid, SelectedField2D};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
@@ -8,7 +8,7 @@ use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const FETCH_METADATA_SCHEMA_VERSION: u32 = 2;
-const GRID_PAYLOAD_SCHEMA_VERSION: u32 = 1;
+const GRID_PAYLOAD_SCHEMA_VERSION: u32 = 2;
 const FIELD_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +43,7 @@ struct CachedGridPayload {
     shape: GridShape,
     lat_deg: Vec<f32>,
     lon_deg: Vec<f32>,
+    projection: Option<GridProjection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -73,6 +74,21 @@ struct LegacyCachedFetchMetadata {
     resolved_source: rustwx_core::SourceId,
     resolved_url: String,
     bytes_len: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct LegacyCachedGridPayload {
+    shape: GridShape,
+    lat_deg: Vec<f32>,
+    lon_deg: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct LegacySelectedField2D {
+    selector: FieldSelector,
+    units: String,
+    grid: LatLonGrid,
+    values: Vec<f32>,
 }
 
 pub fn artifact_cache_dir(cache_root: &Path, fetch: &FetchRequest) -> PathBuf {
@@ -254,6 +270,7 @@ pub fn store_cached_selected_field(
             shape: field.grid.shape,
             lat_deg: field.grid.lat_deg.clone(),
             lon_deg: field.grid.lon_deg.clone(),
+            projection: field.projection.clone(),
         };
         let grid_bytes = serialize_binary_payload(GRID_PAYLOAD_SCHEMA_VERSION, &grid_payload)?;
         atomic_write_bytes(&grid_path, &grid_bytes)?;
@@ -329,9 +346,19 @@ fn load_cached_selected_field_payload(
                 return Ok(None);
             }
         };
-        let Some(grid_payload) =
+        let grid_payload = if let Some(payload) =
             load_binary_payload::<CachedGridPayload>(&grid_bytes, GRID_PAYLOAD_SCHEMA_VERSION)
-        else {
+        {
+            payload
+        } else if let Some(payload) = load_binary_payload::<LegacyCachedGridPayload>(&grid_bytes, 1)
+        {
+            CachedGridPayload {
+                shape: payload.shape,
+                lat_deg: payload.lat_deg,
+                lon_deg: payload.lon_deg,
+                projection: None,
+            }
+        } else {
             quarantine_cache_paths(
                 &[field_path, &grid_path],
                 "selected_field_grid_decode_error",
@@ -351,7 +378,13 @@ fn load_cached_selected_field_payload(
         };
         let field =
             match SelectedField2D::new(payload.selector, payload.units, grid, payload.values) {
-                Ok(field) => field,
+                Ok(field) => {
+                    if let Some(projection) = grid_payload.projection {
+                        field.with_projection(projection)
+                    } else {
+                        field
+                    }
+                }
                 Err(_) => {
                     quarantine_cache_paths(&[field_path, &grid_path], "selected_field_invalid");
                     return Ok(None);
@@ -367,7 +400,15 @@ fn load_cached_selected_field_payload(
         return Ok(Some(field));
     }
 
-    if let Ok(field) = bincode::deserialize::<SelectedField2D>(bytes) {
+    if let Ok(field) = bincode::deserialize::<LegacySelectedField2D>(bytes) {
+        let field =
+            match SelectedField2D::new(field.selector, field.units, field.grid, field.values) {
+                Ok(field) => field,
+                Err(_) => {
+                    quarantine_cache_paths(&[field_path], "legacy_selected_field_invalid");
+                    return Ok(None);
+                }
+            };
         if field.selector != expected_selector {
             quarantine_cache_paths(&[field_path], "legacy_selected_field_selector_mismatch");
             return Ok(None);

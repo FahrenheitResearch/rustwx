@@ -13,6 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 rustwx-calc = { path = "../rustwx-calc" }
 rustwx-core = { path = "../rustwx-core" }
+rustwx-cross-section = { path = "../rustwx-cross-section" }
 rustwx-io = { path = "../rustwx-io" }
 rustwx-models = { path = "../rustwx-models" }
 rustwx-render = { path = "../rustwx-render" }

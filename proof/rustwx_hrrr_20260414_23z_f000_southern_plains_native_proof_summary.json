@@ -1,0 +1,88 @@
+{
+  "runner": "hrrr_native_proof",
+  "model": "hrrr",
+  "mode": "custom",
+  "date_yyyymmdd": "20260414",
+  "cycle_utc": 23,
+  "forecast_hour": 0,
+  "source": "Nomads",
+  "out_dir": "proof",
+  "cache_root": "proof\\cache",
+  "use_cache": true,
+  "source_mode": "canonical",
+  "selected_region": "southern_plains",
+  "selected_suite_cases": [],
+  "case_count": 1,
+  "output_count": 8,
+  "cross_section_proof_count": 4,
+  "blocker_count": 0,
+  "cases": [
+    {
+      "slug": "southern_plains",
+      "label": "Custom HRRR Proof",
+      "theme": "single-region ad hoc proof",
+      "region": "southern_plains",
+      "cycle_utc": 23,
+      "projected": true,
+      "contour_candidate": false,
+      "notes": [
+        "Custom mode keeps the older single-region behavior for focused reruns."
+      ],
+      "direct_recipes": [
+        "500mb_temperature_height_winds"
+      ],
+      "derived_recipes": [
+        "stp_fixed",
+        "sbcape",
+        "srh_0_1km"
+      ],
+      "output_count": 4,
+      "blocker_count": 0,
+      "outputs": [
+        {
+          "case_slug": "southern_plains",
+          "lane": "direct",
+          "recipe_slug": "500mb_temperature_height_winds",
+          "title": "500mb Temperature / Height / Winds",
+          "source_route": "direct_native_exact",
+          "output_path": "southern_plains\\rustwx_hrrr_20260414_23z_f000_southern_plains_500mb_temperature_height_winds.png"
+        },
+        {
+          "case_slug": "southern_plains",
+          "lane": "derived",
+          "recipe_slug": "stp_fixed",
+          "title": "STP (FIXED)",
+          "source_route": "canonical_derived",
+          "output_path": "southern_plains\\rustwx_hrrr_20260414_23z_f000_southern_plains_stp_fixed.png"
+        },
+        {
+          "case_slug": "southern_plains",
+          "lane": "derived",
+          "recipe_slug": "sbcape",
+          "title": "SBCAPE",
+          "source_route": "canonical_derived",
+          "output_path": "southern_plains\\rustwx_hrrr_20260414_23z_f000_southern_plains_sbcape.png"
+        },
+        {
+          "case_slug": "southern_plains",
+          "lane": "derived",
+          "recipe_slug": "srh_0_1km",
+          "title": "0-1 km SRH",
+          "source_route": "canonical_derived",
+          "output_path": "southern_plains\\rustwx_hrrr_20260414_23z_f000_southern_plains_srh_0_1km.png"
+        }
+      ],
+      "blockers": [],
+      "shared_timing": {
+        "resolve_run_ms": 0,
+        "shared_load_decode_ms": 18698,
+        "shared_derived_prepare_ms": 0,
+        "total_prepare_ms": 18698
+      },
+      "total_ms": 9462,
+      "publication_manifest_path": "southern_plains\\rustwx_hrrr_20260414_23z_f000_southern_plains_non_ecape_hour_run_manifest.json",
+      "attempt_manifest_path": "southern_plains\\rustwx_hrrr_20260414_23z_f000_southern_plains_non_ecape_hour_run_manifest.00abedd1375f43ab.json"
+    }
+  ],
+  "cross_section_hook_path": "rustwx_hrrr_20260414_23z_f000_southern_plains_native_proof_cross_section_hook.json"
+}

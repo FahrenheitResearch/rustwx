@@ -18,6 +18,8 @@ pub enum RustwxRenderError {
     DegenerateProjectedGrid,
     #[error("render request requires matching projected x/y arrays")]
     InvalidProjectedGrid,
+    #[error("failed to build projected contour topology: {0}")]
+    ContourTopology(String),
     #[error(
         "invalid panel layout: rows={rows}, columns={columns}, panel_width={panel_width}, panel_height={panel_height}"
     )]

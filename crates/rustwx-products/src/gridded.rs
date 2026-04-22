@@ -1,15 +1,18 @@
 use crate::cache::{load_bincode, store_bincode};
-use crate::direct::build_projected_map;
+use crate::direct::build_projected_map_with_projection;
 use crate::shared_context::PreparedProjectedContext;
 use grib_core::grib2::{
     Grib2File, Grib2Message, flip_rows, grid_latlon, unpack_message_normalized,
 };
 use rustwx_calc::{GridShape as CalcGridShape, VolumeShape};
 use rustwx_core::{
-    CanonicalBundleDescriptor, CanonicalDataFamily, CycleSpec, GridShape, LatLonGrid, ModelId,
-    ModelRunRequest, RustwxError, SourceId,
+    CanonicalBundleDescriptor, CanonicalDataFamily, CycleSpec, GridProjection, GridShape,
+    LatLonGrid, ModelId, ModelRunRequest, RustwxError, SourceId,
 };
-use rustwx_io::{CachedFetchResult, FetchRequest, artifact_cache_dir, fetch_bytes_with_cache};
+use rustwx_io::{
+    CachedFetchResult, FetchRequest, artifact_cache_dir, fetch_bytes_with_cache,
+    grid_projection_from_grib2_grid,
+};
 use rustwx_models::{
     LatestRun, ResolvedCanonicalBundleProduct, latest_available_run_at_forecast_hour,
     latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
@@ -27,6 +30,7 @@ pub struct SurfaceFields {
     pub lon: Vec<f64>,
     pub nx: usize,
     pub ny: usize,
+    pub projection: Option<GridProjection>,
     pub psfc_pa: Vec<f64>,
     pub orog_m: Vec<f64>,
     pub orog_is_proxy: bool,
@@ -58,6 +62,7 @@ pub(crate) struct SurfaceGridLayout {
     pub lon: Vec<f64>,
     pub nx: usize,
     pub ny: usize,
+    pub projection: Option<GridProjection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -427,7 +432,7 @@ pub fn build_projected_maps_for_sizes(
         if width == 0 || height == 0 || context.contains_size(width, height) {
             continue;
         }
-        let projected = build_projected_map(
+        let projected = build_projected_map_with_projection(
             &surface
                 .lat
                 .iter()
@@ -440,6 +445,7 @@ pub fn build_projected_maps_for_sizes(
                 .copied()
                 .map(|v| v as f32)
                 .collect::<Vec<_>>(),
+            surface.projection.as_ref(),
             bounds,
             map_frame_aspect_ratio(width, height, true, true),
         )?;
@@ -785,6 +791,7 @@ fn crop_surface_fields(surface: &SurfaceFields, crop: GridCrop) -> SurfaceFields
         lon: crop_2d_values(&surface.lon, surface.nx, crop),
         nx: crop.width(),
         ny: crop.height(),
+        projection: surface.projection.clone(),
         psfc_pa: crop_2d_values(&surface.psfc_pa, surface.nx, crop),
         orog_m: crop_2d_values(&surface.orog_m, surface.nx, crop),
         orog_is_proxy: surface.orog_is_proxy,
@@ -1137,7 +1144,13 @@ fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Err
         .messages
         .first()
         .ok_or("surface family GRIB had no messages")?;
-    let SurfaceGridLayout { lat, lon, nx, ny } = decode_surface_grid_from_sample(sample);
+    let SurfaceGridLayout {
+        lat,
+        lon,
+        nx,
+        ny,
+        projection,
+    } = decode_surface_grid_from_sample(sample);
 
     let psfc_pa = unpack_message_normalized(find_message(
         &file.messages,
@@ -1160,6 +1173,7 @@ fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Err
         lon,
         nx,
         ny,
+        projection,
         psfc_pa,
         orog_m,
         orog_is_proxy,
@@ -1184,6 +1198,7 @@ fn decode_surface_cropped(
         lon,
         nx,
         ny: _,
+        projection,
     } = decode_surface_grid_from_sample(sample);
 
     let psfc_pa = crop_2d_values(
@@ -1220,6 +1235,7 @@ fn decode_surface_cropped(
         lon: crop_2d_values(&lon, nx, crop),
         nx: crop.width(),
         ny: crop.height(),
+        projection,
         psfc_pa,
         orog_m,
         orog_is_proxy,
@@ -1364,6 +1380,7 @@ fn decode_surface_grid_from_sample(sample: &Grib2Message) -> SurfaceGridLayout {
             .collect::<Vec<_>>(),
         nx: sample.grid.nx as usize,
         ny: sample.grid.ny as usize,
+        projection: grid_projection_from_grib2_grid(&sample.grid),
     }
 }
 
@@ -1923,6 +1940,11 @@ mod tests {
             lon: vec![-97.0; len],
             nx,
             ny,
+            projection: Some(GridProjection::LambertConformal {
+                standard_parallel_1_deg: 38.5,
+                standard_parallel_2_deg: 38.5,
+                central_meridian_deg: -97.5,
+            }),
             psfc_pa: vec![100000.0; len],
             orog_m: vec![300.0; len],
             orog_is_proxy: false,

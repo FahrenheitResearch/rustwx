@@ -44,6 +44,41 @@ impl GridShape {
     }
 }
 
+/// Native map-projection metadata carried alongside a lat/lon grid when the
+/// upstream source knows the model's actual projection family.
+///
+/// This is intentionally lightweight: it captures the projection parameters
+/// needed to project model footprints and overlays consistently, while keeping
+/// the public core model independent of any GRIB-specific parser types.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GridProjection {
+    Geographic,
+    LambertConformal {
+        standard_parallel_1_deg: f64,
+        standard_parallel_2_deg: f64,
+        central_meridian_deg: f64,
+    },
+    PolarStereographic {
+        true_latitude_deg: f64,
+        central_meridian_deg: f64,
+        south_pole_on_projection_plane: bool,
+    },
+    Mercator {
+        latitude_of_true_scale_deg: f64,
+        central_meridian_deg: f64,
+    },
+    Other {
+        template: u16,
+    },
+}
+
+impl GridProjection {
+    pub fn is_projected(&self) -> bool {
+        !matches!(self, Self::Geographic)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LatLonGrid {
     pub shape: GridShape,
@@ -549,6 +584,7 @@ pub struct SelectedField2D {
     pub units: String,
     pub grid: LatLonGrid,
     pub values: Vec<f32>,
+    pub projection: Option<GridProjection>,
 }
 
 impl SelectedField2D {
@@ -570,7 +606,13 @@ impl SelectedField2D {
             units: units.into(),
             grid,
             values,
+            projection: None,
         })
+    }
+
+    pub fn with_projection(mut self, projection: GridProjection) -> Self {
+        self.projection = Some(projection);
+        self
     }
 
     pub fn into_field2d(self) -> Field2D {
@@ -1609,8 +1651,13 @@ mod tests {
         let grid = LatLonGrid::new(shape, vec![35.0, 35.0], vec![-99.0, -98.0]).unwrap();
         let selector = FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500);
 
-        let selected =
-            SelectedField2D::new(selector, "gpm", grid.clone(), vec![5700.0, 5712.0]).unwrap();
+        let selected = SelectedField2D::new(selector, "gpm", grid.clone(), vec![5700.0, 5712.0])
+            .unwrap()
+            .with_projection(GridProjection::LambertConformal {
+                standard_parallel_1_deg: 38.5,
+                standard_parallel_2_deg: 38.5,
+                central_meridian_deg: -97.5,
+            });
         let legacy: Field2D = selected.into();
 
         assert_eq!(
@@ -1620,6 +1667,42 @@ mod tests {
         assert_eq!(legacy.units, "gpm");
         assert_eq!(legacy.grid, grid);
         assert_eq!(legacy.values, vec![5700.0, 5712.0]);
+    }
+
+    #[test]
+    fn selected_field_keeps_projection_metadata() {
+        let shape = GridShape::new(2, 1).unwrap();
+        let grid = LatLonGrid::new(shape, vec![35.0, 35.0], vec![-99.0, -98.0]).unwrap();
+        let selector = FieldSelector::surface(CanonicalField::Temperature);
+
+        let selected = SelectedField2D::new(selector, "K", grid, vec![290.0, 291.0])
+            .unwrap()
+            .with_projection(GridProjection::Mercator {
+                latitude_of_true_scale_deg: 20.0,
+                central_meridian_deg: -95.0,
+            });
+
+        assert_eq!(
+            selected.projection,
+            Some(GridProjection::Mercator {
+                latitude_of_true_scale_deg: 20.0,
+                central_meridian_deg: -95.0,
+            })
+        );
+    }
+
+    #[test]
+    fn grid_projection_bincode_round_trip_works() {
+        let projection = GridProjection::PolarStereographic {
+            true_latitude_deg: 60.0,
+            central_meridian_deg: -105.0,
+            south_pole_on_projection_plane: false,
+        };
+
+        let bytes = bincode::serialize(&projection).unwrap();
+        let round_trip = bincode::deserialize::<GridProjection>(&bytes).unwrap();
+
+        assert_eq!(round_trip, projection);
     }
 
     #[test]

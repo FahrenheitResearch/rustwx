@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod catalog;
+pub mod cross_section;
 pub mod derived;
 pub mod direct;
 pub mod ecape;

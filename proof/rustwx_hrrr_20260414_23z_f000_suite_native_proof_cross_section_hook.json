@@ -1,0 +1,19 @@
+{
+  "status": "placeholder",
+  "kind": "cross_section_integration_hook",
+  "rationale": "RustWX ships 2D HRRR map proofs here, but the cross-section renderer still lives outside this CLI lane.",
+  "suggested_contract": "future rustwx xsection subcommand or a public /api/v1/cross-section style endpoint",
+  "output": "png",
+  "example_request": {
+    "model": "hrrr",
+    "region_hint": "midwest",
+    "product": "temperature",
+    "forecast_hour": 0,
+    "start_lat": 39.0997,
+    "start_lon": -94.5786,
+    "end_lat": 41.8781,
+    "end_lon": -87.6298,
+    "y_axis": "pressure",
+    "y_top_hpa": 100
+  }
+}

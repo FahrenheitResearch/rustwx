@@ -1,0 +1,21 @@
+{
+  "model": "hrrr",
+  "route_slug": "amarillo_chicago",
+  "route_label": "Amarillo to Chicago",
+  "product_slug": "wind_speed",
+  "product_label": "Wind Speed",
+  "palette_slug": "wind_speed",
+  "date_yyyymmdd": "20260414",
+  "cycle_utc": 23,
+  "forecast_hour": 0,
+  "source": "nomads",
+  "output_path": "rustwx_hrrr_20260414_23z_f000_amarillo_chicago_wind_speed_cross_section.png",
+  "summary_path": "rustwx_hrrr_20260414_23z_f000_amarillo_chicago_wind_speed_cross_section.json",
+  "route_distance_km": 1436.9903662394959,
+  "sample_count": 181,
+  "pressure_levels": 40,
+  "start_lat": 35.222,
+  "start_lon": -101.8313,
+  "end_lat": 41.8781,
+  "end_lon": -87.6298
+}

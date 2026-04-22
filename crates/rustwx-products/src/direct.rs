@@ -1108,9 +1108,10 @@ fn build_prepared_projected_maps(
             5 => ProductVisualMode::ComparisonPanel,
             _ => ProductVisualMode::FilledMeteorology,
         };
-        let projected = build_projected_map(
+        let projected = build_projected_map_with_projection(
             &sample_field.grid.lat_deg,
             &sample_field.grid.lon_deg,
+            sample_field.projection.as_ref(),
             request.domain.bounds,
             map_frame_aspect_ratio_for_mode(visual_mode, width, height, true, true),
         )?;
@@ -1213,9 +1214,10 @@ fn render_direct_recipe(
         {
             projected
         } else {
-            let projected = build_projected_map(
+            let projected = build_projected_map_with_projection(
                 &filled.grid.lat_deg,
                 &filled.grid.lon_deg,
+                filled.projection.as_ref(),
                 request.domain.bounds,
                 map_frame_aspect_ratio_for_mode(
                     visual_mode,
@@ -1370,9 +1372,10 @@ fn render_direct_composite_panel(
     {
         projected
     } else {
-        let projected = build_projected_map(
+        let projected = build_projected_map_with_projection(
             &first_field.grid.lat_deg,
             &first_field.grid.lon_deg,
+            first_field.projection.as_ref(),
             request.domain.bounds,
             map_frame_aspect_ratio_for_mode(
                 ProductVisualMode::PanelMember,
@@ -1999,7 +2002,28 @@ fn cached_barb_strides(
     *cache.entry(key).or_insert(strides)
 }
 
-pub use rustwx_render::build_projected_map;
+pub fn build_projected_map(
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+    bounds: (f64, f64, f64, f64),
+    target_ratio: f64,
+) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
+    rustwx_render::build_projected_map(lat_deg, lon_deg, bounds, target_ratio)
+}
+
+pub fn build_projected_map_with_projection(
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+    projection: Option<&rustwx_core::GridProjection>,
+    bounds: (f64, f64, f64, f64),
+    target_ratio: f64,
+) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
+    let mut options = rustwx_render::ProjectedMapBuildOptions::from_bounds(bounds, target_ratio);
+    if let Some(projection) = projection.cloned() {
+        options = options.with_projection(projection);
+    }
+    rustwx_render::build_projected_map_with_options(lat_deg, lon_deg, &options)
+}
 
 #[cfg(test)]
 mod tests {

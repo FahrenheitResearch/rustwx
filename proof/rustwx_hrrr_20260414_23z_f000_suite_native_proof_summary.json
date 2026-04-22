@@ -1,0 +1,87 @@
+{
+  "runner": "hrrr_native_proof",
+  "model": "hrrr",
+  "mode": "suite",
+  "date_yyyymmdd": "20260414",
+  "cycle_utc": 23,
+  "forecast_hour": 0,
+  "source": "Nomads",
+  "out_dir": "proof",
+  "cache_root": "proof\\cache",
+  "use_cache": true,
+  "source_mode": "canonical",
+  "selected_region": null,
+  "selected_suite_cases": [
+    "conus_contour"
+  ],
+  "case_count": 1,
+  "output_count": 4,
+  "blocker_count": 0,
+  "cases": [
+    {
+      "slug": "conus_contour",
+      "label": "CONUS Projected Contour / Synoptic",
+      "theme": "projected contour-sensitive synoptic proof",
+      "region": "conus",
+      "cycle_utc": 23,
+      "projected": true,
+      "contour_candidate": true,
+      "notes": [
+        "MSLP / 10m Winds is the contour-sensitive projected map to rerun as contour integration improves.",
+        "500mb Temperature / Height / Winds is the projected synoptic companion proof."
+      ],
+      "direct_recipes": [
+        "mslp_10m_winds",
+        "500mb_temperature_height_winds"
+      ],
+      "derived_recipes": [],
+      "output_count": 4,
+      "blocker_count": 0,
+      "outputs": [
+        {
+          "case_slug": "conus_contour",
+          "lane": "direct",
+          "recipe_slug": "mslp_10m_winds",
+          "title": "MSLP / 10m Winds",
+          "source_route": "direct_native_exact",
+          "output_path": "conus\\rustwx_hrrr_20260414_23z_f000_conus_mslp_10m_winds.png"
+        },
+        {
+          "case_slug": "conus_contour",
+          "lane": "direct",
+          "recipe_slug": "500mb_temperature_height_winds",
+          "title": "500mb Temperature / Height / Winds",
+          "source_route": "direct_native_exact",
+          "output_path": "conus\\rustwx_hrrr_20260414_23z_f000_conus_500mb_temperature_height_winds.png"
+        },
+        {
+          "case_slug": "conus_contour",
+          "lane": "derived",
+          "recipe_slug": "sbcape",
+          "title": "SBCAPE",
+          "source_route": "canonical_derived",
+          "output_path": "conus\\rustwx_hrrr_20260414_23z_f000_conus_sbcape.png"
+        },
+        {
+          "case_slug": "conus_contour",
+          "lane": "derived",
+          "recipe_slug": "stp_fixed",
+          "title": "STP (FIXED)",
+          "source_route": "canonical_derived",
+          "output_path": "conus\\rustwx_hrrr_20260414_23z_f000_conus_stp_fixed.png"
+        }
+      ],
+      "blockers": [],
+      "shared_timing": {
+        "resolve_run_ms": 0,
+        "shared_load_decode_ms": 353382,
+        "shared_derived_prepare_ms": 0,
+        "total_prepare_ms": 353383
+      },
+      "total_ms": 114676,
+      "publication_manifest_path": "conus\\rustwx_hrrr_20260414_23z_f000_conus_non_ecape_hour_run_manifest.json",
+      "attempt_manifest_path": "conus\\rustwx_hrrr_20260414_23z_f000_conus_non_ecape_hour_run_manifest.38499809c30eb830.json"
+    }
+  ],
+  "cross_section_hook_path": "rustwx_hrrr_20260414_23z_f000_suite_native_proof_cross_section_hook.json"
+}

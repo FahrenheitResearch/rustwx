@@ -1,4 +1,4 @@
-use crate::direct::build_projected_map;
+use crate::direct::build_projected_map_with_projection;
 use crate::gridded::{
     PreparedHeavyVolume, PressureFields, SharedTiming, SurfaceFields, prepare_heavy_volume,
     prepare_heavy_volume_timed, resolve_thermo_pair_run,
@@ -97,9 +97,10 @@ pub fn run_severe_batch(
     let full_pressure = &pressure_decode.value;
     let owned_full_grid = full_surface.core_grid()?;
     let project_start = Instant::now();
-    let full_projected = build_projected_map(
+    let full_projected = build_projected_map_with_projection(
         &owned_full_grid.lat_deg,
         &owned_full_grid.lon_deg,
+        full_surface.projection.as_ref(),
         request.domain.bounds,
         heavy_map_target_aspect_ratio(),
     )?;
@@ -121,9 +122,10 @@ pub fn run_severe_batch(
         heavy_domain.bind(full_surface, full_pressure, &owned_full_grid);
 
     let projected = if heavy_domain.cropped.is_some() {
-        build_projected_map(
+        build_projected_map_with_projection(
             &grid.lat_deg,
             &grid.lon_deg,
+            surface.projection.as_ref(),
             request.domain.bounds,
             heavy_map_target_aspect_ratio(),
         )?

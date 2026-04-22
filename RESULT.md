@@ -13,6 +13,13 @@
 - Updated README examples to use `ecape8_batch --model hrrr` instead of `hrrr_ecape8 --region conus`.
 - Removed legacy severe/ECAPE credit/footer strings from shared rendering and added a regression test that fails if they reappear under `crates/`.
 
+## Weather-native engine progress in this sprint
+
+- The repo now has a real `rustwx-contour` crate with isoline and filled-band extraction primitives, but the live map proofs still use the existing `rustwx-render` contour overlay path.
+- The repo now has a real `rustwx-cross-section` crate plus `hrrr_temperature_xsection`, which generates a real-data HRRR temperature cross-section preview with matching summary JSON.
+- `hrrr_native_proof` changed the proof publication shape: it now publishes a bounded 2D HRRR map bundle, a summary JSON, and an explicit cross-section integration hook JSON instead of pretending cross-sections are already part of that lane.
+- Top-level docs and proof docs were corrected to keep those boundaries explicit: contour topology exists now, contour integration into the shared map renderer is future work; cross-section rendering exists now, but native-proof integration is still a hook.
+
 ## HRRR ECAPE wrapper before/after
 
 Warm-cache comparison for `2026-04-14 23Z F001 midwest`:
@@ -58,10 +65,21 @@ Shared-file verification:
 - GFS/ECMWF severe math is cheap at regional scale; fetch/shared overhead dominates the instrumented phases there.
 - Render is not the bottleneck on any of the verified heavy runs.
 
+## Render verification/docs follow-up
+
+- Added a short top-level architecture note for the weather-native plot engine split: product builders own science and `rustwx-render` owns presentation/runtime rendering.
+- Expanded `crates/rustwx-render/verify` from a pure re-export into an isolated verification harness with synthetic request builders, mixed filled/overlay/panel smoke tests, and runnable PNG examples.
+- Updated proof/docs so reviewers can distinguish renderer-isolated verification from full end-to-end proof artifacts.
+- Added a lightweight doc-alignment test so the repo keeps distinguishing current renderer-local contour overlays from future `rustwx-contour` integration, and bounded native proofs from the separate cross-section proof lane.
+
 ## Acceptance runs
 
 - `cargo fmt`: pass
 - `cargo test`: pass
+- `cargo test --manifest-path crates/rustwx-render/verify/Cargo.toml`: pass
+- `cargo test --manifest-path crates/rustwx-render/verify/Cargo.toml repo_docs_describe_contour_and_proof_boundaries`: pass
+- `cargo run --manifest-path crates/rustwx-render/verify/Cargo.toml --example synthetic_sbecape`: pass
+- `cargo run --manifest-path crates/rustwx-render/verify/Cargo.toml --example synthetic_panel`: pass
 - `cargo run -p rustwx-cli --release --bin product_catalog`: pass
 - `cargo run -p rustwx-cli --release --bin hrrr_non_ecape_hour -- --date 20260414 --cycle 23 --forecast-hour 1 --region conus`: pass
 - `cargo run -p rustwx-cli --release --bin ecape8_batch -- --model hrrr --date 20260414 --cycle 23 --forecast-hour 1 --source nomads --region midwest`: pass

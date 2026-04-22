@@ -200,9 +200,10 @@ pub(crate) fn run_hrrr_batch_from_loaded(
         .unwrap_or(1.0);
     let owned_full_grid;
     let base_grid = surface_full.core_grid()?;
-    let full_projected_for_crop = crate::direct::build_projected_map(
+    let full_projected_for_crop = crate::direct::build_projected_map_with_projection(
         &base_grid.lat_deg,
         &base_grid.lon_deg,
+        surface_full.projection.as_ref(),
         request.domain.bounds,
         crop_target_ratio,
     )?;
@@ -230,9 +231,10 @@ pub(crate) fn run_hrrr_batch_from_loaded(
         let key = self::layout_key(layout);
         let project_start = Instant::now();
         if !projected_maps.contains_key(&key) {
-            let projected = crate::direct::build_projected_map(
+            let projected = crate::direct::build_projected_map_with_projection(
                 &grid.lat_deg,
                 &grid.lon_deg,
+                surface.projection.as_ref(),
                 request.domain.bounds,
                 layout.target_aspect_ratio(),
             )?;

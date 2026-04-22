@@ -1,4 +1,4 @@
-use crate::direct::build_projected_map;
+use crate::direct::build_projected_map_with_projection;
 use crate::ecape::compute_ecape8_panel_fields_with_prepared_volume;
 use crate::gridded::{
     CroppedHeavyDomain, PressureFields, ProjectedGridIntersection, SharedTiming, SurfaceFields,
@@ -328,9 +328,10 @@ pub fn run_heavy_panel_hour(
     let target_ratio = heavy_map_target_aspect_ratio();
     let owned_full_grid = full_surface.core_grid()?;
     let project_start = Instant::now();
-    let full_projected = build_projected_map(
+    let full_projected = build_projected_map_with_projection(
         &owned_full_grid.lat_deg,
         &owned_full_grid.lon_deg,
+        full_surface.projection.as_ref(),
         request.domain.bounds,
         target_ratio,
     )?;
@@ -345,9 +346,10 @@ pub fn run_heavy_panel_hour(
     let (surface, pressure, grid) =
         heavy_domain.bind(full_surface, full_pressure, &owned_full_grid);
     let projected = if heavy_domain.cropped.is_some() {
-        build_projected_map(
+        build_projected_map_with_projection(
             &grid.lat_deg,
             &grid.lon_deg,
+            surface.projection.as_ref(),
             request.domain.bounds,
             target_ratio,
         )?

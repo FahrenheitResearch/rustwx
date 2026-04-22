@@ -77,6 +77,65 @@ pub fn compute_2m_theta_e(
     Ok(compute_surface_thermo(grid, surface)?.theta_e_2m_k)
 }
 
+pub fn compute_dewpoint_from_pressure_and_mixing_ratio(
+    pressure_hpa: &[f64],
+    mixing_ratio_kgkg: &[f64],
+) -> Result<Vec<f64>, CalcError> {
+    let n = pressure_hpa.len();
+    validate_len("mixing_ratio_kgkg", mixing_ratio_kgkg.len(), n)?;
+
+    Ok(pressure_hpa
+        .iter()
+        .zip(mixing_ratio_kgkg.iter())
+        .map(|(&pressure_hpa, &mixing_ratio_kgkg)| {
+            dewpoint_from_mixing_ratio(pressure_hpa, mixing_ratio_kgkg)
+        })
+        .collect())
+}
+
+pub fn compute_relative_humidity_from_pressure_temperature_and_mixing_ratio(
+    pressure_hpa: &[f64],
+    temperature_c: &[f64],
+    mixing_ratio_kgkg: &[f64],
+) -> Result<Vec<f64>, CalcError> {
+    let n = pressure_hpa.len();
+    validate_len("temperature_c", temperature_c.len(), n)?;
+    let dewpoint_c =
+        compute_dewpoint_from_pressure_and_mixing_ratio(pressure_hpa, mixing_ratio_kgkg)?;
+
+    Ok(temperature_c
+        .iter()
+        .zip(dewpoint_c.iter())
+        .map(|(&temperature_c, &dewpoint_c)| {
+            metrust::calc::thermo::relative_humidity_from_dewpoint(temperature_c, dewpoint_c)
+        })
+        .collect())
+}
+
+pub fn compute_theta_e_from_pressure_temperature_and_mixing_ratio(
+    pressure_hpa: &[f64],
+    temperature_c: &[f64],
+    mixing_ratio_kgkg: &[f64],
+) -> Result<Vec<f64>, CalcError> {
+    let n = pressure_hpa.len();
+    validate_len("temperature_c", temperature_c.len(), n)?;
+    let dewpoint_c =
+        compute_dewpoint_from_pressure_and_mixing_ratio(pressure_hpa, mixing_ratio_kgkg)?;
+
+    Ok(pressure_hpa
+        .iter()
+        .zip(temperature_c.iter())
+        .zip(dewpoint_c.iter())
+        .map(|((&pressure_hpa, &temperature_c), &dewpoint_c)| {
+            metrust::calc::thermo::equivalent_potential_temperature(
+                pressure_hpa,
+                temperature_c,
+                dewpoint_c,
+            )
+        })
+        .collect())
+}
+
 pub fn compute_2m_heat_index(
     grid: GridShape,
     surface: SurfaceInputs<'_>,
@@ -535,6 +594,56 @@ mod tests {
     fn dewpoint_from_mixing_ratio_matches_expected_surface_value() {
         let td = dewpoint_from_mixing_ratio(1000.0, 0.014);
         assert!(td > 18.0 && td < 21.0, "dewpoint={td}");
+    }
+
+    #[test]
+    fn pressure_profile_thermo_wrappers_return_finite_values() {
+        let pressure_hpa = [1000.0, 850.0];
+        let temperature_c = [28.0, 14.0];
+        let mixing_ratio_kgkg = [0.014, 0.009];
+
+        let dewpoint_c =
+            compute_dewpoint_from_pressure_and_mixing_ratio(&pressure_hpa, &mixing_ratio_kgkg)
+                .unwrap();
+        let relative_humidity_pct =
+            compute_relative_humidity_from_pressure_temperature_and_mixing_ratio(
+                &pressure_hpa,
+                &temperature_c,
+                &mixing_ratio_kgkg,
+            )
+            .unwrap();
+        let theta_e_k = compute_theta_e_from_pressure_temperature_and_mixing_ratio(
+            &pressure_hpa,
+            &temperature_c,
+            &mixing_ratio_kgkg,
+        )
+        .unwrap();
+
+        assert_eq!(dewpoint_c.len(), 2);
+        assert!(dewpoint_c.iter().all(|value| value.is_finite()));
+        assert!(relative_humidity_pct.iter().all(|value| value.is_finite()));
+        assert!(theta_e_k.iter().all(|value| value.is_finite()));
+        assert!(relative_humidity_pct.iter().all(|value| *value > 0.0));
+        assert!(theta_e_k[0] > 330.0);
+    }
+
+    #[test]
+    fn pressure_profile_thermo_wrappers_validate_lengths() {
+        let err = compute_relative_humidity_from_pressure_temperature_and_mixing_ratio(
+            &[1000.0, 850.0],
+            &[20.0],
+            &[0.01, 0.008],
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            CalcError::LengthMismatch {
+                field: "temperature_c",
+                expected: 2,
+                actual: 1,
+            }
+        ));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use crate::direct::{build_projected_map, build_projected_map_with_projection};
 use rustwx_calc::{
     CalcError, EcapeVolumeInputs, FixedStpInputs, GridShape as CalcGridShape, SurfaceInputs,
     TemperatureAdvectionInputs, VolumeShape, WindGridInputs, compute_2m_apparent_temperature,
@@ -11,9 +12,9 @@ use rustwx_core::{
 };
 use rustwx_render::{
     Color, DerivedProductStyle, DomainFrame, ExtendMode, MapRenderRequest, PngCompressionMode,
-    PngWriteOptions, ProductVisualMode, ProjectedDomain, ProjectedExtent, ProjectedMap,
-    RenderImageTiming, RenderStateTiming, Solar07Palette, Solar07Product, WindBarbLayer,
-    build_projected_map as build_projected_map_from_latlon, map_frame_aspect_ratio,
+    PngWriteOptions, ProductVisualMode, ProjectedContourLineStyle, ProjectedDomain,
+    ProjectedExtent, ProjectedMap, RenderImageTiming, RenderStateTiming, Solar07Palette,
+    Solar07Product, WindBarbLayer, build_projected_contour_geometry, map_frame_aspect_ratio,
     save_png_profile_with_options,
 };
 use serde::{Deserialize, Serialize};
@@ -1092,7 +1093,7 @@ fn maybe_load_rrfs_cropped_pair_for_derived(
     let fetch_pressure_ms = pressure_fetch_start.elapsed().as_millis();
 
     let surface_grid = decode_surface_grid(surface_file.bytes.as_slice())?;
-    let projected = build_projected_map_from_latlon(
+    let projected = build_projected_map_with_projection(
         &surface_grid
             .lat
             .iter()
@@ -1105,6 +1106,7 @@ fn maybe_load_rrfs_cropped_pair_for_derived(
             .copied()
             .map(|value| value as f32)
             .collect::<Vec<_>>(),
+        surface_grid.projection.as_ref(),
         request.domain.bounds,
         map_frame_aspect_ratio(request.output_width, request.output_height, true, true),
     )?;
@@ -1318,9 +1320,10 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
         }
         let owned_full_grid = full_surface.core_grid()?;
         let project_start = Instant::now();
-        let full_projected = build_projected_map_from_latlon(
+        let full_projected = build_projected_map_with_projection(
             &owned_full_grid.lat_deg,
             &owned_full_grid.lon_deg,
+            full_surface.projection.as_ref(),
             request.domain.bounds,
             map_frame_aspect_ratio(request.output_width, request.output_height, true, true),
         )?;
@@ -1348,9 +1351,10 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                     }
                     ProjectedGridIntersection::Crop(crop) => {
                         let derived_grid = crop_latlon_grid(&shared.grid, crop)?;
-                        let derived_projected = build_projected_map_from_latlon(
+                        let derived_projected = build_projected_map_with_projection(
                             &derived_grid.lat_deg,
                             &derived_grid.lon_deg,
+                            full_surface.projection.as_ref(),
                             request.domain.bounds,
                             map_frame_aspect_ratio(
                                 request.output_width,
@@ -1385,9 +1389,10 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                     };
 
                     let derived_projected = if cropped.is_some() {
-                        build_projected_map_from_latlon(
+                        build_projected_map_with_projection(
                             &derived_grid.lat_deg,
                             &derived_grid.lon_deg,
+                            surface.projection.as_ref(),
                             request.domain.bounds,
                             map_frame_aspect_ratio(
                                 request.output_width,
@@ -1471,7 +1476,7 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
 
         if grid.is_none() {
             let project_start = Instant::now();
-            let native_projected = build_projected_map_from_latlon(
+            let native_projected = build_projected_map(
                 &native_field.grid.lat_deg,
                 &native_field.grid.lon_deg,
                 request.domain.bounds,
@@ -1967,6 +1972,7 @@ fn build_native_render_artifact(
     });
     request.projected_lines = projected.lines.clone();
     request.projected_polygons = projected.polygons.clone();
+    maybe_apply_native_contour_fill(recipe, &mut request)?;
     Ok(HrrrDerivedLiveArtifact {
         recipe_slug: recipe.slug().to_string(),
         title: recipe.title().to_string(),
@@ -2855,6 +2861,7 @@ fn build_render_artifact(
     });
     request.projected_lines = projected.lines.clone();
     request.projected_polygons = projected.polygons.clone();
+    maybe_apply_native_contour_fill(recipe, &mut request)?;
     if matches!(recipe, DerivedRecipe::ThetaE2m10mWinds) {
         let u_kt = computed_surface_u10(computed, recipe)?;
         let v_kt = computed_surface_v10(computed, recipe)?;
@@ -2873,6 +2880,105 @@ fn build_render_artifact(
         field,
         request,
     })
+}
+
+struct NativeContourProductConfig {
+    scale: rustwx_render::ColorScale,
+    line_levels: &'static [f64],
+    line_style: ProjectedContourLineStyle,
+    tick_step: Option<f64>,
+}
+
+const STP_NATIVE_LINE_LEVELS: &[f64] = &[1.0, 3.0, 5.0];
+const CAPE_NATIVE_LINE_LEVELS: &[f64] = &[500.0, 1000.0, 2000.0, 3000.0, 4000.0];
+const SRH_NATIVE_LINE_LEVELS: &[f64] = &[150.0, 250.0, 350.0, 450.0];
+const EHI_NATIVE_LINE_LEVELS: &[f64] = &[1.0, 2.0, 3.0, 5.0];
+
+fn native_contour_product_config(recipe: DerivedRecipe) -> Option<NativeContourProductConfig> {
+    match recipe {
+        DerivedRecipe::StpFixed => Some(NativeContourProductConfig {
+            scale: rustwx_render::ColorScale::Discrete(rustwx_render::palette_scale(
+                Solar07Palette::Stp,
+                vec![1.0, 2.0, 3.0, 5.0, 8.0, 11.0],
+                ExtendMode::Max,
+                None,
+            )),
+            line_levels: STP_NATIVE_LINE_LEVELS,
+            line_style: ProjectedContourLineStyle {
+                color: Color::rgba(55, 16, 16, 210),
+                width: 2,
+            },
+            tick_step: Some(1.0),
+        }),
+        DerivedRecipe::Sbcape | DerivedRecipe::Mlcape => Some(NativeContourProductConfig {
+            scale: rustwx_render::ColorScale::Discrete(rustwx_render::palette_scale(
+                Solar07Palette::Cape,
+                vec![250.0, 500.0, 1000.0, 1500.0, 2000.0, 3000.0, 4000.0, 5000.0],
+                ExtendMode::Max,
+                None,
+            )),
+            line_levels: CAPE_NATIVE_LINE_LEVELS,
+            line_style: ProjectedContourLineStyle {
+                color: Color::rgba(84, 44, 18, 215),
+                width: 2,
+            },
+            tick_step: Some(500.0),
+        }),
+        DerivedRecipe::Srh01km | DerivedRecipe::Srh03km => Some(NativeContourProductConfig {
+            scale: rustwx_render::ColorScale::Discrete(rustwx_render::palette_scale(
+                Solar07Palette::Srh,
+                vec![100.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0],
+                ExtendMode::Max,
+                None,
+            )),
+            line_levels: SRH_NATIVE_LINE_LEVELS,
+            line_style: ProjectedContourLineStyle {
+                color: Color::rgba(15, 35, 56, 220),
+                width: 2,
+            },
+            tick_step: Some(50.0),
+        }),
+        DerivedRecipe::Ehi01km | DerivedRecipe::Ehi03km => Some(NativeContourProductConfig {
+            scale: rustwx_render::ColorScale::Discrete(rustwx_render::palette_scale(
+                Solar07Palette::Ehi,
+                vec![0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0],
+                ExtendMode::Max,
+                None,
+            )),
+            line_levels: EHI_NATIVE_LINE_LEVELS,
+            line_style: ProjectedContourLineStyle {
+                color: Color::rgba(44, 18, 66, 220),
+                width: 2,
+            },
+            tick_step: Some(0.5),
+        }),
+        _ => None,
+    }
+}
+
+fn maybe_apply_native_contour_fill(
+    recipe: DerivedRecipe,
+    request: &mut MapRenderRequest,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(config) = native_contour_product_config(recipe) else {
+        return Ok(());
+    };
+    let Some(projected_domain) = request.projected_domain.as_ref() else {
+        return Ok(());
+    };
+    request.scale = config.scale;
+    request.cbar_tick_step = config.tick_step;
+    let geometry = build_projected_contour_geometry(
+        &request.field,
+        projected_domain,
+        &request.scale,
+        config.line_levels,
+        config.line_style,
+    )?;
+    request.projected_data_polygons.extend(geometry.fills);
+    request.projected_lines.extend(geometry.lines);
+    request.field.values.fill(f32::NAN);
+    Ok(())
 }
 
 fn heavy_ecape_subtitle_right(recipe: DerivedRecipe, source: SourceId) -> String {
@@ -2973,9 +3079,10 @@ fn render_derived_heavy_recipes(
     )?;
     let (surface, pressure, grid) = heavy_domain.bind(full_surface, full_pressure, full_grid);
     let projected = if heavy_domain.cropped.is_some() {
-        build_projected_map_from_latlon(
+        build_projected_map_with_projection(
             &grid.lat_deg,
             &grid.lon_deg,
+            surface.projection.as_ref(),
             request.domain.bounds,
             map_frame_aspect_ratio(request.output_width, request.output_height, true, true),
         )?
@@ -3640,6 +3747,28 @@ mod tests {
         assert!(!requirements.needs_volume());
         assert!(!requirements.needs_height_agl());
         assert!(!requirements.needs_grid_spacing());
+    }
+
+    #[test]
+    fn native_contour_config_covers_multiple_real_products() {
+        for recipe in [
+            DerivedRecipe::StpFixed,
+            DerivedRecipe::Sbcape,
+            DerivedRecipe::Mlcape,
+            DerivedRecipe::Srh01km,
+            DerivedRecipe::Srh03km,
+            DerivedRecipe::Ehi01km,
+            DerivedRecipe::Ehi03km,
+        ] {
+            let config = native_contour_product_config(recipe)
+                .unwrap_or_else(|| panic!("expected native contour config for {}", recipe.slug()));
+            assert!(
+                !config.line_levels.is_empty(),
+                "{} should define contour lines",
+                recipe.slug()
+            );
+        }
+        assert!(native_contour_product_config(DerivedRecipe::LiftedIndex).is_none());
     }
 
     #[test]
