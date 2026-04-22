@@ -73,8 +73,8 @@ pub use geo::{
 };
 pub use palette::{ALL_CROSS_SECTION_PALETTES, CrossSectionPalette, PaletteStop};
 pub use render::{
-    Color, CrossSectionRenderRequest, Insets, RenderedCrossSection, WindOverlayBundle,
-    WindOverlayStyle, render_scalar_section,
+    Color, CrossSectionRenderRequest, CrossSectionRenderTiming, Insets, RenderedCrossSection,
+    WindOverlayBundle, WindOverlayStyle, render_scalar_section, render_scalar_section_profile,
 };
 pub use request::{
     CrossSectionRequest, HorizontalInterpolation, SamplingStrategy, SectionLayout, VerticalWindow,

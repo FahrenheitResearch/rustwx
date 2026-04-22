@@ -18,7 +18,8 @@ pub mod solar07;
 mod text;
 
 pub use contour_fill::{
-    ProjectedContourGeometry, ProjectedContourLineStyle, build_projected_contour_geometry,
+    ProjectedContourGeometry, ProjectedContourGeometryTiming, ProjectedContourLineStyle,
+    build_projected_contour_geometry, build_projected_contour_geometry_profile,
 };
 pub use error::RustwxRenderError;
 pub use features::{

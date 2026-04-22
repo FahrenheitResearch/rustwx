@@ -1,4 +1,5 @@
 use rustwx_contour::{ContourEngine, ContourLevels, RectilinearGrid, ScalarField2D};
+use std::time::Instant;
 
 use crate::data::{ScalarSection, SectionMetadata};
 use crate::error::CrossSectionError;
@@ -268,6 +269,31 @@ impl RenderedCrossSection {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CrossSectionRenderTiming {
+    pub plot_layout_ms: u128,
+    pub terrain_mask_ms: u128,
+    pub scene_resolve_ms: u128,
+    pub canvas_init_ms: u128,
+    pub scalar_field_ms: u128,
+    pub grid_ms: u128,
+    pub contour_topology_ms: u128,
+    pub contour_draw_ms: u128,
+    pub wind_overlay_ms: u128,
+    pub terrain_ms: u128,
+    pub axes_ms: u128,
+    pub header_ms: u128,
+    pub footer_ms: u128,
+    pub colorbar_ms: u128,
+    pub total_ms: u128,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct OverlayContourTiming {
+    topology_ms: u128,
+    draw_ms: u128,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct ResolvedRenderScene {
     palette: Vec<Color>,
@@ -432,14 +458,29 @@ pub fn render_scalar_section(
     section: &ScalarSection,
     request: &CrossSectionRenderRequest,
 ) -> Result<RenderedCrossSection, CrossSectionError> {
+    render_scalar_section_profile(section, request).map(|(rendered, _)| rendered)
+}
+
+pub fn render_scalar_section_profile(
+    section: &ScalarSection,
+    request: &CrossSectionRenderRequest,
+) -> Result<(RenderedCrossSection, CrossSectionRenderTiming), CrossSectionError> {
+    let total_start = Instant::now();
     if request.width < 2 || request.height < 2 {
         return Err(CrossSectionError::InvalidRenderDimensions);
     }
 
+    let plot_layout_start = Instant::now();
     let plot = PlotRect::from_request(request)?;
+    let plot_layout_ms = plot_layout_start.elapsed().as_millis();
+    let terrain_mask_start = Instant::now();
     let masked = section.masked_with_terrain();
+    let terrain_mask_ms = terrain_mask_start.elapsed().as_millis();
+    let scene_resolve_start = Instant::now();
     let scene = ResolvedRenderScene::resolve(section, &masked, request)?;
+    let scene_resolve_ms = scene_resolve_start.elapsed().as_millis();
 
+    let canvas_init_start = Instant::now();
     let mut canvas = Canvas::new(
         request.width,
         request.height,
@@ -451,32 +492,73 @@ pub fn render_scalar_section(
         request.plot_background_top,
         request.plot_background_bottom,
     );
+    let canvas_init_ms = canvas_init_start.elapsed().as_millis();
+    let scalar_field_start = Instant::now();
     render_scalar_field(&mut canvas, &plot, section, &scene);
+    let scalar_field_ms = scalar_field_start.elapsed().as_millis();
 
+    let mut grid_ms = 0;
     if request.show_grid {
+        let grid_start = Instant::now();
         draw_grid(&mut canvas, &plot, &masked, request);
+        grid_ms = grid_start.elapsed().as_millis();
     }
 
-    draw_overlay_contours(&mut canvas, &plot, &masked, request, &scene);
+    let contour_timing =
+        draw_overlay_contours_profile(&mut canvas, &plot, &masked, request, &scene);
+    let wind_overlay_start = Instant::now();
     draw_wind_overlay(&mut canvas, &plot, &masked, request)?;
+    let wind_overlay_ms = wind_overlay_start.elapsed().as_millis();
+    let terrain_start = Instant::now();
     draw_terrain(&mut canvas, &plot, section, request);
+    let terrain_ms = terrain_start.elapsed().as_millis();
 
+    let mut axes_ms = 0;
     if request.show_axes {
+        let axes_start = Instant::now();
         draw_axes(&mut canvas, &plot, &masked, request);
+        axes_ms = axes_start.elapsed().as_millis();
     }
 
+    let header_start = Instant::now();
     draw_header(&mut canvas, &plot, &masked, request, &scene);
+    let header_ms = header_start.elapsed().as_millis();
+    let footer_start = Instant::now();
     draw_footer(&mut canvas, &plot, &masked, request, &scene);
+    let footer_ms = footer_start.elapsed().as_millis();
 
+    let mut colorbar_ms = 0;
     if request.show_colorbar {
+        let colorbar_start = Instant::now();
         draw_colorbar(&mut canvas, &plot, request, &scene);
+        colorbar_ms = colorbar_start.elapsed().as_millis();
     }
 
-    Ok(RenderedCrossSection {
+    let rendered = RenderedCrossSection {
         width: request.width,
         height: request.height,
         rgba: canvas.rgba,
-    })
+    };
+    Ok((
+        rendered,
+        CrossSectionRenderTiming {
+            plot_layout_ms,
+            terrain_mask_ms,
+            scene_resolve_ms,
+            canvas_init_ms,
+            scalar_field_ms,
+            grid_ms,
+            contour_topology_ms: contour_timing.topology_ms,
+            contour_draw_ms: contour_timing.draw_ms,
+            wind_overlay_ms,
+            terrain_ms,
+            axes_ms,
+            header_ms,
+            footer_ms,
+            colorbar_ms,
+            total_ms: total_start.elapsed().as_millis(),
+        },
+    ))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -804,27 +886,28 @@ fn draw_grid(
     }
 }
 
-fn draw_overlay_contours(
+fn draw_overlay_contours_profile(
     canvas: &mut Canvas,
     plot: &PlotRect,
     section: &ScalarSection,
     request: &CrossSectionRenderRequest,
     scene: &ResolvedRenderScene,
-) {
+) -> OverlayContourTiming {
+    let topology_start = Instant::now();
     let mut levels = scene.overlay_levels.clone();
     if let Some(highlight) = scene.highlight_overlay {
         levels.push(highlight);
     }
     normalize_levels(&mut levels);
     if levels.is_empty() {
-        return;
+        return OverlayContourTiming::default();
     }
 
     let Ok(grid) = RectilinearGrid::new(
         section.distances_km().to_vec(),
         section.vertical_axis().levels().to_vec(),
     ) else {
-        return;
+        return OverlayContourTiming::default();
     };
     let values = section
         .values()
@@ -832,14 +915,16 @@ fn draw_overlay_contours(
         .map(|value| *value as f64)
         .collect::<Vec<_>>();
     let Ok(field) = ScalarField2D::new(grid, values) else {
-        return;
+        return OverlayContourTiming::default();
     };
     let contour_levels = levels.iter().map(|value| *value as f64).collect::<Vec<_>>();
     let Ok(levels) = ContourLevels::new(contour_levels) else {
-        return;
+        return OverlayContourTiming::default();
     };
 
     let topology = ContourEngine::new().extract_isolines(&field, &levels);
+    let topology_ms = topology_start.elapsed().as_millis();
+    let draw_start = Instant::now();
 
     for layer in &topology.layers {
         let level = layer.level as f32;
@@ -878,6 +963,10 @@ fn draw_overlay_contours(
         if highlighted {
             draw_highlight_label(canvas, plot, section, layer, color, scene);
         }
+    }
+    OverlayContourTiming {
+        topology_ms,
+        draw_ms: draw_start.elapsed().as_millis(),
     }
 }
 

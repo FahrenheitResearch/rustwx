@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::time::Instant;
 
 use rustwx_calc::{
     compute_relative_humidity_from_pressure_temperature_and_mixing_ratio,
@@ -31,6 +32,24 @@ pub struct PressureCrossSectionArtifact {
     pub wind_overlay: WindOverlayBundle,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PressureCrossSectionBuildTiming {
+    pub stencil_build_ms: u128,
+    pub terrain_profile_ms: u128,
+    pub pressure_sampling_ms: u128,
+    pub product_compute_ms: u128,
+    pub metadata_ms: u128,
+    pub section_assembly_ms: u128,
+    pub wind_overlay_ms: u128,
+    pub total_ms: u128,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProfiledPressureCrossSectionArtifact {
+    pub artifact: PressureCrossSectionArtifact,
+    pub timing: PressureCrossSectionBuildTiming,
+}
+
 pub fn supports_pressure_cross_section_product(product: CrossSectionProduct) -> bool {
     SUPPORTED_PRESSURE_CROSS_SECTION_PRODUCTS.contains(&product)
 }
@@ -40,7 +59,15 @@ pub fn build_pressure_cross_section(
     layout: &SectionLayout,
     product: CrossSectionProduct,
 ) -> Result<PressureCrossSectionArtifact, Box<dyn std::error::Error>> {
-    build_pressure_cross_section_from_parts(
+    build_pressure_cross_section_profiled(loaded, layout, product).map(|profiled| profiled.artifact)
+}
+
+pub fn build_pressure_cross_section_profiled(
+    loaded: &LoadedModelTimestep,
+    layout: &SectionLayout,
+    product: CrossSectionProduct,
+) -> Result<ProfiledPressureCrossSectionArtifact, Box<dyn std::error::Error>> {
+    build_pressure_cross_section_from_parts_profiled(
         &loaded.surface_decode.value,
         &loaded.pressure_decode.value,
         loaded.model,
@@ -52,7 +79,7 @@ pub fn build_pressure_cross_section(
     )
 }
 
-fn build_pressure_cross_section_from_parts(
+fn build_pressure_cross_section_from_parts_profiled(
     surface: &SurfaceFields,
     pressure: &PressureFields,
     model: ModelId,
@@ -61,7 +88,8 @@ fn build_pressure_cross_section_from_parts(
     forecast_hour: u16,
     layout: &SectionLayout,
     product: CrossSectionProduct,
-) -> Result<PressureCrossSectionArtifact, Box<dyn std::error::Error>> {
+) -> Result<ProfiledPressureCrossSectionArtifact, Box<dyn std::error::Error>> {
+    let total_start = Instant::now();
     if !supports_pressure_cross_section_product(product) {
         return Err(format!(
             "cross-section product '{}' is not yet wired for gridded pressure sections",
@@ -73,11 +101,14 @@ fn build_pressure_cross_section_from_parts(
     let sampled_points = layout.sampled_path.points();
     let sampled_distances = layout.sampled_path.distances_km();
     let sampled_bearings = layout.sampled_path.bearings_deg();
+    let stencil_build_start = Instant::now();
     let stencils = build_sample_stencils(surface, &sampled_points, layout.interpolation);
+    let stencil_build_ms = stencil_build_start.elapsed().as_millis();
     let nxy = surface.nx * surface.ny;
     let n_points = sampled_points.len();
     let n_levels = pressure.pressure_levels_hpa.len();
 
+    let terrain_profile_start = Instant::now();
     let surface_pressure_hpa = stencils
         .iter()
         .map(|stencil| sample_weighted_2d(&surface.psfc_pa, stencil) / 100.0)
@@ -90,12 +121,14 @@ fn build_pressure_cross_section_from_parts(
     let terrain = TerrainProfile::new(sampled_distances.clone())?
         .with_surface_pressure_hpa(surface_pressure_hpa)?
         .with_surface_height_m(surface_height_m)?;
+    let terrain_profile_ms = terrain_profile_start.elapsed().as_millis();
 
     let mut temperature_c = Vec::with_capacity(n_levels * n_points);
     let mut qvapor_kgkg = Vec::with_capacity(n_levels * n_points);
     let mut u_ms = Vec::with_capacity(n_levels * n_points);
     let mut v_ms = Vec::with_capacity(n_levels * n_points);
     let mut pressure_hpa = Vec::with_capacity(n_levels * n_points);
+    let pressure_sampling_start = Instant::now();
     for (level_index, level_hpa) in pressure.pressure_levels_hpa.iter().copied().enumerate() {
         let level_offset = level_index * nxy;
         for stencil in &stencils {
@@ -122,7 +155,9 @@ fn build_pressure_cross_section_from_parts(
             pressure_hpa.push(level_hpa);
         }
     }
+    let pressure_sampling_ms = pressure_sampling_start.elapsed().as_millis();
 
+    let product_compute_start = Instant::now();
     let section_values = build_product_values(
         product,
         &pressure_hpa,
@@ -134,8 +169,12 @@ fn build_pressure_cross_section_from_parts(
     .into_iter()
     .map(|value| value as f32)
     .collect::<Vec<_>>();
+    let product_compute_ms = product_compute_start.elapsed().as_millis();
 
+    let metadata_start = Instant::now();
     let metadata = build_section_metadata(layout, model, source, cycle, forecast_hour, product);
+    let metadata_ms = metadata_start.elapsed().as_millis();
+    let section_assembly_start = Instant::now();
     let section = ScalarSection::new(
         sampled_distances.clone(),
         VerticalAxis::pressure_hpa(pressure.pressure_levels_hpa.clone())?,
@@ -143,17 +182,32 @@ fn build_pressure_cross_section_from_parts(
     )?
     .with_metadata(metadata)
     .with_terrain(terrain)?;
+    let section_assembly_ms = section_assembly_start.elapsed().as_millis();
 
+    let wind_overlay_start = Instant::now();
     let wind_overlay = WindOverlayBundle::new(
         build_wind_grid(&u_ms, &v_ms, n_levels, n_points, &sampled_bearings)?,
         WindOverlayStyle::default(),
     )
     .with_label("Section Relative Wind");
+    let wind_overlay_ms = wind_overlay_start.elapsed().as_millis();
 
-    Ok(PressureCrossSectionArtifact {
-        section,
-        style: CrossSectionStyle::new(product),
-        wind_overlay,
+    Ok(ProfiledPressureCrossSectionArtifact {
+        artifact: PressureCrossSectionArtifact {
+            section,
+            style: CrossSectionStyle::new(product),
+            wind_overlay,
+        },
+        timing: PressureCrossSectionBuildTiming {
+            stencil_build_ms,
+            terrain_profile_ms,
+            pressure_sampling_ms,
+            product_compute_ms,
+            metadata_ms,
+            section_assembly_ms,
+            wind_overlay_ms,
+            total_ms: total_start.elapsed().as_millis(),
+        },
     })
 }
 

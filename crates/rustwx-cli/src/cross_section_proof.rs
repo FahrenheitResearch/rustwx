@@ -10,8 +10,10 @@ use rustwx_cross_section::{
     SectionPath, WindOverlayBundle, WindOverlayStyle, render_scalar_section,
 };
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
-use rustwx_products::cross_section::{PressureCrossSectionArtifact, build_pressure_cross_section};
-use rustwx_products::gridded::load_model_timestep_from_parts;
+use rustwx_products::cross_section::{
+    PressureCrossSectionArtifact, build_pressure_cross_section_profiled,
+};
+use rustwx_products::gridded::{LoadedModelTimestep, load_model_timestep_from_parts};
 use serde::Serialize;
 
 #[derive(Debug, Clone)]
@@ -35,6 +37,32 @@ pub struct CrossSectionRunOutput {
     pub output_path: PathBuf,
     pub summary_path: PathBuf,
     pub summary: CrossSectionSummary,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedPressureCrossSectionScene {
+    pub route_slug: String,
+    pub route_label: String,
+    pub route_distance_km: f64,
+    pub palette_slug: String,
+    pub artifact: PressureCrossSectionArtifact,
+    pub render_request: CrossSectionRenderRequest,
+    pub timing: PreparedPressureCrossSectionTiming,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedPressureCrossSectionTiming {
+    pub path_layout_ms: u128,
+    pub artifact_build_ms: u128,
+    pub artifact_stencil_build_ms: u128,
+    pub artifact_terrain_profile_ms: u128,
+    pub artifact_pressure_sampling_ms: u128,
+    pub artifact_product_compute_ms: u128,
+    pub artifact_metadata_ms: u128,
+    pub artifact_section_assembly_ms: u128,
+    pub artifact_wind_overlay_ms: u128,
+    pub render_request_build_ms: u128,
+    pub total_ms: u128,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -211,6 +239,66 @@ pub fn run_pressure_cross_section(
         request.use_cache,
     )?;
 
+    let scene = prepare_pressure_cross_section_scene(request, &loaded)?;
+    let rendered = render_scalar_section(&scene.artifact.section, &scene.render_request)?;
+
+    let output_path = request.out_dir.join(format!(
+        "rustwx_hrrr_{}_{}z_f{:03}_{}_{}_cross_section.png",
+        request.date,
+        request.cycle,
+        request.forecast_hour,
+        scene.route_slug,
+        request.product.slug()
+    ));
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    save_rgba_image(&output_path, &rendered)?;
+
+    let summary_path = request.out_dir.join(format!(
+        "rustwx_hrrr_{}_{}z_f{:03}_{}_{}_cross_section.json",
+        request.date,
+        request.cycle,
+        request.forecast_hour,
+        scene.route_slug,
+        request.product.slug()
+    ));
+    let summary = CrossSectionSummary {
+        model: "hrrr",
+        route_slug: scene.route_slug.clone(),
+        route_label: scene.route_label.clone(),
+        product_slug: request.product.slug().to_string(),
+        product_label: request.product.display_name().to_string(),
+        palette_slug: scene.palette_slug.clone(),
+        date_yyyymmdd: request.date.clone(),
+        cycle_utc: request.cycle,
+        forecast_hour: request.forecast_hour,
+        source: request.source.as_str().to_string(),
+        output_path: relative_path(&request.out_dir, &output_path),
+        summary_path: relative_path(&request.out_dir, &summary_path),
+        route_distance_km: scene.route_distance_km,
+        sample_count: scene.artifact.section.n_points(),
+        pressure_levels: scene.artifact.section.n_levels(),
+        start_lat: request.route.start_lat,
+        start_lon: request.route.start_lon,
+        end_lat: request.route.end_lat,
+        end_lon: request.route.end_lon,
+    };
+    fs::write(&summary_path, serde_json::to_vec_pretty(&summary)?)?;
+
+    Ok(CrossSectionRunOutput {
+        output_path,
+        summary_path,
+        summary,
+    })
+}
+
+pub fn prepare_pressure_cross_section_scene(
+    request: &PressureCrossSectionRequest,
+    loaded: &LoadedModelTimestep,
+) -> Result<PreparedPressureCrossSectionScene, Box<dyn std::error::Error>> {
+    let total_start = std::time::Instant::now();
+    let path_layout_start = std::time::Instant::now();
     let route = request.route;
     let path = SectionPath::endpoints(
         GeoPoint::new(route.start_lat, route.start_lon)?,
@@ -252,63 +340,37 @@ pub fn run_pressure_cross_section(
                 .with_attribute("render_style", request.product.style_key()),
         )
         .build_layout()?;
+    let path_layout_ms = path_layout_start.elapsed().as_millis();
 
-    let mut artifact = build_pressure_cross_section(&loaded, &layout, request.product)?;
+    let artifact_build_start = std::time::Instant::now();
+    let profiled = build_pressure_cross_section_profiled(loaded, &layout, request.product)?;
+    let mut artifact = profiled.artifact;
     artifact.wind_overlay = tuned_wind_overlay(&artifact.wind_overlay);
+    let artifact_build_ms = artifact_build_start.elapsed().as_millis();
+    let render_request_build_start = std::time::Instant::now();
     let style = proof_style_for_request(request, &artifact);
-    let rendered = render_scalar_section(
-        &artifact.section,
-        &render_request_for_request(request, &artifact, &style),
-    )?;
-
-    let output_path = request.out_dir.join(format!(
-        "rustwx_hrrr_{}_{}z_f{:03}_{}_{}_cross_section.png",
-        request.date,
-        request.cycle,
-        request.forecast_hour,
-        route.slug,
-        request.product.slug()
-    ));
-    if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    save_rgba_image(&output_path, &rendered)?;
-
-    let summary_path = request.out_dir.join(format!(
-        "rustwx_hrrr_{}_{}z_f{:03}_{}_{}_cross_section.json",
-        request.date,
-        request.cycle,
-        request.forecast_hour,
-        route.slug,
-        request.product.slug()
-    ));
-    let summary = CrossSectionSummary {
-        model: "hrrr",
+    let render_request = render_request_for_request(request, &artifact, &style);
+    let render_request_build_ms = render_request_build_start.elapsed().as_millis();
+    Ok(PreparedPressureCrossSectionScene {
         route_slug: route.slug.to_string(),
         route_label: route.label.to_string(),
-        product_slug: request.product.slug().to_string(),
-        product_label: request.product.display_name().to_string(),
-        palette_slug: style.palette().slug().to_string(),
-        date_yyyymmdd: request.date.clone(),
-        cycle_utc: request.cycle,
-        forecast_hour: request.forecast_hour,
-        source: request.source.as_str().to_string(),
-        output_path: relative_path(&request.out_dir, &output_path),
-        summary_path: relative_path(&request.out_dir, &summary_path),
         route_distance_km,
-        sample_count: artifact.section.n_points(),
-        pressure_levels: artifact.section.n_levels(),
-        start_lat: route.start_lat,
-        start_lon: route.start_lon,
-        end_lat: route.end_lat,
-        end_lon: route.end_lon,
-    };
-    fs::write(&summary_path, serde_json::to_vec_pretty(&summary)?)?;
-
-    Ok(CrossSectionRunOutput {
-        output_path,
-        summary_path,
-        summary,
+        palette_slug: style.palette().slug().to_string(),
+        artifact,
+        render_request,
+        timing: PreparedPressureCrossSectionTiming {
+            path_layout_ms,
+            artifact_build_ms,
+            artifact_stencil_build_ms: profiled.timing.stencil_build_ms,
+            artifact_terrain_profile_ms: profiled.timing.terrain_profile_ms,
+            artifact_pressure_sampling_ms: profiled.timing.pressure_sampling_ms,
+            artifact_product_compute_ms: profiled.timing.product_compute_ms,
+            artifact_metadata_ms: profiled.timing.metadata_ms,
+            artifact_section_assembly_ms: profiled.timing.section_assembly_ms,
+            artifact_wind_overlay_ms: profiled.timing.wind_overlay_ms,
+            render_request_build_ms,
+            total_ms: total_start.elapsed().as_millis(),
+        },
     })
 }
 

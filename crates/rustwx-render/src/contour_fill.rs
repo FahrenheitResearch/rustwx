@@ -12,6 +12,7 @@ use rustwx_contour::{
     ScalarField2D,
 };
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectedContourLineStyle {
@@ -34,6 +35,17 @@ pub struct ProjectedContourGeometry {
     pub lines: Vec<ProjectedLineOverlay>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ProjectedContourGeometryTiming {
+    pub projected_points_ms: u128,
+    pub scalar_field_ms: u128,
+    pub fill_topology_ms: u128,
+    pub fill_geometry_ms: u128,
+    pub line_topology_ms: u128,
+    pub line_geometry_ms: u128,
+    pub total_ms: u128,
+}
+
 pub fn build_projected_contour_geometry(
     field: &Field2D,
     projected_domain: &ProjectedDomain,
@@ -41,6 +53,24 @@ pub fn build_projected_contour_geometry(
     line_levels: &[f64],
     line_style: ProjectedContourLineStyle,
 ) -> Result<ProjectedContourGeometry, RustwxRenderError> {
+    build_projected_contour_geometry_profile(
+        field,
+        projected_domain,
+        scale,
+        line_levels,
+        line_style,
+    )
+    .map(|(geometry, _)| geometry)
+}
+
+pub fn build_projected_contour_geometry_profile(
+    field: &Field2D,
+    projected_domain: &ProjectedDomain,
+    scale: &ColorScale,
+    line_levels: &[f64],
+    line_style: ProjectedContourLineStyle,
+) -> Result<(ProjectedContourGeometry, ProjectedContourGeometryTiming), RustwxRenderError> {
+    let total_start = Instant::now();
     let expected = field.grid.shape.len();
     if projected_domain.x.len() != expected {
         return Err(RustwxRenderError::LayerShapeMismatch {
@@ -57,6 +87,7 @@ pub fn build_projected_contour_geometry(
         });
     }
 
+    let projected_points_start = Instant::now();
     let shape = ContourGridShape::new(field.grid.shape.nx, field.grid.shape.ny)
         .map_err(|err| RustwxRenderError::ContourTopology(err.to_string()))?;
     let points = projected_domain
@@ -67,6 +98,8 @@ pub fn build_projected_contour_geometry(
         .collect::<Vec<_>>();
     let grid = ContourProjectedGrid::new(shape, points)
         .map_err(|err| RustwxRenderError::ContourTopology(err.to_string()))?;
+    let projected_points_ms = projected_points_start.elapsed().as_millis();
+    let scalar_field_start = Instant::now();
     let values = field
         .values
         .iter()
@@ -74,6 +107,7 @@ pub fn build_projected_contour_geometry(
         .collect::<Vec<_>>();
     let scalar = ScalarField2D::new(grid, values)
         .map_err(|err| RustwxRenderError::ContourTopology(err.to_string()))?;
+    let scalar_field_ms = scalar_field_start.elapsed().as_millis();
     let discrete = scale.resolved_discrete();
     let leveled = leveled_colormap(&discrete);
     let bins = LevelBins::with_extend(
@@ -83,7 +117,10 @@ pub fn build_projected_contour_geometry(
     .map_err(|err| RustwxRenderError::ContourTopology(err.to_string()))?;
 
     let engine = ContourEngine::new();
+    let fill_topology_start = Instant::now();
     let fill_topology = engine.extract_filled_bands(&scalar, &bins);
+    let fill_topology_ms = fill_topology_start.elapsed().as_millis();
+    let fill_geometry_start = Instant::now();
     let fills = fill_topology
         .polygons
         .iter()
@@ -104,12 +141,18 @@ pub fn build_projected_contour_geometry(
             })
         })
         .collect();
+    let fill_geometry_ms = fill_geometry_start.elapsed().as_millis();
 
     let mut lines = Vec::new();
+    let mut line_topology_ms = 0;
+    let mut line_geometry_ms = 0;
     if !line_levels.is_empty() {
+        let line_topology_start = Instant::now();
         let levels = ContourLevels::new(line_levels.to_vec())
             .map_err(|err| RustwxRenderError::ContourTopology(err.to_string()))?;
         let topology = engine.extract_isolines(&scalar, &levels);
+        line_topology_ms = line_topology_start.elapsed().as_millis();
+        let line_geometry_start = Instant::now();
         for layer in topology.layers {
             let _ = layer.level;
             for segment in layer.segments {
@@ -124,9 +167,21 @@ pub fn build_projected_contour_geometry(
                 });
             }
         }
+        line_geometry_ms = line_geometry_start.elapsed().as_millis();
     }
 
-    Ok(ProjectedContourGeometry { fills, lines })
+    Ok((
+        ProjectedContourGeometry { fills, lines },
+        ProjectedContourGeometryTiming {
+            projected_points_ms,
+            scalar_field_ms,
+            fill_topology_ms,
+            fill_geometry_ms,
+            line_topology_ms,
+            line_geometry_ms,
+            total_ms: total_start.elapsed().as_millis(),
+        },
+    ))
 }
 
 fn contour_extend_mode(mode: ExtendMode) -> ContourExtendMode {

@@ -14,8 +14,8 @@ use rustwx_render::{
     Color, DerivedProductStyle, DomainFrame, ExtendMode, MapRenderRequest, PngCompressionMode,
     PngWriteOptions, ProductVisualMode, ProjectedContourLineStyle, ProjectedDomain,
     ProjectedExtent, ProjectedMap, RenderImageTiming, RenderStateTiming, Solar07Palette,
-    Solar07Product, WindBarbLayer, build_projected_contour_geometry, map_frame_aspect_ratio,
-    save_png_profile_with_options,
+    Solar07Product, WindBarbLayer, build_projected_contour_geometry_profile,
+    map_frame_aspect_ratio, save_png_profile_with_options,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -595,6 +595,44 @@ pub struct HrrrDerivedLiveArtifact {
     pub title: String,
     pub field: Field2D,
     pub request: MapRenderRequest,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct DerivedLiveArtifactBuildTiming {
+    pub compute_fields_ms: u128,
+    pub request_base_build_ms: u128,
+    pub native_contour_fill_ms: u128,
+    #[serde(default)]
+    pub native_contour_projected_points_ms: u128,
+    #[serde(default)]
+    pub native_contour_scalar_field_ms: u128,
+    #[serde(default)]
+    pub native_contour_fill_topology_ms: u128,
+    #[serde(default)]
+    pub native_contour_fill_geometry_ms: u128,
+    #[serde(default)]
+    pub native_contour_line_topology_ms: u128,
+    #[serde(default)]
+    pub native_contour_line_geometry_ms: u128,
+    pub wind_overlay_build_ms: u128,
+    pub total_ms: u128,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct NativeContourBuildTiming {
+    total_ms: u128,
+    projected_points_ms: u128,
+    scalar_field_ms: u128,
+    fill_topology_ms: u128,
+    fill_geometry_ms: u128,
+    line_topology_ms: u128,
+    line_geometry_ms: u128,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProfiledHrrrDerivedLiveArtifact {
+    pub artifact: HrrrDerivedLiveArtifact,
+    pub timing: DerivedLiveArtifactBuildTiming,
 }
 
 #[derive(Debug, Clone)]
@@ -2052,6 +2090,43 @@ pub fn build_hrrr_live_derived_artifact_with_render_mode(
     )
 }
 
+pub fn build_hrrr_live_derived_artifact_profiled(
+    recipe_slug: &str,
+    surface: &GenericSurfaceFields,
+    pressure: &GenericPressureFields,
+    grid: &rustwx_core::LatLonGrid,
+    projected: &ProjectedMap,
+    date_yyyymmdd: &str,
+    cycle_utc: u8,
+    forecast_hour: u16,
+    source: SourceId,
+    contour_mode: NativeContourRenderMode,
+) -> Result<ProfiledHrrrDerivedLiveArtifact, Box<dyn std::error::Error>> {
+    let total_start = Instant::now();
+    let recipe =
+        DerivedRecipe::parse(recipe_slug).map_err(|err| format!("{recipe_slug}: {err}"))?;
+    let compute_start = Instant::now();
+    let computed = compute_derived_fields_generic(surface, pressure, &[recipe])?;
+    let compute_fields_ms = compute_start.elapsed().as_millis();
+    let (artifact, mut timing) = build_render_artifact_with_contour_mode_profiled(
+        recipe,
+        grid,
+        projected,
+        date_yyyymmdd,
+        cycle_utc,
+        forecast_hour,
+        source,
+        ModelId::Hrrr,
+        OUTPUT_WIDTH,
+        OUTPUT_HEIGHT,
+        &computed,
+        contour_mode,
+    )?;
+    timing.compute_fields_ms = compute_fields_ms;
+    timing.total_ms = total_start.elapsed().as_millis();
+    Ok(ProfiledHrrrDerivedLiveArtifact { artifact, timing })
+}
+
 pub(crate) fn plan_derived_recipes(
     recipe_slugs: &[String],
 ) -> Result<Vec<DerivedRecipe>, Box<dyn std::error::Error>> {
@@ -2949,6 +3024,318 @@ fn build_render_artifact_with_contour_mode(
     })
 }
 
+fn build_render_artifact_with_contour_mode_profiled(
+    recipe: DerivedRecipe,
+    grid: &rustwx_core::LatLonGrid,
+    projected: &ProjectedMap,
+    date_yyyymmdd: &str,
+    cycle_utc: u8,
+    forecast_hour: u16,
+    source: SourceId,
+    model: ModelId,
+    output_width: u32,
+    output_height: u32,
+    computed: &DerivedComputedFields,
+    contour_mode: NativeContourRenderMode,
+) -> Result<(HrrrDerivedLiveArtifact, DerivedLiveArtifactBuildTiming), Box<dyn std::error::Error>> {
+    let total_start = Instant::now();
+    let request_base_build_start = Instant::now();
+    let (field, mut request) = match recipe {
+        DerivedRecipe::Sbcape => solar07_request(
+            recipe,
+            grid,
+            "J/kg",
+            required_values(&computed.sbcape_jkg, recipe, "sbcape_jkg")?.clone(),
+            Solar07Product::Sbcape,
+        )?,
+        DerivedRecipe::Sbcin => solar07_request(
+            recipe,
+            grid,
+            "J/kg",
+            required_values(&computed.sbcin_jkg, recipe, "sbcin_jkg")?.clone(),
+            Solar07Product::Sbcin,
+        )?,
+        DerivedRecipe::Sblcl => solar07_request(
+            recipe,
+            grid,
+            "m",
+            required_values(&computed.sblcl_m, recipe, "sblcl_m")?.clone(),
+            Solar07Product::Lcl,
+        )?,
+        DerivedRecipe::Mlcape => solar07_request(
+            recipe,
+            grid,
+            "J/kg",
+            required_values(&computed.mlcape_jkg, recipe, "mlcape_jkg")?.clone(),
+            Solar07Product::Mlcape,
+        )?,
+        DerivedRecipe::Mlcin => solar07_request(
+            recipe,
+            grid,
+            "J/kg",
+            required_values(&computed.mlcin_jkg, recipe, "mlcin_jkg")?.clone(),
+            Solar07Product::Mlcin,
+        )?,
+        DerivedRecipe::Mucape => solar07_request(
+            recipe,
+            grid,
+            "J/kg",
+            required_values(&computed.mucape_jkg, recipe, "mucape_jkg")?.clone(),
+            Solar07Product::Mucape,
+        )?,
+        DerivedRecipe::Mucin => solar07_request(
+            recipe,
+            grid,
+            "J/kg",
+            required_values(&computed.mucin_jkg, recipe, "mucin_jkg")?.clone(),
+            Solar07Product::Mucin,
+        )?,
+        DerivedRecipe::ThetaE2m10mWinds => palette_request(
+            recipe,
+            grid,
+            "K",
+            required_values(&computed.theta_e_2m_k, recipe, "theta_e_2m_k")?.clone(),
+            Solar07Palette::Temperature,
+            range_step(280.0, 381.0, 4.0),
+            ExtendMode::Both,
+            Some(8.0),
+        )?,
+        DerivedRecipe::ApparentTemperature2m => derived_style_request(
+            recipe,
+            grid,
+            "degC",
+            required_values(
+                &computed.apparent_temperature_2m_c,
+                recipe,
+                "apparent_temperature_2m_c",
+            )?
+            .clone(),
+            DerivedProductStyle::ApparentTemperature,
+        )?,
+        DerivedRecipe::HeatIndex2m => palette_request(
+            recipe,
+            grid,
+            "degC",
+            required_values(&computed.heat_index_2m_c, recipe, "heat_index_2m_c")?.clone(),
+            Solar07Palette::Temperature,
+            range_step(-30.0, 51.0, 5.0),
+            ExtendMode::Both,
+            Some(5.0),
+        )?,
+        DerivedRecipe::WindChill2m => palette_request(
+            recipe,
+            grid,
+            "degC",
+            required_values(&computed.wind_chill_2m_c, recipe, "wind_chill_2m_c")?.clone(),
+            Solar07Palette::Temperature,
+            range_step(-40.0, 31.0, 5.0),
+            ExtendMode::Both,
+            Some(5.0),
+        )?,
+        DerivedRecipe::LiftedIndex => palette_request(
+            recipe,
+            grid,
+            "degC",
+            required_values(&computed.lifted_index_c, recipe, "lifted_index_c")?.clone(),
+            Solar07Palette::Temperature,
+            range_step(-12.0, 13.0, 1.0),
+            ExtendMode::Both,
+            Some(1.0),
+        )?,
+        DerivedRecipe::LapseRate700500 => solar07_lapse_request(
+            recipe,
+            grid,
+            required_values(
+                &computed.lapse_rate_700_500_cpkm,
+                recipe,
+                "lapse_rate_700_500_cpkm",
+            )?
+            .clone(),
+        )?,
+        DerivedRecipe::LapseRate03km => solar07_lapse_request(
+            recipe,
+            grid,
+            required_values(
+                &computed.lapse_rate_0_3km_cpkm,
+                recipe,
+                "lapse_rate_0_3km_cpkm",
+            )?
+            .clone(),
+        )?,
+        DerivedRecipe::BulkShear01km => palette_request(
+            recipe,
+            grid,
+            "kt",
+            required_values(&computed.shear_01km_kt, recipe, "shear_01km_kt")?.clone(),
+            Solar07Palette::Winds,
+            range_step(0.0, 85.0, 5.0),
+            ExtendMode::Max,
+            Some(5.0),
+        )?,
+        DerivedRecipe::BulkShear06km => palette_request(
+            recipe,
+            grid,
+            "kt",
+            required_values(&computed.shear_06km_kt, recipe, "shear_06km_kt")?.clone(),
+            Solar07Palette::Winds,
+            range_step(0.0, 85.0, 5.0),
+            ExtendMode::Max,
+            Some(5.0),
+        )?,
+        DerivedRecipe::Srh01km => solar07_request(
+            recipe,
+            grid,
+            "m^2/s^2",
+            required_values(&computed.srh_01km_m2s2, recipe, "srh_01km_m2s2")?.clone(),
+            Solar07Product::Srh01km,
+        )?,
+        DerivedRecipe::Srh03km => solar07_request(
+            recipe,
+            grid,
+            "m^2/s^2",
+            required_values(&computed.srh_03km_m2s2, recipe, "srh_03km_m2s2")?.clone(),
+            Solar07Product::Srh03km,
+        )?,
+        DerivedRecipe::Ehi01km => solar07_request(
+            recipe,
+            grid,
+            "dimensionless",
+            required_values(&computed.ehi_01km, recipe, "ehi_01km")?.clone(),
+            Solar07Product::Ehi,
+        )?,
+        DerivedRecipe::Ehi03km => solar07_request(
+            recipe,
+            grid,
+            "dimensionless",
+            required_values(&computed.ehi_03km, recipe, "ehi_03km")?.clone(),
+            Solar07Product::Ehi,
+        )?,
+        DerivedRecipe::StpFixed => solar07_request(
+            recipe,
+            grid,
+            "dimensionless",
+            required_values(&computed.stp_fixed, recipe, "stp_fixed")?.clone(),
+            Solar07Product::StpFixed,
+        )?,
+        DerivedRecipe::ScpMu03km06kmProxy => solar07_request(
+            recipe,
+            grid,
+            "dimensionless",
+            required_values(
+                &computed.scp_mu_03km_06km_proxy,
+                recipe,
+                "scp_mu_03km_06km_proxy",
+            )?
+            .clone(),
+            Solar07Product::Scp,
+        )?,
+        DerivedRecipe::TemperatureAdvection700mb => palette_request(
+            recipe,
+            grid,
+            "degC/hr",
+            required_values(
+                &computed.temperature_advection_700mb_cph,
+                recipe,
+                "temperature_advection_700mb_cph",
+            )?
+            .clone(),
+            Solar07Palette::Temperature,
+            range_step(-12.0, 13.0, 1.0),
+            ExtendMode::Both,
+            Some(1.0),
+        )?,
+        DerivedRecipe::TemperatureAdvection850mb => palette_request(
+            recipe,
+            grid,
+            "degC/hr",
+            required_values(
+                &computed.temperature_advection_850mb_cph,
+                recipe,
+                "temperature_advection_850mb_cph",
+            )?
+            .clone(),
+            Solar07Palette::Temperature,
+            range_step(-12.0, 13.0, 1.0),
+            ExtendMode::Both,
+            Some(1.0),
+        )?,
+        DerivedRecipe::Sbecape
+        | DerivedRecipe::Mlecape
+        | DerivedRecipe::Muecape
+        | DerivedRecipe::Sbncape
+        | DerivedRecipe::Sbecin
+        | DerivedRecipe::Mlecin
+        | DerivedRecipe::EcapeScp
+        | DerivedRecipe::EcapeEhi => {
+            return Err(format!(
+                "heavy derived recipe '{}' must render through the cropped ECAPE path",
+                recipe.slug()
+            )
+            .into());
+        }
+    };
+
+    request.width = output_width;
+    request.height = output_height;
+    request.supersample_factor = 2;
+    request.domain_frame = Some(DomainFrame::model_data_default());
+    request.title = Some(recipe.title().to_string());
+    request.subtitle_left = Some(format!(
+        "{} {}Z F{:03}  {}",
+        date_yyyymmdd, cycle_utc, forecast_hour, model
+    ));
+    request.subtitle_right = Some(format!("source: {}", source));
+    request.projected_domain = Some(ProjectedDomain {
+        x: projected.projected_x.clone(),
+        y: projected.projected_y.clone(),
+        extent: projected.extent.clone(),
+    });
+    request.projected_lines = projected.lines.clone();
+    request.projected_polygons = projected.polygons.clone();
+    let request_base_build_ms = request_base_build_start.elapsed().as_millis();
+
+    let native_contour_timing =
+        maybe_apply_native_contour_fill_for_mode_profiled(recipe, &mut request, contour_mode)?;
+
+    let mut wind_overlay_build_ms = 0;
+    if matches!(recipe, DerivedRecipe::ThetaE2m10mWinds) {
+        let wind_overlay_start = Instant::now();
+        let u_kt = computed_surface_u10(computed, recipe)?;
+        let v_kt = computed_surface_v10(computed, recipe)?;
+        request.wind_barbs.push(surface_wind_barb_layer(
+            grid,
+            &projected.extent,
+            &projected.projected_x,
+            &projected.projected_y,
+            &u_kt,
+            &v_kt,
+        ));
+        wind_overlay_build_ms = wind_overlay_start.elapsed().as_millis();
+    }
+
+    Ok((
+        HrrrDerivedLiveArtifact {
+            recipe_slug: recipe.slug().to_string(),
+            title: recipe.title().to_string(),
+            field,
+            request,
+        },
+        DerivedLiveArtifactBuildTiming {
+            compute_fields_ms: 0,
+            request_base_build_ms,
+            native_contour_fill_ms: native_contour_timing.total_ms,
+            native_contour_projected_points_ms: native_contour_timing.projected_points_ms,
+            native_contour_scalar_field_ms: native_contour_timing.scalar_field_ms,
+            native_contour_fill_topology_ms: native_contour_timing.fill_topology_ms,
+            native_contour_fill_geometry_ms: native_contour_timing.fill_geometry_ms,
+            native_contour_line_topology_ms: native_contour_timing.line_topology_ms,
+            native_contour_line_geometry_ms: native_contour_timing.line_geometry_ms,
+            wind_overlay_build_ms,
+            total_ms: total_start.elapsed().as_millis(),
+        },
+    ))
+}
+
 struct NativeContourProductConfig {
     scale: rustwx_render::ColorScale,
     line_levels: &'static [f64],
@@ -3035,18 +3422,27 @@ fn maybe_apply_native_contour_fill_for_mode(
     request: &mut MapRenderRequest,
     contour_mode: NativeContourRenderMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    maybe_apply_native_contour_fill_for_mode_profiled(recipe, request, contour_mode).map(|_| ())
+}
+
+fn maybe_apply_native_contour_fill_for_mode_profiled(
+    recipe: DerivedRecipe,
+    request: &mut MapRenderRequest,
+    contour_mode: NativeContourRenderMode,
+) -> Result<NativeContourBuildTiming, Box<dyn std::error::Error>> {
+    let total_start = Instant::now();
     if matches!(contour_mode, NativeContourRenderMode::LegacyRaster) {
-        return Ok(());
+        return Ok(NativeContourBuildTiming::default());
     }
     let Some(config) = native_contour_product_config(recipe) else {
-        return Ok(());
+        return Ok(NativeContourBuildTiming::default());
     };
     let Some(projected_domain) = request.projected_domain.as_ref() else {
-        return Ok(());
+        return Ok(NativeContourBuildTiming::default());
     };
     request.scale = config.scale;
     request.cbar_tick_step = config.tick_step;
-    let geometry = build_projected_contour_geometry(
+    let (geometry, geometry_timing) = build_projected_contour_geometry_profile(
         &request.field,
         projected_domain,
         &request.scale,
@@ -3056,7 +3452,15 @@ fn maybe_apply_native_contour_fill_for_mode(
     request.projected_data_polygons.extend(geometry.fills);
     request.projected_lines.extend(geometry.lines);
     request.field.values.fill(f32::NAN);
-    Ok(())
+    Ok(NativeContourBuildTiming {
+        total_ms: total_start.elapsed().as_millis(),
+        projected_points_ms: geometry_timing.projected_points_ms,
+        scalar_field_ms: geometry_timing.scalar_field_ms,
+        fill_topology_ms: geometry_timing.fill_topology_ms,
+        fill_geometry_ms: geometry_timing.fill_geometry_ms,
+        line_topology_ms: geometry_timing.line_topology_ms,
+        line_geometry_ms: geometry_timing.line_geometry_ms,
+    })
 }
 
 fn heavy_ecape_subtitle_right(recipe: DerivedRecipe, source: SourceId) -> String {
