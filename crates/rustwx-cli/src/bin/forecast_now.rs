@@ -37,6 +37,7 @@ use rustwx_products::heavy::{HeavyPanelHourRequest, run_heavy_panel_hour};
 use rustwx_products::non_ecape::{
     HrrrNonEcapeHourRequest, NonEcapeHourRequest, run_hrrr_non_ecape_hour, run_model_non_ecape_hour,
 };
+use rustwx_products::places::default_major_place_label_overlay_for_domain;
 use rustwx_products::severe::{SevereBatchRequest, run_severe_batch};
 use rustwx_products::shared_context::DomainSpec;
 use rustwx_products::source::ProductSourceMode;
@@ -1165,6 +1166,8 @@ fn run_non_hrrr_non_ecape_hour(
         output_width: config.output_width,
         output_height: config.output_height,
         png_compression: rustwx_render::PngCompressionMode::Default,
+        custom_poi_overlay: None,
+        place_label_overlay: default_major_place_label_overlay_for_domain(domain),
     };
 
     match run_model_non_ecape_hour(&request) {
@@ -1267,6 +1270,8 @@ fn run_direct_lane(
         output_width: config.output_width,
         output_height: config.output_height,
         png_compression: rustwx_render::PngCompressionMode::Default,
+        custom_poi_overlay: None,
+        place_label_overlay: default_major_place_label_overlay_for_domain(domain),
     };
     let slug = Lane::Direct.slug();
     match rustwx_products::direct::run_direct_batch(&request) {
@@ -1357,6 +1362,8 @@ fn run_derived_lane(
         output_width: config.output_width,
         output_height: config.output_height,
         png_compression: rustwx_render::PngCompressionMode::Default,
+        custom_poi_overlay: None,
+        place_label_overlay: default_major_place_label_overlay_for_domain(domain),
     };
     let slug = Lane::Derived.slug();
     match rustwx_products::derived::run_derived_batch(&request) {
@@ -1560,6 +1567,8 @@ fn run_hrrr_unified(
             output_width: config.output_width,
             output_height: config.output_height,
             png_compression: rustwx_render::PngCompressionMode::Default,
+            custom_poi_overlay: None,
+            place_label_overlay: default_major_place_label_overlay_for_domain(domain),
         };
         match run_hrrr_non_ecape_hour(&request) {
             Ok(report) => {

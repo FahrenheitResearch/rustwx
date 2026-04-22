@@ -23,6 +23,7 @@ use rustwx_products::heavy::{HeavyPanelHourRequest, run_heavy_panel_hour};
 use rustwx_products::non_ecape::{
     HrrrNonEcapeHourRequest, NonEcapeHourRequest, run_hrrr_non_ecape_hour, run_model_non_ecape_hour,
 };
+use rustwx_products::places::default_major_place_label_overlay_for_domain;
 use rustwx_products::publication::{
     ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
     finalize_and_publish_run_manifest, publish_failure_manifest,
@@ -1012,12 +1013,13 @@ fn execute_hrrr_non_ecape(
     context: &JobExecutionContext,
     config: &RunnerConfig,
 ) -> JobExecutionResult {
+    let domain = domain_from_region_slug(&job.key.region_slug);
     let request = HrrrNonEcapeHourRequest {
         date_yyyymmdd: context.latest.cycle.date_yyyymmdd.clone(),
         cycle_override_utc: Some(context.latest.cycle.hour_utc),
         forecast_hour: job.key.forecast_hour,
         source: context.latest.source,
-        domain: domain_from_region_slug(&job.key.region_slug),
+        domain: domain.clone(),
         out_dir: config.out_dir.join(&job.key.region_slug),
         cache_root: config.cache_dir.clone(),
         use_cache: config.use_cache,
@@ -1036,6 +1038,8 @@ fn execute_hrrr_non_ecape(
         output_width: config.output_width,
         output_height: config.output_height,
         png_compression: config.png_compression,
+        custom_poi_overlay: None,
+        place_label_overlay: default_major_place_label_overlay_for_domain(&domain),
     };
     match run_hrrr_non_ecape_hour(&request) {
         Ok(report) => JobExecutionResult {
@@ -1083,13 +1087,14 @@ fn execute_non_hrrr_non_ecape(
     context: &JobExecutionContext,
     config: &RunnerConfig,
 ) -> JobExecutionResult {
+    let domain = domain_from_region_slug(&job.key.region_slug);
     let request = NonEcapeHourRequest {
         model: job.key.model,
         date_yyyymmdd: context.latest.cycle.date_yyyymmdd.clone(),
         cycle_override_utc: Some(context.latest.cycle.hour_utc),
         forecast_hour: job.key.forecast_hour,
         source: context.latest.source,
-        domain: domain_from_region_slug(&job.key.region_slug),
+        domain: domain.clone(),
         out_dir: config.out_dir.join(&job.key.region_slug),
         cache_root: config.cache_dir.clone(),
         use_cache: config.use_cache,
@@ -1108,6 +1113,8 @@ fn execute_non_hrrr_non_ecape(
         output_width: config.output_width,
         output_height: config.output_height,
         png_compression: config.png_compression,
+        custom_poi_overlay: None,
+        place_label_overlay: default_major_place_label_overlay_for_domain(&domain),
     };
     match run_model_non_ecape_hour(&request) {
         Ok(report) => JobExecutionResult {
@@ -1236,13 +1243,14 @@ fn execute_direct(
             detail: Some("direct lane has no configured recipes".to_string()),
         };
     }
+    let domain = domain_from_region_slug(&job.key.region_slug);
     let request = DirectBatchRequest {
         model: job.key.model,
         date_yyyymmdd: context.latest.cycle.date_yyyymmdd.clone(),
         cycle_override_utc: Some(context.latest.cycle.hour_utc),
         forecast_hour: job.key.forecast_hour,
         source: context.latest.source,
-        domain: domain_from_region_slug(&job.key.region_slug),
+        domain: domain.clone(),
         out_dir: config.out_dir.join(&job.key.region_slug),
         cache_root: config.cache_dir.clone(),
         use_cache: config.use_cache,
@@ -1253,6 +1261,8 @@ fn execute_direct(
         output_width: config.output_width,
         output_height: config.output_height,
         png_compression: config.png_compression,
+        custom_poi_overlay: None,
+        place_label_overlay: default_major_place_label_overlay_for_domain(&domain),
     };
     match run_direct_batch(&request) {
         Ok(report) => JobExecutionResult {
@@ -1292,13 +1302,14 @@ fn execute_derived(
             detail: Some("derived lane has no configured recipes".to_string()),
         };
     }
+    let domain = domain_from_region_slug(&job.key.region_slug);
     let request = DerivedBatchRequest {
         model: job.key.model,
         date_yyyymmdd: context.latest.cycle.date_yyyymmdd.clone(),
         cycle_override_utc: Some(context.latest.cycle.hour_utc),
         forecast_hour: job.key.forecast_hour,
         source: context.latest.source,
-        domain: domain_from_region_slug(&job.key.region_slug),
+        domain: domain.clone(),
         out_dir: config.out_dir.join(&job.key.region_slug),
         cache_root: config.cache_dir.clone(),
         use_cache: config.use_cache,
@@ -1312,6 +1323,8 @@ fn execute_derived(
         output_width: config.output_width,
         output_height: config.output_height,
         png_compression: config.png_compression,
+        custom_poi_overlay: None,
+        place_label_overlay: default_major_place_label_overlay_for_domain(&domain),
     };
     match run_derived_batch(&request) {
         Ok(report) => JobExecutionResult {

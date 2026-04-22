@@ -8,17 +8,18 @@ use rustwx_io::{
     extract_fields_from_grib2_partial, load_cached_selected_field, store_cached_selected_field,
 };
 use rustwx_models::{
-    LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
-    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan,
+    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan, LatestRun,
+    ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
 };
 use rustwx_render::{
+    build_projected_contour_geometry_profile, densify_discrete_scale, draw_centered_text_line,
+    map_frame_aspect_ratio_for_mode, render_panel_grid, save_png_profile_with_options,
+    save_rgba_png_profile_with_options,
+    solar07::{solar07_palette, Solar07Palette},
     Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode, LevelDensity,
     MapRenderRequest, PanelGridLayout, PanelPadding, PngCompressionMode, PngWriteOptions,
     ProductVisualMode, ProjectedContourLineStyle, ProjectedDomain, ProjectedMap, RenderImageTiming,
-    RenderStateTiming, WindBarbLayer, build_projected_contour_geometry_profile,
-    densify_discrete_scale, draw_centered_text_line, map_frame_aspect_ratio_for_mode,
-    render_panel_grid, save_png_profile_with_options, save_rgba_png_profile_with_options,
-    solar07::{Solar07Palette, solar07_palette},
+    RenderStateTiming, WindBarbLayer,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -28,16 +29,18 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
+use crate::custom_poi::{apply_custom_poi_overlay, CustomPoiOverlay};
+use crate::places::{default_major_place_label_overlay_for_domain, PlaceLabelOverlay};
 use crate::planner::{ExecutionPlan, ExecutionPlanBuilder};
 use crate::publication::{
-    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
-    fetch_identity_from_cached_result_with_aliases,
+    artifact_identity_from_path, fetch_identity_from_cached_result_with_aliases,
+    ArtifactContentIdentity, PublishedFetchIdentity,
 };
 use crate::runtime::{
-    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
+    load_execution_plan, BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet,
 };
 use crate::shared_context::{DomainSpec, ProjectedMapProvider};
-use crate::source::{ProductSourceRoute, direct_route_for_recipe_slug};
+use crate::source::{direct_route_for_recipe_slug, ProductSourceRoute};
 use crate::spec::direct_product_specs;
 
 const OUTPUT_WIDTH: u32 = 1200;
@@ -90,6 +93,10 @@ pub struct DirectBatchRequest {
     pub output_height: u32,
     #[serde(default = "default_png_compression")]
     pub png_compression: PngCompressionMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_poi_overlay: Option<CustomPoiOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place_label_overlay: Option<PlaceLabelOverlay>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,6 +120,10 @@ pub struct HrrrDirectBatchRequest {
     pub output_height: u32,
     #[serde(default = "default_png_compression")]
     pub png_compression: PngCompressionMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_poi_overlay: Option<CustomPoiOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place_label_overlay: Option<PlaceLabelOverlay>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -329,6 +340,8 @@ impl DirectBatchRequest {
             output_width: request.output_width,
             output_height: request.output_height,
             png_compression: request.png_compression,
+            custom_poi_overlay: request.custom_poi_overlay.clone(),
+            place_label_overlay: request.place_label_overlay.clone(),
         }
     }
 
@@ -1298,6 +1311,31 @@ fn render_direct_recipe(
             request.date_yyyymmdd, latest.cycle.hour_utc, request.forecast_hour, request.model
         ));
         render_request.subtitle_right = Some(format!("source: {}", latest.source));
+        if let Some(overlay) = request.custom_poi_overlay.as_ref() {
+            apply_custom_poi_overlay(
+                &mut render_request,
+                overlay,
+                request.domain.bounds,
+                &filled.grid.lat_deg,
+                &filled.grid.lon_deg,
+                filled.projection.as_ref(),
+            )?;
+        }
+        let default_place_overlay = default_major_place_label_overlay_for_domain(&request.domain);
+        if let Some(overlay) = request
+            .place_label_overlay
+            .as_ref()
+            .or(default_place_overlay.as_ref())
+        {
+            crate::apply_place_label_overlay_with_density_styling(
+                &mut render_request,
+                overlay,
+                &request.domain,
+                &filled.grid.lat_deg,
+                &filled.grid.lon_deg,
+                filled.projection.as_ref(),
+            )?;
+        }
         let save_timing = save_png_profile_with_options(
             &render_request,
             &output_path,
@@ -1472,6 +1510,31 @@ fn render_direct_composite_panel(
         panel_request.visual_mode = ProductVisualMode::PanelMember;
         panel_request.subtitle_left = None;
         panel_request.subtitle_right = None;
+        if let Some(overlay) = request.custom_poi_overlay.as_ref() {
+            apply_custom_poi_overlay(
+                &mut panel_request,
+                overlay,
+                request.domain.bounds,
+                &filled.grid.lat_deg,
+                &filled.grid.lon_deg,
+                filled.projection.as_ref(),
+            )?;
+        }
+        let default_place_overlay = default_major_place_label_overlay_for_domain(&request.domain);
+        if let Some(overlay) = request
+            .place_label_overlay
+            .as_ref()
+            .or(default_place_overlay.as_ref())
+        {
+            crate::apply_place_label_overlay_with_density_styling(
+                &mut panel_request,
+                overlay,
+                &request.domain,
+                &filled.grid.lat_deg,
+                &filled.grid.lon_deg,
+                filled.projection.as_ref(),
+            )?;
+        }
         panel_requests.push(panel_request);
     }
     let request_build_ms = request_build_start.elapsed().as_millis();
@@ -2286,6 +2349,8 @@ mod tests {
             output_width: OUTPUT_WIDTH,
             output_height: OUTPUT_HEIGHT,
             png_compression: PngCompressionMode::Default,
+            custom_poi_overlay: None,
+            place_label_overlay: None,
         }
     }
 
@@ -2377,16 +2442,12 @@ mod tests {
             groups[0].fetch_mode,
             PlotRecipeFetchMode::WholeFileStructuredExtract
         );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500))
-        );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700))
-        );
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500)));
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700)));
         assert!(groups[0].variable_patterns.is_empty());
     }
 
@@ -2565,18 +2626,14 @@ mod tests {
         let groups = group_direct_fetches(&request, &planned);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].product, "sfc");
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::entire_atmosphere(
-                    CanonicalField::LowCloudCover
-                ))
-        );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow))
-        );
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::entire_atmosphere(
+                CanonicalField::LowCloudCover
+            )));
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow)));
     }
 
     #[test]

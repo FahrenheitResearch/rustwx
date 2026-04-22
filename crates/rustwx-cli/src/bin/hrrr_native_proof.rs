@@ -19,6 +19,7 @@ use rustwx_products::direct::supported_direct_recipe_slugs;
 use rustwx_products::non_ecape::{
     HrrrNonEcapeHourReport, HrrrNonEcapeHourRequest, run_hrrr_non_ecape_hour,
 };
+use rustwx_products::places::{PlaceLabelDensityTier, default_place_label_overlay_for_domain};
 use rustwx_products::publication::{
     atomic_write_json, canonical_run_slug, publish_failure_manifest,
 };
@@ -106,6 +107,8 @@ struct Args {
     no_cache: bool,
     #[arg(long = "source-mode", alias = "thermo-path", value_enum, default_value_t = SourceModeArg::Canonical)]
     source_mode: SourceModeArg,
+    #[arg(long = "place-label-density", default_value_t = 1, value_parser = clap::value_parser!(u8).range(0..=3))]
+    place_label_density: u8,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -638,12 +641,13 @@ fn run_case(
     direct_recipe_slugs: Vec<String>,
     derived_recipe_slugs: Vec<String>,
 ) -> Result<NativeProofCaseSummary, Box<dyn std::error::Error>> {
+    let domain = DomainSpec::new(region.slug(), region.bounds());
     let request = HrrrNonEcapeHourRequest {
         date_yyyymmdd: args.date.clone(),
         cycle_override_utc: args.cycle,
         forecast_hour: args.forecast_hour,
         source: args.source,
-        domain: DomainSpec::new(region.slug(), region.bounds()),
+        domain: domain.clone(),
         out_dir: args.out_dir.clone(),
         cache_root: cache_root.to_path_buf(),
         use_cache: !args.no_cache,
@@ -654,6 +658,11 @@ fn run_case(
         output_width: 1200,
         output_height: 900,
         png_compression: rustwx_render::PngCompressionMode::Default,
+        custom_poi_overlay: None,
+        place_label_overlay: default_place_label_overlay_for_domain(
+            &domain,
+            PlaceLabelDensityTier::from_numeric(args.place_label_density),
+        ),
     };
     let report = run_hrrr_non_ecape_hour(&request)?;
 

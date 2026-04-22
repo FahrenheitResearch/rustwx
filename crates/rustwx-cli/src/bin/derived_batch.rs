@@ -15,6 +15,7 @@ use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::derived::{
     DerivedBatchRequest, run_derived_batch, supported_derived_recipe_slugs,
 };
+use rustwx_products::places::{PlaceLabelDensityTier, default_place_label_overlay_for_domain};
 use rustwx_products::publication::{
     ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
     canonical_run_slug, finalize_and_publish_run_manifest, publish_failure_manifest,
@@ -66,6 +67,8 @@ struct Args {
     contour_mode: ContourModeArg,
     #[arg(long, default_value_t = 1)]
     native_fill_level_multiplier: usize,
+    #[arg(long = "place-label-density", default_value_t = 1, value_parser = clap::value_parser!(u8).range(0..=3))]
+    place_label_density: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -136,13 +139,14 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         args.recipes.clone()
     };
 
+    let domain = DomainSpec::new(args.region.slug(), args.region.bounds());
     let request = DerivedBatchRequest {
         model: args.model,
         date_yyyymmdd: args.date.clone(),
         cycle_override_utc: args.cycle,
         forecast_hour: args.forecast_hour,
         source,
-        domain: DomainSpec::new(args.region.slug(), args.region.bounds()),
+        domain: domain.clone(),
         out_dir: args.out_dir.clone(),
         cache_root: cache_root.clone(),
         use_cache: !args.no_cache,
@@ -156,6 +160,11 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         output_width: 1200,
         output_height: 900,
         png_compression: rustwx_render::PngCompressionMode::Default,
+        custom_poi_overlay: None,
+        place_label_overlay: default_place_label_overlay_for_domain(
+            &domain,
+            PlaceLabelDensityTier::from_numeric(args.place_label_density),
+        ),
     };
     let report = run_derived_batch(&request)?;
 

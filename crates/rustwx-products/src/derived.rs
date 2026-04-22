@@ -1,21 +1,22 @@
+use crate::custom_poi::{apply_custom_poi_overlay, CustomPoiOverlay};
 use crate::direct::{build_projected_map, build_projected_map_with_projection};
 use rustwx_calc::{
-    CalcError, EcapeVolumeInputs, FixedStpInputs, GridShape as CalcGridShape, SurfaceInputs,
-    TemperatureAdvectionInputs, VolumeShape, WindGridInputs, compute_2m_apparent_temperature,
-    compute_ehi_01km, compute_ehi_03km, compute_lapse_rate_0_3km, compute_lapse_rate_700_500,
-    compute_lifted_index, compute_mlcape_cin, compute_mucape_cin, compute_sbcape_cin,
-    compute_shear_01km, compute_shear_06km, compute_srh_01km, compute_srh_03km, compute_stp_fixed,
-    compute_surface_thermo,
+    compute_2m_apparent_temperature, compute_ehi_01km, compute_ehi_03km, compute_lapse_rate_0_3km,
+    compute_lapse_rate_700_500, compute_lifted_index, compute_mlcape_cin, compute_mucape_cin,
+    compute_sbcape_cin, compute_shear_01km, compute_shear_06km, compute_srh_01km, compute_srh_03km,
+    compute_stp_fixed, compute_surface_thermo, CalcError, EcapeVolumeInputs, FixedStpInputs,
+    GridShape as CalcGridShape, SurfaceInputs, TemperatureAdvectionInputs, VolumeShape,
+    WindGridInputs,
 };
 use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId,
 };
 use rustwx_render::{
-    Color, DerivedProductStyle, DomainFrame, ExtendMode, LevelDensity, MapRenderRequest,
-    PngCompressionMode, PngWriteOptions, ProductVisualMode, ProjectedContourLineStyle,
-    ProjectedDomain, ProjectedExtent, ProjectedMap, RenderImageTiming, RenderStateTiming,
-    Solar07Palette, Solar07Product, WindBarbLayer, build_projected_contour_geometry_profile,
-    densify_discrete_scale, map_frame_aspect_ratio, save_png_profile_with_options,
+    build_projected_contour_geometry_profile, densify_discrete_scale, map_frame_aspect_ratio,
+    save_png_profile_with_options, Color, DerivedProductStyle, DomainFrame, ExtendMode,
+    LevelDensity, MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode,
+    ProjectedContourLineStyle, ProjectedDomain, ProjectedExtent, ProjectedMap, RenderImageTiming,
+    RenderStateTiming, Solar07Palette, Solar07Product, WindBarbLayer,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -27,30 +28,31 @@ use std::time::Instant;
 
 use crate::ecape::compute_ecape8_panel_fields_with_prepared_volume;
 use crate::gridded::{
-    PressureFields as GenericPressureFields, ProjectedGridIntersection,
-    SharedTiming as GenericSharedTiming, SurfaceFields as GenericSurfaceFields,
     broadcast_levels_pa, classify_projected_grid_intersection, crop_latlon_grid, crop_values_f64,
     decode_cache_path, decode_surface_grid, fetch_family_file,
     load_or_decode_pressure_cropped_with_shape, load_or_decode_surface_cropped,
-    prepare_heavy_volume_timed, resolve_thermo_pair_run,
+    prepare_heavy_volume_timed, resolve_thermo_pair_run, PressureFields as GenericPressureFields,
+    ProjectedGridIntersection, SharedTiming as GenericSharedTiming,
+    SurfaceFields as GenericSurfaceFields,
 };
-use crate::heavy::{HeavyComputeTiming, crop_and_guard_heavy_domain};
+use crate::heavy::{crop_and_guard_heavy_domain, HeavyComputeTiming};
+use crate::places::{default_major_place_label_overlay_for_domain, PlaceLabelOverlay};
 use crate::planner::{ExecutionPlanBuilder, PlannedBundle};
 use crate::publication::{
-    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
+    artifact_identity_from_path, ArtifactContentIdentity, PublishedFetchIdentity,
 };
 use crate::runtime::{
-    BundleLoaderConfig, CroppedDecodeProfile, FetchedBundleBytes, LoadedBundleSet,
-    LoadedBundleTiming, load_execution_plan,
+    load_execution_plan, BundleLoaderConfig, CroppedDecodeProfile, FetchedBundleBytes,
+    LoadedBundleSet, LoadedBundleTiming,
 };
 use crate::severe::{
     build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
 };
-use crate::shared_context::{DomainSpec, Solar07PanelField, build_solar07_map_request};
+use crate::shared_context::{build_solar07_map_request, DomainSpec, Solar07PanelField};
 use crate::source::{ProductSourceMode, ProductSourceRoute};
 use crate::thermo_native::{
-    NativeSemantics, NativeThermoCandidate, NativeThermoRecipe, crop_native_field,
-    extract_native_thermo_field, native_candidate,
+    crop_native_field, extract_native_thermo_field, native_candidate, NativeSemantics,
+    NativeThermoCandidate, NativeThermoRecipe,
 };
 use rustwx_models::{
     latest_available_run_at_forecast_hour, latest_available_run_for_products_at_forecast_hour,
@@ -92,6 +94,7 @@ trait SurfaceFieldSet {
     fn lon(&self) -> &[f64];
     fn nx(&self) -> usize;
     fn ny(&self) -> usize;
+    fn projection(&self) -> Option<&rustwx_core::GridProjection>;
     fn orog_m(&self) -> &[f64];
     fn psfc_pa(&self) -> &[f64];
     fn t2_k(&self) -> &[f64];
@@ -121,6 +124,9 @@ impl SurfaceFieldSet for GenericSurfaceFields {
     }
     fn ny(&self) -> usize {
         self.ny
+    }
+    fn projection(&self) -> Option<&rustwx_core::GridProjection> {
+        self.projection.as_ref()
     }
     fn orog_m(&self) -> &[f64] {
         &self.orog_m
@@ -457,6 +463,10 @@ pub struct DerivedBatchRequest {
     pub output_height: u32,
     #[serde(default = "default_png_compression")]
     pub png_compression: PngCompressionMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_poi_overlay: Option<CustomPoiOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place_label_overlay: Option<PlaceLabelOverlay>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -484,6 +494,10 @@ pub struct HrrrDerivedBatchRequest {
     pub output_height: u32,
     #[serde(default = "default_png_compression")]
     pub png_compression: PngCompressionMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_poi_overlay: Option<CustomPoiOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place_label_overlay: Option<PlaceLabelOverlay>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -676,6 +690,7 @@ pub struct ProfiledHrrrDerivedLiveArtifact {
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedSharedDerivedFields {
     grid: rustwx_core::LatLonGrid,
+    projection: Option<rustwx_core::GridProjection>,
     computed: DerivedComputedFields,
     fetch_decode: Option<GenericSharedTiming>,
 }
@@ -1094,6 +1109,8 @@ impl DerivedBatchRequest {
             output_width: request.output_width,
             output_height: request.output_height,
             png_compression: request.png_compression,
+            custom_poi_overlay: request.custom_poi_overlay.clone(),
+            place_label_overlay: request.place_label_overlay.clone(),
         }
     }
 
@@ -1412,6 +1429,7 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
     let mut heavy_timing = None;
     let mut memory_profile = None;
     let mut grid: Option<rustwx_core::LatLonGrid> = None;
+    let mut grid_projection: Option<rustwx_core::GridProjection> = None;
     let mut projected: Option<ProjectedMap> = None;
     let input_fetches = build_planned_input_fetches(loaded);
     let input_fetch_keys = unique_input_fetch_keys(&input_fetches);
@@ -1467,6 +1485,7 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                     }
                     ProjectedGridIntersection::Full => {
                         grid = Some(shared.grid.clone());
+                        grid_projection = shared.projection.clone();
                         projected = Some(full_projected.clone());
                         computed = shared.computed.clone();
                     }
@@ -1485,6 +1504,7 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                             ),
                         )?;
                         grid = Some(derived_grid);
+                        grid_projection = shared.projection.clone();
                         projected = Some(derived_projected);
                         computed =
                             crop_computed_fields(&shared.computed, shared.grid.shape.nx, crop);
@@ -1534,6 +1554,7 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                     )?;
                     compute_ms += compute_start.elapsed().as_millis();
                     grid = Some(derived_grid);
+                    grid_projection = surface.projection.clone();
                     projected = Some(derived_projected);
                 }
                 fetch_decode = Some(build_shared_timing_for_pair(
@@ -1605,6 +1626,7 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
             )?;
             project_ms += project_start.elapsed().as_millis();
             grid = Some(native_field.grid.clone());
+            grid_projection = None;
             projected = Some(native_projected);
         }
         let output_path = request.out_dir.join(format!(
@@ -1634,8 +1656,39 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
             request.contour_mode,
             request.native_fill_level_multiplier,
         )?;
+        let HrrrDerivedLiveArtifact {
+            recipe_slug,
+            title,
+            field: _,
+            request: mut render_request,
+        } = render_artifact;
+        if let Some(overlay) = request.custom_poi_overlay.as_ref() {
+            apply_custom_poi_overlay(
+                &mut render_request,
+                overlay,
+                request.domain.bounds,
+                &native_field.grid.lat_deg,
+                &native_field.grid.lon_deg,
+                None,
+            )?;
+        }
+        let default_place_overlay = default_major_place_label_overlay_for_domain(&request.domain);
+        if let Some(overlay) = request
+            .place_label_overlay
+            .as_ref()
+            .or(default_place_overlay.as_ref())
+        {
+            crate::apply_place_label_overlay_with_density_styling(
+                &mut render_request,
+                overlay,
+                &request.domain,
+                &native_field.grid.lat_deg,
+                &native_field.grid.lon_deg,
+                None,
+            )?;
+        }
         let save_timing = save_png_profile_with_options(
-            &render_artifact.request,
+            &render_request,
             &output_path,
             &request.png_write_options(),
         )?;
@@ -1644,8 +1697,8 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
         rendered_by_recipe.insert(
             route.recipe,
             DerivedRenderedRecipe {
-                recipe_slug: render_artifact.recipe_slug,
-                title: render_artifact.title,
+                recipe_slug,
+                title,
                 source_route: route.source_route,
                 output_path,
                 content_identity,
@@ -1689,6 +1742,7 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
         let grid_ref = grid
             .as_ref()
             .ok_or("derived render requested but no grid was prepared")?;
+        let projection_ref = grid_projection.as_ref();
         let projected_ref = projected
             .as_ref()
             .ok_or("derived render requested but no projection was prepared")?;
@@ -1699,6 +1753,7 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                     request,
                     recipe,
                     grid_ref,
+                    projection_ref,
                     projected_ref,
                     date_yyyymmdd,
                     cycle_utc,
@@ -1717,11 +1772,13 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
 
                 for recipe in derived_output_recipes.iter().copied() {
                     let lane_fetch_keys = input_fetch_keys.clone();
+                    let lane_projection = grid_projection.clone();
                     pending.push_back(scope.spawn(move || {
                         render_derived_output_recipe(
                             request,
                             recipe,
                             grid_ref,
+                            lane_projection.as_ref(),
                             projected_ref,
                             date_yyyymmdd,
                             cycle_utc,
@@ -1857,6 +1914,7 @@ pub(crate) fn prepare_shared_derived_fields(
     let fetch_decode = build_shared_timing_for_pair(loaded, surface_planned, pressure_planned)?;
     Ok(Some(PreparedSharedDerivedFields {
         grid: surface_decode.value.core_grid()?,
+        projection: surface_decode.value.projection.clone(),
         computed,
         fetch_decode: Some(GenericSharedTiming {
             fetch_surface_ms: 0,
@@ -3833,6 +3891,7 @@ fn render_derived_heavy_recipe(
     recipe: DerivedRecipe,
     field: &Solar07PanelField,
     grid: &rustwx_core::LatLonGrid,
+    projection: Option<&rustwx_core::GridProjection>,
     projected: &ProjectedMap,
     date_yyyymmdd: &str,
     cycle_utc: u8,
@@ -3871,6 +3930,31 @@ fn render_derived_heavy_recipe(
         request.contour_mode,
         request.native_fill_level_multiplier,
     )?;
+    if let Some(overlay) = request.custom_poi_overlay.as_ref() {
+        apply_custom_poi_overlay(
+            &mut render_request,
+            overlay,
+            request.domain.bounds,
+            &grid.lat_deg,
+            &grid.lon_deg,
+            projection,
+        )?;
+    }
+    let default_place_overlay = default_major_place_label_overlay_for_domain(&request.domain);
+    if let Some(overlay) = request
+        .place_label_overlay
+        .as_ref()
+        .or(default_place_overlay.as_ref())
+    {
+        crate::apply_place_label_overlay_with_density_styling(
+            &mut render_request,
+            overlay,
+            &request.domain,
+            &grid.lat_deg,
+            &grid.lon_deg,
+            projection,
+        )?;
+    }
     let save_timing =
         save_png_profile_with_options(&render_request, &output_path, &request.png_write_options())?;
     let render_ms = render_start.elapsed().as_millis();
@@ -3956,6 +4040,7 @@ fn render_derived_heavy_recipes(
             *recipe,
             field,
             &grid,
+            surface.projection(),
             &projected,
             date_yyyymmdd,
             cycle_utc,
@@ -4460,6 +4545,7 @@ fn render_derived_output_recipe(
     request: &DerivedBatchRequest,
     recipe: DerivedRecipe,
     grid_ref: &rustwx_core::LatLonGrid,
+    projection: Option<&rustwx_core::GridProjection>,
     projected_ref: &ProjectedMap,
     date_yyyymmdd: &str,
     cycle_utc: u8,
@@ -4496,18 +4582,48 @@ fn render_derived_output_recipe(
         request.native_fill_level_multiplier,
     )
     .map_err(thread_render_error)?;
-    let save_timing = save_png_profile_with_options(
-        &render_artifact.request,
-        &output_path,
-        &request.png_write_options(),
-    )
-    .map_err(thread_render_error)?;
+    let HrrrDerivedLiveArtifact {
+        recipe_slug,
+        title,
+        field: _,
+        request: mut render_request,
+    } = render_artifact;
+    if let Some(overlay) = request.custom_poi_overlay.as_ref() {
+        apply_custom_poi_overlay(
+            &mut render_request,
+            overlay,
+            request.domain.bounds,
+            &grid_ref.lat_deg,
+            &grid_ref.lon_deg,
+            projection,
+        )
+        .map_err(thread_render_error)?;
+    }
+    let default_place_overlay = default_major_place_label_overlay_for_domain(&request.domain);
+    if let Some(overlay) = request
+        .place_label_overlay
+        .as_ref()
+        .or(default_place_overlay.as_ref())
+    {
+        crate::apply_place_label_overlay_with_density_styling(
+            &mut render_request,
+            overlay,
+            &request.domain,
+            &grid_ref.lat_deg,
+            &grid_ref.lon_deg,
+            projection,
+        )
+        .map_err(thread_render_error)?;
+    }
+    let save_timing =
+        save_png_profile_with_options(&render_request, &output_path, &request.png_write_options())
+            .map_err(thread_render_error)?;
     let render_ms = render_start.elapsed().as_millis();
     let content_identity =
         artifact_identity_from_path(&output_path).map_err(thread_render_error)?;
     Ok(DerivedRenderedRecipe {
-        recipe_slug: render_artifact.recipe_slug,
-        title: render_artifact.title,
+        recipe_slug,
+        title,
         source_route: derived_compute_source_route(recipe, request.source_mode).ok_or_else(
             || {
                 io::Error::other(format!(
@@ -4824,14 +4940,12 @@ mod tests {
         )
         .unwrap();
         assert!(!native.request.projected_data_polygons.is_empty());
-        assert!(
-            native
-                .request
-                .field
-                .values
-                .iter()
-                .all(|value| value.is_nan())
-        );
+        assert!(native
+            .request
+            .field
+            .values
+            .iter()
+            .all(|value| value.is_nan()));
 
         let legacy = build_native_render_artifact(
             DerivedRecipe::Sbcape,
@@ -4850,14 +4964,12 @@ mod tests {
         )
         .unwrap();
         assert!(legacy.request.projected_data_polygons.is_empty());
-        assert!(
-            legacy
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(legacy
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
     }
 
     #[test]
@@ -4901,14 +5013,12 @@ mod tests {
         )
         .unwrap();
         assert!(!experimental.request.projected_data_polygons.is_empty());
-        assert!(
-            experimental
-                .request
-                .field
-                .values
-                .iter()
-                .all(|value| value.is_nan())
-        );
+        assert!(experimental
+            .request
+            .field
+            .values
+            .iter()
+            .all(|value| value.is_nan()));
     }
 
     #[test]
@@ -4934,14 +5044,12 @@ mod tests {
         )
         .unwrap();
         assert!(!signature.request.projected_data_polygons.is_empty());
-        assert!(
-            signature
-                .request
-                .field
-                .values
-                .iter()
-                .all(|value| value.is_nan())
-        );
+        assert!(signature
+            .request
+            .field
+            .values
+            .iter()
+            .all(|value| value.is_nan()));
     }
 
     #[test]
@@ -4967,14 +5075,12 @@ mod tests {
         )
         .unwrap();
         assert!(signature.request.projected_data_polygons.is_empty());
-        assert!(
-            signature
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(signature
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
     }
 
     #[test]
@@ -5027,14 +5133,12 @@ mod tests {
         )
         .unwrap();
         assert!(!signature.request.projected_data_polygons.is_empty());
-        assert!(
-            signature
-                .request
-                .field
-                .values
-                .iter()
-                .all(|value| value.is_nan())
-        );
+        assert!(signature
+            .request
+            .field
+            .values
+            .iter()
+            .all(|value| value.is_nan()));
     }
 
     #[test]
@@ -5144,11 +5248,9 @@ mod tests {
         assert!(planned.output_recipes.is_empty());
         assert!(planned.native_routes.is_empty());
         assert_eq!(planned.blockers.len(), 1);
-        assert!(
-            planned.blockers[0]
-                .reason
-                .contains("will not fall back to canonical-derived compute")
-        );
+        assert!(planned.blockers[0]
+            .reason
+            .contains("will not fall back to canonical-derived compute"));
     }
 
     #[test]
@@ -5163,11 +5265,9 @@ mod tests {
         assert!(planned.compute_recipes.is_empty());
         assert!(planned.heavy_recipes.is_empty());
         assert_eq!(planned.blockers.len(), 1);
-        assert!(
-            planned.blockers[0]
-                .reason
-                .contains("cropped heavy ECAPE path")
-        );
+        assert!(planned.blockers[0]
+            .reason
+            .contains("cropped heavy ECAPE path"));
     }
 
     #[test]
@@ -5192,6 +5292,8 @@ mod tests {
             output_width: OUTPUT_WIDTH,
             output_height: OUTPUT_HEIGHT,
             png_compression: PngCompressionMode::Default,
+            custom_poi_overlay: None,
+            place_label_overlay: None,
         };
         let planned =
             plan_native_thermo_routes(request.model, &[DerivedRecipe::Sbcape], request.source_mode)

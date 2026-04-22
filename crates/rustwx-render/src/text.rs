@@ -21,11 +21,11 @@ enum FontKind {
 static FONTS: OnceLock<FontSet> = OnceLock::new();
 
 pub fn draw_text(img: &mut RgbaImage, text: &str, x: i32, y: i32, color: Rgba, scale: u32) {
-    draw_text_inner(img, text, x, y, color, scale, FontKind::Regular);
+    draw_text_inner(img, text, x, y, color, scale, 1.0, FontKind::Regular);
 }
 
 pub fn draw_text_bold(img: &mut RgbaImage, text: &str, x: i32, y: i32, color: Rgba, scale: u32) {
-    draw_text_inner(img, text, x, y, color, scale, FontKind::Bold);
+    draw_text_inner(img, text, x, y, color, scale, 1.0, FontKind::Bold);
 }
 
 pub fn draw_text_centered(img: &mut RgbaImage, text: &str, y: i32, color: Rgba, scale: u32) {
@@ -50,24 +50,74 @@ pub fn draw_text_right(
         y,
         color,
         scale,
+        1.0,
         FontKind::Regular,
     );
 }
 
 pub fn text_width(text: &str, scale: u32) -> u32 {
-    measure_text(text, scale, FontKind::Regular)
+    measure_text(text, scale, 1.0, FontKind::Regular)
 }
 
 pub fn text_width_bold(text: &str, scale: u32) -> u32 {
-    measure_text(text, scale, FontKind::Bold)
+    measure_text(text, scale, 1.0, FontKind::Bold)
 }
 
 pub(crate) fn regular_line_height(scale: u32) -> u32 {
-    line_height(scale, FontKind::Regular)
+    line_height(scale, 1.0, FontKind::Regular)
 }
 
 pub(crate) fn bold_line_height(scale: u32) -> u32 {
-    line_height(scale, FontKind::Bold)
+    line_height(scale, 1.0, FontKind::Bold)
+}
+
+pub(crate) fn draw_text_with_factor(
+    img: &mut RgbaImage,
+    text: &str,
+    x: i32,
+    y: i32,
+    color: Rgba,
+    scale: u32,
+    size_factor: f32,
+) {
+    draw_text_inner(
+        img,
+        text,
+        x,
+        y,
+        color,
+        scale,
+        size_factor,
+        FontKind::Regular,
+    );
+}
+
+pub(crate) fn draw_text_bold_with_factor(
+    img: &mut RgbaImage,
+    text: &str,
+    x: i32,
+    y: i32,
+    color: Rgba,
+    scale: u32,
+    size_factor: f32,
+) {
+    draw_text_inner(img, text, x, y, color, scale, size_factor, FontKind::Bold);
+}
+
+pub(crate) fn text_width_with_factor(text: &str, scale: u32, size_factor: f32) -> u32 {
+    measure_text(text, scale, size_factor, FontKind::Regular)
+}
+
+pub(crate) fn text_width_bold_with_factor(text: &str, scale: u32, size_factor: f32) -> u32 {
+    measure_text(text, scale, size_factor, FontKind::Bold)
+}
+
+pub(crate) fn regular_line_height_with_factor(scale: u32, size_factor: f32) -> u32 {
+    line_height(scale, size_factor, FontKind::Regular)
+}
+
+pub(crate) fn bold_line_height_with_factor(scale: u32, size_factor: f32) -> u32 {
+    line_height(scale, size_factor, FontKind::Bold)
 }
 
 pub fn format_tick(value: f64) -> String {
@@ -86,18 +136,26 @@ fn draw_text_inner(
     y: i32,
     color: Rgba,
     scale: u32,
+    size_factor: f32,
     kind: FontKind,
 ) {
     if let Some(font) = get_font(kind) {
-        draw_ttf_text(img, text, x, y, color, scale, font, kind);
+        draw_ttf_text(img, text, x, y, color, scale, size_factor, font, kind);
     } else {
-        draw_bitmap_text(img, text, x, y, color, scale);
+        draw_bitmap_text(
+            img,
+            text,
+            x,
+            y,
+            color,
+            effective_bitmap_scale(scale, size_factor),
+        );
     }
 }
 
-fn measure_text(text: &str, scale: u32, kind: FontKind) -> u32 {
+fn measure_text(text: &str, scale: u32, size_factor: f32, kind: FontKind) -> u32 {
     if let Some(font) = get_font(kind) {
-        let scale = Scale::uniform(font_size_px(scale, kind));
+        let scale = Scale::uniform(font_size_px(scale, size_factor, kind));
         let v_metrics = font.v_metrics(scale);
         let glyphs: Vec<_> = font
             .layout(text, scale, point(0.0, v_metrics.ascent))
@@ -114,7 +172,7 @@ fn measure_text(text: &str, scale: u32, kind: FontKind) -> u32 {
             })
             .unwrap_or(0)
     } else {
-        text.len() as u32 * 8 * scale
+        text.len() as u32 * 8 * effective_bitmap_scale(scale, size_factor)
     }
 }
 
@@ -125,10 +183,11 @@ fn draw_ttf_text(
     y: i32,
     color: Rgba,
     scale_tag: u32,
+    size_factor: f32,
     font: &Font<'static>,
     kind: FontKind,
 ) {
-    let scale = match font_size_px(scale_tag, kind) {
+    let scale = match font_size_px(scale_tag, size_factor, kind) {
         s if s > 0.0 => Scale::uniform(s),
         _ => Scale::uniform(12.0),
     };
@@ -216,7 +275,7 @@ fn blend_pixel(img: &mut RgbaImage, x: i32, y: i32, color: Rgba) {
     img.put_pixel(x as u32, y as u32, blended);
 }
 
-fn font_size_px(scale: u32, kind: FontKind) -> f32 {
+fn font_size_px(scale: u32, size_factor: f32, kind: FontKind) -> f32 {
     let base = match (scale.max(1), kind) {
         (1, FontKind::Regular) => 12.0,
         (1, FontKind::Bold) => 15.0,
@@ -225,15 +284,21 @@ fn font_size_px(scale: u32, kind: FontKind) -> f32 {
         (s, FontKind::Regular) => 12.0 + (s as f32 - 1.0) * 4.0,
         (s, FontKind::Bold) => 15.0 + (s as f32 - 1.0) * 4.0,
     };
-    base
+    base * size_factor.clamp(0.65, 2.0)
 }
 
-fn line_height(scale: u32, kind: FontKind) -> u32 {
+fn line_height(scale: u32, size_factor: f32, kind: FontKind) -> u32 {
     if get_font(kind).is_some() {
-        font_size_px(scale, kind).ceil() as u32
+        font_size_px(scale, size_factor, kind).ceil() as u32
     } else {
-        (8 * scale.max(1)).max(12)
+        (8 * effective_bitmap_scale(scale, size_factor)).max(12)
     }
+}
+
+fn effective_bitmap_scale(scale: u32, size_factor: f32) -> u32 {
+    ((scale.max(1) as f32) * size_factor.clamp(0.65, 2.0))
+        .round()
+        .max(1.0) as u32
 }
 
 fn get_font(kind: FontKind) -> Option<&'static Font<'static>> {

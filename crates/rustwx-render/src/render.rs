@@ -3,17 +3,20 @@ use crate::colorbar;
 use crate::colormap::LeveledColormap;
 use crate::draw;
 use crate::overlay::{
-    BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPolygon, ProjectedPolyline,
+    BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPlaceLabelOverlay,
+    ProjectedPolygon, ProjectedPolyline,
 };
 use crate::presentation::{ProductVisualMode, RenderPresentation, TitleAnchor};
 use crate::rasterize;
-use crate::request::{ChromeScale, DomainFrame};
+use crate::request::{
+    ChromeScale, DomainFrame, ProjectedLabelPlacement, ProjectedPlaceLabelPriority,
+};
 use crate::text;
+use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
+use image::imageops::{crop_imm, resize, FilterType};
 use image::ExtendedColorType;
 use image::ImageEncoder;
 use image::RgbaImage;
-use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
-use image::imageops::{FilterType, crop_imm, resize};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
@@ -50,6 +53,7 @@ pub struct RenderOpts {
     /// Typical stack: ocean → land → lakes.
     pub projected_polygons: Vec<ProjectedPolygon>,
     pub projected_data_polygons: Vec<ProjectedPolygon>,
+    pub projected_place_labels: Vec<ProjectedPlaceLabelOverlay>,
     pub projected_lines: Vec<ProjectedPolyline>,
     pub contours: Vec<ContourOverlay>,
     pub barbs: Vec<BarbOverlay>,
@@ -140,6 +144,7 @@ impl Default for RenderOpts {
             projected_grid: None,
             projected_polygons: vec![],
             projected_data_polygons: vec![],
+            projected_place_labels: vec![],
             projected_lines: vec![],
             contours: vec![],
             barbs: vec![],
@@ -472,6 +477,14 @@ fn measure_text_width(text: &str, scale: u32, bold: bool) -> u32 {
     }
 }
 
+fn measure_text_width_with_factor(text: &str, scale: u32, size_factor: f32, bold: bool) -> u32 {
+    if bold {
+        text::text_width_bold_with_factor(text, scale, size_factor)
+    } else {
+        text::text_width_with_factor(text, scale, size_factor)
+    }
+}
+
 fn centered_text_left(text: &str, center_x: u32, scale: u32, bold: bool) -> i32 {
     let width = measure_text_width(text, scale, bold) as i32;
     center_x as i32 - width / 2
@@ -494,6 +507,41 @@ fn ellipsize_text_to_width(text: &str, max_width: u32, scale: u32, bold: bool) -
         candidate.push(ch);
         candidate.push_str(ellipsis);
         if measure_text_width(&candidate, scale, bold) > max_width {
+            break;
+        }
+        kept.push(ch);
+    }
+
+    if kept.is_empty() {
+        ellipsis.to_string()
+    } else {
+        format!("{kept}{ellipsis}")
+    }
+}
+
+fn ellipsize_text_to_width_with_factor(
+    text: &str,
+    max_width: u32,
+    scale: u32,
+    size_factor: f32,
+    bold: bool,
+) -> String {
+    if measure_text_width_with_factor(text, scale, size_factor, bold) <= max_width {
+        return text.to_string();
+    }
+
+    let ellipsis = "...";
+    let ellipsis_w = measure_text_width_with_factor(ellipsis, scale, size_factor, bold);
+    if ellipsis_w >= max_width {
+        return ellipsis.to_string();
+    }
+
+    let mut kept = String::new();
+    for ch in text.chars() {
+        let mut candidate = kept.clone();
+        candidate.push(ch);
+        candidate.push_str(ellipsis);
+        if measure_text_width_with_factor(&candidate, scale, size_factor, bold) > max_width {
             break;
         }
         kept.push(ch);
@@ -670,6 +718,308 @@ fn draw_projected_lines(
         if current.len() >= 2 {
             draw::draw_polyline_aa(img, &current, style.color, style.width);
         }
+    }
+}
+
+fn label_bounds(layout: &Layout, clip_rect: Option<LocalRect>) -> (i32, i32, i32, i32) {
+    if let Some(rect) = clip_rect {
+        (
+            (layout.map_x + rect.min_x) as i32,
+            (layout.map_x + rect.max_x) as i32,
+            (layout.map_y + rect.min_y) as i32,
+            (layout.map_y + rect.max_y) as i32,
+        )
+    } else {
+        let max_x = layout.map_x.saturating_add(layout.map_w).saturating_sub(1) as i32;
+        let max_y = layout.map_y.saturating_add(layout.map_h).saturating_sub(1) as i32;
+        (layout.map_x as i32, max_x, layout.map_y as i32, max_y)
+    }
+}
+
+fn label_line_height_with_factor(scale: u32, size_factor: f32, bold: bool) -> u32 {
+    if bold {
+        text::bold_line_height_with_factor(scale, size_factor)
+    } else {
+        text::regular_line_height_with_factor(scale, size_factor)
+    }
+}
+
+fn draw_styled_text(
+    img: &mut RgbaImage,
+    text_value: &str,
+    x: i32,
+    y: i32,
+    color: Rgba,
+    scale: u32,
+    size_factor: f32,
+    bold: bool,
+) {
+    if bold {
+        text::draw_text_bold_with_factor(img, text_value, x, y, color, scale, size_factor);
+    } else {
+        text::draw_text_with_factor(img, text_value, x, y, color, scale, size_factor);
+    }
+}
+
+fn label_top_left(
+    placement: ProjectedLabelPlacement,
+    anchor_x: i32,
+    anchor_y: i32,
+    label_width: u32,
+    label_height: u32,
+) -> (i32, i32) {
+    let width = label_width as i32;
+    let height = label_height as i32;
+    match placement {
+        ProjectedLabelPlacement::Center => (anchor_x - width / 2, anchor_y - height / 2),
+        ProjectedLabelPlacement::Left => (anchor_x - width, anchor_y - height / 2),
+        ProjectedLabelPlacement::Right => (anchor_x, anchor_y - height / 2),
+        ProjectedLabelPlacement::Above => (anchor_x - width / 2, anchor_y - height),
+        ProjectedLabelPlacement::Below => (anchor_x - width / 2, anchor_y),
+        ProjectedLabelPlacement::AboveLeft => (anchor_x - width, anchor_y - height),
+        ProjectedLabelPlacement::AboveRight => (anchor_x, anchor_y - height),
+        ProjectedLabelPlacement::BelowLeft => (anchor_x - width, anchor_y),
+        ProjectedLabelPlacement::BelowRight => (anchor_x, anchor_y),
+    }
+}
+
+fn draw_text_halo(
+    img: &mut RgbaImage,
+    text_value: &str,
+    x: i32,
+    y: i32,
+    label_color: Rgba,
+    halo_color: Rgba,
+    halo_width_px: u32,
+    scale: u32,
+    size_factor: f32,
+    bold: bool,
+) {
+    let halo_width_px = halo_width_px as i32;
+    if halo_color.a > 0 && halo_width_px > 0 {
+        for dy in -halo_width_px..=halo_width_px {
+            for dx in -halo_width_px..=halo_width_px {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                if dx.abs().max(dy.abs()) > halo_width_px {
+                    continue;
+                }
+                draw_styled_text(
+                    img,
+                    text_value,
+                    x + dx,
+                    y + dy,
+                    halo_color,
+                    scale,
+                    size_factor,
+                    bold,
+                );
+            }
+        }
+    }
+    draw_styled_text(img, text_value, x, y, label_color, scale, size_factor, bold);
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PlaceLabelRenderAdjustments {
+    text_size_factor: f32,
+    text_alpha_factor: f32,
+    halo_alpha_factor: f32,
+    marker_scale_factor: f32,
+    marker_alpha_factor: f32,
+    outline_width_factor: f32,
+    halo_width_factor: f32,
+    offset_factor: f32,
+}
+
+fn place_label_render_adjustments(
+    priority: ProjectedPlaceLabelPriority,
+) -> PlaceLabelRenderAdjustments {
+    match priority {
+        ProjectedPlaceLabelPriority::Primary => PlaceLabelRenderAdjustments {
+            text_size_factor: 1.0,
+            text_alpha_factor: 1.0,
+            halo_alpha_factor: 1.0,
+            marker_scale_factor: 1.0,
+            marker_alpha_factor: 1.0,
+            outline_width_factor: 1.0,
+            halo_width_factor: 1.0,
+            offset_factor: 1.0,
+        },
+        ProjectedPlaceLabelPriority::Auxiliary => PlaceLabelRenderAdjustments {
+            text_size_factor: 0.90,
+            text_alpha_factor: 0.84,
+            halo_alpha_factor: 0.78,
+            marker_scale_factor: 0.82,
+            marker_alpha_factor: 0.84,
+            outline_width_factor: 0.75,
+            halo_width_factor: 0.75,
+            offset_factor: 0.92,
+        },
+        ProjectedPlaceLabelPriority::Micro => PlaceLabelRenderAdjustments {
+            text_size_factor: 0.82,
+            text_alpha_factor: 0.72,
+            halo_alpha_factor: 0.62,
+            marker_scale_factor: 0.68,
+            marker_alpha_factor: 0.72,
+            outline_width_factor: 0.50,
+            halo_width_factor: 0.50,
+            offset_factor: 0.85,
+        },
+    }
+}
+
+fn scale_alpha(color: Rgba, factor: f32) -> Rgba {
+    Rgba::with_alpha(
+        color.r,
+        color.g,
+        color.b,
+        ((color.a as f32) * factor.clamp(0.0, 1.0)).round() as u8,
+    )
+}
+
+fn scale_nonzero_u32(value: u32, factor: f32) -> u32 {
+    if value == 0 {
+        0
+    } else {
+        ((value as f32) * factor).round().max(1.0) as u32
+    }
+}
+
+fn scale_i32(value: i32, factor: f32) -> i32 {
+    ((value as f32) * factor).round() as i32
+}
+
+fn draw_projected_place_labels(
+    img: &mut RgbaImage,
+    layout: &Layout,
+    extent: &MapExtent,
+    place_labels: &[ProjectedPlaceLabelOverlay],
+    clip_mask: Option<&RgbaImage>,
+    clip_rect: Option<LocalRect>,
+) {
+    let (min_x, max_x, min_y, max_y) = label_bounds(layout, clip_rect);
+    let available_width = max_x.saturating_sub(min_x).saturating_add(1) as u32;
+    let available_height = max_y.saturating_sub(min_y).saturating_add(1) as u32;
+
+    for place_label in place_labels {
+        let adjustments = place_label_render_adjustments(place_label.priority);
+        let Some((px, py)) =
+            extent.to_pixel(place_label.x, place_label.y, layout.map_w, layout.map_h)
+        else {
+            continue;
+        };
+
+        if let Some(mask) = clip_mask {
+            if !mask_contains_local_pixel(mask, px, py) {
+                continue;
+            }
+        }
+
+        let marker_x = layout.map_x as f64 + px.clamp(0.0, layout.map_w.saturating_sub(1) as f64);
+        let marker_y = layout.map_y as f64 + py.clamp(0.0, layout.map_h.saturating_sub(1) as f64);
+        let marker_radius = scale_nonzero_u32(
+            place_label.style.marker_radius_px,
+            adjustments.marker_scale_factor,
+        );
+        let marker_outline_width = scale_nonzero_u32(
+            place_label.style.marker_outline_width,
+            adjustments.outline_width_factor,
+        );
+        if marker_radius > 0 {
+            draw::draw_circle_fill_aa(
+                img,
+                marker_x,
+                marker_y,
+                marker_radius as f64,
+                scale_alpha(
+                    place_label.style.marker_fill,
+                    adjustments.marker_alpha_factor,
+                ),
+            );
+            let marker_outline = scale_alpha(
+                place_label.style.marker_outline,
+                adjustments.marker_alpha_factor,
+            );
+            if marker_outline_width > 0 && marker_outline.a > 0 {
+                draw::draw_circle_stroke_aa(
+                    img,
+                    marker_x,
+                    marker_y,
+                    marker_radius as f64,
+                    marker_outline,
+                    marker_outline_width,
+                );
+            }
+        }
+
+        let Some(label) = place_label
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+
+        let bold = place_label.style.label_bold;
+        let scale = place_label.style.label_scale.max(1);
+        let fitted_label = ellipsize_text_to_width_with_factor(
+            label,
+            available_width.max(1),
+            scale,
+            adjustments.text_size_factor,
+            bold,
+        );
+        let label_width = measure_text_width_with_factor(
+            &fitted_label,
+            scale,
+            adjustments.text_size_factor,
+            bold,
+        );
+        let label_height = label_line_height_with_factor(scale, adjustments.text_size_factor, bold);
+        if label_width == 0 || label_height == 0 || label_height > available_height {
+            continue;
+        }
+
+        let anchor_x = marker_x.round() as i32
+            + scale_i32(
+                place_label.style.label_offset_x_px,
+                adjustments.offset_factor,
+            );
+        let anchor_y = marker_y.round() as i32
+            + scale_i32(
+                place_label.style.label_offset_y_px,
+                adjustments.offset_factor,
+            );
+        let (mut text_x, mut text_y) = label_top_left(
+            place_label.style.label_placement,
+            anchor_x,
+            anchor_y,
+            label_width,
+            label_height,
+        );
+        let max_label_x = max_x.saturating_sub(label_width as i32).saturating_add(1);
+        let max_label_y = max_y.saturating_sub(label_height as i32).saturating_add(1);
+        text_x = text_x.clamp(min_x, max_label_x.max(min_x));
+        text_y = text_y.clamp(min_y, max_label_y.max(min_y));
+
+        draw_text_halo(
+            img,
+            &fitted_label,
+            text_x,
+            text_y,
+            scale_alpha(place_label.style.label_color, adjustments.text_alpha_factor),
+            scale_alpha(place_label.style.label_halo, adjustments.halo_alpha_factor),
+            scale_nonzero_u32(
+                place_label.style.label_halo_width_px,
+                adjustments.halo_width_factor,
+            ),
+            scale,
+            adjustments.text_size_factor,
+            bold,
+        );
     }
 }
 
@@ -1170,6 +1520,25 @@ fn scale_render_opts_for_supersample(opts: &RenderOpts, factor: u32) -> RenderOp
     for line in &mut scaled.projected_lines {
         line.width = line.width.max(1).saturating_mul(factor);
     }
+    for place_label in &mut scaled.projected_place_labels {
+        place_label.style.marker_radius_px =
+            place_label.style.marker_radius_px.saturating_mul(factor);
+        place_label.style.marker_outline_width = place_label
+            .style
+            .marker_outline_width
+            .saturating_mul(factor);
+        place_label.style.label_halo_width_px =
+            place_label.style.label_halo_width_px.saturating_mul(factor);
+        place_label.style.label_scale = place_label.style.label_scale.max(1).saturating_mul(factor);
+        place_label.style.label_offset_x_px = place_label
+            .style
+            .label_offset_x_px
+            .saturating_mul(factor as i32);
+        place_label.style.label_offset_y_px = place_label
+            .style
+            .label_offset_y_px
+            .saturating_mul(factor as i32);
+    }
     for contour in &mut scaled.contours {
         contour.width = contour.width.max(1).saturating_mul(factor);
     }
@@ -1422,7 +1791,11 @@ fn contour_cell_intersections(
     emit_interp_point(&mut pts, &mut count, p2, p3, level);
     emit_interp_point(&mut pts, &mut count, p3, p0, level);
 
-    if count >= 2 { Some((pts, count)) } else { None }
+    if count >= 2 {
+        Some((pts, count))
+    } else {
+        None
+    }
 }
 
 fn maybe_draw_contour_label(
@@ -2058,6 +2431,19 @@ fn draw_variable_layers(
     }
     let barb_ms = barb_start.elapsed().as_millis();
 
+    let label_start = Instant::now();
+    if let Some(ref extent) = opts.map_extent {
+        draw_projected_place_labels(
+            img,
+            layout,
+            extent,
+            &opts.projected_place_labels,
+            domain_clip_mask.as_ref(),
+            domain_clip_rect,
+        );
+    }
+    let label_ms = label_start.elapsed().as_millis();
+
     let outside_frame_clear_start = Instant::now();
     if let (Some(frame), Some(rect)) = (opts.domain_frame, domain_frame_rect) {
         if frame.clear_outside {
@@ -2069,7 +2455,7 @@ fn draw_variable_layers(
     VariableLayerTiming {
         rasterize_ms,
         raster_blit_ms,
-        linework_ms,
+        linework_ms: linework_ms.saturating_add(label_ms),
         contour_ms,
         barb_ms,
         outside_frame_clear_ms,
@@ -2655,10 +3041,34 @@ mod tests {
             projected_grid: Some(sample_projected_grid()),
             projected_polygons: Vec::new(),
             projected_data_polygons: Vec::new(),
+            projected_place_labels: Vec::new(),
             projected_lines: Vec::new(),
             contours: Vec::new(),
             barbs: Vec::new(),
             presentation: RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology),
+        }
+    }
+
+    fn sample_place_label() -> ProjectedPlaceLabelOverlay {
+        ProjectedPlaceLabelOverlay {
+            x: 0.52,
+            y: 0.48,
+            label: Some("Sacramento".into()),
+            priority: ProjectedPlaceLabelPriority::Primary,
+            style: crate::overlay::ProjectedPlaceLabelStyle {
+                marker_radius_px: 4,
+                marker_fill: Rgba::with_alpha(255, 255, 255, 235),
+                marker_outline: Rgba::with_alpha(24, 28, 34, 240),
+                marker_outline_width: 1,
+                label_color: Rgba::BLACK,
+                label_halo: Rgba::with_alpha(255, 255, 255, 235),
+                label_halo_width_px: 2,
+                label_scale: 1,
+                label_offset_x_px: 6,
+                label_offset_y_px: -2,
+                label_placement: ProjectedLabelPlacement::AboveRight,
+                label_bold: true,
+            },
         }
     }
 
@@ -2681,6 +3091,27 @@ mod tests {
 
     fn blank_test_image() -> RgbaImage {
         RgbaImage::from_pixel(80, 80, Rgba::WHITE.to_image_rgba())
+    }
+
+    fn non_white_bounds(img: &RgbaImage) -> Option<(u32, u32, u32, u32)> {
+        let mut min_x = u32::MAX;
+        let mut max_x = 0u32;
+        let mut min_y = u32::MAX;
+        let mut max_y = 0u32;
+        let mut found = false;
+
+        for (x, y, pixel) in img.enumerate_pixels() {
+            if pixel.0 == [255, 255, 255, 255] {
+                continue;
+            }
+            found = true;
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+            min_y = min_y.min(y);
+            max_y = max_y.max(y);
+        }
+
+        found.then_some((min_x, max_x, min_y, max_y))
     }
 
     fn sample_domain_frame(outline_color: crate::request::Color) -> DomainFrame {
@@ -2740,12 +3171,16 @@ mod tests {
             width: 1,
             length_px: 18.0,
         }];
+        opts.projected_place_labels = vec![sample_place_label()];
         opts.domain_frame = Some(sample_domain_frame(crate::request::Color::BLACK));
 
         let scaled = scale_render_opts_for_supersample(&opts, 2);
         assert_eq!(scaled.width, opts.width * 2);
         assert_eq!(scaled.height, opts.height * 2);
         assert_eq!(scaled.projected_lines[0].width, 4);
+        assert_eq!(scaled.projected_place_labels[0].style.marker_radius_px, 8);
+        assert_eq!(scaled.projected_place_labels[0].style.label_scale, 2);
+        assert_eq!(scaled.projected_place_labels[0].style.label_offset_x_px, 12);
         assert_eq!(scaled.contours[0].width, 2);
         assert_eq!(scaled.barbs[0].width, 2);
         assert_eq!(scaled.barbs[0].length_px, 36.0);
@@ -2762,6 +3197,125 @@ mod tests {
         assert_eq!(image.width(), opts.width);
         assert_eq!(image.height(), opts.height);
         assert!(timing.postprocess_ms <= timing.total_ms);
+    }
+
+    #[test]
+    fn projected_place_labels_render_visible_marker_and_text() {
+        let mut opts = sample_projected_opts();
+        opts.projected_place_labels = vec![sample_place_label()];
+        let data = vec![0.5, 1.0, 1.5, 2.0];
+
+        let image = render_to_image(&data, 2, 2, &opts);
+        let dark_pixels = image
+            .pixels()
+            .filter(|pixel| pixel.0[0] < 80 && pixel.0[1] < 80 && pixel.0[2] < 80)
+            .count();
+        let bright_pixels = image
+            .pixels()
+            .filter(|pixel| pixel.0[0] > 220 && pixel.0[1] > 220 && pixel.0[2] > 220)
+            .count();
+
+        assert!(
+            dark_pixels > 50,
+            "label text and marker outline should be visible"
+        );
+        assert!(
+            bright_pixels > 200,
+            "marker fill and halo should be visible"
+        );
+    }
+
+    #[test]
+    fn projected_place_labels_clamp_text_inside_requested_clip_rect() {
+        let presentation = RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology);
+        let layout = compute_layout(240, 160, false, false, presentation, ChromeScale::default());
+        let extent = MapExtent {
+            x_min: 0.0,
+            x_max: 1.0,
+            y_min: 0.0,
+            y_max: 1.0,
+        };
+        let clip_rect = LocalRect {
+            min_x: 20,
+            max_x: 80,
+            min_y: 20,
+            max_y: 60,
+        };
+        let local_x = clip_rect.max_x.saturating_sub(2) as f64;
+        let local_y = clip_rect.max_y.saturating_sub(2) as f64;
+        let mut style = sample_place_label().style;
+        style.marker_radius_px = 0;
+        style.marker_outline_width = 0;
+        style.label_halo = Rgba::TRANSPARENT;
+        style.label_halo_width_px = 0;
+        style.label_offset_x_px = 28;
+        style.label_offset_y_px = 14;
+        style.label_placement = ProjectedLabelPlacement::BelowRight;
+        let label = ProjectedPlaceLabelOverlay {
+            x: local_x / layout.map_w.saturating_sub(1) as f64,
+            y: 1.0 - (local_y / layout.map_h.saturating_sub(1) as f64),
+            label: Some("Sacramento Valley".into()),
+            priority: ProjectedPlaceLabelPriority::Primary,
+            style,
+        };
+        let mut img = RgbaImage::from_pixel(240, 160, Rgba::WHITE.to_image_rgba());
+
+        draw_projected_place_labels(&mut img, &layout, &extent, &[label], None, Some(clip_rect));
+
+        let (min_x, max_x, min_y, max_y) =
+            non_white_bounds(&img).expect("clipped place label should still render");
+        assert!(min_x >= layout.map_x + clip_rect.min_x);
+        assert!(max_x <= layout.map_x + clip_rect.max_x);
+        assert!(min_y >= layout.map_y + clip_rect.min_y);
+        assert!(max_y <= layout.map_y + clip_rect.max_y);
+    }
+
+    #[test]
+    fn projected_place_labels_skip_marker_and_text_outside_requested_clip_mask() {
+        let presentation = RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology);
+        let layout = compute_layout(240, 160, false, false, presentation, ChromeScale::default());
+        let extent = MapExtent {
+            x_min: 0.0,
+            x_max: 1.0,
+            y_min: 0.0,
+            y_max: 1.0,
+        };
+        let clip_mask = RgbaImage::from_pixel(
+            layout.map_w,
+            layout.map_h,
+            Rgba::TRANSPARENT.to_image_rgba(),
+        );
+        let mut img = RgbaImage::from_pixel(240, 160, Rgba::WHITE.to_image_rgba());
+
+        draw_projected_place_labels(
+            &mut img,
+            &layout,
+            &extent,
+            &[sample_place_label()],
+            Some(&clip_mask),
+            None,
+        );
+
+        assert!(
+            non_white_bounds(&img).is_none(),
+            "place labels whose marker falls outside the clip mask should not render"
+        );
+    }
+
+    #[test]
+    fn projected_place_label_priorities_reduce_auxiliary_and_micro_visual_weight() {
+        let primary = place_label_render_adjustments(ProjectedPlaceLabelPriority::Primary);
+        let auxiliary = place_label_render_adjustments(ProjectedPlaceLabelPriority::Auxiliary);
+        let micro = place_label_render_adjustments(ProjectedPlaceLabelPriority::Micro);
+
+        assert_eq!(primary.text_size_factor, 1.0);
+        assert_eq!(primary.marker_scale_factor, 1.0);
+        assert!(auxiliary.text_size_factor < primary.text_size_factor);
+        assert!(auxiliary.text_alpha_factor < primary.text_alpha_factor);
+        assert!(micro.text_size_factor < auxiliary.text_size_factor);
+        assert!(micro.text_alpha_factor < auxiliary.text_alpha_factor);
+        assert!(micro.marker_scale_factor < auxiliary.marker_scale_factor);
+        assert!(micro.halo_width_factor < auxiliary.halo_width_factor);
     }
 
     fn slanted_projected_fixture() -> (Layout, ProjectedGrid, Arc<[Option<(f64, f64)>]>, LocalRect)

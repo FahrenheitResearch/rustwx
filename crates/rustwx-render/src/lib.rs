@@ -45,8 +45,10 @@ pub use render::{
 pub use request::{
     ChromeScale, Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, DomainFrame,
     ExtendMode, Field2D, GridShape, LatLonGrid, MapRenderRequest, ProductKey, ProductMaturity,
-    ProductSemanticFlag, ProductSemantics, ProjectedDomain, ProjectedExtent, ProjectedLineOverlay,
-    ProjectedPolygonFill, WindBarbLayer, WindBarbStyle,
+    ProductSemanticFlag, ProductSemantics, ProjectedDomain, ProjectedExtent,
+    ProjectedLabelPlacement, ProjectedLineOverlay, ProjectedPlaceLabel,
+    ProjectedPlaceLabelPriority, ProjectedPlaceLabelStyle, ProjectedPolygonFill, WindBarbLayer,
+    WindBarbStyle,
 };
 pub use rustwx_core::{
     Field2D as CoreField2D, GridProjection as CoreGridProjection, GridShape as CoreGridShape,
@@ -64,7 +66,8 @@ pub use crate::colormap::{
 };
 use crate::colormap::{Extend, LeveledColormap};
 use crate::overlay::{
-    BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPolygon, ProjectedPolyline,
+    BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPlaceLabelOverlay,
+    ProjectedPolygon, ProjectedPolyline,
 };
 use crate::render::{
     RenderOpts, encode_rgba_png_profile_with_options, render_to_image as native_render_to_image,
@@ -442,6 +445,30 @@ fn with_render_state_profile<T>(
             });
         }
 
+        let mut projected_place_labels = Vec::with_capacity(request.projected_place_labels.len());
+        for place_label in &request.projected_place_labels {
+            projected_place_labels.push(ProjectedPlaceLabelOverlay {
+                x: place_label.x,
+                y: place_label.y,
+                label: place_label.label.clone(),
+                priority: place_label.priority,
+                style: crate::overlay::ProjectedPlaceLabelStyle {
+                    marker_radius_px: place_label.style.marker_radius_px,
+                    marker_fill: place_label.style.marker_fill.into(),
+                    marker_outline: place_label.style.marker_outline.into(),
+                    marker_outline_width: place_label.style.marker_outline_width,
+                    label_color: place_label.style.label_color.into(),
+                    label_halo: place_label.style.label_halo.into(),
+                    label_halo_width_px: place_label.style.label_halo_width_px,
+                    label_scale: place_label.style.label_scale,
+                    label_offset_x_px: place_label.style.label_offset_x_px,
+                    label_offset_y_px: place_label.style.label_offset_y_px,
+                    label_placement: place_label.style.label_placement,
+                    label_bold: place_label.style.label_bold,
+                },
+            });
+        }
+
         let contour_start = Instant::now();
         let mut contours = Vec::with_capacity(request.contours.len());
         for layer in &request.contours {
@@ -499,6 +526,7 @@ fn with_render_state_profile<T>(
             projected_grid,
             projected_polygons,
             projected_data_polygons,
+            projected_place_labels,
             projected_lines,
             contours,
             barbs,
@@ -700,6 +728,7 @@ mod tests {
             projected_domain: None,
             projected_polygons: Vec::new(),
             projected_data_polygons: Vec::new(),
+            projected_place_labels: Vec::new(),
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),
@@ -760,6 +789,7 @@ mod tests {
             projected_domain: None,
             projected_polygons: Vec::new(),
             projected_data_polygons: Vec::new(),
+            projected_place_labels: Vec::new(),
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),
@@ -775,6 +805,41 @@ mod tests {
             .filter(|px| px.0 != [255, 255, 255, 255])
             .count();
         assert!(non_white > 1000, "image should contain rendered content");
+    }
+
+    #[test]
+    fn with_render_state_carries_projected_place_labels_into_render_opts() {
+        let mut request = MapRenderRequest::contour_only(sample_field("overlay"));
+        request.projected_domain = Some(ProjectedDomain {
+            x: vec![0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 2.0, 3.0],
+            y: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0],
+            extent: ProjectedExtent {
+                x_min: 0.0,
+                x_max: 3.0,
+                y_min: 0.0,
+                y_max: 2.0,
+            },
+        });
+        request.projected_place_labels.push(
+            ProjectedPlaceLabel::new(1.5, 1.0)
+                .with_label("Tulsa")
+                .with_priority(ProjectedPlaceLabelPriority::Micro),
+        );
+
+        let carried = with_render_state(&request, |_data, _ny, _nx, opts| {
+            Ok((
+                opts.projected_place_labels.len(),
+                opts.projected_place_labels[0].label.clone(),
+                opts.projected_place_labels[0].style.marker_radius_px,
+                opts.projected_place_labels[0].priority,
+            ))
+        })
+        .unwrap();
+
+        assert_eq!(carried.0, 1);
+        assert_eq!(carried.1.as_deref(), Some("Tulsa"));
+        assert_eq!(carried.2, 3);
+        assert_eq!(carried.3, ProjectedPlaceLabelPriority::Micro);
     }
 
     #[test]

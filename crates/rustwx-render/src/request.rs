@@ -337,6 +337,106 @@ pub struct ProjectedLineOverlay {
     pub role: LineworkRole,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectedLabelPlacement {
+    Center,
+    Left,
+    Right,
+    Above,
+    Below,
+    AboveLeft,
+    #[default]
+    AboveRight,
+    BelowLeft,
+    BelowRight,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectedPlaceLabelPriority {
+    #[default]
+    Primary,
+    Auxiliary,
+    Micro,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectedPlaceLabelStyle {
+    pub marker_radius_px: u32,
+    pub marker_fill: Color,
+    pub marker_outline: Color,
+    pub marker_outline_width: u32,
+    pub label_color: Color,
+    pub label_halo: Color,
+    pub label_halo_width_px: u32,
+    pub label_scale: u32,
+    pub label_offset_x_px: i32,
+    pub label_offset_y_px: i32,
+    #[serde(default)]
+    pub label_placement: ProjectedLabelPlacement,
+    #[serde(default)]
+    pub label_bold: bool,
+}
+
+impl Default for ProjectedPlaceLabelStyle {
+    fn default() -> Self {
+        Self {
+            marker_radius_px: 3,
+            marker_fill: Color::rgba(255, 255, 255, 235),
+            marker_outline: Color::rgba(24, 28, 34, 240),
+            marker_outline_width: 1,
+            label_color: Color::rgba(24, 28, 34, 255),
+            label_halo: Color::rgba(255, 255, 255, 235),
+            label_halo_width_px: 2,
+            label_scale: 1,
+            label_offset_x_px: 6,
+            label_offset_y_px: -2,
+            label_placement: ProjectedLabelPlacement::AboveRight,
+            label_bold: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectedPlaceLabel {
+    pub x: f64,
+    pub y: f64,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub priority: ProjectedPlaceLabelPriority,
+    #[serde(default)]
+    pub style: ProjectedPlaceLabelStyle,
+}
+
+impl ProjectedPlaceLabel {
+    pub fn new(x: f64, y: f64) -> Self {
+        Self {
+            x,
+            y,
+            label: None,
+            priority: ProjectedPlaceLabelPriority::Primary,
+            style: ProjectedPlaceLabelStyle::default(),
+        }
+    }
+
+    pub fn with_label<S: Into<String>>(mut self, label: S) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn with_priority(mut self, priority: ProjectedPlaceLabelPriority) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    pub fn with_style(mut self, style: ProjectedPlaceLabelStyle) -> Self {
+        self.style = style;
+        self
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChromeScale {
@@ -492,6 +592,8 @@ pub struct MapRenderRequest {
     /// Dynamic projected fill polygons drawn during the variable-data pass.
     #[serde(default)]
     pub projected_data_polygons: Vec<ProjectedPolygonFill>,
+    #[serde(default)]
+    pub projected_place_labels: Vec<ProjectedPlaceLabel>,
     pub projected_lines: Vec<ProjectedLineOverlay>,
     pub contours: Vec<ContourLayer>,
     pub wind_barbs: Vec<WindBarbLayer>,
@@ -526,6 +628,7 @@ impl MapRenderRequest {
             projected_domain: None,
             projected_polygons: Vec::new(),
             projected_data_polygons: Vec::new(),
+            projected_place_labels: Vec::new(),
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),
@@ -658,6 +761,16 @@ impl MapRenderRequest {
 
     pub fn with_projected_map(mut self, projected: &ProjectedMap) -> Self {
         self.apply_projected_map(projected);
+        self
+    }
+
+    pub fn add_projected_place_label(&mut self, place_label: ProjectedPlaceLabel) -> &mut Self {
+        self.projected_place_labels.push(place_label);
+        self
+    }
+
+    pub fn with_projected_place_label(mut self, place_label: ProjectedPlaceLabel) -> Self {
+        self.projected_place_labels.push(place_label);
         self
     }
 
@@ -901,6 +1014,33 @@ mod tests {
             ColorScale::Discrete(scale) => assert_eq!(scale.colors, vec![Color::TRANSPARENT]),
             _ => panic!("expected discrete blank fill scale"),
         }
+    }
+
+    #[test]
+    fn projected_place_label_defaults_to_city_friendly_marker_and_label_style() {
+        let label = ProjectedPlaceLabel::new(12.5, -97.25).with_label("Norman");
+
+        assert_eq!(label.x, 12.5);
+        assert_eq!(label.y, -97.25);
+        assert_eq!(label.label.as_deref(), Some("Norman"));
+        assert_eq!(label.priority, ProjectedPlaceLabelPriority::Primary);
+        assert_eq!(
+            label.style.label_placement,
+            ProjectedLabelPlacement::AboveRight
+        );
+        assert_eq!(label.style.marker_radius_px, 3);
+        assert_eq!(label.style.label_scale, 1);
+        assert!(!label.style.label_bold);
+    }
+
+    #[test]
+    fn new_render_requests_start_without_projected_place_labels() {
+        let request = MapRenderRequest::new(
+            sample_render_field(),
+            ColorScale::Solar07(crate::solar07::Solar07Preset::Cape),
+        );
+
+        assert!(request.projected_place_labels.is_empty());
     }
 
     #[test]
