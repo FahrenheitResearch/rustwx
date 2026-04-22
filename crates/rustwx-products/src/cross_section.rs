@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::time::Instant;
 
 use rustwx_calc::{
+    compute_dewpoint_from_pressure_and_mixing_ratio,
     compute_relative_humidity_from_pressure_temperature_and_mixing_ratio,
     compute_theta_e_from_pressure_temperature_and_mixing_ratio,
 };
@@ -17,12 +18,19 @@ use crate::gridded::{LoadedModelTimestep, PressureFields, SurfaceFields};
 const SECTION_CANDIDATE_PADDING_DEG: f64 = 1.5;
 const INTERPOLATED_NEIGHBOR_COUNT: usize = 4;
 const MS_TO_KT: f64 = 1.943_844_492_440_604_8;
+const PA_S_TO_HPA_HR: f64 = 36.0;
 
-pub const SUPPORTED_PRESSURE_CROSS_SECTION_PRODUCTS: [CrossSectionProduct; 4] = [
+pub const SUPPORTED_PRESSURE_CROSS_SECTION_PRODUCTS: [CrossSectionProduct; 10] = [
     CrossSectionProduct::Temperature,
     CrossSectionProduct::RelativeHumidity,
+    CrossSectionProduct::SpecificHumidity,
     CrossSectionProduct::ThetaE,
     CrossSectionProduct::WindSpeed,
+    CrossSectionProduct::WetBulb,
+    CrossSectionProduct::VaporPressureDeficit,
+    CrossSectionProduct::DewpointDepression,
+    CrossSectionProduct::MoistureTransport,
+    CrossSectionProduct::FireWeather,
 ];
 
 #[derive(Debug, Clone)]
@@ -48,6 +56,46 @@ pub struct PressureCrossSectionBuildTiming {
 pub struct ProfiledPressureCrossSectionArtifact {
     pub artifact: PressureCrossSectionArtifact,
     pub timing: PressureCrossSectionBuildTiming,
+}
+
+/// Optional fields that future native/hybrid cross-section builders can forward
+/// into the shared product-derivation lane without changing the product API.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PressureCrossSectionOptionalProductFields<'a> {
+    pub omega_pa_s: Option<&'a [f64]>,
+    pub smoke_ugm3: Option<&'a [f64]>,
+}
+
+/// Shared sampled-path inputs for pressure/native cross-section products.
+#[derive(Debug, Clone, Copy)]
+pub struct PressureCrossSectionProductInputs<'a> {
+    pub pressure_hpa: &'a [f64],
+    pub temperature_c: &'a [f64],
+    pub mixing_ratio_kgkg: &'a [f64],
+    pub u_ms: &'a [f64],
+    pub v_ms: &'a [f64],
+    pub optional: PressureCrossSectionOptionalProductFields<'a>,
+}
+
+impl<'a> PressureCrossSectionProductInputs<'a> {
+    pub fn len(&self) -> usize {
+        self.pressure_hpa.len()
+    }
+
+    pub fn validate(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let expected = self.len();
+        validate_product_input_length("temperature_c", self.temperature_c.len(), expected)?;
+        validate_product_input_length("mixing_ratio_kgkg", self.mixing_ratio_kgkg.len(), expected)?;
+        validate_product_input_length("u_ms", self.u_ms.len(), expected)?;
+        validate_product_input_length("v_ms", self.v_ms.len(), expected)?;
+        if let Some(omega_pa_s) = self.optional.omega_pa_s {
+            validate_product_input_length("omega_pa_s", omega_pa_s.len(), expected)?;
+        }
+        if let Some(smoke_ugm3) = self.optional.smoke_ugm3 {
+            validate_product_input_length("smoke_ugm3", smoke_ugm3.len(), expected)?;
+        }
+        Ok(())
+    }
 }
 
 pub fn supports_pressure_cross_section_product(product: CrossSectionProduct) -> bool {
@@ -124,7 +172,7 @@ fn build_pressure_cross_section_from_parts_profiled(
     let terrain_profile_ms = terrain_profile_start.elapsed().as_millis();
 
     let mut temperature_c = Vec::with_capacity(n_levels * n_points);
-    let mut qvapor_kgkg = Vec::with_capacity(n_levels * n_points);
+    let mut mixing_ratio_kgkg = Vec::with_capacity(n_levels * n_points);
     let mut u_ms = Vec::with_capacity(n_levels * n_points);
     let mut v_ms = Vec::with_capacity(n_levels * n_points);
     let mut pressure_hpa = Vec::with_capacity(n_levels * n_points);
@@ -137,7 +185,7 @@ fn build_pressure_cross_section_from_parts_profiled(
                 level_offset,
                 stencil,
             ));
-            qvapor_kgkg.push(sample_weighted_level(
+            mixing_ratio_kgkg.push(sample_weighted_level(
                 &pressure.qvapor_kgkg_3d,
                 level_offset,
                 stencil,
@@ -158,13 +206,16 @@ fn build_pressure_cross_section_from_parts_profiled(
     let pressure_sampling_ms = pressure_sampling_start.elapsed().as_millis();
 
     let product_compute_start = Instant::now();
-    let section_values = build_product_values(
+    let section_values = build_pressure_cross_section_product_values(
         product,
-        &pressure_hpa,
-        &temperature_c,
-        &qvapor_kgkg,
-        &u_ms,
-        &v_ms,
+        PressureCrossSectionProductInputs {
+            pressure_hpa: &pressure_hpa,
+            temperature_c: &temperature_c,
+            mixing_ratio_kgkg: &mixing_ratio_kgkg,
+            u_ms: &u_ms,
+            v_ms: &v_ms,
+            optional: PressureCrossSectionOptionalProductFields::default(),
+        },
     )?
     .into_iter()
     .map(|value| value as f32)
@@ -211,41 +262,197 @@ fn build_pressure_cross_section_from_parts_profiled(
     })
 }
 
-fn build_product_values(
+pub fn build_pressure_cross_section_product_values(
     product: CrossSectionProduct,
-    pressure_hpa: &[f64],
-    temperature_c: &[f64],
-    qvapor_kgkg: &[f64],
-    u_ms: &[f64],
-    v_ms: &[f64],
+    inputs: PressureCrossSectionProductInputs<'_>,
 ) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    inputs.validate()?;
     match product {
-        CrossSectionProduct::Temperature => Ok(temperature_c.to_vec()),
+        CrossSectionProduct::Temperature => Ok(inputs.temperature_c.to_vec()),
         CrossSectionProduct::RelativeHumidity => Ok(
             compute_relative_humidity_from_pressure_temperature_and_mixing_ratio(
-                pressure_hpa,
-                temperature_c,
-                qvapor_kgkg,
+                inputs.pressure_hpa,
+                inputs.temperature_c,
+                inputs.mixing_ratio_kgkg,
             )?,
         ),
+        CrossSectionProduct::SpecificHumidity => {
+            Ok(mixing_ratio_to_specific_humidity_gkg(inputs.mixing_ratio_kgkg))
+        }
         CrossSectionProduct::ThetaE => {
             Ok(compute_theta_e_from_pressure_temperature_and_mixing_ratio(
-                pressure_hpa,
-                temperature_c,
-                qvapor_kgkg,
+                inputs.pressure_hpa,
+                inputs.temperature_c,
+                inputs.mixing_ratio_kgkg,
             )?)
         }
-        CrossSectionProduct::WindSpeed => Ok(u_ms
-            .iter()
-            .zip(v_ms.iter())
-            .map(|(&u_ms, &v_ms)| ((u_ms * u_ms + v_ms * v_ms).sqrt()) * MS_TO_KT)
-            .collect()),
+        CrossSectionProduct::WindSpeed => Ok(compute_wind_speed_kt(inputs.u_ms, inputs.v_ms)?),
+        CrossSectionProduct::WetBulb => {
+            let relative_humidity_pct = compute_relative_humidity_from_pressure_temperature_and_mixing_ratio(
+                inputs.pressure_hpa,
+                inputs.temperature_c,
+                inputs.mixing_ratio_kgkg,
+            )?;
+            compute_wet_bulb_temperature_c(inputs.temperature_c, &relative_humidity_pct)
+        }
+        CrossSectionProduct::VaporPressureDeficit => {
+            let relative_humidity_pct = compute_relative_humidity_from_pressure_temperature_and_mixing_ratio(
+                inputs.pressure_hpa,
+                inputs.temperature_c,
+                inputs.mixing_ratio_kgkg,
+            )?;
+            compute_vapor_pressure_deficit_hpa(inputs.temperature_c, &relative_humidity_pct)
+        }
+        CrossSectionProduct::DewpointDepression => {
+            let dewpoint_c = compute_dewpoint_from_pressure_and_mixing_ratio(
+                inputs.pressure_hpa,
+                inputs.mixing_ratio_kgkg,
+            )?;
+            Ok(inputs
+                .temperature_c
+                .iter()
+                .zip(dewpoint_c.iter())
+                .map(|(&temperature_c, &dewpoint_c)| temperature_c - dewpoint_c)
+                .collect())
+        }
+        CrossSectionProduct::MoistureTransport => {
+            let specific_humidity_gkg = mixing_ratio_to_specific_humidity_gkg(inputs.mixing_ratio_kgkg);
+            let wind_speed_ms = compute_wind_speed_ms(inputs.u_ms, inputs.v_ms)?;
+            Ok(specific_humidity_gkg
+                .iter()
+                .zip(wind_speed_ms.iter())
+                .map(|(&specific_humidity_gkg, &wind_speed_ms)| specific_humidity_gkg * wind_speed_ms)
+                .collect())
+        }
+        CrossSectionProduct::FireWeather => Ok(
+            compute_relative_humidity_from_pressure_temperature_and_mixing_ratio(
+                inputs.pressure_hpa,
+                inputs.temperature_c,
+                inputs.mixing_ratio_kgkg,
+            )?,
+        ),
+        CrossSectionProduct::Omega => inputs
+            .optional
+            .omega_pa_s
+            .map(|omega_pa_s| omega_pa_s.iter().map(|&value| value * PA_S_TO_HPA_HR).collect())
+            .ok_or_else(|| {
+                "cross-section product 'omega' requires sampled omega input from an upstream/native helper"
+                    .into()
+            }),
+        CrossSectionProduct::Smoke => inputs
+            .optional
+            .smoke_ugm3
+            .map(|smoke_ugm3| smoke_ugm3.to_vec())
+            .ok_or_else(|| {
+                "cross-section product 'smoke' requires sampled smoke input from an upstream/native helper"
+                    .into()
+            }),
         _ => Err(format!(
             "cross-section product '{}' is not supported by the gridded pressure builder",
             product.slug()
         )
         .into()),
     }
+}
+
+fn validate_product_input_length(
+    field: &str,
+    actual: usize,
+    expected: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if actual != expected {
+        Err(format!(
+            "pressure cross-section product input '{field}' had length {actual}, expected {expected}"
+        )
+        .into())
+    } else {
+        Ok(())
+    }
+}
+
+fn mixing_ratio_to_specific_humidity_gkg(mixing_ratio_kgkg: &[f64]) -> Vec<f64> {
+    mixing_ratio_kgkg
+        .iter()
+        .map(|&mixing_ratio_kgkg| {
+            let specific_humidity_kgkg = mixing_ratio_kgkg / (1.0 + mixing_ratio_kgkg);
+            specific_humidity_kgkg * 1000.0
+        })
+        .collect()
+}
+
+fn compute_wind_speed_ms(
+    u_ms: &[f64],
+    v_ms: &[f64],
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    validate_product_input_length("v_ms", v_ms.len(), u_ms.len())?;
+    Ok(u_ms
+        .iter()
+        .zip(v_ms.iter())
+        .map(|(&u_ms, &v_ms)| (u_ms * u_ms + v_ms * v_ms).sqrt())
+        .collect())
+}
+
+fn compute_wind_speed_kt(
+    u_ms: &[f64],
+    v_ms: &[f64],
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    Ok(compute_wind_speed_ms(u_ms, v_ms)?
+        .into_iter()
+        .map(|wind_speed_ms| wind_speed_ms * MS_TO_KT)
+        .collect())
+}
+
+fn compute_wet_bulb_temperature_c(
+    temperature_c: &[f64],
+    relative_humidity_pct: &[f64],
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    validate_product_input_length(
+        "relative_humidity_pct",
+        relative_humidity_pct.len(),
+        temperature_c.len(),
+    )?;
+    Ok(temperature_c
+        .iter()
+        .zip(relative_humidity_pct.iter())
+        .map(|(&temperature_c, &relative_humidity_pct)| {
+            approximate_wet_bulb_temperature_c(temperature_c, relative_humidity_pct)
+        })
+        .collect())
+}
+
+fn approximate_wet_bulb_temperature_c(temperature_c: f64, relative_humidity_pct: f64) -> f64 {
+    let relative_humidity_pct = relative_humidity_pct.clamp(0.0, 100.0);
+    temperature_c * (0.151_977 * (relative_humidity_pct + 8.313_659).sqrt()).atan()
+        + (temperature_c + relative_humidity_pct).atan()
+        - (relative_humidity_pct - 1.676_331).atan()
+        + 0.003_918_38
+            * relative_humidity_pct.powf(1.5)
+            * (0.023_101 * relative_humidity_pct).atan()
+        - 4.686_035
+}
+
+fn compute_vapor_pressure_deficit_hpa(
+    temperature_c: &[f64],
+    relative_humidity_pct: &[f64],
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    validate_product_input_length(
+        "relative_humidity_pct",
+        relative_humidity_pct.len(),
+        temperature_c.len(),
+    )?;
+    Ok(temperature_c
+        .iter()
+        .zip(relative_humidity_pct.iter())
+        .map(|(&temperature_c, &relative_humidity_pct)| {
+            let saturation_vapor_pressure_hpa = tetens_saturation_vapor_pressure_hpa(temperature_c);
+            let relative_humidity_fraction = (relative_humidity_pct / 100.0).clamp(0.0, 1.0);
+            (saturation_vapor_pressure_hpa * (1.0 - relative_humidity_fraction)).max(0.0)
+        })
+        .collect())
+}
+
+fn tetens_saturation_vapor_pressure_hpa(temperature_c: f64) -> f64 {
+    6.1078 * (17.27 * temperature_c / (temperature_c + 237.3)).exp()
 }
 
 fn build_section_metadata(
@@ -506,28 +713,8 @@ mod tests {
     use super::*;
     use rustwx_cross_section::{CrossSectionRequest, SamplingStrategy, SectionPath};
 
-    #[test]
-    fn supported_product_list_matches_current_pressure_section_lane() {
-        assert!(supports_pressure_cross_section_product(
-            CrossSectionProduct::Temperature
-        ));
-        assert!(supports_pressure_cross_section_product(
-            CrossSectionProduct::RelativeHumidity
-        ));
-        assert!(supports_pressure_cross_section_product(
-            CrossSectionProduct::ThetaE
-        ));
-        assert!(supports_pressure_cross_section_product(
-            CrossSectionProduct::WindSpeed
-        ));
-        assert!(!supports_pressure_cross_section_product(
-            CrossSectionProduct::Omega
-        ));
-    }
-
-    #[test]
-    fn pressure_cross_section_builder_returns_finite_theta_e_and_wind_overlay() {
-        let surface = SurfaceFields {
+    fn sample_surface_fields() -> SurfaceFields {
+        SurfaceFields {
             lat: vec![35.0, 35.0, 36.0, 36.0],
             lon: vec![-100.0, -99.0, -100.0, -99.0],
             nx: 2,
@@ -540,16 +727,22 @@ mod tests {
             q2_kgkg: vec![0.012; 4],
             u10_ms: vec![8.0; 4],
             v10_ms: vec![4.0; 4],
-        };
-        let pressure = PressureFields {
+        }
+    }
+
+    fn sample_pressure_fields() -> PressureFields {
+        PressureFields {
             pressure_levels_hpa: vec![1000.0, 850.0],
             temperature_c_3d: vec![24.0, 26.0, 22.0, 24.0, 12.0, 14.0, 10.0, 12.0],
             qvapor_kgkg_3d: vec![0.014, 0.013, 0.012, 0.011, 0.010, 0.009, 0.008, 0.007],
             u_ms_3d: vec![12.0, 16.0, 14.0, 18.0, 20.0, 24.0, 22.0, 26.0],
             v_ms_3d: vec![2.0, 4.0, 3.0, 5.0, 6.0, 8.0, 7.0, 9.0],
             gh_m_3d: vec![100.0; 8],
-        };
-        let layout = CrossSectionRequest::new(
+        }
+    }
+
+    fn sample_layout() -> SectionLayout {
+        CrossSectionRequest::new(
             SectionPath::endpoints(
                 GeoPoint::new(35.0, -100.0).unwrap(),
                 GeoPoint::new(36.0, -99.0).unwrap(),
@@ -564,7 +757,54 @@ mod tests {
                 .with_attribute("end_label", "36.00N 99.00W"),
         )
         .build_layout()
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn supported_product_list_matches_current_pressure_section_lane() {
+        assert!(supports_pressure_cross_section_product(
+            CrossSectionProduct::Temperature
+        ));
+        assert!(supports_pressure_cross_section_product(
+            CrossSectionProduct::RelativeHumidity
+        ));
+        assert!(supports_pressure_cross_section_product(
+            CrossSectionProduct::SpecificHumidity
+        ));
+        assert!(supports_pressure_cross_section_product(
+            CrossSectionProduct::ThetaE
+        ));
+        assert!(supports_pressure_cross_section_product(
+            CrossSectionProduct::WindSpeed
+        ));
+        assert!(supports_pressure_cross_section_product(
+            CrossSectionProduct::WetBulb
+        ));
+        assert!(supports_pressure_cross_section_product(
+            CrossSectionProduct::VaporPressureDeficit
+        ));
+        assert!(supports_pressure_cross_section_product(
+            CrossSectionProduct::DewpointDepression
+        ));
+        assert!(supports_pressure_cross_section_product(
+            CrossSectionProduct::MoistureTransport
+        ));
+        assert!(supports_pressure_cross_section_product(
+            CrossSectionProduct::FireWeather
+        ));
+        assert!(!supports_pressure_cross_section_product(
+            CrossSectionProduct::Omega
+        ));
+        assert!(!supports_pressure_cross_section_product(
+            CrossSectionProduct::Smoke
+        ));
+    }
+
+    #[test]
+    fn pressure_cross_section_builder_returns_finite_theta_e_and_wind_overlay() {
+        let surface = sample_surface_fields();
+        let pressure = sample_pressure_fields();
+        let layout = sample_layout();
 
         let artifact = build_pressure_cross_section_from_parts_profiled(
             &surface,
@@ -598,19 +838,223 @@ mod tests {
     }
 
     #[test]
+    fn pressure_cross_section_builder_returns_finite_moisture_transport() {
+        let surface = sample_surface_fields();
+        let pressure = sample_pressure_fields();
+        let layout = sample_layout();
+
+        let artifact = build_pressure_cross_section_from_parts_profiled(
+            &surface,
+            &pressure,
+            ModelId::Hrrr,
+            SourceId::Nomads,
+            &CycleSpec::new("20260414", 23).unwrap(),
+            0,
+            &layout,
+            CrossSectionProduct::MoistureTransport,
+        )
+        .unwrap()
+        .artifact;
+
+        assert_eq!(
+            artifact.style.product(),
+            CrossSectionProduct::MoistureTransport
+        );
+        assert_eq!(
+            artifact.section.metadata().attribute("product_key"),
+            Some("moisture_transport")
+        );
+        assert_eq!(
+            artifact.section.metadata().field_units.as_deref(),
+            Some("g*m/kg/s")
+        );
+        assert!(
+            artifact
+                .section
+                .values()
+                .iter()
+                .all(|value| value.is_finite() && *value > 0.0)
+        );
+        assert_eq!(artifact.wind_overlay.grid.n_levels(), 2);
+        assert_eq!(artifact.wind_overlay.grid.n_points(), 3);
+    }
+
+    #[test]
     fn wind_speed_sections_are_converted_to_knots() {
-        let values = build_product_values(
+        let pressure_hpa = [1000.0];
+        let temperature_c = [20.0];
+        let mixing_ratio_kgkg = [0.010];
+        let u_ms = [10.0];
+        let v_ms = [0.0];
+        let values = build_pressure_cross_section_product_values(
             CrossSectionProduct::WindSpeed,
-            &[1000.0],
-            &[20.0],
-            &[0.010],
-            &[10.0],
-            &[0.0],
+            PressureCrossSectionProductInputs {
+                pressure_hpa: &pressure_hpa,
+                temperature_c: &temperature_c,
+                mixing_ratio_kgkg: &mixing_ratio_kgkg,
+                u_ms: &u_ms,
+                v_ms: &v_ms,
+                optional: PressureCrossSectionOptionalProductFields::default(),
+            },
         )
         .unwrap();
 
         assert_eq!(values.len(), 1);
         assert!((values[0] - 19.438_444_924_406_05).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn specific_humidity_sections_convert_mixing_ratio_to_g_per_kg() {
+        let pressure_hpa = [1000.0];
+        let temperature_c = [20.0];
+        let mixing_ratio_kgkg = [0.010];
+        let u_ms = [0.0];
+        let v_ms = [0.0];
+        let values = build_pressure_cross_section_product_values(
+            CrossSectionProduct::SpecificHumidity,
+            PressureCrossSectionProductInputs {
+                pressure_hpa: &pressure_hpa,
+                temperature_c: &temperature_c,
+                mixing_ratio_kgkg: &mixing_ratio_kgkg,
+                u_ms: &u_ms,
+                v_ms: &v_ms,
+                optional: PressureCrossSectionOptionalProductFields::default(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(values.len(), 1);
+        assert!((values[0] - 9.900_990_099_009_901).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn moisture_and_fire_products_use_shared_pressure_inputs_consistently() {
+        let pressure_hpa = [1000.0];
+        let temperature_c = [20.0];
+        let mixing_ratio_kgkg = [0.010];
+        let u_ms = [6.0];
+        let v_ms = [8.0];
+        let inputs = PressureCrossSectionProductInputs {
+            pressure_hpa: &pressure_hpa,
+            temperature_c: &temperature_c,
+            mixing_ratio_kgkg: &mixing_ratio_kgkg,
+            u_ms: &u_ms,
+            v_ms: &v_ms,
+            optional: PressureCrossSectionOptionalProductFields::default(),
+        };
+
+        let relative_humidity = build_pressure_cross_section_product_values(
+            CrossSectionProduct::RelativeHumidity,
+            inputs,
+        )
+        .unwrap();
+        let wet_bulb =
+            build_pressure_cross_section_product_values(CrossSectionProduct::WetBulb, inputs)
+                .unwrap();
+        let vapor_pressure_deficit = build_pressure_cross_section_product_values(
+            CrossSectionProduct::VaporPressureDeficit,
+            inputs,
+        )
+        .unwrap();
+        let dewpoint_depression = build_pressure_cross_section_product_values(
+            CrossSectionProduct::DewpointDepression,
+            inputs,
+        )
+        .unwrap();
+        let moisture_transport = build_pressure_cross_section_product_values(
+            CrossSectionProduct::MoistureTransport,
+            inputs,
+        )
+        .unwrap();
+        let fire_weather =
+            build_pressure_cross_section_product_values(CrossSectionProduct::FireWeather, inputs)
+                .unwrap();
+
+        let expected_dewpoint_c =
+            compute_dewpoint_from_pressure_and_mixing_ratio(&pressure_hpa, &mixing_ratio_kgkg)
+                .unwrap();
+        let expected_specific_humidity_gkg =
+            mixing_ratio_to_specific_humidity_gkg(&mixing_ratio_kgkg);
+        let expected_wind_speed_ms = compute_wind_speed_ms(&u_ms, &v_ms).unwrap();
+
+        assert_eq!(fire_weather, relative_humidity);
+        assert!(
+            (wet_bulb[0]
+                - approximate_wet_bulb_temperature_c(temperature_c[0], relative_humidity[0]))
+            .abs()
+                < 1.0e-9
+        );
+        assert!(
+            (vapor_pressure_deficit[0]
+                - tetens_saturation_vapor_pressure_hpa(temperature_c[0])
+                    * (1.0 - (relative_humidity[0] / 100.0).clamp(0.0, 1.0)))
+            .abs()
+                < 1.0e-9
+        );
+        assert!(
+            (dewpoint_depression[0] - (temperature_c[0] - expected_dewpoint_c[0])).abs() < 1.0e-9
+        );
+        assert!(
+            (moisture_transport[0] - expected_specific_humidity_gkg[0] * expected_wind_speed_ms[0])
+                .abs()
+                < 1.0e-9
+        );
+    }
+
+    #[test]
+    fn omega_and_smoke_products_require_optional_upstream_inputs() {
+        let pressure_hpa = [1000.0];
+        let temperature_c = [20.0];
+        let mixing_ratio_kgkg = [0.010];
+        let u_ms = [5.0];
+        let v_ms = [0.0];
+        let inputs = PressureCrossSectionProductInputs {
+            pressure_hpa: &pressure_hpa,
+            temperature_c: &temperature_c,
+            mixing_ratio_kgkg: &mixing_ratio_kgkg,
+            u_ms: &u_ms,
+            v_ms: &v_ms,
+            optional: PressureCrossSectionOptionalProductFields::default(),
+        };
+
+        let omega_err =
+            build_pressure_cross_section_product_values(CrossSectionProduct::Omega, inputs)
+                .unwrap_err();
+        let smoke_err =
+            build_pressure_cross_section_product_values(CrossSectionProduct::Smoke, inputs)
+                .unwrap_err();
+
+        assert!(
+            omega_err
+                .to_string()
+                .contains("requires sampled omega input")
+        );
+        assert!(
+            smoke_err
+                .to_string()
+                .contains("requires sampled smoke input")
+        );
+
+        let optional_inputs = PressureCrossSectionProductInputs {
+            optional: PressureCrossSectionOptionalProductFields {
+                omega_pa_s: Some(&[0.5]),
+                smoke_ugm3: Some(&[12.0]),
+            },
+            ..inputs
+        };
+        let omega = build_pressure_cross_section_product_values(
+            CrossSectionProduct::Omega,
+            optional_inputs,
+        )
+        .unwrap();
+        let smoke = build_pressure_cross_section_product_values(
+            CrossSectionProduct::Smoke,
+            optional_inputs,
+        )
+        .unwrap();
+
+        assert_eq!(omega, vec![18.0]);
+        assert_eq!(smoke, vec![12.0]);
     }
 
     #[test]

@@ -21,6 +21,10 @@ pub struct SurfaceThermoOutputs {
     pub dewpoint_2m_c: Vec<f64>,
     pub relative_humidity_2m_pct: Vec<f64>,
     pub theta_e_2m_k: Vec<f64>,
+    pub wetbulb_2m_c: Vec<f64>,
+    pub dewpoint_depression_2m_c: Vec<f64>,
+    pub vpd_2m_hpa: Vec<f64>,
+    pub fire_weather_composite: Vec<f64>,
     pub heat_index_2m_c: Vec<f64>,
     pub wind_chill_2m_c: Vec<f64>,
 }
@@ -36,6 +40,10 @@ struct SurfaceThermoState {
     dewpoint_2m_c: Vec<f64>,
     relative_humidity_2m_pct: Vec<f64>,
     theta_e_2m_k: Vec<f64>,
+    wetbulb_2m_c: Vec<f64>,
+    dewpoint_depression_2m_c: Vec<f64>,
+    vpd_2m_hpa: Vec<f64>,
+    fire_weather_composite: Vec<f64>,
     heat_index_2m_c: Vec<f64>,
     wind_chill_2m_c: Vec<f64>,
     apparent_temperature_2m_c: Vec<f64>,
@@ -51,6 +59,10 @@ pub fn compute_surface_thermo(
         dewpoint_2m_c: state.dewpoint_2m_c,
         relative_humidity_2m_pct: state.relative_humidity_2m_pct,
         theta_e_2m_k: state.theta_e_2m_k,
+        wetbulb_2m_c: state.wetbulb_2m_c,
+        dewpoint_depression_2m_c: state.dewpoint_depression_2m_c,
+        vpd_2m_hpa: state.vpd_2m_hpa,
+        fire_weather_composite: state.fire_weather_composite,
         heat_index_2m_c: state.heat_index_2m_c,
         wind_chill_2m_c: state.wind_chill_2m_c,
     })
@@ -468,6 +480,10 @@ fn compute_surface_thermo_state(
     let mut dewpoint_2m_c = Vec::with_capacity(grid.len());
     let mut relative_humidity_2m_pct = Vec::with_capacity(grid.len());
     let mut theta_e_2m_k = Vec::with_capacity(grid.len());
+    let mut wetbulb_2m_c = Vec::with_capacity(grid.len());
+    let mut dewpoint_depression_2m_c = Vec::with_capacity(grid.len());
+    let mut vpd_2m_hpa = Vec::with_capacity(grid.len());
+    let mut fire_weather_composite = Vec::with_capacity(grid.len());
     let mut heat_index_2m_c = Vec::with_capacity(grid.len());
     let mut wind_chill_2m_c = Vec::with_capacity(grid.len());
     let mut apparent_temperature_2m_c = Vec::with_capacity(grid.len());
@@ -481,6 +497,10 @@ fn compute_surface_thermo_state(
         let wind_speed_ms = (surface.u10_ms[idx] * surface.u10_ms[idx]
             + surface.v10_ms[idx] * surface.v10_ms[idx])
             .sqrt();
+        let wetbulb_c =
+            metrust::calc::wet_bulb_temperature(pressure_hpa, temperature_c, dewpoint_c);
+        let dewpoint_depression_c = (temperature_c - dewpoint_c).max(0.0);
+        let vpd_hpa = vapor_pressure_deficit_hpa(temperature_c, dewpoint_c);
 
         dewpoint_2m_c.push(dewpoint_c);
         relative_humidity_2m_pct.push(relative_humidity_pct);
@@ -488,6 +508,15 @@ fn compute_surface_thermo_state(
             pressure_hpa,
             temperature_c,
             dewpoint_c,
+        ));
+        wetbulb_2m_c.push(wetbulb_c);
+        dewpoint_depression_2m_c.push(dewpoint_depression_c);
+        vpd_2m_hpa.push(vpd_hpa);
+        fire_weather_composite.push(fire_weather_composite_value(
+            temperature_c,
+            relative_humidity_pct,
+            wind_speed_ms,
+            vpd_hpa,
         ));
         heat_index_2m_c.push(metrust::calc::atmo::heat_index(
             temperature_c,
@@ -505,6 +534,10 @@ fn compute_surface_thermo_state(
         dewpoint_2m_c,
         relative_humidity_2m_pct,
         theta_e_2m_k,
+        wetbulb_2m_c,
+        dewpoint_depression_2m_c,
+        vpd_2m_hpa,
+        fire_weather_composite,
         heat_index_2m_c,
         wind_chill_2m_c,
         apparent_temperature_2m_c,
@@ -516,6 +549,34 @@ fn dewpoint_from_mixing_ratio(pressure_hpa: f64, mixing_ratio_kgkg: f64) -> f64 
     let vapor_pressure_hpa = (q * pressure_hpa / (0.622 + q)).max(1.0e-10);
     let ln_e = (vapor_pressure_hpa / 6.112).ln();
     (243.5 * ln_e) / (17.67 - ln_e)
+}
+
+fn vapor_pressure_deficit_hpa(temperature_c: f64, dewpoint_c: f64) -> f64 {
+    let saturation_hpa = metrust::calc::thermo::saturation_vapor_pressure(temperature_c);
+    let actual_hpa = metrust::calc::thermo::vapor_pressure(dewpoint_c);
+    (saturation_hpa - actual_hpa).max(0.0)
+}
+
+fn fire_weather_composite_value(
+    temperature_c: f64,
+    relative_humidity_pct: f64,
+    wind_speed_ms: f64,
+    vpd_hpa: f64,
+) -> f64 {
+    const MPH_PER_MS: f64 = 2.236_936_292_054_4;
+
+    // Blend Fosberg and capped HDW so the public-facing composite stays on
+    // a stable 0-100 scale while still responding directly to VPD.
+    let fosberg = metrust::calc::fosberg_fire_weather_index(
+        temperature_c * 9.0 / 5.0 + 32.0,
+        relative_humidity_pct,
+        wind_speed_ms * MPH_PER_MS,
+    );
+    let hdw =
+        metrust::calc::hot_dry_windy(temperature_c, relative_humidity_pct, wind_speed_ms, vpd_hpa)
+            .clamp(0.0, 100.0);
+
+    (0.5 * fosberg + 0.5 * hdw).clamp(0.0, 100.0)
 }
 
 fn column(values: &[f64], nxy: usize, nz: usize, ij: usize) -> Vec<f64> {
@@ -683,5 +744,42 @@ mod tests {
             inputs.dy_m,
         );
         assert_eq!(wrapper, direct);
+    }
+
+    #[test]
+    fn surface_thermo_outputs_include_fire_weather_family() {
+        let pressure_hpa = 1000.0;
+        let cool_moist_q =
+            metrust::calc::thermo::specific_humidity_from_dewpoint(pressure_hpa, 18.0);
+        let hot_dry_q = metrust::calc::thermo::specific_humidity_from_dewpoint(pressure_hpa, 5.0);
+        let outputs = compute_surface_thermo(
+            GridShape::new(2, 1).unwrap(),
+            SurfaceInputs {
+                psfc_pa: &[100000.0, 100000.0],
+                t2_k: &[293.15, 308.15],
+                q2_kgkg: &[cool_moist_q, hot_dry_q],
+                u10_ms: &[1.0, 12.0],
+                v10_ms: &[0.0, 4.0],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(outputs.wetbulb_2m_c.len(), 2);
+        assert_eq!(outputs.dewpoint_depression_2m_c.len(), 2);
+        assert_eq!(outputs.vpd_2m_hpa.len(), 2);
+        assert_eq!(outputs.fire_weather_composite.len(), 2);
+
+        for idx in 0..2 {
+            let temperature_c = [20.0, 35.0][idx];
+            assert!(outputs.wetbulb_2m_c[idx] <= temperature_c + 1.0e-6);
+            assert!(outputs.wetbulb_2m_c[idx] >= outputs.dewpoint_2m_c[idx] - 1.0e-6);
+            assert!(outputs.dewpoint_depression_2m_c[idx] >= 0.0);
+            assert!(outputs.vpd_2m_hpa[idx] >= 0.0);
+            assert!((0.0..=100.0).contains(&outputs.fire_weather_composite[idx]));
+        }
+
+        assert!(outputs.dewpoint_depression_2m_c[1] > outputs.dewpoint_depression_2m_c[0]);
+        assert!(outputs.vpd_2m_hpa[1] > outputs.vpd_2m_hpa[0]);
+        assert!(outputs.fire_weather_composite[1] > outputs.fire_weather_composite[0]);
     }
 }

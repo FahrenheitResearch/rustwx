@@ -276,6 +276,30 @@ const SUPPORTED_DERIVED_RECIPE_INVENTORY: &[DerivedRecipeInventoryEntry] = &[
         heavy: false,
     },
     DerivedRecipeInventoryEntry {
+        slug: "vpd_2m",
+        title: "2 m Vapor Pressure Deficit",
+        experimental: false,
+        heavy: false,
+    },
+    DerivedRecipeInventoryEntry {
+        slug: "dewpoint_depression_2m",
+        title: "2 m Dewpoint Depression",
+        experimental: false,
+        heavy: false,
+    },
+    DerivedRecipeInventoryEntry {
+        slug: "wetbulb_2m",
+        title: "2 m Wet-Bulb Temperature",
+        experimental: false,
+        heavy: false,
+    },
+    DerivedRecipeInventoryEntry {
+        slug: "fire_weather_composite",
+        title: "Fire Weather Composite",
+        experimental: false,
+        heavy: false,
+    },
+    DerivedRecipeInventoryEntry {
         slug: "apparent_temperature_2m",
         title: "2 m Apparent Temperature",
         experimental: false,
@@ -691,6 +715,10 @@ pub(crate) enum DerivedRecipe {
     EcapeScp,
     EcapeEhi,
     ThetaE2m10mWinds,
+    Vpd2m,
+    DewpointDepression2m,
+    Wetbulb2m,
+    FireWeatherComposite,
     ApparentTemperature2m,
     HeatIndex2m,
     WindChill2m,
@@ -729,6 +757,18 @@ impl DerivedRecipe {
             "ecape_scp" => Ok(Self::EcapeScp),
             "ecape_ehi" => Ok(Self::EcapeEhi),
             "theta_e_2m_10m_winds" | "2m_theta_e_10m_winds" => Ok(Self::ThetaE2m10mWinds),
+            "vpd_2m" | "2m_vpd" | "vapor_pressure_deficit_2m" | "2m_vapor_pressure_deficit" => {
+                Ok(Self::Vpd2m)
+            }
+            "dewpoint_depression_2m" | "2m_dewpoint_depression" => {
+                Ok(Self::DewpointDepression2m)
+            }
+            "wetbulb_2m" | "wet_bulb_2m" | "2m_wetbulb" | "2m_wet_bulb" => {
+                Ok(Self::Wetbulb2m)
+            }
+            "fire_weather_composite" | "fire_weather" | "fire_wx" => {
+                Ok(Self::FireWeatherComposite)
+            }
             "apparent_temperature_2m" | "2m_apparent_temperature" => {
                 Ok(Self::ApparentTemperature2m)
             }
@@ -775,6 +815,10 @@ impl DerivedRecipe {
             Self::EcapeScp => "ecape_scp",
             Self::EcapeEhi => "ecape_ehi",
             Self::ThetaE2m10mWinds => "theta_e_2m_10m_winds",
+            Self::Vpd2m => "vpd_2m",
+            Self::DewpointDepression2m => "dewpoint_depression_2m",
+            Self::Wetbulb2m => "wetbulb_2m",
+            Self::FireWeatherComposite => "fire_weather_composite",
             Self::ApparentTemperature2m => "apparent_temperature_2m",
             Self::HeatIndex2m => "heat_index_2m",
             Self::WindChill2m => "wind_chill_2m",
@@ -812,6 +856,10 @@ impl DerivedRecipe {
             Self::EcapeScp => "ECAPE SCP (EXP)",
             Self::EcapeEhi => "ECAPE EHI (EXP)",
             Self::ThetaE2m10mWinds => "2 m Theta-e, 10 m Wind",
+            Self::Vpd2m => "2 m Vapor Pressure Deficit",
+            Self::DewpointDepression2m => "2 m Dewpoint Depression",
+            Self::Wetbulb2m => "2 m Wet-Bulb Temperature",
+            Self::FireWeatherComposite => "Fire Weather Composite",
             Self::ApparentTemperature2m => "2 m Apparent Temperature",
             Self::HeatIndex2m => "2 m Heat Index",
             Self::WindChill2m => "2 m Wind Chill",
@@ -836,9 +884,12 @@ impl DerivedRecipe {
             Self::ThetaE2m10mWinds
             | Self::TemperatureAdvection700mb
             | Self::TemperatureAdvection850mb => ProductVisualMode::UpperAirAnalysis,
-            Self::ApparentTemperature2m | Self::HeatIndex2m | Self::WindChill2m => {
-                ProductVisualMode::FilledMeteorology
-            }
+            Self::Vpd2m
+            | Self::DewpointDepression2m
+            | Self::Wetbulb2m
+            | Self::ApparentTemperature2m
+            | Self::HeatIndex2m
+            | Self::WindChill2m => ProductVisualMode::FilledMeteorology,
             _ => ProductVisualMode::SevereDiagnostic,
         }
     }
@@ -868,6 +919,10 @@ struct DerivedComputedFields {
     mucape_jkg: Option<Vec<f64>>,
     mucin_jkg: Option<Vec<f64>>,
     theta_e_2m_k: Option<Vec<f64>>,
+    vpd_2m_hpa: Option<Vec<f64>>,
+    dewpoint_depression_2m_c: Option<Vec<f64>>,
+    wetbulb_2m_c: Option<Vec<f64>>,
+    fire_weather_composite: Option<Vec<f64>>,
     apparent_temperature_2m_c: Option<Vec<f64>>,
     heat_index_2m_c: Option<Vec<f64>>,
     wind_chill_2m_c: Option<Vec<f64>>,
@@ -928,7 +983,11 @@ impl DerivedRequirements {
                     requirements.surface_thermo = true;
                     requirements.surface_winds = true;
                 }
-                DerivedRecipe::ApparentTemperature2m
+                DerivedRecipe::Vpd2m
+                | DerivedRecipe::DewpointDepression2m
+                | DerivedRecipe::Wetbulb2m
+                | DerivedRecipe::FireWeatherComposite
+                | DerivedRecipe::ApparentTemperature2m
                 | DerivedRecipe::HeatIndex2m
                 | DerivedRecipe::WindChill2m => {
                     requirements.surface_thermo = true;
@@ -2619,6 +2678,18 @@ where
             computed.surface_u10_ms = Some(surface.u10_ms().to_vec());
             computed.surface_v10_ms = Some(surface.v10_ms().to_vec());
         }
+        if recipes.contains(&DerivedRecipe::Vpd2m) {
+            computed.vpd_2m_hpa = Some(surface_thermo.vpd_2m_hpa);
+        }
+        if recipes.contains(&DerivedRecipe::DewpointDepression2m) {
+            computed.dewpoint_depression_2m_c = Some(surface_thermo.dewpoint_depression_2m_c);
+        }
+        if recipes.contains(&DerivedRecipe::Wetbulb2m) {
+            computed.wetbulb_2m_c = Some(surface_thermo.wetbulb_2m_c);
+        }
+        if recipes.contains(&DerivedRecipe::FireWeatherComposite) {
+            computed.fire_weather_composite = Some(surface_thermo.fire_weather_composite);
+        }
         if recipes.contains(&DerivedRecipe::ApparentTemperature2m) {
             computed.apparent_temperature_2m_c =
                 Some(compute_2m_apparent_temperature(grid, surface_inputs)?);
@@ -2909,6 +2980,56 @@ fn build_render_artifact_with_contour_mode(
             range_step(280.0, 381.0, 4.0),
             ExtendMode::Both,
             Some(8.0),
+        )?,
+        DerivedRecipe::Vpd2m => custom_scale_request(
+            recipe,
+            grid,
+            "hPa",
+            required_values(&computed.vpd_2m_hpa, recipe, "vpd_2m_hpa")?.clone(),
+            range_step(0.0, 11.0, 1.0),
+            vpd_scale_colors(),
+            ExtendMode::Max,
+            Some(2.0),
+        )?,
+        DerivedRecipe::DewpointDepression2m => custom_scale_request(
+            recipe,
+            grid,
+            "degC",
+            required_values(
+                &computed.dewpoint_depression_2m_c,
+                recipe,
+                "dewpoint_depression_2m_c",
+            )?
+            .clone(),
+            range_step(0.0, 41.0, 4.0),
+            dewpoint_depression_scale_colors(),
+            ExtendMode::Max,
+            Some(8.0),
+        )?,
+        DerivedRecipe::Wetbulb2m => palette_request(
+            recipe,
+            grid,
+            "degC",
+            required_values(&computed.wetbulb_2m_c, recipe, "wetbulb_2m_c")?.clone(),
+            Solar07Palette::Temperature,
+            range_step(-40.0, 31.0, 5.0),
+            ExtendMode::Both,
+            Some(10.0),
+        )?,
+        DerivedRecipe::FireWeatherComposite => custom_scale_request(
+            recipe,
+            grid,
+            "index",
+            required_values(
+                &computed.fire_weather_composite,
+                recipe,
+                "fire_weather_composite",
+            )?
+            .clone(),
+            range_step(0.0, 101.0, 10.0),
+            fire_weather_composite_scale_colors(),
+            ExtendMode::Neither,
+            Some(20.0),
         )?,
         DerivedRecipe::ApparentTemperature2m => derived_style_request(
             recipe,
@@ -3204,6 +3325,56 @@ fn build_render_artifact_with_contour_mode_profiled(
             range_step(280.0, 381.0, 4.0),
             ExtendMode::Both,
             Some(8.0),
+        )?,
+        DerivedRecipe::Vpd2m => custom_scale_request(
+            recipe,
+            grid,
+            "hPa",
+            required_values(&computed.vpd_2m_hpa, recipe, "vpd_2m_hpa")?.clone(),
+            range_step(0.0, 11.0, 1.0),
+            vpd_scale_colors(),
+            ExtendMode::Max,
+            Some(2.0),
+        )?,
+        DerivedRecipe::DewpointDepression2m => custom_scale_request(
+            recipe,
+            grid,
+            "degC",
+            required_values(
+                &computed.dewpoint_depression_2m_c,
+                recipe,
+                "dewpoint_depression_2m_c",
+            )?
+            .clone(),
+            range_step(0.0, 41.0, 4.0),
+            dewpoint_depression_scale_colors(),
+            ExtendMode::Max,
+            Some(8.0),
+        )?,
+        DerivedRecipe::Wetbulb2m => palette_request(
+            recipe,
+            grid,
+            "degC",
+            required_values(&computed.wetbulb_2m_c, recipe, "wetbulb_2m_c")?.clone(),
+            Solar07Palette::Temperature,
+            range_step(-40.0, 31.0, 5.0),
+            ExtendMode::Both,
+            Some(10.0),
+        )?,
+        DerivedRecipe::FireWeatherComposite => custom_scale_request(
+            recipe,
+            grid,
+            "index",
+            required_values(
+                &computed.fire_weather_composite,
+                recipe,
+                "fire_weather_composite",
+            )?
+            .clone(),
+            range_step(0.0, 101.0, 10.0),
+            fire_weather_composite_scale_colors(),
+            ExtendMode::Neither,
+            Some(20.0),
         )?,
         DerivedRecipe::ApparentTemperature2m => derived_style_request(
             recipe,
@@ -3533,6 +3704,10 @@ fn signature_contour_recipe_enabled(recipe: DerivedRecipe) -> bool {
             | DerivedRecipe::BulkShear01km
             | DerivedRecipe::BulkShear06km
             | DerivedRecipe::ThetaE2m10mWinds
+            | DerivedRecipe::Vpd2m
+            | DerivedRecipe::DewpointDepression2m
+            | DerivedRecipe::Wetbulb2m
+            | DerivedRecipe::FireWeatherComposite
             | DerivedRecipe::ApparentTemperature2m
             | DerivedRecipe::HeatIndex2m
             | DerivedRecipe::LiftedIndex
@@ -3850,6 +4025,18 @@ fn crop_computed_fields(
         mucape_jkg: crop_optional_values(&computed.mucape_jkg, source_nx, crop),
         mucin_jkg: crop_optional_values(&computed.mucin_jkg, source_nx, crop),
         theta_e_2m_k: crop_optional_values(&computed.theta_e_2m_k, source_nx, crop),
+        vpd_2m_hpa: crop_optional_values(&computed.vpd_2m_hpa, source_nx, crop),
+        dewpoint_depression_2m_c: crop_optional_values(
+            &computed.dewpoint_depression_2m_c,
+            source_nx,
+            crop,
+        ),
+        wetbulb_2m_c: crop_optional_values(&computed.wetbulb_2m_c, source_nx, crop),
+        fire_weather_composite: crop_optional_values(
+            &computed.fire_weather_composite,
+            source_nx,
+            crop,
+        ),
         apparent_temperature_2m_c: crop_optional_values(
             &computed.apparent_temperature_2m_c,
             source_nx,
@@ -4028,6 +4215,31 @@ fn palette_request(
     Ok((field, request))
 }
 
+fn custom_scale_request(
+    recipe: DerivedRecipe,
+    grid: &rustwx_core::LatLonGrid,
+    units: &str,
+    values: Vec<f64>,
+    levels: Vec<f64>,
+    colors: Vec<Color>,
+    extend: ExtendMode,
+    tick_step: Option<f64>,
+) -> Result<(Field2D, MapRenderRequest), Box<dyn std::error::Error>> {
+    let field = core_field(recipe, units, grid, values)?;
+    let mut request = MapRenderRequest::new(
+        field.clone().into(),
+        rustwx_render::ColorScale::Discrete(rustwx_render::DiscreteColorScale {
+            levels,
+            colors,
+            extend,
+            mask_below: None,
+        }),
+    )
+    .with_visual_mode(recipe.visual_mode());
+    request.cbar_tick_step = tick_step;
+    Ok((field, request))
+}
+
 fn derived_style_request(
     recipe: DerivedRecipe,
     grid: &rustwx_core::LatLonGrid,
@@ -4053,6 +4265,51 @@ fn core_field(
         grid.clone(),
         values.into_iter().map(|value| value as f32).collect(),
     )?)
+}
+
+fn vpd_scale_colors() -> Vec<Color> {
+    vec![
+        Color::rgba(26, 152, 80, 255),
+        Color::rgba(85, 180, 95, 255),
+        Color::rgba(120, 198, 102, 255),
+        Color::rgba(166, 217, 106, 255),
+        Color::rgba(217, 239, 139, 255),
+        Color::rgba(254, 224, 139, 255),
+        Color::rgba(253, 174, 97, 255),
+        Color::rgba(244, 109, 67, 255),
+        Color::rgba(215, 48, 39, 255),
+        Color::rgba(165, 0, 38, 255),
+    ]
+}
+
+fn dewpoint_depression_scale_colors() -> Vec<Color> {
+    vec![
+        Color::rgba(0, 104, 55, 255),
+        Color::rgba(26, 152, 80, 255),
+        Color::rgba(102, 189, 99, 255),
+        Color::rgba(166, 217, 106, 255),
+        Color::rgba(217, 239, 139, 255),
+        Color::rgba(254, 224, 139, 255),
+        Color::rgba(253, 174, 97, 255),
+        Color::rgba(244, 109, 67, 255),
+        Color::rgba(215, 48, 39, 255),
+        Color::rgba(165, 0, 38, 255),
+    ]
+}
+
+fn fire_weather_composite_scale_colors() -> Vec<Color> {
+    vec![
+        Color::rgba(34, 139, 34, 255),
+        Color::rgba(50, 205, 50, 255),
+        Color::rgba(120, 230, 60, 255),
+        Color::rgba(173, 255, 47, 255),
+        Color::rgba(255, 215, 0, 255),
+        Color::rgba(255, 170, 0, 255),
+        Color::rgba(255, 140, 0, 255),
+        Color::rgba(255, 69, 0, 255),
+        Color::rgba(204, 0, 0, 255),
+        Color::rgba(139, 0, 0, 255),
+    ]
 }
 
 fn level_slice<'a>(
@@ -4339,6 +4596,16 @@ mod tests {
         }
     }
 
+    fn sample_fire_weather_computed_fields() -> DerivedComputedFields {
+        DerivedComputedFields {
+            vpd_2m_hpa: Some(vec![0.5, 1.5, 3.0, 2.0, 4.0, 6.0, 5.0, 8.0, 10.0]),
+            dewpoint_depression_2m_c: Some(vec![1.0, 3.0, 6.0, 4.0, 8.0, 12.0, 10.0, 16.0, 20.0]),
+            wetbulb_2m_c: Some(vec![-6.0, -3.0, 0.0, 2.0, 5.0, 8.0, 11.0, 15.0, 19.0]),
+            fire_weather_composite: Some(vec![8.0, 15.0, 25.0, 20.0, 35.0, 55.0, 50.0, 75.0, 92.0]),
+            ..DerivedComputedFields::default()
+        }
+    }
+
     #[test]
     fn canonical_depth_ehi_slugs_are_supported_and_legacy_aliases_canonicalize() {
         assert_eq!(
@@ -4352,6 +4619,26 @@ mod tests {
         assert_eq!(
             DerivedRecipe::parse("2m_apparent_temperature").unwrap(),
             DerivedRecipe::ApparentTemperature2m
+        );
+        assert_eq!(
+            DerivedRecipe::parse("2m_vpd").unwrap(),
+            DerivedRecipe::Vpd2m
+        );
+        assert_eq!(
+            DerivedRecipe::parse("vapor_pressure_deficit_2m").unwrap(),
+            DerivedRecipe::Vpd2m
+        );
+        assert_eq!(
+            DerivedRecipe::parse("2m_dewpoint_depression").unwrap(),
+            DerivedRecipe::DewpointDepression2m
+        );
+        assert_eq!(
+            DerivedRecipe::parse("wet_bulb_2m").unwrap(),
+            DerivedRecipe::Wetbulb2m
+        );
+        assert_eq!(
+            DerivedRecipe::parse("fire_weather").unwrap(),
+            DerivedRecipe::FireWeatherComposite
         );
         assert_eq!(
             DerivedRecipe::parse("ehi_0_1km").unwrap(),
@@ -4438,6 +4725,51 @@ mod tests {
 
         let requirements =
             DerivedRequirements::from_recipes(&[DerivedRecipe::ApparentTemperature2m]);
+        assert!(requirements.surface_thermo);
+        assert!(!requirements.surface_winds);
+        assert!(!requirements.needs_volume());
+        assert!(!requirements.needs_height_agl());
+        assert!(!requirements.needs_grid_spacing());
+    }
+
+    #[test]
+    fn fire_weather_family_is_supported_surface_only_inventory() {
+        let expected = [
+            ("vpd_2m", "2 m Vapor Pressure Deficit", DerivedRecipe::Vpd2m),
+            (
+                "dewpoint_depression_2m",
+                "2 m Dewpoint Depression",
+                DerivedRecipe::DewpointDepression2m,
+            ),
+            (
+                "wetbulb_2m",
+                "2 m Wet-Bulb Temperature",
+                DerivedRecipe::Wetbulb2m,
+            ),
+            (
+                "fire_weather_composite",
+                "Fire Weather Composite",
+                DerivedRecipe::FireWeatherComposite,
+            ),
+        ];
+
+        for (slug, title, parsed) in expected {
+            let recipe = supported_derived_recipe_inventory()
+                .iter()
+                .find(|recipe| recipe.slug == slug)
+                .unwrap_or_else(|| panic!("{slug} inventory entry should exist"));
+            assert_eq!(recipe.title, title);
+            assert!(!recipe.experimental);
+            assert!(!recipe.heavy);
+            assert_eq!(DerivedRecipe::parse(slug).unwrap(), parsed);
+        }
+
+        let requirements = DerivedRequirements::from_recipes(&[
+            DerivedRecipe::Vpd2m,
+            DerivedRecipe::DewpointDepression2m,
+            DerivedRecipe::Wetbulb2m,
+            DerivedRecipe::FireWeatherComposite,
+        ]);
         assert!(requirements.surface_thermo);
         assert!(!requirements.surface_winds);
         assert!(!requirements.needs_volume());
@@ -4642,6 +4974,66 @@ mod tests {
                 .values
                 .iter()
                 .any(|value| value.is_finite())
+        );
+    }
+
+    #[test]
+    fn fire_weather_family_render_artifacts_build_and_signature_mode_projects() {
+        let grid = sample_native_contour_grid();
+        let projected = sample_projected_map();
+        let computed = sample_fire_weather_computed_fields();
+
+        for recipe in [
+            DerivedRecipe::Vpd2m,
+            DerivedRecipe::DewpointDepression2m,
+            DerivedRecipe::Wetbulb2m,
+            DerivedRecipe::FireWeatherComposite,
+        ] {
+            let artifact = build_render_artifact_with_contour_mode(
+                recipe,
+                &grid,
+                &projected,
+                "20260414",
+                23,
+                0,
+                SourceId::Nomads,
+                ModelId::Hrrr,
+                1200,
+                900,
+                &computed,
+                NativeContourRenderMode::LegacyRaster,
+                1,
+            )
+            .unwrap();
+            assert_eq!(artifact.request.title.as_deref(), Some(recipe.title()));
+            assert!(artifact.request.projected_data_polygons.is_empty());
+            assert!(artifact.field.values.iter().any(|value| value.is_finite()));
+        }
+
+        let signature = build_render_artifact_with_contour_mode(
+            DerivedRecipe::FireWeatherComposite,
+            &grid,
+            &projected,
+            "20260414",
+            23,
+            0,
+            SourceId::Nomads,
+            ModelId::Hrrr,
+            1200,
+            900,
+            &computed,
+            NativeContourRenderMode::Signature,
+            1,
+        )
+        .unwrap();
+        assert!(!signature.request.projected_data_polygons.is_empty());
+        assert!(
+            signature
+                .request
+                .field
+                .values
+                .iter()
+                .all(|value| value.is_nan())
         );
     }
 

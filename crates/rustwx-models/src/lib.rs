@@ -1168,6 +1168,34 @@ const FIELD_UH: GribFieldSpec = field_spec(
     &["MXUPHL:5000-2000", "UPHL:5000-2000", "UHEL:"],
 );
 
+const FIELD_SMOKE_MASS_DENSITY_8M: GribFieldSpec = field_spec(
+    "smoke_mass_density_8m_agl",
+    "8m AGL Smoke Mass Density",
+    ProductFamily::Native,
+    GribLevelKind::HeightAboveGround,
+    Some(8),
+    Some(FieldSelector::height_agl(
+        CanonicalField::SmokeMassDensity,
+        8,
+    )),
+    &["MASSDEN:8 m above ground"],
+);
+
+const FIELD_COLUMN_INTEGRATED_SMOKE: GribFieldSpec = field_spec(
+    "column_integrated_smoke",
+    "Column-Integrated Smoke",
+    ProductFamily::Native,
+    GribLevelKind::EntireAtmosphere,
+    None,
+    Some(FieldSelector::entire_atmosphere(
+        CanonicalField::ColumnIntegratedSmoke,
+    )),
+    &[
+        "COLMD:entire atmosphere (considered as a single layer)",
+        "COLMD:entire atmosphere",
+    ],
+);
+
 const PLOT_RECIPES: &[PlotRecipe] = &[
     PlotRecipe {
         slug: "200mb_height_winds",
@@ -1637,6 +1665,24 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         barbs_v: None,
         style: RenderStyle::Solar07Uh,
     },
+    PlotRecipe {
+        slug: "smoke_pm25_native",
+        title: "PM2.5 Smoke",
+        filled: FIELD_SMOKE_MASS_DENSITY_8M,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::Solar07Temperature,
+    },
+    PlotRecipe {
+        slug: "smoke_column",
+        title: "Column-Integrated Smoke",
+        filled: FIELD_COLUMN_INTEGRATED_SMOKE,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::Solar07Temperature,
+    },
 ];
 
 pub fn built_in_models() -> &'static [ModelSummary] {
@@ -1700,7 +1746,14 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
             CanonicalField::UWind | CanonicalField::VWind,
             VerticalSelector::HeightAboveGroundMeters(10),
         ) => true,
+        (
+            CanonicalField::Pressure | CanonicalField::SmokeMassDensity,
+            VerticalSelector::HybridLevel(level),
+        ) => matches!(model, ModelId::Hrrr) && is_supported_hrrr_smoke_hybrid_level(level),
         (CanonicalField::WindGust, VerticalSelector::HeightAboveGroundMeters(10)) => true,
+        (CanonicalField::SmokeMassDensity, VerticalSelector::HeightAboveGroundMeters(8)) => {
+            matches!(model, ModelId::Hrrr)
+        }
         (CanonicalField::PressureReducedToMeanSeaLevel, VerticalSelector::MeanSeaLevel) => true,
         (
             CanonicalField::PrecipitableWater | CanonicalField::TotalCloudCover,
@@ -1712,6 +1765,9 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
             | CanonicalField::HighCloudCover,
             VerticalSelector::EntireAtmosphere,
         ) => true,
+        (CanonicalField::ColumnIntegratedSmoke, VerticalSelector::EntireAtmosphere) => {
+            matches!(model, ModelId::Hrrr)
+        }
         (CanonicalField::TotalPrecipitation, VerticalSelector::Surface) => true,
         (CanonicalField::Visibility, VerticalSelector::Surface) => true,
         (
@@ -2473,10 +2529,21 @@ fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<Stri
             field.label
         )),
         (
+            "smoke_mass_density_8m_agl" | "column_integrated_smoke",
+            ModelId::Gfs | ModelId::EcmwfOpenData,
+        ) => Some(format!(
+            "{} is only verified and wired for HRRR wrfnat right now; the native smoke GRIB signature is not verified yet for model '{model}'",
+            field.label
+        )),
+        (
             "simulated_infrared_brightness_temperature",
             ModelId::Gfs | ModelId::EcmwfOpenData | ModelId::RrfsA,
         ) => Some(format!(
             "{} is only verified and wired for HRRR right now; the native GRIB signature is not verified yet for model '{model}'",
+            field.label
+        )),
+        ("smoke_mass_density_8m_agl" | "column_integrated_smoke", ModelId::RrfsA) => Some(format!(
+            "{} is only verified and wired for HRRR wrfnat right now; the native GRIB signature is not verified yet for model '{model}'",
             field.label
         )),
         _ => None,
@@ -2638,6 +2705,10 @@ fn unsupported_source(source: SourceId, model: ModelId) -> String {
     format!("unsupported://{source}/{model}")
 }
 
+fn is_supported_hrrr_smoke_hybrid_level(level: u16) -> bool {
+    (1..=50).contains(&level)
+}
+
 impl fmt::Display for ModelSummary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.id, self.description)
@@ -2721,6 +2792,8 @@ mod tests {
         assert!(plot_recipe("1km_reflectivity").is_some());
         assert!(plot_recipe("composite_reflectivity").is_some());
         assert!(plot_recipe("composite_reflectivity_uh").is_some());
+        assert!(plot_recipe("smoke_pm25_native").is_some());
+        assert!(plot_recipe("smoke_column").is_some());
     }
 
     #[test]
@@ -2738,6 +2811,16 @@ mod tests {
             provenance.selector,
             Some(FieldSelector::isobaric(CanonicalField::Temperature, 500))
         );
+
+        let smoke_metadata = FIELD_SMOKE_MASS_DENSITY_8M.product_metadata();
+        assert_eq!(smoke_metadata.display_name, "8m AGL Smoke Mass Density");
+        assert_eq!(smoke_metadata.category.as_deref(), Some("native"));
+        assert_eq!(smoke_metadata.native_units.as_deref(), Some("kg/m^3"));
+
+        let column_metadata = FIELD_COLUMN_INTEGRATED_SMOKE.product_metadata();
+        assert_eq!(column_metadata.display_name, "Column-Integrated Smoke");
+        assert_eq!(column_metadata.category.as_deref(), Some("native"));
+        assert_eq!(column_metadata.native_units.as_deref(), Some("kg/m^2"));
     }
 
     #[test]
@@ -2834,6 +2917,33 @@ mod tests {
         );
         assert!(recipe.barbs_u.is_none());
         assert!(recipe.barbs_v.is_none());
+    }
+
+    #[test]
+    fn smoke_recipes_are_selector_backed_native_hrrr_products() {
+        let smoke = plot_recipe("smoke_pm25_native").unwrap();
+        assert_eq!(smoke.filled.family, ProductFamily::Native);
+        assert_eq!(
+            smoke.filled.selector,
+            Some(FieldSelector::height_agl(
+                CanonicalField::SmokeMassDensity,
+                8
+            ))
+        );
+        assert_eq!(smoke.filled.idx_patterns()[0], "MASSDEN:8 m above ground");
+
+        let column = plot_recipe("smoke_column").unwrap();
+        assert_eq!(column.filled.family, ProductFamily::Native);
+        assert_eq!(
+            column.filled.selector,
+            Some(FieldSelector::entire_atmosphere(
+                CanonicalField::ColumnIntegratedSmoke
+            ))
+        );
+        assert_eq!(
+            column.filled.idx_patterns()[0],
+            "COLMD:entire atmosphere (considered as a single layer)"
+        );
     }
 
     #[test]
@@ -3329,6 +3439,33 @@ mod tests {
     }
 
     #[test]
+    fn smoke_recipes_use_hrrr_native_fetch_plan() {
+        let smoke = plot_recipe_fetch_plan("smoke_pm25_native", ModelId::Hrrr).unwrap();
+        assert_eq!(smoke.product, "nat");
+        assert_eq!(smoke.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
+        assert_eq!(
+            smoke.fetch_mode,
+            PlotRecipeFetchMode::WholeFileStructuredExtract
+        );
+        assert_eq!(
+            smoke.selectors(),
+            vec![FieldSelector::height_agl(
+                CanonicalField::SmokeMassDensity,
+                8
+            )]
+        );
+
+        let column = plot_recipe_fetch_plan("smoke_column", ModelId::Hrrr).unwrap();
+        assert_eq!(column.product, "nat");
+        assert_eq!(
+            column.selectors(),
+            vec![FieldSelector::entire_atmosphere(
+                CanonicalField::ColumnIntegratedSmoke
+            )]
+        );
+    }
+
+    #[test]
     fn supported_recipe_has_no_fetch_blockers() {
         let blockers =
             plot_recipe_fetch_blockers("850mb_temperature_height_winds", ModelId::EcmwfOpenData)
@@ -3350,6 +3487,16 @@ mod tests {
         );
         assert!(
             plot_recipe_fetch_blockers("uh_2to5km", ModelId::Hrrr)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            plot_recipe_fetch_blockers("smoke_pm25_native", ModelId::Hrrr)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            plot_recipe_fetch_blockers("smoke_column", ModelId::Hrrr)
                 .unwrap()
                 .is_empty()
         );
@@ -3438,6 +3585,30 @@ mod tests {
         assert!(!selector_supported_for_model(
             FieldSelector::nominal_top(CanonicalField::SimulatedInfraredBrightnessTemperature),
             ModelId::Gfs,
+        ));
+        assert!(selector_supported_for_model(
+            FieldSelector::height_agl(CanonicalField::SmokeMassDensity, 8),
+            ModelId::Hrrr,
+        ));
+        assert!(selector_supported_for_model(
+            FieldSelector::entire_atmosphere(CanonicalField::ColumnIntegratedSmoke),
+            ModelId::Hrrr,
+        ));
+        assert!(selector_supported_for_model(
+            FieldSelector::hybrid_level(CanonicalField::SmokeMassDensity, 50),
+            ModelId::Hrrr,
+        ));
+        assert!(selector_supported_for_model(
+            FieldSelector::hybrid_level(CanonicalField::Pressure, 1),
+            ModelId::Hrrr,
+        ));
+        assert!(!selector_supported_for_model(
+            FieldSelector::height_agl(CanonicalField::SmokeMassDensity, 8),
+            ModelId::RrfsA,
+        ));
+        assert!(!selector_supported_for_model(
+            FieldSelector::hybrid_level(CanonicalField::SmokeMassDensity, 51),
+            ModelId::Hrrr,
         ));
     }
 
@@ -3572,6 +3743,17 @@ mod tests {
                 .reason
                 .contains("GRIB signature is not verified yet")
         );
+    }
+
+    #[test]
+    fn smoke_recipes_remain_blocked_for_unverified_models() {
+        let rrfs_smoke = plot_recipe_fetch_blockers("smoke_pm25_native", ModelId::RrfsA).unwrap();
+        assert_eq!(rrfs_smoke.len(), 1);
+        assert!(rrfs_smoke[0].reason.contains("HRRR wrfnat"));
+
+        let gfs_column = plot_recipe_fetch_blockers("smoke_column", ModelId::Gfs).unwrap();
+        assert_eq!(gfs_column.len(), 1);
+        assert!(gfs_column[0].reason.contains("native smoke GRIB signature"));
     }
 
     #[test]

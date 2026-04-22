@@ -92,8 +92,14 @@ pub struct CrossSectionSummary {
 pub enum ProofProductArg {
     Temperature,
     RelativeHumidity,
+    SpecificHumidity,
     ThetaE,
     WindSpeed,
+    WetBulb,
+    VaporPressureDeficit,
+    DewpointDepression,
+    MoistureTransport,
+    FireWeather,
 }
 
 impl ProofProductArg {
@@ -101,8 +107,14 @@ impl ProofProductArg {
         match self {
             Self::Temperature => CrossSectionProduct::Temperature,
             Self::RelativeHumidity => CrossSectionProduct::RelativeHumidity,
+            Self::SpecificHumidity => CrossSectionProduct::SpecificHumidity,
             Self::ThetaE => CrossSectionProduct::ThetaE,
             Self::WindSpeed => CrossSectionProduct::WindSpeed,
+            Self::WetBulb => CrossSectionProduct::WetBulb,
+            Self::VaporPressureDeficit => CrossSectionProduct::VaporPressureDeficit,
+            Self::DewpointDepression => CrossSectionProduct::DewpointDepression,
+            Self::MoistureTransport => CrossSectionProduct::MoistureTransport,
+            Self::FireWeather => CrossSectionProduct::FireWeather,
         }
     }
 }
@@ -386,6 +398,9 @@ fn proof_style_for_request(
                 .with_value_range(-36.0, 30.0)
                 .with_value_ticks(vec![-35.0, -30.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0]);
         }
+        CrossSectionProduct::SpecificHumidity => {
+            style = style.with_value_ticks(vec![0.0, 2.0, 4.0, 8.0, 12.0, 16.0]);
+        }
         CrossSectionProduct::ThetaE => {
             style = style
                 .with_value_range(284.0, 356.0)
@@ -393,6 +408,21 @@ fn proof_style_for_request(
         }
         CrossSectionProduct::WindSpeed => {
             style = style.with_value_ticks(vec![0.0, 20.0, 40.0, 60.0, 80.0, 100.0]);
+        }
+        CrossSectionProduct::WetBulb => {
+            style = style.with_value_ticks(vec![-40.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0]);
+        }
+        CrossSectionProduct::VaporPressureDeficit => {
+            style = style.with_value_ticks(vec![0.0, 2.0, 4.0, 6.0, 8.0, 10.0]);
+        }
+        CrossSectionProduct::DewpointDepression => {
+            style = style.with_value_ticks(vec![0.0, 5.0, 10.0, 20.0, 30.0, 40.0]);
+        }
+        CrossSectionProduct::MoistureTransport => {
+            style = style.with_value_ticks(vec![0.0, 25.0, 50.0, 100.0, 150.0, 200.0]);
+        }
+        CrossSectionProduct::FireWeather => {
+            style = style.with_value_ticks(vec![0.0, 15.0, 25.0, 40.0, 60.0, 80.0, 100.0]);
         }
         _ => {}
     }
@@ -542,8 +572,32 @@ mod tests {
             CrossSectionProduct::RelativeHumidity
         );
         assert_eq!(
+            ProofProductArg::SpecificHumidity.product(),
+            CrossSectionProduct::SpecificHumidity
+        );
+        assert_eq!(
             ProofProductArg::ThetaE.product(),
             CrossSectionProduct::ThetaE
+        );
+        assert_eq!(
+            ProofProductArg::WetBulb.product(),
+            CrossSectionProduct::WetBulb
+        );
+        assert_eq!(
+            ProofProductArg::VaporPressureDeficit.product(),
+            CrossSectionProduct::VaporPressureDeficit
+        );
+        assert_eq!(
+            ProofProductArg::DewpointDepression.product(),
+            CrossSectionProduct::DewpointDepression
+        );
+        assert_eq!(
+            ProofProductArg::MoistureTransport.product(),
+            CrossSectionProduct::MoistureTransport
+        );
+        assert_eq!(
+            ProofProductArg::FireWeather.product(),
+            CrossSectionProduct::FireWeather
         );
     }
 }

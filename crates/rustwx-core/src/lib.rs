@@ -23,6 +23,10 @@ pub enum RustwxError {
     EmptyPressureLevels,
     #[error("invalid pressure level at index {index}: {value}")]
     InvalidPressureLevel { index: usize, value: f32 },
+    #[error("hybrid-level volume requires at least one level")]
+    EmptyHybridLevels,
+    #[error("invalid hybrid level at index {index}: {value}")]
+    InvalidHybridLevel { index: usize, value: u16 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,6 +154,7 @@ impl std::fmt::Display for ProductKey {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CanonicalField {
+    Pressure,
     GeopotentialHeight,
     Temperature,
     RelativeHumidity,
@@ -177,11 +182,14 @@ pub enum CanonicalField {
     LandSeaMask,
     CompositeReflectivity,
     UpdraftHelicity,
+    SmokeMassDensity,
+    ColumnIntegratedSmoke,
 }
 
 impl CanonicalField {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Pressure => "pressure",
             Self::GeopotentialHeight => "geopotential_height",
             Self::Temperature => "temperature",
             Self::RelativeHumidity => "relative_humidity",
@@ -211,11 +219,14 @@ impl CanonicalField {
             Self::LandSeaMask => "land_sea_mask",
             Self::CompositeReflectivity => "composite_reflectivity",
             Self::UpdraftHelicity => "updraft_helicity",
+            Self::SmokeMassDensity => "smoke_mass_density",
+            Self::ColumnIntegratedSmoke => "column_integrated_smoke",
         }
     }
 
     pub fn display_name(self) -> &'static str {
         match self {
+            Self::Pressure => "Pressure",
             Self::GeopotentialHeight => "Geopotential Height",
             Self::Temperature => "Temperature",
             Self::RelativeHumidity => "Relative Humidity",
@@ -245,11 +256,14 @@ impl CanonicalField {
             Self::LandSeaMask => "Land-Sea Mask",
             Self::CompositeReflectivity => "Composite Reflectivity",
             Self::UpdraftHelicity => "Updraft Helicity",
+            Self::SmokeMassDensity => "Smoke Mass Density",
+            Self::ColumnIntegratedSmoke => "Column-Integrated Smoke",
         }
     }
 
     pub fn native_units(self) -> &'static str {
         match self {
+            Self::Pressure => "Pa",
             Self::GeopotentialHeight => "gpm",
             Self::Temperature => "K",
             Self::RelativeHumidity => "%",
@@ -273,6 +287,8 @@ impl CanonicalField {
             Self::LandSeaMask => "fraction",
             Self::CompositeReflectivity => "dBZ",
             Self::UpdraftHelicity => "m^2/s^2",
+            Self::SmokeMassDensity => "kg/m^3",
+            Self::ColumnIntegratedSmoke => "kg/m^2",
         }
     }
 }
@@ -289,6 +305,7 @@ pub enum VerticalSelector {
     MeanSeaLevel,
     HeightAboveGroundMeters(u16),
     HeightAboveGroundLayerMeters { bottom_m: u16, top_m: u16 },
+    HybridLevel(u16),
     IsobaricHpa(u16),
     EntireAtmosphere,
     NominalTop,
@@ -303,6 +320,7 @@ impl VerticalSelector {
             Self::HeightAboveGroundLayerMeters { bottom_m, top_m } => {
                 format!("{bottom_m}m_to_{top_m}m_agl")
             }
+            Self::HybridLevel(level) => format!("hybrid_level_{level}"),
             Self::IsobaricHpa(level_hpa) => format!("{level_hpa}hpa"),
             Self::EntireAtmosphere => "entire_atmosphere".to_string(),
             Self::NominalTop => "nominal_top".to_string(),
@@ -319,6 +337,7 @@ impl std::fmt::Display for VerticalSelector {
             Self::HeightAboveGroundLayerMeters { bottom_m, top_m } => {
                 write!(f, "{bottom_m}-{top_m}m_agl")
             }
+            Self::HybridLevel(level) => write!(f, "hybrid_level_{level}"),
             Self::IsobaricHpa(level_hpa) => write!(f, "{level_hpa}hpa"),
             Self::EntireAtmosphere => f.write_str("entire_atmosphere"),
             Self::NominalTop => f.write_str("nominal_top"),
@@ -339,6 +358,10 @@ impl FieldSelector {
 
     pub const fn isobaric(field: CanonicalField, level_hpa: u16) -> Self {
         Self::new(field, VerticalSelector::IsobaricHpa(level_hpa))
+    }
+
+    pub const fn hybrid_level(field: CanonicalField, level: u16) -> Self {
+        Self::new(field, VerticalSelector::HybridLevel(level))
     }
 
     pub const fn surface(field: CanonicalField) -> Self {
@@ -628,6 +651,66 @@ impl SelectedField2D {
 impl From<SelectedField2D> for Field2D {
     fn from(value: SelectedField2D) -> Self {
         value.into_field2d()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SelectedHybridLevelVolume {
+    pub field: CanonicalField,
+    pub levels_hybrid: Vec<u16>,
+    pub units: String,
+    pub grid: LatLonGrid,
+    pub values: Vec<f32>,
+    pub projection: Option<GridProjection>,
+}
+
+impl SelectedHybridLevelVolume {
+    pub fn new<S: Into<String>>(
+        field: CanonicalField,
+        levels_hybrid: Vec<u16>,
+        units: S,
+        grid: LatLonGrid,
+        values: Vec<f32>,
+    ) -> Result<Self, RustwxError> {
+        validate_hybrid_levels(&levels_hybrid)?;
+        let expected = levels_hybrid.len() * grid.shape.len();
+        if values.len() != expected {
+            return Err(RustwxError::InvalidFieldDataLength {
+                expected,
+                actual: values.len(),
+            });
+        }
+        Ok(Self {
+            field,
+            levels_hybrid,
+            units: units.into(),
+            grid,
+            values,
+            projection: None,
+        })
+    }
+
+    pub fn level_count(&self) -> usize {
+        self.levels_hybrid.len()
+    }
+
+    pub fn level_slice(&self, level_index: usize) -> Option<&[f32]> {
+        let layer_len = self.grid.shape.len();
+        let start = level_index.checked_mul(layer_len)?;
+        let end = start.checked_add(layer_len)?;
+        self.values.get(start..end)
+    }
+
+    pub fn selector_at(&self, level_index: usize) -> Option<FieldSelector> {
+        self.levels_hybrid
+            .get(level_index)
+            .copied()
+            .map(|level| FieldSelector::hybrid_level(self.field, level))
+    }
+
+    pub fn with_projection(mut self, projection: GridProjection) -> Self {
+        self.projection = Some(projection);
+        self
     }
 }
 
@@ -1333,6 +1416,20 @@ fn validate_pressure_levels(levels_hpa: &[f32]) -> Result<(), RustwxError> {
     Ok(())
 }
 
+fn validate_hybrid_levels(levels_hybrid: &[u16]) -> Result<(), RustwxError> {
+    if levels_hybrid.is_empty() {
+        return Err(RustwxError::EmptyHybridLevels);
+    }
+
+    for (index, value) in levels_hybrid.iter().copied().enumerate() {
+        if value == 0 {
+            return Err(RustwxError::InvalidHybridLevel { index, value });
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1390,6 +1487,10 @@ mod tests {
 
     #[test]
     fn field_selector_builds_keys_and_units() {
+        let hybrid_pressure = FieldSelector::hybrid_level(CanonicalField::Pressure, 17);
+        assert_eq!(hybrid_pressure.key(), "pressure_hybrid_level_17");
+        assert_eq!(hybrid_pressure.native_units(), "Pa");
+
         let selector = FieldSelector::isobaric(CanonicalField::Temperature, 500);
         assert_eq!(selector.to_string(), "temperature@500hpa");
         assert_eq!(selector.key(), "temperature_500hpa");
@@ -1486,6 +1587,21 @@ mod tests {
 
         let uh = FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000);
         assert_eq!(uh.key(), "updraft_helicity_2000m_to_5000m_agl");
+
+        let smoke_8m = FieldSelector::height_agl(CanonicalField::SmokeMassDensity, 8);
+        assert_eq!(smoke_8m.key(), "smoke_mass_density_8m_agl");
+        assert_eq!(smoke_8m.native_units(), "kg/m^3");
+
+        let smoke_hybrid = FieldSelector::hybrid_level(CanonicalField::SmokeMassDensity, 50);
+        assert_eq!(smoke_hybrid.key(), "smoke_mass_density_hybrid_level_50");
+        assert_eq!(smoke_hybrid.native_units(), "kg/m^3");
+
+        let smoke_column = FieldSelector::entire_atmosphere(CanonicalField::ColumnIntegratedSmoke);
+        assert_eq!(
+            smoke_column.key(),
+            "column_integrated_smoke_entire_atmosphere"
+        );
+        assert_eq!(smoke_column.native_units(), "kg/m^2");
     }
 
     #[test]
@@ -1692,6 +1808,44 @@ mod tests {
     }
 
     #[test]
+    fn selected_hybrid_level_volume_tracks_levels_slices_and_projection() {
+        let shape = GridShape::new(2, 1).unwrap();
+        let grid = LatLonGrid::new(shape, vec![35.0, 35.0], vec![-99.0, -98.0]).unwrap();
+        let volume = SelectedHybridLevelVolume::new(
+            CanonicalField::SmokeMassDensity,
+            vec![1, 2],
+            "kg/m^3",
+            grid,
+            vec![1.0, 2.0, 3.0, 4.0],
+        )
+        .unwrap()
+        .with_projection(GridProjection::LambertConformal {
+            standard_parallel_1_deg: 38.5,
+            standard_parallel_2_deg: 38.5,
+            central_meridian_deg: -97.5,
+        });
+
+        assert_eq!(volume.level_count(), 2);
+        assert_eq!(volume.level_slice(0), Some(&[1.0, 2.0][..]));
+        assert_eq!(volume.level_slice(1), Some(&[3.0, 4.0][..]));
+        assert_eq!(
+            volume.selector_at(1),
+            Some(FieldSelector::hybrid_level(
+                CanonicalField::SmokeMassDensity,
+                2
+            ))
+        );
+        assert_eq!(
+            volume.projection,
+            Some(GridProjection::LambertConformal {
+                standard_parallel_1_deg: 38.5,
+                standard_parallel_2_deg: 38.5,
+                central_meridian_deg: -97.5,
+            })
+        );
+    }
+
+    #[test]
     fn grid_projection_bincode_round_trip_works() {
         let projection = GridProjection::PolarStereographic {
             true_latitude_deg: 60.0,
@@ -1847,6 +2001,46 @@ mod tests {
         ));
         assert!(matches!(
             PressureLevelVolume::new(metadata, vec![850.0, 700.0], grid, vec![1.0, 2.0, 3.0]),
+            Err(RustwxError::InvalidFieldDataLength {
+                expected: 4,
+                actual: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn hybrid_level_volume_validates_levels_and_lengths() {
+        let shape = GridShape::new(2, 1).unwrap();
+        let grid = LatLonGrid::new(shape, vec![35.0, 35.0], vec![-99.0, -98.0]).unwrap();
+
+        assert!(matches!(
+            SelectedHybridLevelVolume::new(
+                CanonicalField::SmokeMassDensity,
+                Vec::new(),
+                "kg/m^3",
+                grid.clone(),
+                vec![1.0, 2.0],
+            ),
+            Err(RustwxError::EmptyHybridLevels)
+        ));
+        assert!(matches!(
+            SelectedHybridLevelVolume::new(
+                CanonicalField::SmokeMassDensity,
+                vec![1, 0],
+                "kg/m^3",
+                grid.clone(),
+                vec![1.0, 2.0, 3.0, 4.0],
+            ),
+            Err(RustwxError::InvalidHybridLevel { index: 1, value: 0 })
+        ));
+        assert!(matches!(
+            SelectedHybridLevelVolume::new(
+                CanonicalField::Pressure,
+                vec![1, 2],
+                "Pa",
+                grid,
+                vec![1.0, 2.0, 3.0],
+            ),
             Err(RustwxError::InvalidFieldDataLength {
                 expected: 4,
                 actual: 3

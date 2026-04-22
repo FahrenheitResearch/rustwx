@@ -700,7 +700,9 @@ fn group_direct_fetches(
     let mut grouped = HashMap::<String, FetchGroup>::new();
     for item in recipes {
         let planned_family = item.plan.product.to_string();
-        let key = canonical_fetch_product(request, planned_family.as_str());
+        let selectors = item.plan.selectors();
+        let key =
+            canonical_fetch_product_for_selectors(request, planned_family.as_str(), &selectors);
         let entry = grouped.entry(key.clone()).or_insert_with(|| FetchGroup {
             product: key.clone(),
             fetch_mode: PlotRecipeFetchMode::WholeFileStructuredExtract,
@@ -714,7 +716,7 @@ fn group_direct_fetches(
                 entry.variable_patterns.push(pattern.to_string());
             }
         }
-        for selector in item.plan.selectors() {
+        for selector in selectors {
             if !entry.selectors.contains(&selector) {
                 entry.selectors.push(selector);
             }
@@ -726,14 +728,34 @@ fn group_direct_fetches(
 }
 
 fn canonical_fetch_product(request: &DirectBatchRequest, planned_product: &str) -> String {
+    canonical_fetch_product_for_selectors(request, planned_product, &[])
+}
+
+fn canonical_fetch_product_for_selectors(
+    request: &DirectBatchRequest,
+    planned_product: &str,
+    selectors: &[FieldSelector],
+) -> String {
     if let Some(overridden) = request.product_overrides.get(planned_product) {
         return overridden.clone();
     }
 
     match (request.model, planned_product) {
+        (ModelId::Hrrr, "nat") if hrrr_native_selectors_require_wrfnat(selectors) => {
+            "nat".to_string()
+        }
         (ModelId::Hrrr, "nat") => "sfc".to_string(),
         _ => planned_product.to_string(),
     }
+}
+
+fn hrrr_native_selectors_require_wrfnat(selectors: &[FieldSelector]) -> bool {
+    selectors.iter().any(|selector| {
+        matches!(
+            selector.field,
+            CanonicalField::SmokeMassDensity | CanonicalField::ColumnIntegratedSmoke
+        )
+    })
 }
 
 fn build_direct_execution_plan(
@@ -1159,7 +1181,11 @@ fn render_direct_recipe(
         request.domain.slug,
         item.recipe.slug
     ));
-    let canonical_product = canonical_fetch_product(request, item.plan.product.as_ref());
+    let canonical_product = canonical_fetch_product_for_selectors(
+        request,
+        item.plan.product.as_ref(),
+        &item.plan.selectors(),
+    );
     let runtime_fetch = fetch_truth_by_actual_product
         .get::<str>(canonical_product.as_str())
         .ok_or_else(|| {
@@ -1717,7 +1743,17 @@ fn derived_height_winds_fill(
 
 fn convert_filled_field(recipe: &PlotRecipe, field: &SelectedField2D) -> rustwx_core::Field2D {
     let mut core = field.clone().into_field2d();
-    if matches!(
+    if field.selector.field == CanonicalField::SmokeMassDensity {
+        for value in &mut core.values {
+            *value *= 1_000_000_000.0;
+        }
+        core.units = "ug/m^3".to_string();
+    } else if field.selector.field == CanonicalField::ColumnIntegratedSmoke {
+        for value in &mut core.values {
+            *value *= 1_000_000.0;
+        }
+        core.units = "mg/m^2".to_string();
+    } else if matches!(
         recipe.style,
         RenderStyle::Solar07Temperature | RenderStyle::Solar07Dewpoint
     ) {
@@ -1767,6 +1803,22 @@ fn should_render_overlay_only(selector: FieldSelector, has_explicit_contours: bo
 }
 
 fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> ColorScale {
+    if filled_selector.field == CanonicalField::SmokeMassDensity {
+        return ColorScale::Discrete(DiscreteColorScale {
+            levels: vec![0.0, 5.0, 10.0, 20.0, 35.0, 55.0, 100.0, 150.0, 250.0, 500.0],
+            colors: smoke_scale_colors(),
+            extend: ExtendMode::Max,
+            mask_below: Some(1.0),
+        });
+    }
+    if filled_selector.field == CanonicalField::ColumnIntegratedSmoke {
+        return ColorScale::Discrete(DiscreteColorScale {
+            levels: vec![0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 40.0, 80.0, 160.0, 320.0],
+            colors: smoke_scale_colors(),
+            extend: ExtendMode::Max,
+            mask_below: Some(0.5),
+        });
+    }
     let discrete = match recipe.style {
         RenderStyle::Solar07Temperature => {
             let (lo, hi) = match filled_selector.vertical {
@@ -1898,6 +1950,21 @@ fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> Colo
         },
     };
     ColorScale::Discrete(discrete)
+}
+
+fn smoke_scale_colors() -> Vec<Color> {
+    vec![
+        Color::rgba(230, 243, 255, 255),
+        Color::rgba(135, 206, 235, 255),
+        Color::rgba(144, 238, 144, 255),
+        Color::rgba(255, 255, 0, 255),
+        Color::rgba(255, 165, 0, 255),
+        Color::rgba(255, 69, 0, 255),
+        Color::rgba(255, 0, 0, 255),
+        Color::rgba(128, 0, 128, 255),
+        Color::rgba(92, 0, 168, 255),
+        Color::rgba(64, 0, 128, 255),
+    ]
 }
 
 fn build_contour_layers(
@@ -2363,6 +2430,38 @@ mod tests {
         };
         let fetch = build_direct_fetch_request(&request, &latest, 6, &group).unwrap();
         assert_eq!(fetch.request.product, "sfc");
+    }
+
+    #[test]
+    fn smoke_fetches_stay_on_hrrr_wrfnat_family() {
+        let planned = plan_direct_recipes(
+            ModelId::Hrrr,
+            &[
+                "smoke_pm25_native".to_string(),
+                "2m_temperature_10m_winds".to_string(),
+            ],
+        )
+        .unwrap();
+        let request = sample_direct_request(ModelId::Hrrr);
+        let groups = group_direct_fetches(&request, &planned);
+
+        assert!(groups.iter().any(|group| group.product == "nat"));
+        assert!(groups.iter().any(|group| group.product == "sfc"));
+
+        let smoke_group = groups
+            .iter()
+            .find(|group| {
+                group.selectors.contains(&FieldSelector::height_agl(
+                    CanonicalField::SmokeMassDensity,
+                    8,
+                ))
+            })
+            .expect("expected a dedicated smoke wrfnat group");
+        assert_eq!(smoke_group.product, "nat");
+        assert_eq!(
+            smoke_group.planned_family_aliases,
+            std::collections::BTreeSet::from(["nat".to_string()])
+        );
     }
 
     #[test]

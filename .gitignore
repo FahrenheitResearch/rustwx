@@ -8,10 +8,12 @@ __pycache__/
 proof/cache/
 proof/cache_reuse_demo/
 proof/cache_run*/
+proof/inventory/
 proof/experimental_contours/
 proof/full_hour_compare/
 proof/full_hour_compare_dense2/
 proof/signature_bench/
+proof/smoke_fire/
 proof/*.grib2
 proof/*.idx
 proof/*.bin
