@@ -4,6 +4,7 @@ pub mod catalog;
 pub mod comparison;
 pub mod cross_section;
 pub mod custom_poi;
+pub mod dataset_export;
 pub mod derived;
 pub mod direct;
 pub mod ecape;

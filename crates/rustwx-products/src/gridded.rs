@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 const GEOPOTENTIAL_M2S2_TO_M: f64 = 1.0 / 9.806_65;
+const MAX_DECODE_CACHE_WRITE_BYTES: usize = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SurfaceFields {
@@ -267,6 +268,36 @@ pub fn load_model_timestep_from_parts(
     )
 }
 
+pub fn load_model_timestep_from_parts_cropped(
+    model: ModelId,
+    date_yyyymmdd: &str,
+    cycle_override_utc: Option<u8>,
+    forecast_hour: u16,
+    source: SourceId,
+    surface_product_override: Option<&str>,
+    pressure_product_override: Option<&str>,
+    cache_root: &Path,
+    use_cache: bool,
+    bounds: (f64, f64, f64, f64),
+) -> Result<LoadedModelTimestep, Box<dyn std::error::Error>> {
+    let latest = resolve_model_run(
+        model,
+        date_yyyymmdd,
+        cycle_override_utc,
+        forecast_hour,
+        source,
+    )?;
+    load_model_timestep_from_latest_cropped(
+        latest,
+        forecast_hour,
+        surface_product_override,
+        pressure_product_override,
+        cache_root,
+        use_cache,
+        bounds,
+    )
+}
+
 pub fn load_surface_geometry_from_latest(
     latest: LatestRun,
     forecast_hour: u16,
@@ -323,7 +354,7 @@ pub fn load_model_timestep_from_latest(
     let (surface_bundle, pressure_bundle) =
         thermo_bundles(model, surface_product_override, pressure_product_override);
 
-    let ((surface_file, fetch_surface_ms), (pressure_file, fetch_pressure_ms)) =
+    let ((mut surface_file, fetch_surface_ms), (mut pressure_file, fetch_pressure_ms)) =
         if surface_bundle.native_product == pressure_bundle.native_product {
             let fetch_start = Instant::now();
             let fetched = fetch_family_file_with_patterns(
@@ -394,6 +425,140 @@ pub fn load_model_timestep_from_latest(
         surface_decode.value.nx,
         surface_decode.value.ny,
     )?;
+    surface_file.bytes.clear();
+    surface_file.bytes.shrink_to_fit();
+    pressure_file.bytes.clear();
+    pressure_file.bytes.shrink_to_fit();
+    let grid = surface_decode.value.core_grid()?;
+    let surface_fetch = surface_file.runtime_info(&surface_bundle);
+    let pressure_fetch = pressure_file.runtime_info(&pressure_bundle);
+
+    Ok(LoadedModelTimestep {
+        latest,
+        model,
+        surface_file,
+        pressure_file,
+        surface_decode,
+        pressure_decode,
+        grid,
+        shared_timing: SharedTiming {
+            fetch_surface_ms,
+            fetch_pressure_ms,
+            decode_surface_ms,
+            decode_pressure_ms,
+            fetch_surface_cache_hit: false,
+            fetch_pressure_cache_hit: false,
+            decode_surface_cache_hit: false,
+            decode_pressure_cache_hit: false,
+            surface_fetch,
+            pressure_fetch,
+        },
+    }
+    .with_cache_flags())
+}
+
+pub fn load_model_timestep_from_latest_cropped(
+    latest: LatestRun,
+    forecast_hour: u16,
+    surface_product_override: Option<&str>,
+    pressure_product_override: Option<&str>,
+    cache_root: &Path,
+    use_cache: bool,
+    bounds: (f64, f64, f64, f64),
+) -> Result<LoadedModelTimestep, Box<dyn std::error::Error>> {
+    let model = latest.model;
+    let (surface_bundle, pressure_bundle) =
+        thermo_bundles(model, surface_product_override, pressure_product_override);
+
+    let ((mut surface_file, fetch_surface_ms), (mut pressure_file, fetch_pressure_ms)) =
+        if surface_bundle.native_product == pressure_bundle.native_product {
+            let fetch_start = Instant::now();
+            let fetched = fetch_family_file_with_patterns(
+                model,
+                latest.cycle.clone(),
+                forecast_hour,
+                latest.source,
+                &surface_bundle,
+                merge_variable_patterns([
+                    bundle_fetch_variable_patterns(
+                        model,
+                        surface_bundle.bundle,
+                        &surface_bundle.native_product,
+                    ),
+                    bundle_fetch_variable_patterns(
+                        model,
+                        pressure_bundle.bundle,
+                        &pressure_bundle.native_product,
+                    ),
+                ]),
+                cache_root,
+                use_cache,
+            )?;
+            let elapsed = fetch_start.elapsed().as_millis();
+            ((fetched.clone(), elapsed), (fetched, elapsed))
+        } else {
+            let surface_start = Instant::now();
+            let surface = fetch_family_file(
+                model,
+                latest.cycle.clone(),
+                forecast_hour,
+                latest.source,
+                &surface_bundle,
+                cache_root,
+                use_cache,
+            )?;
+            let pressure_start = Instant::now();
+            let pressure = fetch_family_file(
+                model,
+                latest.cycle.clone(),
+                forecast_hour,
+                latest.source,
+                &pressure_bundle,
+                cache_root,
+                use_cache,
+            )?;
+            (
+                (surface, surface_start.elapsed().as_millis()),
+                (pressure, pressure_start.elapsed().as_millis()),
+            )
+        };
+
+    let surface_layout = decode_surface_grid(surface_file.bytes.as_slice())?;
+    let crop = crop_rect_for_layout(&surface_layout, bounds)?
+        .ok_or("requested cropped load produced an empty domain")?;
+    let surface_cache_path =
+        cropped_decode_cache_path(cache_root, &surface_file.request, "surface", crop);
+    let pressure_cache_path =
+        cropped_decode_cache_path(cache_root, &pressure_file.request, "pressure", crop);
+
+    let decode_surface_start = Instant::now();
+    let surface_decode = load_or_decode_surface_cropped(
+        &surface_cache_path,
+        surface_file.bytes.as_slice(),
+        use_cache,
+        crop,
+    )?;
+    let decode_surface_ms = decode_surface_start.elapsed().as_millis();
+
+    let decode_pressure_start = Instant::now();
+    let (pressure_decode, pressure_shape) = load_or_decode_pressure_cropped_with_shape(
+        &pressure_cache_path,
+        pressure_file.bytes.as_slice(),
+        use_cache,
+        crop,
+    )?;
+    let decode_pressure_ms = decode_pressure_start.elapsed().as_millis();
+
+    validate_pressure_decode_against_surface(
+        &pressure_decode,
+        pressure_shape,
+        surface_decode.value.nx,
+        surface_decode.value.ny,
+    )?;
+    surface_file.bytes.clear();
+    surface_file.bytes.shrink_to_fit();
+    pressure_file.bytes.clear();
+    pressure_file.bytes.shrink_to_fit();
     let grid = surface_decode.value.core_grid()?;
     let surface_fetch = surface_file.runtime_info(&surface_bundle);
     let pressure_fetch = pressure_file.runtime_info(&pressure_bundle);
@@ -737,6 +902,44 @@ pub fn crop_latlon_grid(
     )?)
 }
 
+fn crop_rect_for_layout(
+    layout: &SurfaceGridLayout,
+    bounds: (f64, f64, f64, f64),
+) -> Result<Option<GridCrop>, Box<dyn std::error::Error>> {
+    let mut min_x = layout.nx;
+    let mut max_x = 0usize;
+    let mut min_y = layout.ny;
+    let mut max_y = 0usize;
+    let mut found = false;
+
+    for y in 0..layout.ny {
+        let row_offset = y * layout.nx;
+        for x in 0..layout.nx {
+            let idx = row_offset + x;
+            let lat = layout.lat[idx];
+            let lon = layout.lon[idx];
+            if lon >= bounds.0 && lon <= bounds.1 && lat >= bounds.2 && lat <= bounds.3 {
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+                found = true;
+            }
+        }
+    }
+
+    if !found {
+        return Ok(None);
+    }
+
+    Ok(Some(GridCrop {
+        x_start: min_x,
+        x_end: max_x + 1,
+        y_start: min_y,
+        y_end: max_y + 1,
+    }))
+}
+
 fn crop_rect_for_bounds(
     surface: &SurfaceFields,
     bounds: (f64, f64, f64, f64),
@@ -861,6 +1064,26 @@ fn crop_2d_values(values: &[f64], source_nx: usize, crop: GridCrop) -> Vec<f64> 
     out
 }
 
+fn cropped_decode_cache_path(
+    cache_root: &Path,
+    fetch: &rustwx_io::FetchRequest,
+    name: &str,
+    crop: GridCrop,
+) -> PathBuf {
+    let mut path = decode_cache_path(cache_root, fetch, name);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(name)
+        .to_string();
+    let suffix = format!(
+        "{stem}_crop_{}_{}_{}_{}",
+        crop.x_start, crop.x_end, crop.y_start, crop.y_end
+    );
+    path.set_file_name(format!("{suffix}.bin"));
+    path
+}
+
 fn crop_3d_values(
     values: &[f64],
     source_nx: usize,
@@ -963,8 +1186,6 @@ pub(crate) fn bundle_fetch_variable_patterns(
             "GP:surface",
             "TMP:2 m above ground",
             "SPFH:2 m above ground",
-            "DPT:2 m above ground",
-            "RH:2 m above ground",
             "UGRD:10 m above ground",
             "VGRD:10 m above ground",
         ]
@@ -972,7 +1193,7 @@ pub(crate) fn bundle_fetch_variable_patterns(
         .map(str::to_string)
         .collect(),
         (CanonicalBundleDescriptor::PressureAnalysis, "prs-na") => {
-            vec!["HGT", "GP", "TMP", "SPFH", "DPT", "RH", "UGRD", "VGRD"]
+            vec!["HGT", "GP", "TMP", "SPFH", "UGRD", "VGRD"]
                 .into_iter()
                 .map(str::to_string)
                 .collect()
@@ -1028,7 +1249,7 @@ pub(crate) fn load_or_decode_surface(
         }
     }
     let decoded = decode_surface(bytes)?;
-    if use_cache {
+    if use_cache && decoded.decoded_bytes_estimate() <= MAX_DECODE_CACHE_WRITE_BYTES {
         store_bincode(path, &decoded)?;
     }
     Ok(CachedDecode {
@@ -1056,7 +1277,7 @@ pub(crate) fn load_or_decode_pressure_with_shape(
         }
     }
     let (decoded, nx, ny) = decode_pressure_with_shape(bytes)?;
-    if use_cache {
+    if use_cache && decoded.decoded_bytes_estimate() <= MAX_DECODE_CACHE_WRITE_BYTES {
         store_bincode(path, &decoded)?;
     }
     Ok((
@@ -1096,7 +1317,7 @@ pub(crate) fn load_or_decode_surface_cropped(
         }
     }
     let decoded = decode_surface_cropped(bytes, crop)?;
-    if use_cache {
+    if use_cache && decoded.decoded_bytes_estimate() <= MAX_DECODE_CACHE_WRITE_BYTES {
         store_bincode(path, &decoded)?;
     }
     Ok(CachedDecode {
@@ -1125,7 +1346,7 @@ pub(crate) fn load_or_decode_pressure_cropped_with_shape(
         }
     }
     let (decoded, nx, ny) = decode_pressure_cropped_with_shape(bytes, crop)?;
-    if use_cache {
+    if use_cache && decoded.decoded_bytes_estimate() <= MAX_DECODE_CACHE_WRITE_BYTES {
         store_bincode(path, &decoded)?;
     }
     Ok((
@@ -1882,8 +2103,6 @@ mod tests {
                 "GP:surface".to_string(),
                 "TMP:2 m above ground".to_string(),
                 "SPFH:2 m above ground".to_string(),
-                "DPT:2 m above ground".to_string(),
-                "RH:2 m above ground".to_string(),
                 "UGRD:10 m above ground".to_string(),
                 "VGRD:10 m above ground".to_string(),
             ]
@@ -1899,8 +2118,6 @@ mod tests {
                 "GP".to_string(),
                 "TMP".to_string(),
                 "SPFH".to_string(),
-                "DPT".to_string(),
-                "RH".to_string(),
                 "UGRD".to_string(),
                 "VGRD".to_string(),
             ]

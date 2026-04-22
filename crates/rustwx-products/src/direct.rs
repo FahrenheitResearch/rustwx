@@ -592,6 +592,112 @@ pub(crate) fn load_direct_sampled_fields_from_latest(
     })
 }
 
+pub(crate) fn load_single_direct_sampled_field_from_latest(
+    latest: &LatestRun,
+    forecast_hour: u16,
+    cache_root: &std::path::Path,
+    use_cache: bool,
+    recipe_slug: &str,
+    allow_composite_filled_field: bool,
+) -> Result<DirectSampledProductField, Box<dyn std::error::Error>> {
+    let request = sampling_direct_request(
+        latest.model,
+        latest.source,
+        forecast_hour,
+        cache_root,
+        use_cache,
+    );
+    let planned = plan_direct_recipes(latest.model, &[recipe_slug.to_string()])?;
+    let planned_item = planned
+        .first()
+        .ok_or_else(|| format!("direct recipe '{recipe_slug}' did not plan"))?;
+
+    let groups = group_direct_fetches(&request, &planned);
+    let plan = build_direct_execution_plan(latest, forecast_hour, &groups);
+    let loaded = load_execution_plan(
+        plan,
+        &BundleLoaderConfig::new(cache_root.to_path_buf(), use_cache),
+    )?;
+
+    let mut extracted = HashMap::<FieldSelector, SelectedField2D>::new();
+    let mut missing_selectors = HashSet::<FieldSelector>::new();
+    let mut fetches_by_product = HashMap::<String, PublishedFetchIdentity>::new();
+
+    for group in &groups {
+        let fetched = match find_loaded_bytes_for_group(&loaded, group) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                for selector in &group.selectors {
+                    missing_selectors.insert(*selector);
+                }
+                return Err(format!(
+                    "direct recipe '{}' fetch group '{}' failed: {}",
+                    recipe_slug, group.product, err
+                )
+                .into());
+            }
+        };
+        let (fields, unmatched, timing) =
+            extract_direct_fetch_group_from_loaded(&request, group, fetched, use_cache)?;
+        extracted.extend(fields.into_iter().map(|field| (field.selector, field)));
+        for selector in unmatched {
+            missing_selectors.insert(selector);
+        }
+        fetches_by_product.insert(group.product.clone(), timing.input_fetch.clone());
+    }
+
+    if let Some(reason) = recipe_block_reason(planned_item.recipe, &missing_selectors) {
+        return Err(format!(
+            "direct sampled field '{}' is blocked: {}",
+            recipe_slug, reason
+        )
+        .into());
+    }
+
+    if composite_panel_spec(planned_item.recipe.slug).is_some() && !allow_composite_filled_field {
+        return Err(format!(
+            "direct recipe '{}' is composite and does not expose a single sampled filled field by default",
+            recipe_slug
+        )
+        .into());
+    }
+
+    let Some(filled_selector) = planned_item.recipe.filled.selector else {
+        return Err(format!(
+            "direct recipe '{}' is missing a filled selector binding",
+            recipe_slug
+        )
+        .into());
+    };
+    let Some(filled) = extracted.get(&filled_selector) else {
+        return Err(format!(
+            "direct recipe '{}' did not resolve filled selector {}",
+            recipe_slug,
+            filled_selector.key()
+        )
+        .into());
+    };
+    let field = render_filled_field(planned_item.recipe, filled, &extracted)?;
+    let canonical_product = canonical_fetch_product_for_selectors(
+        &request,
+        planned_item.plan.product.as_ref(),
+        &planned_item.plan.selectors(),
+    );
+    let input_fetches = fetches_by_product
+        .get(&canonical_product)
+        .cloned()
+        .into_iter()
+        .collect();
+    Ok(DirectSampledProductField {
+        recipe_slug: planned_item.recipe.slug.to_string(),
+        title: planned_item.recipe.title.to_string(),
+        source_route: direct_route_for_recipe_slug(planned_item.recipe.slug),
+        field_selector: Some(filled_selector),
+        field,
+        input_fetches,
+    })
+}
+
 /// Planner-loaded entry point used by `hrrr_non_ecape_hour`. Direct
 /// shares the unified `LoadedBundleSet` with the derived/severe lanes
 /// when they co-run.
