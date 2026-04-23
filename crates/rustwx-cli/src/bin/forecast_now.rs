@@ -16,7 +16,7 @@
 //! - Writes PNGs and a single summary JSON. The summary lists every
 //!   attempted (model, fh, lane) with outcome + reason.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
@@ -87,6 +87,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     no_cache: bool,
 
+    /// Allow large-domain heavy diagnostics on wide crops like CONUS.
+    #[arg(long, default_value_t = false)]
+    allow_large_heavy_domain: bool,
+
     /// Number of outer forecast jobs to run concurrently. A job is one
     /// independent (region, model, forecast_hour) execution bundle.
     #[arg(long, default_value_t = 1)]
@@ -138,6 +142,21 @@ struct Args {
     #[arg(long = "source-mode", alias = "thermo-path", value_enum, default_value_t = SourceModeArg::Canonical)]
     source_mode: SourceModeArg,
 
+    /// Override the surface/native product used by pair-derived WRF/GDEX
+    /// and heavy lanes, e.g. d612005-future2d.
+    #[arg(long)]
+    surface_product: Option<String>,
+
+    /// Override the pressure/3-D product used by pair-derived WRF/GDEX
+    /// and heavy lanes, e.g. d612005-future3d.
+    #[arg(long)]
+    pressure_product: Option<String>,
+
+    /// Override direct planned product families. Repeatable or comma
+    /// separated: planned=actual.
+    #[arg(long = "product-override", value_delimiter = ',', num_args = 0..)]
+    product_overrides: Vec<String>,
+
     /// Route policy for direct+derived non-ECAPE work.
     ///
     /// `auto` uses the unified non-ECAPE path for every supported model.
@@ -187,8 +206,10 @@ fn default_direct_recipes() -> Vec<String> {
         "composite_reflectivity",
         "2m_temperature_10m_winds",
         "2m_dewpoint_10m_winds",
-        "2m_relative_humidity",
+        "2m_relative_humidity_10m_winds",
+        "250mb_height_winds",
         "500mb_height_winds",
+        "250mb_temperature_height_winds",
         "700mb_height_winds",
         "850mb_height_winds",
         "500mb_rh_height_winds",
@@ -233,18 +254,35 @@ fn default_derived_recipes() -> Vec<String> {
     .collect()
 }
 
-fn forecast_now_required_products(model: ModelId, args: &Args) -> Vec<&'static str> {
-    if !matches!(model, ModelId::RrfsA) {
-        return Vec::new();
-    }
+fn forecast_now_required_products(model: ModelId, args: &Args) -> Vec<String> {
     let mut products = Vec::new();
-    if !args.skip_direct {
-        products.push("prs-conus");
+    if matches!(model, ModelId::RrfsA) {
+        if !args.skip_direct {
+            products.push("prs-conus".to_string());
+        }
+        if !args.skip_severe || !args.skip_ecape || !args.skip_derived {
+            products.push("nat-na".to_string());
+            products.push("prs-na".to_string());
+        }
     }
-    if !args.skip_severe || !args.skip_ecape || !args.skip_derived {
-        products.push("nat-na");
-        products.push("prs-na");
+    if matches!(model, ModelId::WrfGdex) {
+        if let Some(product) = &args.surface_product {
+            products.push(product.clone());
+        }
+        if let Some(product) = &args.pressure_product {
+            products.push(product.clone());
+        }
+        for value in &args.product_overrides {
+            if let Some((_, actual)) = value.split_once('=') {
+                let actual = actual.trim();
+                if !actual.is_empty() {
+                    products.push(actual.to_string());
+                }
+            }
+        }
     }
+    products.sort();
+    products.dedup();
     products
 }
 
@@ -375,10 +413,7 @@ fn run_forecast_job(job: ForecastJob, config: &ExecConfig) -> ForecastJobResult 
         let non_hrrr_route = select_non_hrrr_non_ecape_route(job.model, config.route_policy);
         if want_non_hrrr_non_ecape
             && matches!(non_hrrr_route, RouteSelection::Unified)
-            && matches!(
-                job.model,
-                ModelId::RrfsA | ModelId::Gfs | ModelId::EcmwfOpenData
-            )
+            && supports_unified_non_hrrr_non_ecape(job.model)
         {
             let mut outcome = run_non_hrrr_non_ecape_hour(
                 job.model,
@@ -506,6 +541,42 @@ fn filter_heavy_derived_recipes(recipes: Vec<String>, skip_ecape: bool) -> Vec<S
         .collect()
 }
 
+fn build_direct_product_overrides(
+    args: &Args,
+) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+    let mut parsed = parse_product_overrides(&args.product_overrides)?;
+    if args.models.iter().any(|model| *model == ModelId::WrfGdex) {
+        if let Some(product) = &args.surface_product {
+            parsed.insert("d612005-hist2d".to_string(), product.clone());
+        }
+        if let Some(product) = &args.pressure_product {
+            parsed.insert("d612005-hist3d".to_string(), product.clone());
+        }
+    }
+    Ok(parsed)
+}
+
+fn parse_product_overrides(
+    values: &[String],
+) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+    let mut parsed = HashMap::new();
+    for value in values {
+        let (planned, actual) = value.split_once('=').ok_or_else(|| {
+            format!("invalid --product-override '{value}', expected planned=actual")
+        })?;
+        let planned = planned.trim();
+        let actual = actual.trim();
+        if planned.is_empty() || actual.is_empty() {
+            return Err(format!(
+                "invalid --product-override '{value}', expected non-empty planned=actual"
+            )
+            .into());
+        }
+        parsed.insert(planned.to_string(), actual.to_string());
+    }
+    Ok(parsed)
+}
+
 fn select_non_hrrr_non_ecape_route(model: ModelId, policy: RoutePolicyArg) -> RouteSelection {
     if matches!(model, ModelId::Hrrr) {
         return RouteSelection::HrrrUnified;
@@ -514,6 +585,13 @@ fn select_non_hrrr_non_ecape_route(model: ModelId, policy: RoutePolicyArg) -> Ro
         RoutePolicyArg::Auto | RoutePolicyArg::Unified => RouteSelection::Unified,
         RoutePolicyArg::Split => RouteSelection::Split,
     }
+}
+
+fn supports_unified_non_hrrr_non_ecape(model: ModelId) -> bool {
+    matches!(
+        model,
+        ModelId::RrfsA | ModelId::Gfs | ModelId::EcmwfOpenData | ModelId::WrfGdex
+    )
 }
 
 #[derive(Debug, Serialize)]
@@ -526,6 +604,7 @@ struct RunSummary {
     cycle_override_utc: Option<u8>,
     models: Vec<ModelId>,
     hours: Vec<u16>,
+    allow_large_heavy_domain: bool,
     direct_recipes: Vec<String>,
     derived_recipes: Vec<String>,
     route_policy: RoutePolicyArg,
@@ -555,12 +634,16 @@ struct ExecConfig {
     out_dir: PathBuf,
     cache_dir: PathBuf,
     no_cache: bool,
+    allow_large_heavy_domain: bool,
     skip_severe: bool,
     skip_ecape: bool,
     skip_direct: bool,
     skip_derived: bool,
     source_mode: ProductSourceMode,
     route_policy: RoutePolicyArg,
+    surface_product_override: Option<String>,
+    pressure_product_override: Option<String>,
+    direct_product_overrides: HashMap<String, String>,
     output_width: u32,
     output_height: u32,
 }
@@ -646,13 +729,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let derived_recipes = filter_heavy_derived_recipes(derived_recipes, args.skip_ecape);
 
     println!(
-        "[forecast-now] date={date} regions={:?} hours={:?} models={:?} direct={} derived={} route_policy={:?} size={}x{} job_concurrency={} render_threads={:?}",
+        "[forecast-now] date={date} regions={:?} hours={:?} models={:?} direct={} derived={} route_policy={:?} allow_large_heavy_domain={} size={}x{} job_concurrency={} render_threads={:?}",
         args.regions.iter().map(|r| r.slug()).collect::<Vec<_>>(),
         hours,
         args.models,
         direct_recipes.len(),
         derived_recipes.len(),
         args.route_policy,
+        args.allow_large_heavy_domain,
         args.width,
         args.height,
         args.job_concurrency,
@@ -680,11 +764,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     pin_forecast_hour,
                 )
             } else {
+                let required_refs = required_products
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
                 rustwx_models::latest_available_run_for_products_at_forecast_hour(
                     model,
                     Some(source),
                     &date,
-                    &required_products,
+                    &required_refs,
                     pin_forecast_hour,
                 )
             };
@@ -719,12 +807,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         out_dir: args.out_dir.clone(),
         cache_dir: args.cache_dir.clone(),
         no_cache: args.no_cache,
+        allow_large_heavy_domain: args.allow_large_heavy_domain,
         skip_severe: args.skip_severe,
         skip_ecape: args.skip_ecape,
         skip_direct: args.skip_direct,
         skip_derived: args.skip_derived,
         source_mode: args.source_mode.into(),
         route_policy: args.route_policy,
+        surface_product_override: args.surface_product.clone(),
+        pressure_product_override: args.pressure_product.clone(),
+        direct_product_overrides: build_direct_product_overrides(&args)?,
         output_width: args.width,
         output_height: args.height,
     };
@@ -848,6 +940,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cycle_override_utc: args.cycle,
         models: args.models.clone(),
         hours: hours.clone(),
+        allow_large_heavy_domain: args.allow_large_heavy_domain,
         direct_recipes,
         derived_recipes,
         route_policy: args.route_policy,
@@ -883,6 +976,7 @@ mod tests {
     use super::{
         PinResolution, PinnedRunRequest, RoutePolicyArg, RouteSelection,
         filter_heavy_derived_recipes, select_non_hrrr_non_ecape_route,
+        supports_unified_non_hrrr_non_ecape,
     };
     use rustwx_core::{ModelId, SourceId};
 
@@ -922,6 +1016,16 @@ mod tests {
             select_non_hrrr_non_ecape_route(ModelId::EcmwfOpenData, RoutePolicyArg::Auto),
             RouteSelection::Unified
         );
+        assert_eq!(
+            select_non_hrrr_non_ecape_route(ModelId::WrfGdex, RoutePolicyArg::Auto),
+            RouteSelection::Unified
+        );
+    }
+
+    #[test]
+    fn wrf_gdex_supports_unified_non_ecape_runner() {
+        assert!(supports_unified_non_hrrr_non_ecape(ModelId::WrfGdex));
+        assert!(!supports_unified_non_hrrr_non_ecape(ModelId::Hrrr));
     }
 }
 
@@ -1012,9 +1116,9 @@ fn run_severe_lane(
         out_dir: config.out_dir.clone(),
         cache_root: config.cache_dir.clone(),
         use_cache: !config.no_cache,
-        surface_product_override: None,
-        pressure_product_override: None,
-        allow_large_heavy_domain: false,
+        surface_product_override: config.surface_product_override.clone(),
+        pressure_product_override: config.pressure_product_override.clone(),
+        allow_large_heavy_domain: config.allow_large_heavy_domain,
     };
     let slug = Lane::Severe.slug();
     match run_severe_batch(&request) {
@@ -1078,9 +1182,9 @@ fn run_ecape_lane(
         out_dir: config.out_dir.clone(),
         cache_root: config.cache_dir.clone(),
         use_cache: !config.no_cache,
-        surface_product_override: None,
-        pressure_product_override: None,
-        allow_large_heavy_domain: false,
+        surface_product_override: config.surface_product_override.clone(),
+        pressure_product_override: config.pressure_product_override.clone(),
+        allow_large_heavy_domain: config.allow_large_heavy_domain,
     };
     let slug = Lane::Ecape.slug();
     match run_ecape_batch(&request) {
@@ -1161,10 +1265,16 @@ fn run_non_hrrr_non_ecape_hour(
         source_mode: config.source_mode,
         direct_recipe_slugs,
         derived_recipe_slugs,
+        direct_product_overrides: config.direct_product_overrides.clone(),
+        surface_product_override: config.surface_product_override.clone(),
+        pressure_product_override: config.pressure_product_override.clone(),
+        allow_large_heavy_domain: config.allow_large_heavy_domain,
         windowed_products: Vec::new(),
         output_width: config.output_width,
         output_height: config.output_height,
         png_compression: rustwx_render::PngCompressionMode::Default,
+        custom_poi_overlay: None,
+        place_label_overlay: None,
     };
 
     match run_model_non_ecape_hour(&request) {
@@ -1261,10 +1371,14 @@ fn run_direct_lane(
         cache_root: config.cache_dir.clone(),
         use_cache: !config.no_cache,
         recipe_slugs: recipes.to_vec(),
-        product_overrides: std::collections::HashMap::new(),
+        product_overrides: config.direct_product_overrides.clone(),
+        contour_mode: rustwx_products::derived::NativeContourRenderMode::Automatic,
+        native_fill_level_multiplier: 1,
         output_width: config.output_width,
         output_height: config.output_height,
         png_compression: rustwx_render::PngCompressionMode::Default,
+        custom_poi_overlay: None,
+        place_label_overlay: None,
     };
     let slug = Lane::Direct.slug();
     match rustwx_products::direct::run_direct_batch(&request) {
@@ -1346,13 +1460,17 @@ fn run_derived_lane(
         cache_root: config.cache_dir.clone(),
         use_cache: !config.no_cache,
         recipe_slugs: recipes.to_vec(),
-        surface_product_override: None,
-        pressure_product_override: None,
+        surface_product_override: config.surface_product_override.clone(),
+        pressure_product_override: config.pressure_product_override.clone(),
         source_mode: config.source_mode,
-        allow_large_heavy_domain: false,
+        allow_large_heavy_domain: config.allow_large_heavy_domain,
+        contour_mode: rustwx_products::derived::NativeContourRenderMode::Automatic,
+        native_fill_level_multiplier: 1,
         output_width: config.output_width,
         output_height: config.output_height,
         png_compression: rustwx_render::PngCompressionMode::Default,
+        custom_poi_overlay: None,
+        place_label_overlay: None,
     };
     let slug = Lane::Derived.slug();
     match rustwx_products::derived::run_derived_batch(&request) {
@@ -1455,9 +1573,9 @@ fn run_hrrr_unified(
             out_dir: config.out_dir.clone(),
             cache_root: config.cache_dir.clone(),
             use_cache: !config.no_cache,
-            surface_product_override: None,
-            pressure_product_override: None,
-            allow_large_heavy_domain: false,
+            surface_product_override: config.surface_product_override.clone(),
+            pressure_product_override: config.pressure_product_override.clone(),
+            allow_large_heavy_domain: config.allow_large_heavy_domain,
         };
         let slug = if !config.skip_severe && !config.skip_ecape {
             "hrrr_heavy_hour"
@@ -1556,6 +1674,8 @@ fn run_hrrr_unified(
             output_width: config.output_width,
             output_height: config.output_height,
             png_compression: rustwx_render::PngCompressionMode::Default,
+            custom_poi_overlay: None,
+            place_label_overlay: None,
         };
         match run_hrrr_non_ecape_hour(&request) {
             Ok(report) => {

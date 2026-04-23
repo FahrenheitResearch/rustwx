@@ -6,15 +6,20 @@ pub use cache::{
     store_cached_fetch, store_cached_selected_field,
 };
 
-use grib_core::grib2::{Grib2File, Grib2Message, flip_rows, grid_latlon, unpack_message};
+use grib_core::grib2::{
+    Grib2File, Grib2Message, GridDefinition, flip_rows, grid_latlon, unpack_message,
+};
 use rayon::prelude::*;
 use rustwx_core::{
-    CanonicalField, FieldSelector, GridShape, LatLonGrid, ModelId, ModelRunRequest, ModelTimestep,
-    ResolvedUrl, SelectedField2D, SourceId, VerticalSelector,
+    CanonicalField, FieldSelector, GridProjection, GridShape, LatLonGrid, ModelId, ModelRunRequest,
+    ModelTimestep, ResolvedUrl, SelectedField2D, SelectedHybridLevelVolume, SourceId,
+    VerticalSelector,
 };
 use rustwx_models::{latest_available_run, model_summary, resolve_urls};
+use rustwx_wrf as wrf;
 use serde::Serialize;
 use std::collections::HashSet;
+use std::path::Path;
 use thiserror::Error;
 use wx_core::download::{DownloadClient, byte_ranges, find_entries, parse_idx};
 
@@ -36,6 +41,8 @@ pub enum IoError {
     UnsupportedStructuredSelector { selector: FieldSelector },
     #[error("grid coordinates could not be derived for selector '{selector}'")]
     MissingGridCoordinates { selector: FieldSelector },
+    #[error("wrf error: {0}")]
+    Wrf(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -78,6 +85,35 @@ pub struct FetchResult {
     pub source: SourceId,
     pub url: String,
     pub bytes: Vec<u8>,
+}
+
+pub fn grid_projection_from_grib2_grid(grid: &GridDefinition) -> Option<GridProjection> {
+    match grid.template {
+        0 | 1 | 40 => Some(GridProjection::Geographic),
+        10 => Some(GridProjection::Mercator {
+            latitude_of_true_scale_deg: grid.latin1,
+            central_meridian_deg: normalize_longitude(longitude_midpoint(grid.lon1, grid.lon2)),
+        }),
+        20 => Some(GridProjection::PolarStereographic {
+            true_latitude_deg: if grid.lad != 0.0 {
+                grid.lad
+            } else {
+                grid.latin1
+            },
+            central_meridian_deg: normalize_longitude(grid.lov),
+            south_pole_on_projection_plane: (grid.projection_center_flag & 1) != 0,
+        }),
+        30 => Some(GridProjection::LambertConformal {
+            standard_parallel_1_deg: grid.latin1,
+            standard_parallel_2_deg: if grid.latin2 != 0.0 {
+                grid.latin2
+            } else {
+                grid.latin1
+            },
+            central_meridian_deg: normalize_longitude(grid.lov),
+        }),
+        template => Some(GridProjection::Other { template }),
+    }
 }
 
 pub fn client() -> Result<DownloadClient, IoError> {
@@ -349,6 +385,30 @@ pub struct PartialExtraction {
     pub missing: Vec<FieldSelector>,
 }
 
+pub fn extract_fields_partial_from_model_bytes(
+    model: ModelId,
+    bytes: &[u8],
+    preferred_path: Option<&Path>,
+    selectors: &[FieldSelector],
+) -> Result<PartialExtraction, IoError> {
+    match model {
+        ModelId::WrfGdex => {
+            let partial =
+                wrf::extract_selectors_partial_from_bytes(bytes, preferred_path, selectors)
+                    .map_err(|err| IoError::Wrf(err.to_string()))?;
+            Ok(PartialExtraction {
+                extracted: partial.extracted,
+                missing: partial.missing,
+            })
+        }
+        _ => {
+            let grib =
+                Grib2File::from_bytes(bytes).map_err(|err| IoError::Grib(err.to_string()))?;
+            extract_fields_from_grib2_partial(&grib, selectors)
+        }
+    }
+}
+
 pub fn extract_pressure_field_from_bytes(
     bytes: &[u8],
     field: CanonicalField,
@@ -363,6 +423,129 @@ pub fn extract_pressure_field_from_grib2(
     level_hpa: u16,
 ) -> Result<SelectedField2D, IoError> {
     extract_field_from_grib2(grib, FieldSelector::isobaric(field, level_hpa))
+}
+
+pub const HRRR_WRFNAT_HYBRID_LEVEL_COUNT: u16 = 50;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HrrrWrfnatSmokeExtraction {
+    pub hybrid_smoke: SelectedHybridLevelVolume,
+    pub hybrid_pressure: SelectedHybridLevelVolume,
+    pub near_surface_smoke: SelectedField2D,
+    pub column_smoke: SelectedField2D,
+}
+
+pub fn hrrr_wrfnat_hybrid_levels() -> Vec<u16> {
+    (1..=HRRR_WRFNAT_HYBRID_LEVEL_COUNT).collect()
+}
+
+pub fn extract_hybrid_level_volume_from_bytes(
+    bytes: &[u8],
+    field: CanonicalField,
+    levels_hybrid: &[u16],
+) -> Result<SelectedHybridLevelVolume, IoError> {
+    let grib = Grib2File::from_bytes(bytes).map_err(|err| IoError::Grib(err.to_string()))?;
+    extract_hybrid_level_volume_from_grib2(&grib, field, levels_hybrid)
+}
+
+pub fn extract_hybrid_level_volume_from_grib2(
+    grib: &Grib2File,
+    field: CanonicalField,
+    levels_hybrid: &[u16],
+) -> Result<SelectedHybridLevelVolume, IoError> {
+    let selectors = levels_hybrid
+        .iter()
+        .copied()
+        .map(|level| FieldSelector::hybrid_level(field, level))
+        .collect::<Vec<_>>();
+    let slices = extract_fields_from_grib2(grib, &selectors)?;
+    build_hybrid_level_volume(field, levels_hybrid, slices)
+}
+
+pub fn extract_hrrr_wrfnat_smoke_fields_from_bytes(
+    bytes: &[u8],
+) -> Result<HrrrWrfnatSmokeExtraction, IoError> {
+    let grib = Grib2File::from_bytes(bytes).map_err(|err| IoError::Grib(err.to_string()))?;
+    extract_hrrr_wrfnat_smoke_fields_from_grib2(&grib)
+}
+
+pub fn extract_hrrr_wrfnat_smoke_fields_from_grib2(
+    grib: &Grib2File,
+) -> Result<HrrrWrfnatSmokeExtraction, IoError> {
+    let levels = hrrr_wrfnat_hybrid_levels();
+    let hybrid_smoke =
+        extract_hybrid_level_volume_from_grib2(grib, CanonicalField::SmokeMassDensity, &levels)?;
+    let hybrid_pressure =
+        extract_hybrid_level_volume_from_grib2(grib, CanonicalField::Pressure, &levels)?;
+    let mut smoke_maps = extract_fields_from_grib2(
+        grib,
+        &[
+            FieldSelector::height_agl(CanonicalField::SmokeMassDensity, 8),
+            FieldSelector::entire_atmosphere(CanonicalField::ColumnIntegratedSmoke),
+        ],
+    )?;
+    debug_assert_eq!(smoke_maps.len(), 2);
+    let column_smoke = smoke_maps
+        .pop()
+        .expect("column smoke selector should be present after successful extraction");
+    let near_surface_smoke = smoke_maps
+        .pop()
+        .expect("near-surface smoke selector should be present after successful extraction");
+
+    Ok(HrrrWrfnatSmokeExtraction {
+        hybrid_smoke,
+        hybrid_pressure,
+        near_surface_smoke,
+        column_smoke,
+    })
+}
+
+fn build_hybrid_level_volume(
+    field: CanonicalField,
+    levels_hybrid: &[u16],
+    slices: Vec<SelectedField2D>,
+) -> Result<SelectedHybridLevelVolume, IoError> {
+    let Some(first) = slices.first() else {
+        return Err(rustwx_core::RustwxError::EmptyHybridLevels.into());
+    };
+
+    let expected_grid = first.grid.clone();
+    let expected_units = first.units.clone();
+    let expected_projection = first.projection.clone();
+
+    for slice in &slices {
+        if slice.grid != expected_grid {
+            return Err(IoError::Grib(format!(
+                "hybrid volume for field '{field}' used inconsistent grids across levels"
+            )));
+        }
+        if slice.units != expected_units {
+            return Err(IoError::Grib(format!(
+                "hybrid volume for field '{field}' used inconsistent units across levels"
+            )));
+        }
+        if slice.projection != expected_projection {
+            return Err(IoError::Grib(format!(
+                "hybrid volume for field '{field}' used inconsistent projections across levels"
+            )));
+        }
+    }
+
+    let values = slices
+        .into_iter()
+        .flat_map(|slice| slice.values)
+        .collect::<Vec<_>>();
+    let mut volume = SelectedHybridLevelVolume::new(
+        field,
+        levels_hybrid.to_vec(),
+        expected_units,
+        expected_grid,
+        values,
+    )?;
+    if let Some(projection) = expected_projection {
+        volume = volume.with_projection(projection);
+    }
+    Ok(volume)
 }
 
 fn filtered_urls(fetch: &FetchRequest) -> Result<Vec<ResolvedUrl>, IoError> {
@@ -476,6 +659,7 @@ enum LevelMatch {
     Surface,
     MeanSeaLevel,
     IsobaricHpa(u16),
+    HybridLevel(u16),
     EntireAtmosphere,
     NominalTop,
     ExactLevelType(u8),
@@ -500,6 +684,11 @@ const PARAMETER_HGT: &[ParameterCode] = &[ParameterCode {
     discipline: 0,
     category: 3,
     number: 5,
+}];
+const PARAMETER_PRESSURE: &[ParameterCode] = &[ParameterCode {
+    discipline: 0,
+    category: 3,
+    number: 0,
 }];
 const PARAMETER_TMP: &[ParameterCode] = &[ParameterCode {
     discipline: 0,
@@ -689,6 +878,16 @@ const PARAMETER_UPDRAFT_HELICITY: &[ParameterCode] = &[
         number: 15,
     },
 ];
+const PARAMETER_SMOKE_MASS_DENSITY: &[ParameterCode] = &[ParameterCode {
+    discipline: 0,
+    category: 20,
+    number: 0,
+}];
+const PARAMETER_COLUMN_INTEGRATED_SMOKE: &[ParameterCode] = &[ParameterCode {
+    discipline: 0,
+    category: 20,
+    number: 1,
+}];
 
 impl StructuredMessageSelector {
     fn matches(self, message: &Grib2Message) -> bool {
@@ -714,6 +913,14 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
 
     fn try_from(selector: FieldSelector) -> Result<Self, Self::Error> {
         match selector {
+            FieldSelector {
+                field: CanonicalField::Pressure,
+                vertical: VerticalSelector::HybridLevel(level),
+            } if is_supported_hrrr_smoke_hybrid_level(level) => Ok(Self {
+                parameters: PARAMETER_PRESSURE,
+                level: LevelMatch::HybridLevel(level),
+                units: "Pa",
+            }),
             FieldSelector {
                 field: CanonicalField::GeopotentialHeight,
                 vertical: VerticalSelector::IsobaricHpa(level_hpa),
@@ -771,6 +978,14 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
                 units: "%",
             }),
             FieldSelector {
+                field: CanonicalField::SmokeMassDensity,
+                vertical: VerticalSelector::HybridLevel(level),
+            } if is_supported_hrrr_smoke_hybrid_level(level) => Ok(Self {
+                parameters: PARAMETER_SMOKE_MASS_DENSITY,
+                level: LevelMatch::HybridLevel(level),
+                units: "kg/m^3",
+            }),
+            FieldSelector {
                 field: CanonicalField::AbsoluteVorticity,
                 vertical: VerticalSelector::IsobaricHpa(level_hpa),
             } if is_supported_upper_air_level(level_hpa) => Ok(Self {
@@ -822,6 +1037,14 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
                 units: "m/s",
             }),
             FieldSelector {
+                field: CanonicalField::SmokeMassDensity,
+                vertical: VerticalSelector::HeightAboveGroundMeters(8),
+            } => Ok(Self {
+                parameters: PARAMETER_SMOKE_MASS_DENSITY,
+                level: LevelMatch::HeightAboveGroundMeters(8),
+                units: "kg/m^3",
+            }),
+            FieldSelector {
                 field: CanonicalField::PressureReducedToMeanSeaLevel,
                 vertical: VerticalSelector::MeanSeaLevel,
             } => Ok(Self {
@@ -834,6 +1057,14 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
                 vertical: VerticalSelector::EntireAtmosphere,
             } => Ok(Self {
                 parameters: PARAMETER_PWAT,
+                level: LevelMatch::EntireAtmosphere,
+                units: "kg/m^2",
+            }),
+            FieldSelector {
+                field: CanonicalField::ColumnIntegratedSmoke,
+                vertical: VerticalSelector::EntireAtmosphere,
+            } => Ok(Self {
+                parameters: PARAMETER_COLUMN_INTEGRATED_SMOKE,
                 level: LevelMatch::EntireAtmosphere,
                 units: "kg/m^2",
             }),
@@ -985,6 +1216,10 @@ impl LevelMatch {
                     .abs()
                         < 0.25
             }
+            Self::HybridLevel(level) => {
+                message.product.level_type == 105
+                    && (message.product.level_value - f64::from(level)).abs() < 0.25
+            }
             Self::EntireAtmosphere => matches!(message.product.level_type, 10 | 200),
             Self::NominalTop => message.product.level_type == 8,
             Self::ExactLevelType(level_type) => message.product.level_type == level_type,
@@ -1027,8 +1262,11 @@ fn build_selected_field(
         lon.into_iter().map(|value| value as f32).collect(),
     )?;
     let values = values.into_iter().map(|value| value as f32).collect();
-
-    SelectedField2D::new(selector, units, grid, values).map_err(Into::into)
+    let mut field = SelectedField2D::new(selector, units, grid, values)?;
+    if let Some(projection) = grid_projection_from_grib2_grid(&message.grid) {
+        field = field.with_projection(projection);
+    }
+    Ok(field)
 }
 
 // GRIB2 Code Table 4.5 level type 100 (isobaric surface) always encodes the
@@ -1038,6 +1276,19 @@ fn build_selected_field(
 // which made GFS and RRFS-A pick the wrong 700 mb RH message (flat brown).
 fn normalize_pressure_level_hpa(level_value_pa: f64) -> f64 {
     level_value_pa / 100.0
+}
+
+fn is_supported_hrrr_smoke_hybrid_level(level: u16) -> bool {
+    (1..=HRRR_WRFNAT_HYBRID_LEVEL_COUNT).contains(&level)
+}
+
+fn longitude_midpoint(west_deg: f64, east_deg: f64) -> f64 {
+    let west = normalize_longitude(west_deg);
+    let mut east = normalize_longitude(east_deg);
+    if east < west {
+        east += 360.0;
+    }
+    west + (east - west) / 2.0
 }
 
 fn normalize_longitude(lon: f64) -> f64 {
@@ -1144,6 +1395,41 @@ mod tests {
             bitmap: None,
             raw_data,
         }
+    }
+
+    #[test]
+    fn projection_metadata_is_inferred_from_grib_grid_templates() {
+        let lambert = GridDefinition {
+            template: 30,
+            latin1: 38.5,
+            latin2: 38.5,
+            lov: 262.5,
+            ..Default::default()
+        };
+        assert_eq!(
+            grid_projection_from_grib2_grid(&lambert),
+            Some(GridProjection::LambertConformal {
+                standard_parallel_1_deg: 38.5,
+                standard_parallel_2_deg: 38.5,
+                central_meridian_deg: -97.5,
+            })
+        );
+
+        let polar = GridDefinition {
+            template: 20,
+            lad: 60.0,
+            lov: 210.0,
+            projection_center_flag: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            grid_projection_from_grib2_grid(&polar),
+            Some(GridProjection::PolarStereographic {
+                true_latitude_deg: 60.0,
+                central_meridian_deg: -150.0,
+                south_pole_on_projection_plane: true,
+            })
+        );
     }
 
     fn sample_pressure_subset_path() -> PathBuf {
@@ -1448,6 +1734,68 @@ mod tests {
         let rh_2m_message = ieee_f32_message(PARAMETER_RH[0], 103, 2.0, &[64.0], -99.0, -99.0);
         assert!(rh_2m.matches(&rh_2m_message));
 
+        let hybrid_pressure = StructuredMessageSelector::try_from(FieldSelector::hybrid_level(
+            CanonicalField::Pressure,
+            7,
+        ))
+        .unwrap();
+        let hybrid_pressure_message =
+            ieee_f32_message(PARAMETER_PRESSURE[0], 105, 7.0, &[81_500.0], -99.0, -99.0);
+        assert!(hybrid_pressure.matches(&hybrid_pressure_message));
+
+        let hybrid_smoke = StructuredMessageSelector::try_from(FieldSelector::hybrid_level(
+            CanonicalField::SmokeMassDensity,
+            7,
+        ))
+        .unwrap();
+        let hybrid_smoke_message = ieee_f32_message(
+            PARAMETER_SMOKE_MASS_DENSITY[0],
+            105,
+            7.0,
+            &[0.000_012],
+            -99.0,
+            -99.0,
+        );
+        assert!(hybrid_smoke.matches(&hybrid_smoke_message));
+        let wrong_hybrid_smoke_message = ieee_f32_message(
+            PARAMETER_SMOKE_MASS_DENSITY[0],
+            105,
+            8.0,
+            &[0.000_012],
+            -99.0,
+            -99.0,
+        );
+        assert!(!hybrid_smoke.matches(&wrong_hybrid_smoke_message));
+
+        let smoke_8m = StructuredMessageSelector::try_from(FieldSelector::height_agl(
+            CanonicalField::SmokeMassDensity,
+            8,
+        ))
+        .unwrap();
+        let smoke_8m_message = ieee_f32_message(
+            PARAMETER_SMOKE_MASS_DENSITY[0],
+            103,
+            8.0,
+            &[0.000_025],
+            -99.0,
+            -99.0,
+        );
+        assert!(smoke_8m.matches(&smoke_8m_message));
+
+        let smoke_column = StructuredMessageSelector::try_from(FieldSelector::entire_atmosphere(
+            CanonicalField::ColumnIntegratedSmoke,
+        ))
+        .unwrap();
+        let smoke_column_message = ieee_f32_message(
+            PARAMETER_COLUMN_INTEGRATED_SMOKE[0],
+            200,
+            0.0,
+            &[0.003],
+            -99.0,
+            -99.0,
+        );
+        assert!(smoke_column.matches(&smoke_column_message));
+
         let u_10m = StructuredMessageSelector::try_from(FieldSelector::height_agl(
             CanonicalField::UWind,
             10,
@@ -1703,6 +2051,20 @@ mod tests {
             Err(IoError::UnsupportedStructuredSelector { .. })
         ));
         assert!(matches!(
+            StructuredMessageSelector::try_from(FieldSelector::hybrid_level(
+                CanonicalField::SmokeMassDensity,
+                51
+            )),
+            Err(IoError::UnsupportedStructuredSelector { .. })
+        ));
+        assert!(matches!(
+            StructuredMessageSelector::try_from(FieldSelector::height_agl(
+                CanonicalField::SmokeMassDensity,
+                2
+            )),
+            Err(IoError::UnsupportedStructuredSelector { .. })
+        ));
+        assert!(matches!(
             StructuredMessageSelector::try_from(FieldSelector::entire_atmosphere(
                 CanonicalField::SimulatedInfraredBrightnessTemperature
             )),
@@ -1756,6 +2118,116 @@ mod tests {
         assert_eq!(field.grid.shape.ny, 1);
         assert_eq!(field.grid.lon_deg, vec![-99.0, -98.0]);
         assert_eq!(field.values, vec![255.0, 256.5]);
+    }
+
+    #[test]
+    fn extract_hybrid_level_volume_from_grib2_stacks_requested_levels() {
+        let smoke_level_2 = ieee_f32_message(
+            PARAMETER_SMOKE_MASS_DENSITY[0],
+            105,
+            2.0,
+            &[0.3, 0.4],
+            -99.0,
+            -98.0,
+        );
+        let smoke_level_1 = ieee_f32_message(
+            PARAMETER_SMOKE_MASS_DENSITY[0],
+            105,
+            1.0,
+            &[0.1, 0.2],
+            -99.0,
+            -98.0,
+        );
+        let grib = Grib2File {
+            messages: vec![smoke_level_2, smoke_level_1],
+        };
+
+        let volume = extract_hybrid_level_volume_from_grib2(
+            &grib,
+            CanonicalField::SmokeMassDensity,
+            &[1, 2],
+        )
+        .unwrap();
+
+        assert_eq!(volume.field, CanonicalField::SmokeMassDensity);
+        assert_eq!(volume.levels_hybrid, vec![1, 2]);
+        assert_eq!(volume.units, "kg/m^3");
+        assert_eq!(volume.level_slice(0), Some(&[0.1, 0.2][..]));
+        assert_eq!(volume.level_slice(1), Some(&[0.3, 0.4][..]));
+        assert_eq!(
+            volume.selector_at(0),
+            Some(FieldSelector::hybrid_level(
+                CanonicalField::SmokeMassDensity,
+                1
+            ))
+        );
+    }
+
+    #[test]
+    fn extract_hrrr_wrfnat_smoke_fields_returns_surface_column_and_hybrid_pairs() {
+        let mut messages = Vec::new();
+        for level in 1..=HRRR_WRFNAT_HYBRID_LEVEL_COUNT {
+            messages.push(ieee_f32_message(
+                PARAMETER_PRESSURE[0],
+                105,
+                f64::from(level),
+                &[80_000.0 - level as f32, 79_000.0 - level as f32],
+                -99.0,
+                -98.0,
+            ));
+
+            let smoke_values = match level {
+                1 => vec![0.1, 0.2],
+                2 => vec![0.3, 0.4],
+                _ => vec![level as f32, level as f32 + 0.5],
+            };
+            messages.push(ieee_f32_message(
+                PARAMETER_SMOKE_MASS_DENSITY[0],
+                105,
+                f64::from(level),
+                &smoke_values,
+                -99.0,
+                -98.0,
+            ));
+        }
+        messages.push(ieee_f32_message(
+            PARAMETER_SMOKE_MASS_DENSITY[0],
+            103,
+            8.0,
+            &[1.5, 2.5],
+            -99.0,
+            -98.0,
+        ));
+        messages.push(ieee_f32_message(
+            PARAMETER_COLUMN_INTEGRATED_SMOKE[0],
+            200,
+            0.0,
+            &[3.5, 4.5],
+            -99.0,
+            -98.0,
+        ));
+        let grib = Grib2File { messages };
+
+        let extracted = extract_hrrr_wrfnat_smoke_fields_from_grib2(&grib).unwrap();
+
+        assert_eq!(extracted.hybrid_smoke.level_count(), 50);
+        assert_eq!(extracted.hybrid_pressure.level_count(), 50);
+        assert_eq!(
+            extracted.near_surface_smoke.selector,
+            FieldSelector::height_agl(CanonicalField::SmokeMassDensity, 8)
+        );
+        assert_eq!(
+            extracted.column_smoke.selector,
+            FieldSelector::entire_atmosphere(CanonicalField::ColumnIntegratedSmoke)
+        );
+        assert_eq!(extracted.hybrid_smoke.level_slice(0), Some(&[0.1, 0.2][..]));
+        assert_eq!(extracted.hybrid_smoke.level_slice(1), Some(&[0.3, 0.4][..]));
+        assert_eq!(
+            extracted.hybrid_pressure.selector_at(49),
+            Some(FieldSelector::hybrid_level(CanonicalField::Pressure, 50))
+        );
+        assert_eq!(extracted.near_surface_smoke.values, vec![1.5, 2.5]);
+        assert_eq!(extracted.column_smoke.values, vec![3.5, 4.5]);
     }
 
     #[test]

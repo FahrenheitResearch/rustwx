@@ -1,5 +1,6 @@
 use crate::color::Rgba;
 use crate::presentation::{LineworkRole, PolygonRole};
+use crate::request::{ProjectedLabelPlacement, ProjectedPlaceLabelPriority};
 
 #[derive(Clone, Debug)]
 pub struct MapExtent {
@@ -52,6 +53,31 @@ pub struct ProjectedPolygon {
     pub rings: Vec<Vec<(f64, f64)>>,
     pub color: Rgba,
     pub role: PolygonRole,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProjectedPlaceLabelStyle {
+    pub marker_radius_px: u32,
+    pub marker_fill: Rgba,
+    pub marker_outline: Rgba,
+    pub marker_outline_width: u32,
+    pub label_color: Rgba,
+    pub label_halo: Rgba,
+    pub label_halo_width_px: u32,
+    pub label_scale: u32,
+    pub label_offset_x_px: i32,
+    pub label_offset_y_px: i32,
+    pub label_placement: ProjectedLabelPlacement,
+    pub label_bold: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProjectedPlaceLabelOverlay {
+    pub x: f64,
+    pub y: f64,
+    pub label: Option<String>,
+    pub priority: ProjectedPlaceLabelPriority,
+    pub style: ProjectedPlaceLabelStyle,
 }
 
 #[derive(Clone, Debug)]

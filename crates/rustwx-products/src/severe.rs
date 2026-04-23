@@ -1,4 +1,4 @@
-use crate::direct::build_projected_map;
+use crate::direct::build_projected_map_with_projection;
 use crate::gridded::{
     PreparedHeavyVolume, PressureFields, SharedTiming, SurfaceFields, prepare_heavy_volume,
     prepare_heavy_volume_timed, resolve_thermo_pair_run,
@@ -12,13 +12,13 @@ use crate::publication::{PublishedFetchIdentity, fetch_identity_from_cached_resu
 use crate::runtime::{
     BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
 };
-use crate::shared_context::{DomainSpec, Solar07PanelField};
+use crate::shared_context::{DomainSpec, WeatherPanelField};
 use rustwx_calc::{
     EcapeVolumeInputs, SupportedSevereFields, SurfaceInputs, compute_supported_severe_fields,
 };
 use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
-use rustwx_models::LatestRun;
-use rustwx_render::Solar07Product;
+use rustwx_models::{LatestRun, default_bundle_product};
+use rustwx_render::WeatherProduct;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -97,9 +97,10 @@ pub fn run_severe_batch(
     let full_pressure = &pressure_decode.value;
     let owned_full_grid = full_surface.core_grid()?;
     let project_start = Instant::now();
-    let full_projected = build_projected_map(
+    let full_projected = build_projected_map_with_projection(
         &owned_full_grid.lat_deg,
         &owned_full_grid.lon_deg,
+        full_surface.projection.as_ref(),
         request.domain.bounds,
         heavy_map_target_aspect_ratio(),
     )?;
@@ -121,9 +122,10 @@ pub fn run_severe_batch(
         heavy_domain.bind(full_surface, full_pressure, &owned_full_grid);
 
     let projected = if heavy_domain.cropped.is_some() {
-        build_projected_map(
+        build_projected_map_with_projection(
             &grid.lat_deg,
             &grid.lon_deg,
+            surface.projection.as_ref(),
             request.domain.bounds,
             heavy_map_target_aspect_ratio(),
         )?
@@ -240,16 +242,7 @@ pub fn build_severe_execution_plan(
 }
 
 fn default_logical_family(model: ModelId, bundle: CanonicalBundleDescriptor) -> &'static str {
-    match (model, bundle) {
-        (ModelId::Hrrr, CanonicalBundleDescriptor::SurfaceAnalysis) => "sfc",
-        (ModelId::Hrrr, CanonicalBundleDescriptor::PressureAnalysis) => "prs",
-        (ModelId::Hrrr, CanonicalBundleDescriptor::NativeAnalysis) => "nat",
-        (ModelId::Gfs, _) => "pgrb2.0p25",
-        (ModelId::EcmwfOpenData, _) => "oper",
-        (ModelId::RrfsA, CanonicalBundleDescriptor::SurfaceAnalysis) => "nat-na",
-        (ModelId::RrfsA, CanonicalBundleDescriptor::PressureAnalysis) => "prs-na",
-        (ModelId::RrfsA, CanonicalBundleDescriptor::NativeAnalysis) => "nat-na",
-    }
+    default_bundle_product(model, bundle)
 }
 
 /// Reconstruct the legacy `SharedTiming` block from the loader output so
@@ -345,25 +338,25 @@ pub(crate) fn build_planned_input_fetches(loaded: &LoadedBundleSet) -> Vec<Publi
         .collect()
 }
 
-pub fn severe_panel_fields_from_supported(fields: SupportedSevereFields) -> Vec<Solar07PanelField> {
+pub fn severe_panel_fields_from_supported(fields: SupportedSevereFields) -> Vec<WeatherPanelField> {
     vec![
-        Solar07PanelField::new(Solar07Product::Sbcape, "J/kg", fields.sbcape_jkg),
-        Solar07PanelField::new(Solar07Product::Mlcin, "J/kg", fields.mlcin_jkg),
-        Solar07PanelField::new(Solar07Product::Mucape, "J/kg", fields.mucape_jkg),
-        Solar07PanelField::new(Solar07Product::Srh01km, "m^2/s^2", fields.srh_01km_m2s2)
+        WeatherPanelField::new(WeatherProduct::Sbcape, "J/kg", fields.sbcape_jkg),
+        WeatherPanelField::new(WeatherProduct::Mlcin, "J/kg", fields.mlcin_jkg),
+        WeatherPanelField::new(WeatherProduct::Mucape, "J/kg", fields.mucape_jkg),
+        WeatherPanelField::new(WeatherProduct::Srh01km, "m^2/s^2", fields.srh_01km_m2s2)
             .with_artifact_slug("srh_0_1km"),
-        Solar07PanelField::new(Solar07Product::Srh03km, "m^2/s^2", fields.srh_03km_m2s2)
+        WeatherPanelField::new(WeatherProduct::Srh03km, "m^2/s^2", fields.srh_03km_m2s2)
             .with_artifact_slug("srh_0_3km"),
-        Solar07PanelField::new(Solar07Product::StpFixed, "dimensionless", fields.stp_fixed),
-        Solar07PanelField::new(
-            Solar07Product::Scp,
+        WeatherPanelField::new(WeatherProduct::StpFixed, "dimensionless", fields.stp_fixed),
+        WeatherPanelField::new(
+            WeatherProduct::Scp,
             "dimensionless",
             fields.scp_mu_03km_06km_proxy,
         )
         .with_artifact_slug("scp_mu_0_3km_0_6km_proxy")
         .with_title_override("SCP (MU / 0-3 KM / 0-6 KM PROXY)"),
-        Solar07PanelField::new(
-            Solar07Product::Ehi,
+        WeatherPanelField::new(
+            WeatherProduct::Ehi,
             "dimensionless",
             fields.ehi_sb_01km_proxy,
         )
@@ -375,7 +368,7 @@ pub fn severe_panel_fields_from_supported(fields: SupportedSevereFields) -> Vec<
 pub fn compute_severe_panel_fields(
     surface: &SurfaceFields,
     pressure: &PressureFields,
-) -> Result<Vec<Solar07PanelField>, Box<dyn std::error::Error>> {
+) -> Result<Vec<WeatherPanelField>, Box<dyn std::error::Error>> {
     let prepared = prepare_heavy_volume(surface, pressure, false)?;
     compute_severe_panel_fields_with_prepared_volume(surface, pressure, &prepared)
 }
@@ -503,11 +496,14 @@ pub fn compute_severe_panel_fields_with_prepared_volume(
     surface: &SurfaceFields,
     pressure: &PressureFields,
     prepared: &PreparedHeavyVolume,
-) -> Result<Vec<Solar07PanelField>, Box<dyn std::error::Error>> {
+) -> Result<Vec<WeatherPanelField>, Box<dyn std::error::Error>> {
     let fields = compute_supported_severe_fields(
         prepared.grid,
         EcapeVolumeInputs {
-            pressure_pa: &prepared.pressure_levels_pa,
+            pressure_pa: prepared
+                .pressure_3d_pa
+                .as_deref()
+                .unwrap_or(&prepared.pressure_levels_pa),
             temperature_c: &pressure.temperature_c_3d,
             qvapor_kgkg: &pressure.qvapor_kgkg_3d,
             height_agl_m: &prepared.height_agl_3d,

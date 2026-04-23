@@ -118,42 +118,42 @@ pub fn windowed_product_specs() -> Vec<ProductSpec> {
         (
             HrrrWindowedProduct::Qpf1h,
             "1-h APCP accumulation ending at the requested forecast hour",
-            "solar07_qpf",
+            "weather_qpf",
         ),
         (
             HrrrWindowedProduct::Qpf6h,
             "Uses direct 6-hour APCP from the ending hour when present, else sums hourly APCP increments",
-            "solar07_qpf",
+            "weather_qpf",
         ),
         (
             HrrrWindowedProduct::Qpf12h,
             "Uses direct 12-hour APCP from the ending hour when present, else sums hourly APCP increments",
-            "solar07_qpf",
+            "weather_qpf",
         ),
         (
             HrrrWindowedProduct::Qpf24h,
             "Uses direct 24-hour APCP from the ending hour when present, else sums hourly APCP increments",
-            "solar07_qpf",
+            "weather_qpf",
         ),
         (
             HrrrWindowedProduct::QpfTotal,
             "Uses direct APCP from the ending hour when available, else sums all hourly APCP increments from F001..Fend",
-            "solar07_qpf",
+            "weather_qpf",
         ),
         (
             HrrrWindowedProduct::Uh25km1h,
             "Native 2-5 km UH 1-hour max from HRRR wrfnat",
-            "solar07_uh",
+            "weather_uh",
         ),
         (
             HrrrWindowedProduct::Uh25km3h,
             "Max of trailing native hourly 2-5 km UH maxima",
-            "solar07_uh",
+            "weather_uh",
         ),
         (
             HrrrWindowedProduct::Uh25kmRunMax,
             "Run max of native hourly 2-5 km UH maxima from F001..Fend",
-            "solar07_uh",
+            "weather_uh",
         ),
     ]
     .into_iter()
@@ -274,7 +274,7 @@ fn heavy_product_spec(product: HrrrBatchProduct) -> ProductSpec {
         product_metadata: Some(heavy_product_metadata(title, maturity, &flags, id)),
         maturity,
         flags: sorted_flags(&flags),
-        render_style: Some("solar07_map_family".to_string()),
+        render_style: Some("weather_map_family".to_string()),
         aliases: Vec::new(),
         notes,
         blocked_reasons: Vec::new(),
@@ -507,7 +507,7 @@ fn with_canonical_identity(
 
 fn direct_render_style(recipe: &PlotRecipe) -> &'static str {
     match recipe.slug {
-        "cloud_cover_levels" | "precipitation_type" => "solar07_panel_grid",
+        "cloud_cover_levels" | "precipitation_type" => "weather_panel_grid",
         _ => render_style_name(recipe.style),
     }
 }
@@ -560,29 +560,29 @@ fn derived_entry_notes(slug: &str, experimental: bool) -> Vec<String> {
 
 fn render_style_name(style: RenderStyle) -> &'static str {
     match style {
-        RenderStyle::Solar07Cape => "solar07_cape",
-        RenderStyle::Solar07Cin => "solar07_cin",
-        RenderStyle::Solar07Reflectivity => "solar07_reflectivity",
-        RenderStyle::Solar07Uh => "solar07_uh",
-        RenderStyle::Solar07Temperature => "solar07_temperature",
-        RenderStyle::Solar07Dewpoint => "solar07_dewpoint",
-        RenderStyle::Solar07Rh => "solar07_rh",
-        RenderStyle::Solar07Winds => "solar07_winds",
-        RenderStyle::Solar07Height => "solar07_height",
-        RenderStyle::Solar07Pressure => "solar07_pressure",
-        RenderStyle::Solar07WindGust => "solar07_wind_gust",
-        RenderStyle::Solar07CloudCover => "solar07_cloud_cover",
-        RenderStyle::Solar07PrecipitableWater => "solar07_precipitable_water",
-        RenderStyle::Solar07Qpf => "solar07_qpf",
-        RenderStyle::Solar07Categorical => "solar07_categorical",
-        RenderStyle::Solar07Visibility => "solar07_visibility",
-        RenderStyle::Solar07RadarReflectivity => "solar07_radar_reflectivity",
-        RenderStyle::Solar07Satellite => "solar07_satellite",
-        RenderStyle::Solar07Lightning => "solar07_lightning",
-        RenderStyle::Solar07Vorticity => "solar07_vorticity",
-        RenderStyle::Solar07Stp => "solar07_stp",
-        RenderStyle::Solar07Scp => "solar07_scp",
-        RenderStyle::Solar07Ehi => "solar07_ehi",
+        RenderStyle::WeatherCape => "weather_cape",
+        RenderStyle::WeatherCin => "weather_cin",
+        RenderStyle::WeatherReflectivity => "weather_reflectivity",
+        RenderStyle::WeatherUh => "weather_uh",
+        RenderStyle::WeatherTemperature => "weather_temperature",
+        RenderStyle::WeatherDewpoint => "weather_dewpoint",
+        RenderStyle::WeatherRh => "weather_rh",
+        RenderStyle::WeatherWinds => "weather_winds",
+        RenderStyle::WeatherHeight => "weather_height",
+        RenderStyle::WeatherPressure => "weather_pressure",
+        RenderStyle::WeatherWindGust => "weather_wind_gust",
+        RenderStyle::WeatherCloudCover => "weather_cloud_cover",
+        RenderStyle::WeatherPrecipitableWater => "weather_precipitable_water",
+        RenderStyle::WeatherQpf => "weather_qpf",
+        RenderStyle::WeatherCategorical => "weather_categorical",
+        RenderStyle::WeatherVisibility => "weather_visibility",
+        RenderStyle::WeatherRadarReflectivity => "weather_radar_reflectivity",
+        RenderStyle::WeatherSatellite => "weather_satellite",
+        RenderStyle::WeatherLightning => "weather_lightning",
+        RenderStyle::WeatherVorticity => "weather_vorticity",
+        RenderStyle::WeatherStp => "weather_stp",
+        RenderStyle::WeatherScp => "weather_scp",
+        RenderStyle::WeatherEhi => "weather_ehi",
     }
 }
 

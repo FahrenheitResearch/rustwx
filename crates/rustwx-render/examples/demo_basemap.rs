@@ -151,10 +151,10 @@ fn main() {
 /// and the underlying land fill shows through — matches the reference images'
 /// behavior where "no snowfall" or "no precipitation" cells let the basemap show.
 fn cape_scale_masked() -> ColorScale {
-    use rustwx_render::solar07::Solar07Preset;
-    // Start from the Solar07 CAPE palette so we keep the editorial color ramp,
+    use rustwx_render::weather::WeatherPreset;
+    // Start from the Weather CAPE palette so we keep the editorial color ramp,
     // then override with mask_below.
-    let base = Solar07Preset::Cape.scale();
+    let base = WeatherPreset::Cape.scale();
     ColorScale::Discrete(DiscreteColorScale {
         levels: base.levels,
         colors: base.colors,

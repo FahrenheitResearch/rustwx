@@ -200,6 +200,10 @@ pub fn load_styled_conus_polygons() -> Vec<StyledLonLatPolygonLayer> {
     load_styled_conus_polygons_for(BasemapStyle::Filled)
 }
 
+pub fn load_styled_basemap_polygons() -> Vec<StyledLonLatPolygonLayer> {
+    load_styled_conus_polygons()
+}
+
 pub fn load_styled_conus_polygons_for(style: BasemapStyle) -> Vec<StyledLonLatPolygonLayer> {
     static FILLED: OnceLock<Vec<StyledLonLatPolygonLayer>> = OnceLock::new();
     static WHITE: OnceLock<Vec<StyledLonLatPolygonLayer>> = OnceLock::new();
@@ -208,6 +212,10 @@ pub fn load_styled_conus_polygons_for(style: BasemapStyle) -> Vec<StyledLonLatPo
         BasemapStyle::White => &WHITE,
     };
     cache.get_or_init(|| build_conus_polygons(style)).clone()
+}
+
+pub fn load_styled_basemap_polygons_for(style: BasemapStyle) -> Vec<StyledLonLatPolygonLayer> {
+    load_styled_conus_polygons_for(style)
 }
 
 fn build_conus_polygons(style: BasemapStyle) -> Vec<StyledLonLatPolygonLayer> {
@@ -273,6 +281,10 @@ pub fn load_styled_conus_features() -> Vec<StyledLonLatLayer> {
     load_styled_conus_features_for(BasemapStyle::Filled)
 }
 
+pub fn load_styled_basemap_features() -> Vec<StyledLonLatLayer> {
+    load_styled_conus_features()
+}
+
 pub fn load_styled_conus_features_for(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     static FILLED: OnceLock<Vec<StyledLonLatLayer>> = OnceLock::new();
     static WHITE: OnceLock<Vec<StyledLonLatLayer>> = OnceLock::new();
@@ -281,6 +293,10 @@ pub fn load_styled_conus_features_for(style: BasemapStyle) -> Vec<StyledLonLatLa
         BasemapStyle::White => &WHITE,
     };
     cache.get_or_init(|| build_conus_features(style)).clone()
+}
+
+pub fn load_styled_basemap_features_for(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
+    load_styled_conus_features_for(style)
 }
 
 fn build_conus_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {

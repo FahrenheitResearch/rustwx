@@ -1,25 +1,30 @@
 use crate::cache::{load_bincode, store_bincode};
-use crate::direct::build_projected_map;
+use crate::direct::build_projected_map_with_projection;
 use crate::shared_context::PreparedProjectedContext;
 use grib_core::grib2::{
     Grib2File, Grib2Message, flip_rows, grid_latlon, unpack_message_normalized,
 };
 use rustwx_calc::{GridShape as CalcGridShape, VolumeShape};
 use rustwx_core::{
-    CanonicalBundleDescriptor, CanonicalDataFamily, CycleSpec, GridShape, LatLonGrid, ModelId,
-    ModelRunRequest, RustwxError, SourceId,
+    CanonicalBundleDescriptor, CanonicalDataFamily, CycleSpec, GridProjection, GridShape,
+    LatLonGrid, ModelId, ModelRunRequest, RustwxError, SourceId,
 };
-use rustwx_io::{CachedFetchResult, FetchRequest, artifact_cache_dir, fetch_bytes_with_cache};
+use rustwx_io::{
+    CachedFetchResult, FetchRequest, artifact_cache_dir, fetch_bytes_with_cache,
+    grid_projection_from_grib2_grid,
+};
 use rustwx_models::{
     LatestRun, ResolvedCanonicalBundleProduct, latest_available_run_at_forecast_hour,
     latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
 };
 use rustwx_render::{ProjectedExtent, map_frame_aspect_ratio};
+use rustwx_wrf as wrf;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 const GEOPOTENTIAL_M2S2_TO_M: f64 = 1.0 / 9.806_65;
+const MAX_DECODE_CACHE_WRITE_BYTES: usize = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SurfaceFields {
@@ -27,6 +32,7 @@ pub struct SurfaceFields {
     pub lon: Vec<f64>,
     pub nx: usize,
     pub ny: usize,
+    pub projection: Option<GridProjection>,
     pub psfc_pa: Vec<f64>,
     pub orog_m: Vec<f64>,
     pub orog_is_proxy: bool,
@@ -58,11 +64,13 @@ pub(crate) struct SurfaceGridLayout {
     pub lon: Vec<f64>,
     pub nx: usize,
     pub ny: usize,
+    pub projection: Option<GridProjection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PressureFields {
     pub pressure_levels_hpa: Vec<f64>,
+    pub pressure_3d_pa: Option<Vec<f64>>,
     pub temperature_c_3d: Vec<f64>,
     pub qvapor_kgkg_3d: Vec<f64>,
     pub u_ms_3d: Vec<f64>,
@@ -74,7 +82,13 @@ impl PressureFields {
     pub fn decoded_bytes_estimate(&self) -> usize {
         let level_count = self.pressure_levels_hpa.len();
         let volume_len = self.temperature_c_3d.len();
-        level_count * std::mem::size_of::<f64>() + volume_len * 5usize * std::mem::size_of::<f64>()
+        let pressure_3d_len = self
+            .pressure_3d_pa
+            .as_ref()
+            .map(|values| values.len())
+            .unwrap_or(0);
+        level_count * std::mem::size_of::<f64>()
+            + (volume_len * 5usize + pressure_3d_len) * std::mem::size_of::<f64>()
     }
 }
 
@@ -262,6 +276,36 @@ pub fn load_model_timestep_from_parts(
     )
 }
 
+pub fn load_model_timestep_from_parts_cropped(
+    model: ModelId,
+    date_yyyymmdd: &str,
+    cycle_override_utc: Option<u8>,
+    forecast_hour: u16,
+    source: SourceId,
+    surface_product_override: Option<&str>,
+    pressure_product_override: Option<&str>,
+    cache_root: &Path,
+    use_cache: bool,
+    bounds: (f64, f64, f64, f64),
+) -> Result<LoadedModelTimestep, Box<dyn std::error::Error>> {
+    let latest = resolve_model_run(
+        model,
+        date_yyyymmdd,
+        cycle_override_utc,
+        forecast_hour,
+        source,
+    )?;
+    load_model_timestep_from_latest_cropped(
+        latest,
+        forecast_hour,
+        surface_product_override,
+        pressure_product_override,
+        cache_root,
+        use_cache,
+        bounds,
+    )
+}
+
 pub fn load_surface_geometry_from_latest(
     latest: LatestRun,
     forecast_hour: u16,
@@ -318,7 +362,7 @@ pub fn load_model_timestep_from_latest(
     let (surface_bundle, pressure_bundle) =
         thermo_bundles(model, surface_product_override, pressure_product_override);
 
-    let ((surface_file, fetch_surface_ms), (pressure_file, fetch_pressure_ms)) =
+    let ((mut surface_file, fetch_surface_ms), (mut pressure_file, fetch_pressure_ms)) =
         if surface_bundle.native_product == pressure_bundle.native_product {
             let fetch_start = Instant::now();
             let fetched = fetch_family_file_with_patterns(
@@ -389,6 +433,140 @@ pub fn load_model_timestep_from_latest(
         surface_decode.value.nx,
         surface_decode.value.ny,
     )?;
+    surface_file.bytes.clear();
+    surface_file.bytes.shrink_to_fit();
+    pressure_file.bytes.clear();
+    pressure_file.bytes.shrink_to_fit();
+    let grid = surface_decode.value.core_grid()?;
+    let surface_fetch = surface_file.runtime_info(&surface_bundle);
+    let pressure_fetch = pressure_file.runtime_info(&pressure_bundle);
+
+    Ok(LoadedModelTimestep {
+        latest,
+        model,
+        surface_file,
+        pressure_file,
+        surface_decode,
+        pressure_decode,
+        grid,
+        shared_timing: SharedTiming {
+            fetch_surface_ms,
+            fetch_pressure_ms,
+            decode_surface_ms,
+            decode_pressure_ms,
+            fetch_surface_cache_hit: false,
+            fetch_pressure_cache_hit: false,
+            decode_surface_cache_hit: false,
+            decode_pressure_cache_hit: false,
+            surface_fetch,
+            pressure_fetch,
+        },
+    }
+    .with_cache_flags())
+}
+
+pub fn load_model_timestep_from_latest_cropped(
+    latest: LatestRun,
+    forecast_hour: u16,
+    surface_product_override: Option<&str>,
+    pressure_product_override: Option<&str>,
+    cache_root: &Path,
+    use_cache: bool,
+    bounds: (f64, f64, f64, f64),
+) -> Result<LoadedModelTimestep, Box<dyn std::error::Error>> {
+    let model = latest.model;
+    let (surface_bundle, pressure_bundle) =
+        thermo_bundles(model, surface_product_override, pressure_product_override);
+
+    let ((mut surface_file, fetch_surface_ms), (mut pressure_file, fetch_pressure_ms)) =
+        if surface_bundle.native_product == pressure_bundle.native_product {
+            let fetch_start = Instant::now();
+            let fetched = fetch_family_file_with_patterns(
+                model,
+                latest.cycle.clone(),
+                forecast_hour,
+                latest.source,
+                &surface_bundle,
+                merge_variable_patterns([
+                    bundle_fetch_variable_patterns(
+                        model,
+                        surface_bundle.bundle,
+                        &surface_bundle.native_product,
+                    ),
+                    bundle_fetch_variable_patterns(
+                        model,
+                        pressure_bundle.bundle,
+                        &pressure_bundle.native_product,
+                    ),
+                ]),
+                cache_root,
+                use_cache,
+            )?;
+            let elapsed = fetch_start.elapsed().as_millis();
+            ((fetched.clone(), elapsed), (fetched, elapsed))
+        } else {
+            let surface_start = Instant::now();
+            let surface = fetch_family_file(
+                model,
+                latest.cycle.clone(),
+                forecast_hour,
+                latest.source,
+                &surface_bundle,
+                cache_root,
+                use_cache,
+            )?;
+            let pressure_start = Instant::now();
+            let pressure = fetch_family_file(
+                model,
+                latest.cycle.clone(),
+                forecast_hour,
+                latest.source,
+                &pressure_bundle,
+                cache_root,
+                use_cache,
+            )?;
+            (
+                (surface, surface_start.elapsed().as_millis()),
+                (pressure, pressure_start.elapsed().as_millis()),
+            )
+        };
+
+    let surface_layout = decode_surface_grid(surface_file.bytes.as_slice())?;
+    let crop = crop_rect_for_layout(&surface_layout, bounds)?
+        .ok_or("requested cropped load produced an empty domain")?;
+    let surface_cache_path =
+        cropped_decode_cache_path(cache_root, &surface_file.request, "surface", crop);
+    let pressure_cache_path =
+        cropped_decode_cache_path(cache_root, &pressure_file.request, "pressure", crop);
+
+    let decode_surface_start = Instant::now();
+    let surface_decode = load_or_decode_surface_cropped(
+        &surface_cache_path,
+        surface_file.bytes.as_slice(),
+        use_cache,
+        crop,
+    )?;
+    let decode_surface_ms = decode_surface_start.elapsed().as_millis();
+
+    let decode_pressure_start = Instant::now();
+    let (pressure_decode, pressure_shape) = load_or_decode_pressure_cropped_with_shape(
+        &pressure_cache_path,
+        pressure_file.bytes.as_slice(),
+        use_cache,
+        crop,
+    )?;
+    let decode_pressure_ms = decode_pressure_start.elapsed().as_millis();
+
+    validate_pressure_decode_against_surface(
+        &pressure_decode,
+        pressure_shape,
+        surface_decode.value.nx,
+        surface_decode.value.ny,
+    )?;
+    surface_file.bytes.clear();
+    surface_file.bytes.shrink_to_fit();
+    pressure_file.bytes.clear();
+    pressure_file.bytes.shrink_to_fit();
     let grid = surface_decode.value.core_grid()?;
     let surface_fetch = surface_file.runtime_info(&surface_bundle);
     let pressure_fetch = pressure_file.runtime_info(&pressure_bundle);
@@ -427,7 +605,7 @@ pub fn build_projected_maps_for_sizes(
         if width == 0 || height == 0 || context.contains_size(width, height) {
             continue;
         }
-        let projected = build_projected_map(
+        let projected = build_projected_map_with_projection(
             &surface
                 .lat
                 .iter()
@@ -440,6 +618,7 @@ pub fn build_projected_maps_for_sizes(
                 .copied()
                 .map(|v| v as f32)
                 .collect::<Vec<_>>(),
+            surface.projection.as_ref(),
             bounds,
             map_frame_aspect_ratio(width, height, true, true),
         )?;
@@ -473,8 +652,12 @@ pub fn prepare_heavy_volume_timed(
     let height_agl_3d = compute_height_agl_3d(surface, pressure, grid, shape);
     let prepare_height_agl_ms = height_agl_start.elapsed().as_millis();
     let broadcast_start = Instant::now();
-    let pressure_3d_pa =
-        include_pressure_3d.then(|| broadcast_levels_pa(&pressure.pressure_levels_hpa, grid.len()));
+    let pressure_3d_pa = include_pressure_3d.then(|| {
+        pressure
+            .pressure_3d_pa
+            .clone()
+            .unwrap_or_else(|| broadcast_levels_pa(&pressure.pressure_levels_hpa, grid.len()))
+    });
     let broadcast_pressure_ms = if include_pressure_3d {
         broadcast_start.elapsed().as_millis()
     } else {
@@ -731,6 +914,44 @@ pub fn crop_latlon_grid(
     )?)
 }
 
+fn crop_rect_for_layout(
+    layout: &SurfaceGridLayout,
+    bounds: (f64, f64, f64, f64),
+) -> Result<Option<GridCrop>, Box<dyn std::error::Error>> {
+    let mut min_x = layout.nx;
+    let mut max_x = 0usize;
+    let mut min_y = layout.ny;
+    let mut max_y = 0usize;
+    let mut found = false;
+
+    for y in 0..layout.ny {
+        let row_offset = y * layout.nx;
+        for x in 0..layout.nx {
+            let idx = row_offset + x;
+            let lat = layout.lat[idx];
+            let lon = layout.lon[idx];
+            if lon >= bounds.0 && lon <= bounds.1 && lat >= bounds.2 && lat <= bounds.3 {
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+                found = true;
+            }
+        }
+    }
+
+    if !found {
+        return Ok(None);
+    }
+
+    Ok(Some(GridCrop {
+        x_start: min_x,
+        x_end: max_x + 1,
+        y_start: min_y,
+        y_end: max_y + 1,
+    }))
+}
+
 fn crop_rect_for_bounds(
     surface: &SurfaceFields,
     bounds: (f64, f64, f64, f64),
@@ -785,6 +1006,7 @@ fn crop_surface_fields(surface: &SurfaceFields, crop: GridCrop) -> SurfaceFields
         lon: crop_2d_values(&surface.lon, surface.nx, crop),
         nx: crop.width(),
         ny: crop.height(),
+        projection: surface.projection.clone(),
         psfc_pa: crop_2d_values(&surface.psfc_pa, surface.nx, crop),
         orog_m: crop_2d_values(&surface.orog_m, surface.nx, crop),
         orog_is_proxy: surface.orog_is_proxy,
@@ -806,6 +1028,15 @@ fn crop_pressure_fields(
         .checked_mul(source_ny)
         .and_then(|n2d| n2d.checked_mul(level_count))
         .ok_or("pressure crop expected length overflowed")?;
+    if let Some(values) = pressure.pressure_3d_pa.as_ref() {
+        if values.len() != expected_len {
+            return Err(format!(
+                "pressure field pressure_3d_pa length {} did not match expected source volume length {expected_len}",
+                values.len()
+            )
+            .into());
+        }
+    }
     for (name, values) in [
         ("temperature_c_3d", &pressure.temperature_c_3d),
         ("qvapor_kgkg_3d", &pressure.qvapor_kgkg_3d),
@@ -824,6 +1055,10 @@ fn crop_pressure_fields(
 
     Ok(PressureFields {
         pressure_levels_hpa: pressure.pressure_levels_hpa.clone(),
+        pressure_3d_pa: pressure
+            .pressure_3d_pa
+            .as_ref()
+            .map(|values| crop_3d_values(values, source_nx, source_ny, level_count, crop)),
         temperature_c_3d: crop_3d_values(
             &pressure.temperature_c_3d,
             source_nx,
@@ -852,6 +1087,26 @@ fn crop_2d_values(values: &[f64], source_nx: usize, crop: GridCrop) -> Vec<f64> 
         out.extend_from_slice(&values[row_start..row_end]);
     }
     out
+}
+
+fn cropped_decode_cache_path(
+    cache_root: &Path,
+    fetch: &rustwx_io::FetchRequest,
+    name: &str,
+    crop: GridCrop,
+) -> PathBuf {
+    let mut path = decode_cache_path(cache_root, fetch, name);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(name)
+        .to_string();
+    let suffix = format!(
+        "{stem}_crop_{}_{}_{}_{}",
+        crop.x_start, crop.x_end, crop.y_start, crop.y_end
+    );
+    path.set_file_name(format!("{suffix}.bin"));
+    path
 }
 
 fn crop_3d_values(
@@ -956,8 +1211,6 @@ pub(crate) fn bundle_fetch_variable_patterns(
             "GP:surface",
             "TMP:2 m above ground",
             "SPFH:2 m above ground",
-            "DPT:2 m above ground",
-            "RH:2 m above ground",
             "UGRD:10 m above ground",
             "VGRD:10 m above ground",
         ]
@@ -965,7 +1218,7 @@ pub(crate) fn bundle_fetch_variable_patterns(
         .map(str::to_string)
         .collect(),
         (CanonicalBundleDescriptor::PressureAnalysis, "prs-na") => {
-            vec!["HGT", "GP", "TMP", "SPFH", "DPT", "RH", "UGRD", "VGRD"]
+            vec!["HGT", "GP", "TMP", "SPFH", "UGRD", "VGRD"]
                 .into_iter()
                 .map(str::to_string)
                 .collect()
@@ -1021,7 +1274,7 @@ pub(crate) fn load_or_decode_surface(
         }
     }
     let decoded = decode_surface(bytes)?;
-    if use_cache {
+    if use_cache && decoded.decoded_bytes_estimate() <= MAX_DECODE_CACHE_WRITE_BYTES {
         store_bincode(path, &decoded)?;
     }
     Ok(CachedDecode {
@@ -1049,7 +1302,7 @@ pub(crate) fn load_or_decode_pressure_with_shape(
         }
     }
     let (decoded, nx, ny) = decode_pressure_with_shape(bytes)?;
-    if use_cache {
+    if use_cache && decoded.decoded_bytes_estimate() <= MAX_DECODE_CACHE_WRITE_BYTES {
         store_bincode(path, &decoded)?;
     }
     Ok((
@@ -1089,7 +1342,7 @@ pub(crate) fn load_or_decode_surface_cropped(
         }
     }
     let decoded = decode_surface_cropped(bytes, crop)?;
-    if use_cache {
+    if use_cache && decoded.decoded_bytes_estimate() <= MAX_DECODE_CACHE_WRITE_BYTES {
         store_bincode(path, &decoded)?;
     }
     Ok(CachedDecode {
@@ -1118,7 +1371,7 @@ pub(crate) fn load_or_decode_pressure_cropped_with_shape(
         }
     }
     let (decoded, nx, ny) = decode_pressure_cropped_with_shape(bytes, crop)?;
-    if use_cache {
+    if use_cache && decoded.decoded_bytes_estimate() <= MAX_DECODE_CACHE_WRITE_BYTES {
         store_bincode(path, &decoded)?;
     }
     Ok((
@@ -1132,12 +1385,35 @@ pub(crate) fn load_or_decode_pressure_cropped_with_shape(
 }
 
 fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Error>> {
+    if wrf::looks_like_wrf(bytes) {
+        let decoded = wrf::decode_surface_from_bytes(bytes, None)?;
+        return Ok(SurfaceFields {
+            lat: decoded.lat,
+            lon: decoded.lon,
+            nx: decoded.nx,
+            ny: decoded.ny,
+            projection: None,
+            psfc_pa: decoded.psfc_pa,
+            orog_m: decoded.orog_m,
+            orog_is_proxy: false,
+            t2_k: decoded.t2_k,
+            q2_kgkg: decoded.q2_kgkg,
+            u10_ms: decoded.u10_ms,
+            v10_ms: decoded.v10_ms,
+        });
+    }
     let file = Grib2File::from_bytes(bytes)?;
     let sample = file
         .messages
         .first()
         .ok_or("surface family GRIB had no messages")?;
-    let SurfaceGridLayout { lat, lon, nx, ny } = decode_surface_grid_from_sample(sample);
+    let SurfaceGridLayout {
+        lat,
+        lon,
+        nx,
+        ny,
+        projection,
+    } = decode_surface_grid_from_sample(sample);
 
     let psfc_pa = unpack_message_normalized(find_message(
         &file.messages,
@@ -1160,6 +1436,7 @@ fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Err
         lon,
         nx,
         ny,
+        projection,
         psfc_pa,
         orog_m,
         orog_is_proxy,
@@ -1174,6 +1451,9 @@ fn decode_surface_cropped(
     bytes: &[u8],
     crop: GridCrop,
 ) -> Result<SurfaceFields, Box<dyn std::error::Error>> {
+    if wrf::looks_like_wrf(bytes) {
+        return Ok(crop_surface_fields(&decode_surface(bytes)?, crop));
+    }
     let file = Grib2File::from_bytes(bytes)?;
     let sample = file
         .messages
@@ -1184,6 +1464,7 @@ fn decode_surface_cropped(
         lon,
         nx,
         ny: _,
+        projection,
     } = decode_surface_grid_from_sample(sample);
 
     let psfc_pa = crop_2d_values(
@@ -1220,6 +1501,7 @@ fn decode_surface_cropped(
         lon: crop_2d_values(&lon, nx, crop),
         nx: crop.width(),
         ny: crop.height(),
+        projection,
         psfc_pa,
         orog_m,
         orog_is_proxy,
@@ -1233,6 +1515,22 @@ fn decode_surface_cropped(
 fn decode_pressure_with_shape(
     bytes: &[u8],
 ) -> Result<(PressureFields, usize, usize), Box<dyn std::error::Error>> {
+    if wrf::looks_like_wrf(bytes) {
+        let decoded = wrf::decode_pressure_from_bytes(bytes, None)?;
+        return Ok((
+            PressureFields {
+                pressure_levels_hpa: decoded.pressure_levels_hpa,
+                pressure_3d_pa: Some(decoded.pressure_3d_pa),
+                temperature_c_3d: decoded.temperature_c_3d,
+                qvapor_kgkg_3d: decoded.qvapor_kgkg_3d,
+                u_ms_3d: decoded.u_ms_3d,
+                v_ms_3d: decoded.v_ms_3d,
+                gh_m_3d: decoded.gh_m_3d,
+            },
+            decoded.nx,
+            decoded.ny,
+        ));
+    }
     let file = Grib2File::from_bytes(bytes)?;
     let (nx, ny) = pressure_grid_shape_from_messages(&file.messages)?;
     let temperature = collect_levels(&file.messages, 0, 0, 0, 100)?;
@@ -1267,6 +1565,7 @@ fn decode_pressure_with_shape(
                 .into_iter()
                 .map(normalize_pressure_level_hpa)
                 .collect(),
+            pressure_3d_pa: None,
             temperature_c_3d: flatten(&temperature)?
                 .into_iter()
                 .map(|value| value - 273.15)
@@ -1285,6 +1584,14 @@ fn decode_pressure_cropped_with_shape(
     bytes: &[u8],
     crop: GridCrop,
 ) -> Result<(PressureFields, usize, usize), Box<dyn std::error::Error>> {
+    if wrf::looks_like_wrf(bytes) {
+        let (decoded, nx, ny) = decode_pressure_with_shape(bytes)?;
+        return Ok((
+            crop_pressure_fields(&decoded, nx, ny, crop)?,
+            crop.width(),
+            crop.height(),
+        ));
+    }
     let file = Grib2File::from_bytes(bytes)?;
     let (nx, _ny) = pressure_grid_shape_from_messages(&file.messages)?;
     let temperature = collect_levels_cropped(&file.messages, 0, 0, 0, 100, nx, crop)?;
@@ -1322,6 +1629,7 @@ fn decode_pressure_cropped_with_shape(
     Ok((
         PressureFields {
             pressure_levels_hpa,
+            pressure_3d_pa: None,
             temperature_c_3d: flatten(&temperature)?
                 .into_iter()
                 .map(|value| value - 273.15)
@@ -1364,6 +1672,7 @@ fn decode_surface_grid_from_sample(sample: &Grib2Message) -> SurfaceGridLayout {
             .collect::<Vec<_>>(),
         nx: sample.grid.nx as usize,
         ny: sample.grid.ny as usize,
+        projection: grid_projection_from_grib2_grid(&sample.grid),
     }
 }
 
@@ -1865,8 +2174,6 @@ mod tests {
                 "GP:surface".to_string(),
                 "TMP:2 m above ground".to_string(),
                 "SPFH:2 m above ground".to_string(),
-                "DPT:2 m above ground".to_string(),
-                "RH:2 m above ground".to_string(),
                 "UGRD:10 m above ground".to_string(),
                 "VGRD:10 m above ground".to_string(),
             ]
@@ -1882,8 +2189,6 @@ mod tests {
                 "GP".to_string(),
                 "TMP".to_string(),
                 "SPFH".to_string(),
-                "DPT".to_string(),
-                "RH".to_string(),
                 "UGRD".to_string(),
                 "VGRD".to_string(),
             ]
@@ -1923,6 +2228,11 @@ mod tests {
             lon: vec![-97.0; len],
             nx,
             ny,
+            projection: Some(GridProjection::LambertConformal {
+                standard_parallel_1_deg: 38.5,
+                standard_parallel_2_deg: 38.5,
+                central_meridian_deg: -97.5,
+            }),
             psfc_pa: vec![100000.0; len],
             orog_m: vec![300.0; len],
             orog_is_proxy: false,
@@ -1933,6 +2243,7 @@ mod tests {
         };
         let pressure = PressureFields {
             pressure_levels_hpa: vec![1000.0],
+            pressure_3d_pa: None,
             temperature_c_3d: vec![20.0; len],
             qvapor_kgkg_3d: vec![0.010; len],
             u_ms_3d: vec![10.0; len],

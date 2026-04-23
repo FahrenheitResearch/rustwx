@@ -47,29 +47,29 @@ pub enum GribLevelKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum RenderStyle {
-    Solar07Cape,
-    Solar07Cin,
-    Solar07Reflectivity,
-    Solar07Uh,
-    Solar07Temperature,
-    Solar07Dewpoint,
-    Solar07Rh,
-    Solar07Winds,
-    Solar07Height,
-    Solar07Pressure,
-    Solar07WindGust,
-    Solar07CloudCover,
-    Solar07PrecipitableWater,
-    Solar07Qpf,
-    Solar07Categorical,
-    Solar07Visibility,
-    Solar07RadarReflectivity,
-    Solar07Satellite,
-    Solar07Lightning,
-    Solar07Vorticity,
-    Solar07Stp,
-    Solar07Scp,
-    Solar07Ehi,
+    WeatherCape,
+    WeatherCin,
+    WeatherReflectivity,
+    WeatherUh,
+    WeatherTemperature,
+    WeatherDewpoint,
+    WeatherRh,
+    WeatherWinds,
+    WeatherHeight,
+    WeatherPressure,
+    WeatherWindGust,
+    WeatherCloudCover,
+    WeatherPrecipitableWater,
+    WeatherQpf,
+    WeatherCategorical,
+    WeatherVisibility,
+    WeatherRadarReflectivity,
+    WeatherSatellite,
+    WeatherLightning,
+    WeatherVorticity,
+    WeatherStp,
+    WeatherScp,
+    WeatherEhi,
 }
 
 fn recipe_lineage(slug: &str, family: ProductFamily) -> ProductLineage {
@@ -329,6 +329,11 @@ const ECMWF_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
 const RRFS_A_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 ];
+const WRF_GDEX_CYCLE_HOURS: &[u8] = &[
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+];
+const WRF_GDEX_DEFAULT_SURFACE_PRODUCT: &str = "d612005-hist2d";
+const WRF_GDEX_DEFAULT_PRESSURE_PRODUCT: &str = "d612005-hist3d";
 
 const HRRR_SOURCES: &[SourceDescriptor] = &[
     SourceDescriptor {
@@ -415,6 +420,14 @@ const RRFS_A_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
     notes: "NOAA RRFS AWS bucket",
 }];
 
+const WRF_GDEX_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
+    id: SourceId::Gdex,
+    idx_available: false,
+    priority: 1,
+    max_age_hours: None,
+    notes: "UCAR GDEX THREDDS fileServer",
+}];
+
 const MODELS: &[ModelSummary] = &[
     ModelSummary {
         id: ModelId::Hrrr,
@@ -447,6 +460,14 @@ const MODELS: &[ModelSummary] = &[
         cycle_hours_utc: RRFS_A_CYCLE_HOURS,
         max_forecast_hour: 60,
         sources: RRFS_A_SOURCES,
+    },
+    ModelSummary {
+        id: ModelId::WrfGdex,
+        description: "WRF wrfout archive on UCAR GDEX THREDDS",
+        default_product: WRF_GDEX_DEFAULT_SURFACE_PRODUCT,
+        cycle_hours_utc: WRF_GDEX_CYCLE_HOURS,
+        max_forecast_hour: 0,
+        sources: WRF_GDEX_SOURCES,
     },
 ];
 
@@ -723,6 +744,19 @@ const FIELD_300_HEIGHT: GribFieldSpec = field_spec(
     &["HGT:300 mb"],
 );
 
+const FIELD_250_HEIGHT: GribFieldSpec = field_spec(
+    "height_250mb",
+    "250mb Height",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(250),
+    Some(FieldSelector::isobaric(
+        CanonicalField::GeopotentialHeight,
+        250,
+    )),
+    &["HGT:250 mb"],
+);
+
 const FIELD_200_TEMP: GribFieldSpec = field_spec(
     "temperature_200mb",
     "200mb Temperature",
@@ -741,6 +775,16 @@ const FIELD_300_TEMP: GribFieldSpec = field_spec(
     Some(300),
     Some(FieldSelector::isobaric(CanonicalField::Temperature, 300)),
     &["TMP:300 mb"],
+);
+
+const FIELD_250_TEMP: GribFieldSpec = field_spec(
+    "temperature_250mb",
+    "250mb Temperature",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(250),
+    Some(FieldSelector::isobaric(CanonicalField::Temperature, 250)),
+    &["TMP:250 mb"],
 );
 
 const FIELD_200_RH: GribFieldSpec = field_spec(
@@ -835,6 +879,26 @@ const FIELD_300_V: GribFieldSpec = field_spec(
     &["VGRD:300 mb"],
 );
 
+const FIELD_250_U: GribFieldSpec = field_spec(
+    "u_250mb",
+    "250mb U Wind",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(250),
+    Some(FieldSelector::isobaric(CanonicalField::UWind, 250)),
+    &["UGRD:250 mb"],
+);
+
+const FIELD_250_V: GribFieldSpec = field_spec(
+    "v_250mb",
+    "250mb V Wind",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(250),
+    Some(FieldSelector::isobaric(CanonicalField::VWind, 250)),
+    &["VGRD:250 mb"],
+);
+
 const FIELD_2M_TEMP: GribFieldSpec = field_spec(
     "temperature_2m_agl",
     "2m AGL Temperature",
@@ -895,7 +959,7 @@ const FIELD_10M_WIND_GUST: GribFieldSpec = field_spec(
     GribLevelKind::HeightAboveGround,
     Some(10),
     Some(FieldSelector::height_agl(CanonicalField::WindGust, 10)),
-    &["GUST:surface", "GUST:10 m above ground"],
+    &["GUST:surface", "GUST:10 m above ground", "WSPD10MAX"],
 );
 
 const FIELD_MSLP: GribFieldSpec = field_spec(
@@ -1168,6 +1232,34 @@ const FIELD_UH: GribFieldSpec = field_spec(
     &["MXUPHL:5000-2000", "UPHL:5000-2000", "UHEL:"],
 );
 
+const FIELD_SMOKE_MASS_DENSITY_8M: GribFieldSpec = field_spec(
+    "smoke_mass_density_8m_agl",
+    "8m AGL Smoke Mass Density",
+    ProductFamily::Native,
+    GribLevelKind::HeightAboveGround,
+    Some(8),
+    Some(FieldSelector::height_agl(
+        CanonicalField::SmokeMassDensity,
+        8,
+    )),
+    &["MASSDEN:8 m above ground"],
+);
+
+const FIELD_COLUMN_INTEGRATED_SMOKE: GribFieldSpec = field_spec(
+    "column_integrated_smoke",
+    "Column-Integrated Smoke",
+    ProductFamily::Native,
+    GribLevelKind::EntireAtmosphere,
+    None,
+    Some(FieldSelector::entire_atmosphere(
+        CanonicalField::ColumnIntegratedSmoke,
+    )),
+    &[
+        "COLMD:entire atmosphere (considered as a single layer)",
+        "COLMD:entire atmosphere",
+    ],
+);
+
 const PLOT_RECIPES: &[PlotRecipe] = &[
     PlotRecipe {
         slug: "200mb_height_winds",
@@ -1176,7 +1268,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_200_HEIGHT),
         barbs_u: Some(FIELD_200_U),
         barbs_v: Some(FIELD_200_V),
-        style: RenderStyle::Solar07Height,
+        style: RenderStyle::WeatherHeight,
     },
     PlotRecipe {
         slug: "300mb_height_winds",
@@ -1185,7 +1277,16 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_300_HEIGHT),
         barbs_u: Some(FIELD_300_U),
         barbs_v: Some(FIELD_300_V),
-        style: RenderStyle::Solar07Height,
+        style: RenderStyle::WeatherHeight,
+    },
+    PlotRecipe {
+        slug: "250mb_height_winds",
+        title: "250mb Height / Winds",
+        filled: FIELD_250_HEIGHT,
+        contours: Some(FIELD_250_HEIGHT),
+        barbs_u: Some(FIELD_250_U),
+        barbs_v: Some(FIELD_250_V),
+        style: RenderStyle::WeatherHeight,
     },
     PlotRecipe {
         slug: "500mb_height_winds",
@@ -1194,7 +1295,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_500_HEIGHT),
         barbs_u: Some(FIELD_500_U),
         barbs_v: Some(FIELD_500_V),
-        style: RenderStyle::Solar07Height,
+        style: RenderStyle::WeatherHeight,
     },
     PlotRecipe {
         slug: "700mb_height_winds",
@@ -1203,7 +1304,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_700_HEIGHT),
         barbs_u: Some(FIELD_700_U),
         barbs_v: Some(FIELD_700_V),
-        style: RenderStyle::Solar07Height,
+        style: RenderStyle::WeatherHeight,
     },
     PlotRecipe {
         slug: "850mb_height_winds",
@@ -1212,7 +1313,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_850_HEIGHT),
         barbs_u: Some(FIELD_850_U),
         barbs_v: Some(FIELD_850_V),
-        style: RenderStyle::Solar07Height,
+        style: RenderStyle::WeatherHeight,
     },
     PlotRecipe {
         slug: "200mb_temperature_height_winds",
@@ -1221,7 +1322,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_200_HEIGHT),
         barbs_u: Some(FIELD_200_U),
         barbs_v: Some(FIELD_200_V),
-        style: RenderStyle::Solar07Temperature,
+        style: RenderStyle::WeatherTemperature,
     },
     PlotRecipe {
         slug: "300mb_temperature_height_winds",
@@ -1230,7 +1331,16 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_300_HEIGHT),
         barbs_u: Some(FIELD_300_U),
         barbs_v: Some(FIELD_300_V),
-        style: RenderStyle::Solar07Temperature,
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
+        slug: "250mb_temperature_height_winds",
+        title: "250mb Temperature / Height / Winds",
+        filled: FIELD_250_TEMP,
+        contours: Some(FIELD_250_HEIGHT),
+        barbs_u: Some(FIELD_250_U),
+        barbs_v: Some(FIELD_250_V),
+        style: RenderStyle::WeatherTemperature,
     },
     PlotRecipe {
         slug: "500mb_temperature_height_winds",
@@ -1239,7 +1349,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_500_HEIGHT),
         barbs_u: Some(FIELD_500_U),
         barbs_v: Some(FIELD_500_V),
-        style: RenderStyle::Solar07Temperature,
+        style: RenderStyle::WeatherTemperature,
     },
     PlotRecipe {
         slug: "850mb_temperature_height_winds",
@@ -1248,7 +1358,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_850_HEIGHT),
         barbs_u: Some(FIELD_850_U),
         barbs_v: Some(FIELD_850_V),
-        style: RenderStyle::Solar07Temperature,
+        style: RenderStyle::WeatherTemperature,
     },
     PlotRecipe {
         slug: "700mb_temperature_height_winds",
@@ -1257,7 +1367,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_700_HEIGHT),
         barbs_u: Some(FIELD_700_U),
         barbs_v: Some(FIELD_700_V),
-        style: RenderStyle::Solar07Temperature,
+        style: RenderStyle::WeatherTemperature,
     },
     PlotRecipe {
         slug: "2m_relative_humidity",
@@ -1266,7 +1376,16 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07Rh,
+        style: RenderStyle::WeatherRh,
+    },
+    PlotRecipe {
+        slug: "2m_relative_humidity_10m_winds",
+        title: "2m AGL Relative Humidity / 10m Winds",
+        filled: FIELD_2M_RH,
+        contours: None,
+        barbs_u: Some(FIELD_10M_U),
+        barbs_v: Some(FIELD_10M_V),
+        style: RenderStyle::WeatherRh,
     },
     PlotRecipe {
         slug: "2m_temperature",
@@ -1275,7 +1394,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07Temperature,
+        style: RenderStyle::WeatherTemperature,
     },
     PlotRecipe {
         slug: "2m_temperature_10m_winds",
@@ -1284,7 +1403,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: Some(FIELD_10M_U),
         barbs_v: Some(FIELD_10M_V),
-        style: RenderStyle::Solar07Temperature,
+        style: RenderStyle::WeatherTemperature,
     },
     PlotRecipe {
         slug: "2m_dewpoint",
@@ -1293,7 +1412,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07Dewpoint,
+        style: RenderStyle::WeatherDewpoint,
     },
     PlotRecipe {
         slug: "2m_dewpoint_10m_winds",
@@ -1302,7 +1421,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: Some(FIELD_10M_U),
         barbs_v: Some(FIELD_10M_V),
-        style: RenderStyle::Solar07Dewpoint,
+        style: RenderStyle::WeatherDewpoint,
     },
     PlotRecipe {
         slug: "mslp_10m_winds",
@@ -1311,7 +1430,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: Some(FIELD_10M_U),
         barbs_v: Some(FIELD_10M_V),
-        style: RenderStyle::Solar07Pressure,
+        style: RenderStyle::WeatherPressure,
     },
     PlotRecipe {
         slug: "10m_wind_gusts",
@@ -1320,7 +1439,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07WindGust,
+        style: RenderStyle::WeatherWindGust,
     },
     PlotRecipe {
         slug: "precipitable_water",
@@ -1329,7 +1448,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07PrecipitableWater,
+        style: RenderStyle::WeatherPrecipitableWater,
     },
     PlotRecipe {
         slug: "cloud_cover",
@@ -1338,7 +1457,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07CloudCover,
+        style: RenderStyle::WeatherCloudCover,
     },
     PlotRecipe {
         slug: "low_cloud_cover",
@@ -1347,7 +1466,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07CloudCover,
+        style: RenderStyle::WeatherCloudCover,
     },
     PlotRecipe {
         slug: "middle_cloud_cover",
@@ -1356,7 +1475,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07CloudCover,
+        style: RenderStyle::WeatherCloudCover,
     },
     PlotRecipe {
         slug: "high_cloud_cover",
@@ -1365,7 +1484,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07CloudCover,
+        style: RenderStyle::WeatherCloudCover,
     },
     PlotRecipe {
         slug: "cloud_cover_levels",
@@ -1374,7 +1493,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07CloudCover,
+        style: RenderStyle::WeatherCloudCover,
     },
     PlotRecipe {
         slug: "visibility",
@@ -1383,7 +1502,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07Visibility,
+        style: RenderStyle::WeatherVisibility,
     },
     PlotRecipe {
         slug: "simulated_ir_satellite",
@@ -1392,7 +1511,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07Satellite,
+        style: RenderStyle::WeatherSatellite,
     },
     PlotRecipe {
         slug: "lightning_flash_density",
@@ -1401,7 +1520,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07Lightning,
+        style: RenderStyle::WeatherLightning,
     },
     PlotRecipe {
         slug: "total_qpf",
@@ -1410,7 +1529,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07Qpf,
+        style: RenderStyle::WeatherQpf,
     },
     PlotRecipe {
         slug: "1h_qpf",
@@ -1419,7 +1538,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07Qpf,
+        style: RenderStyle::WeatherQpf,
     },
     PlotRecipe {
         slug: "categorical_rain",
@@ -1428,7 +1547,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07Categorical,
+        style: RenderStyle::WeatherCategorical,
     },
     PlotRecipe {
         slug: "categorical_freezing_rain",
@@ -1437,7 +1556,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07Categorical,
+        style: RenderStyle::WeatherCategorical,
     },
     PlotRecipe {
         slug: "categorical_ice_pellets",
@@ -1446,7 +1565,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07Categorical,
+        style: RenderStyle::WeatherCategorical,
     },
     PlotRecipe {
         slug: "categorical_snow",
@@ -1455,7 +1574,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07Categorical,
+        style: RenderStyle::WeatherCategorical,
     },
     PlotRecipe {
         slug: "precipitation_type",
@@ -1464,7 +1583,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07Categorical,
+        style: RenderStyle::WeatherCategorical,
     },
     PlotRecipe {
         slug: "2m_theta_e_10m_winds",
@@ -1473,7 +1592,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: Some(FIELD_10M_U),
         barbs_v: Some(FIELD_10M_V),
-        style: RenderStyle::Solar07Temperature,
+        style: RenderStyle::WeatherTemperature,
     },
     PlotRecipe {
         slug: "2m_heat_index",
@@ -1482,7 +1601,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07Temperature,
+        style: RenderStyle::WeatherTemperature,
     },
     PlotRecipe {
         slug: "2m_wind_chill",
@@ -1491,7 +1610,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07Temperature,
+        style: RenderStyle::WeatherTemperature,
     },
     PlotRecipe {
         slug: "700mb_dewpoint_height_winds",
@@ -1500,7 +1619,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_700_HEIGHT),
         barbs_u: Some(FIELD_700_U),
         barbs_v: Some(FIELD_700_V),
-        style: RenderStyle::Solar07Dewpoint,
+        style: RenderStyle::WeatherDewpoint,
     },
     PlotRecipe {
         slug: "850mb_dewpoint_height_winds",
@@ -1509,7 +1628,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_850_HEIGHT),
         barbs_u: Some(FIELD_850_U),
         barbs_v: Some(FIELD_850_V),
-        style: RenderStyle::Solar07Dewpoint,
+        style: RenderStyle::WeatherDewpoint,
     },
     PlotRecipe {
         slug: "200mb_rh_height_winds",
@@ -1518,7 +1637,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_200_HEIGHT),
         barbs_u: Some(FIELD_200_U),
         barbs_v: Some(FIELD_200_V),
-        style: RenderStyle::Solar07Rh,
+        style: RenderStyle::WeatherRh,
     },
     PlotRecipe {
         slug: "300mb_rh_height_winds",
@@ -1527,7 +1646,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_300_HEIGHT),
         barbs_u: Some(FIELD_300_U),
         barbs_v: Some(FIELD_300_V),
-        style: RenderStyle::Solar07Rh,
+        style: RenderStyle::WeatherRh,
     },
     PlotRecipe {
         slug: "500mb_rh_height_winds",
@@ -1536,7 +1655,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_500_HEIGHT),
         barbs_u: Some(FIELD_500_U),
         barbs_v: Some(FIELD_500_V),
-        style: RenderStyle::Solar07Rh,
+        style: RenderStyle::WeatherRh,
     },
     PlotRecipe {
         slug: "700mb_rh_height_winds",
@@ -1545,7 +1664,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_700_HEIGHT),
         barbs_u: Some(FIELD_700_U),
         barbs_v: Some(FIELD_700_V),
-        style: RenderStyle::Solar07Rh,
+        style: RenderStyle::WeatherRh,
     },
     PlotRecipe {
         slug: "850mb_rh_height_winds",
@@ -1554,7 +1673,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_850_HEIGHT),
         barbs_u: Some(FIELD_850_U),
         barbs_v: Some(FIELD_850_V),
-        style: RenderStyle::Solar07Rh,
+        style: RenderStyle::WeatherRh,
     },
     PlotRecipe {
         slug: "200mb_absolute_vorticity_height_winds",
@@ -1563,7 +1682,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_200_HEIGHT),
         barbs_u: Some(FIELD_200_U),
         barbs_v: Some(FIELD_200_V),
-        style: RenderStyle::Solar07Vorticity,
+        style: RenderStyle::WeatherVorticity,
     },
     PlotRecipe {
         slug: "300mb_absolute_vorticity_height_winds",
@@ -1572,7 +1691,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_300_HEIGHT),
         barbs_u: Some(FIELD_300_U),
         barbs_v: Some(FIELD_300_V),
-        style: RenderStyle::Solar07Vorticity,
+        style: RenderStyle::WeatherVorticity,
     },
     PlotRecipe {
         slug: "500mb_absolute_vorticity_height_winds",
@@ -1581,7 +1700,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_500_HEIGHT),
         barbs_u: Some(FIELD_500_U),
         barbs_v: Some(FIELD_500_V),
-        style: RenderStyle::Solar07Vorticity,
+        style: RenderStyle::WeatherVorticity,
     },
     PlotRecipe {
         slug: "700mb_absolute_vorticity_height_winds",
@@ -1590,7 +1709,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_700_HEIGHT),
         barbs_u: Some(FIELD_700_U),
         barbs_v: Some(FIELD_700_V),
-        style: RenderStyle::Solar07Vorticity,
+        style: RenderStyle::WeatherVorticity,
     },
     PlotRecipe {
         slug: "850mb_absolute_vorticity_height_winds",
@@ -1599,7 +1718,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_850_HEIGHT),
         barbs_u: Some(FIELD_850_U),
         barbs_v: Some(FIELD_850_V),
-        style: RenderStyle::Solar07Vorticity,
+        style: RenderStyle::WeatherVorticity,
     },
     PlotRecipe {
         slug: "1km_reflectivity",
@@ -1608,7 +1727,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07RadarReflectivity,
+        style: RenderStyle::WeatherRadarReflectivity,
     },
     PlotRecipe {
         slug: "composite_reflectivity",
@@ -1617,7 +1736,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07Reflectivity,
+        style: RenderStyle::WeatherReflectivity,
     },
     PlotRecipe {
         slug: "composite_reflectivity_uh",
@@ -1626,7 +1745,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_UH),
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07Reflectivity,
+        style: RenderStyle::WeatherReflectivity,
     },
     PlotRecipe {
         slug: "uh_2to5km",
@@ -1635,7 +1754,25 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::Solar07Uh,
+        style: RenderStyle::WeatherUh,
+    },
+    PlotRecipe {
+        slug: "smoke_pm25_native",
+        title: "PM2.5 Smoke",
+        filled: FIELD_SMOKE_MASS_DENSITY_8M,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
+        slug: "smoke_column",
+        title: "Column-Integrated Smoke",
+        filled: FIELD_COLUMN_INTEGRATED_SMOKE,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTemperature,
     },
 ];
 
@@ -1700,7 +1837,14 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
             CanonicalField::UWind | CanonicalField::VWind,
             VerticalSelector::HeightAboveGroundMeters(10),
         ) => true,
+        (
+            CanonicalField::Pressure | CanonicalField::SmokeMassDensity,
+            VerticalSelector::HybridLevel(level),
+        ) => matches!(model, ModelId::Hrrr) && is_supported_hrrr_smoke_hybrid_level(level),
         (CanonicalField::WindGust, VerticalSelector::HeightAboveGroundMeters(10)) => true,
+        (CanonicalField::SmokeMassDensity, VerticalSelector::HeightAboveGroundMeters(8)) => {
+            matches!(model, ModelId::Hrrr)
+        }
         (CanonicalField::PressureReducedToMeanSeaLevel, VerticalSelector::MeanSeaLevel) => true,
         (
             CanonicalField::PrecipitableWater | CanonicalField::TotalCloudCover,
@@ -1712,6 +1856,9 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
             | CanonicalField::HighCloudCover,
             VerticalSelector::EntireAtmosphere,
         ) => true,
+        (CanonicalField::ColumnIntegratedSmoke, VerticalSelector::EntireAtmosphere) => {
+            matches!(model, ModelId::Hrrr)
+        }
         (CanonicalField::TotalPrecipitation, VerticalSelector::Surface) => true,
         (CanonicalField::Visibility, VerticalSelector::Surface) => true,
         (
@@ -1725,10 +1872,10 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
             matches!(model, ModelId::EcmwfOpenData)
         }
         (CanonicalField::RadarReflectivity, VerticalSelector::HeightAboveGroundMeters(1000)) => {
-            matches!(model, ModelId::Hrrr | ModelId::RrfsA)
+            matches!(model, ModelId::Hrrr | ModelId::RrfsA | ModelId::WrfGdex)
         }
         (CanonicalField::CompositeReflectivity, VerticalSelector::EntireAtmosphere) => {
-            matches!(model, ModelId::Hrrr | ModelId::RrfsA)
+            matches!(model, ModelId::Hrrr | ModelId::RrfsA | ModelId::WrfGdex)
         }
         (
             CanonicalField::UpdraftHelicity,
@@ -1736,7 +1883,7 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
                 bottom_m: 2000,
                 top_m: 5000,
             },
-        ) => matches!(model, ModelId::Hrrr | ModelId::RrfsA),
+        ) => matches!(model, ModelId::Hrrr | ModelId::RrfsA | ModelId::WrfGdex),
         (CanonicalField::SimulatedInfraredBrightnessTemperature, VerticalSelector::NominalTop) => {
             matches!(model, ModelId::Hrrr)
         }
@@ -1779,6 +1926,7 @@ pub fn supported_forecast_hours(model: ModelId, cycle_hour_utc: u8) -> Vec<u16> 
             _ => Vec::new(),
         },
         ModelId::RrfsA => (0..=60).collect(),
+        ModelId::WrfGdex => (0..=23).collect(),
     }
 }
 
@@ -1797,6 +1945,10 @@ pub fn resolve_canonical_bundle_product(
         .unwrap_or_else(|| default_canonical_bundle_product(model, bundle))
         .to_string();
     ResolvedCanonicalBundleProduct::new(bundle, native_product)
+}
+
+pub fn default_bundle_product(model: ModelId, bundle: CanonicalBundleDescriptor) -> &'static str {
+    default_canonical_bundle_product(model, bundle)
 }
 
 fn default_canonical_bundle_product(
@@ -1819,6 +1971,15 @@ fn default_canonical_bundle_product(
         (ModelId::RrfsA, CanonicalBundleDescriptor::SurfaceAnalysis) => "nat-na",
         (ModelId::RrfsA, CanonicalBundleDescriptor::PressureAnalysis) => "prs-na",
         (ModelId::RrfsA, CanonicalBundleDescriptor::NativeAnalysis) => "nat-na",
+        (ModelId::WrfGdex, CanonicalBundleDescriptor::SurfaceAnalysis) => {
+            WRF_GDEX_DEFAULT_SURFACE_PRODUCT
+        }
+        (ModelId::WrfGdex, CanonicalBundleDescriptor::PressureAnalysis) => {
+            WRF_GDEX_DEFAULT_PRESSURE_PRODUCT
+        }
+        (ModelId::WrfGdex, CanonicalBundleDescriptor::NativeAnalysis) => {
+            WRF_GDEX_DEFAULT_PRESSURE_PRODUCT
+        }
     }
 }
 
@@ -2084,6 +2245,39 @@ fn previous_day_yyyymmdd(date_yyyymmdd: &str) -> Option<String> {
     Some(format!("{:04}{:02}{:02}", new_year, new_month, new_day))
 }
 
+fn next_day_yyyymmdd(date_yyyymmdd: &str) -> Option<String> {
+    if date_yyyymmdd.len() != 8 || !date_yyyymmdd.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let year: i32 = date_yyyymmdd[..4].parse().ok()?;
+    let month: u32 = date_yyyymmdd[4..6].parse().ok()?;
+    let day: u32 = date_yyyymmdd[6..8].parse().ok()?;
+    let month_days = days_in_month(year, month);
+    let (new_year, new_month, new_day) = if day < month_days {
+        (year, month, day + 1)
+    } else if month < 12 {
+        (year, month + 1, 1)
+    } else {
+        (year + 1, 1, 1)
+    };
+    Some(format!("{:04}{:02}{:02}", new_year, new_month, new_day))
+}
+
+fn advance_yyyymmddhh(
+    date_yyyymmdd: &str,
+    hour_utc: u8,
+    forecast_hour: u16,
+) -> Option<(String, u8)> {
+    let mut date = date_yyyymmdd.to_string();
+    let total_hours = u32::from(hour_utc) + u32::from(forecast_hour);
+    let day_rollovers = total_hours / 24;
+    let valid_hour = (total_hours % 24) as u8;
+    for _ in 0..day_rollovers {
+        date = next_day_yyyymmdd(&date)?;
+    }
+    Some((date, valid_hour))
+}
+
 fn days_in_month(year: i32, month: u32) -> u32 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -2149,7 +2343,130 @@ fn build_grib_url(source: SourceId, request: &ModelRunRequest) -> Result<String,
         ModelId::Gfs => build_gfs_url(source, request),
         ModelId::EcmwfOpenData => build_ecmwf_url(source, request)?,
         ModelId::RrfsA => build_rrfs_a_url(source, request)?,
+        ModelId::WrfGdex => build_wrf_gdex_url(source, request)?,
     })
+}
+
+enum WrfGdexProduct {
+    LegacyWrfout {
+        dataset: String,
+        domain: String,
+    },
+    ClimateArchive {
+        dataset: String,
+        branch: &'static str,
+        filename_prefix: &'static str,
+        cadence_hours: Option<u8>,
+    },
+}
+
+fn parse_wrf_gdex_product(product: &str) -> Option<WrfGdexProduct> {
+    let token = normalize_token(product);
+    if let Some((dataset, suffix)) = token.split_once('_') {
+        if dataset.starts_with('d')
+            && dataset.len() == 7
+            && dataset[1..].chars().all(|ch| ch.is_ascii_digit())
+        {
+            if suffix.starts_with('d')
+                && suffix.len() == 3
+                && suffix[1..].chars().all(|ch| ch.is_ascii_digit())
+            {
+                return Some(WrfGdexProduct::LegacyWrfout {
+                    dataset: dataset.to_string(),
+                    domain: suffix.to_string(),
+                });
+            }
+            let climate = match suffix {
+                "hist2d" => Some(("hist2D", "wrf2d_d01", None)),
+                "hist3d" => Some(("hist3D", "wrf3d_d01", Some(3))),
+                "future2d" => Some(("future2D", "wrf2d_d01", None)),
+                "future3d" => Some(("future3D", "wrf3d_d01", Some(3))),
+                _ => None,
+            };
+            if let Some((branch, filename_prefix, cadence_hours)) = climate {
+                return Some(WrfGdexProduct::ClimateArchive {
+                    dataset: dataset.to_string(),
+                    branch,
+                    filename_prefix,
+                    cadence_hours,
+                });
+            }
+        }
+    }
+    if token == "d612005" {
+        return Some(WrfGdexProduct::ClimateArchive {
+            dataset: token,
+            branch: "hist2D",
+            filename_prefix: "wrf2d_d01",
+            cadence_hours: None,
+        });
+    }
+    if token.starts_with('d')
+        && token.len() == 7
+        && token[1..].chars().all(|ch| ch.is_ascii_digit())
+    {
+        return Some(WrfGdexProduct::LegacyWrfout {
+            dataset: token,
+            domain: "d01".to_string(),
+        });
+    }
+    None
+}
+
+fn build_wrf_gdex_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    if source != SourceId::Gdex {
+        return Ok(unsupported_source(source, request.model));
+    }
+    let product =
+        parse_wrf_gdex_product(&request.product).ok_or_else(|| ModelError::UnsupportedProduct {
+            model: request.model,
+            product: request.product.clone(),
+        })?;
+    let (valid_date, valid_hour) = advance_yyyymmddhh(
+        &request.cycle.date_yyyymmdd,
+        request.cycle.hour_utc,
+        request.forecast_hour,
+    )
+    .ok_or_else(|| ModelError::UnsupportedForecastHour {
+        model: request.model,
+        cycle_hour: request.cycle.hour_utc,
+        forecast_hour: request.forecast_hour,
+        reason: "wrfout archive timestamp rollover exceeded the supported date arithmetic path"
+            .to_string(),
+    })?;
+    let year = &valid_date[..4];
+    let month = &valid_date[4..6];
+    let day = &valid_date[6..8];
+    match product {
+        WrfGdexProduct::LegacyWrfout { dataset, domain } => Ok(format!(
+            "https://tds.gdex.ucar.edu/thredds/fileServer/files/{dataset}/{year}{month}/wrfout_{domain}_{year}-{month}-{day}_{:02}:00:00.nc",
+            valid_hour
+        )),
+        WrfGdexProduct::ClimateArchive {
+            dataset,
+            branch,
+            filename_prefix,
+            cadence_hours,
+        } => {
+            if let Some(cadence) = cadence_hours {
+                if valid_hour % cadence != 0 {
+                    return Err(ModelError::UnsupportedForecastHour {
+                        model: request.model,
+                        cycle_hour: request.cycle.hour_utc,
+                        forecast_hour: request.forecast_hour,
+                        reason: format!(
+                            "WRF GDEX product '{branch}' is published every {cadence} hours; requested valid time {:02}Z is off cadence",
+                            valid_hour
+                        ),
+                    });
+                }
+            }
+            Ok(format!(
+                "https://tds.gdex.ucar.edu/thredds/fileServer/files/g/{dataset}/{branch}/{year}{month}/{filename_prefix}_{year}-{month}-{day}_{:02}:00:00.nc",
+                valid_hour
+            ))
+        }
+    }
 }
 
 fn build_hrrr_url(source: SourceId, request: &ModelRunRequest) -> String {
@@ -2447,6 +2764,9 @@ fn plot_recipe_fetch_defaults(
     model: ModelId,
     fields: &[&'static GribFieldSpec],
 ) -> (&'static str, PlotRecipeFetchPolicy) {
+    if let Some(product) = wrf_gdex_recipe_product_override(model, fields) {
+        return (product, PlotRecipeFetchPolicy::WholeFile);
+    }
     let has_native = fields
         .iter()
         .any(|field| field.family == ProductFamily::Native);
@@ -2460,7 +2780,49 @@ fn plot_recipe_fetch_defaults(
         (ModelId::Gfs, _, _) => ("pgrb2.0p25", PlotRecipeFetchPolicy::WholeFile),
         (ModelId::RrfsA, _, _) => ("prs-conus", PlotRecipeFetchPolicy::WholeFile),
         (ModelId::EcmwfOpenData, _, _) => ("oper", PlotRecipeFetchPolicy::WholeFile),
+        (ModelId::WrfGdex, true, _) => (
+            WRF_GDEX_DEFAULT_PRESSURE_PRODUCT,
+            PlotRecipeFetchPolicy::WholeFile,
+        ),
+        (ModelId::WrfGdex, false, true) => (
+            WRF_GDEX_DEFAULT_SURFACE_PRODUCT,
+            PlotRecipeFetchPolicy::WholeFile,
+        ),
+        (ModelId::WrfGdex, false, false) => (
+            WRF_GDEX_DEFAULT_PRESSURE_PRODUCT,
+            PlotRecipeFetchPolicy::WholeFile,
+        ),
     }
+}
+
+fn wrf_gdex_recipe_product_override(
+    model: ModelId,
+    fields: &[&'static GribFieldSpec],
+) -> Option<&'static str> {
+    if model != ModelId::WrfGdex {
+        return None;
+    }
+    let all_native_surface_diagnostics = !fields.is_empty()
+        && fields.iter().all(|field| {
+            matches!(
+                field.key,
+                "composite_reflectivity" | "radar_reflectivity_1km_agl" | "updraft_helicity"
+            )
+        });
+    if all_native_surface_diagnostics {
+        return Some(WRF_GDEX_DEFAULT_SURFACE_PRODUCT);
+    }
+    let all_cloud_cover = !fields.is_empty()
+        && fields.iter().all(|field| {
+            matches!(
+                field.key,
+                "total_cloud_cover" | "low_cloud_cover" | "middle_cloud_cover" | "high_cloud_cover"
+            )
+        });
+    if all_cloud_cover {
+        return Some(WRF_GDEX_DEFAULT_PRESSURE_PRODUCT);
+    }
+    None
 }
 
 fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<String> {
@@ -2473,10 +2835,21 @@ fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<Stri
             field.label
         )),
         (
+            "smoke_mass_density_8m_agl" | "column_integrated_smoke",
+            ModelId::Gfs | ModelId::EcmwfOpenData,
+        ) => Some(format!(
+            "{} is only verified and wired for HRRR wrfnat right now; the native smoke GRIB signature is not verified yet for model '{model}'",
+            field.label
+        )),
+        (
             "simulated_infrared_brightness_temperature",
             ModelId::Gfs | ModelId::EcmwfOpenData | ModelId::RrfsA,
         ) => Some(format!(
             "{} is only verified and wired for HRRR right now; the native GRIB signature is not verified yet for model '{model}'",
+            field.label
+        )),
+        ("smoke_mass_density_8m_agl" | "column_integrated_smoke", ModelId::RrfsA) => Some(format!(
+            "{} is only verified and wired for HRRR wrfnat right now; the native GRIB signature is not verified yet for model '{model}'",
             field.label
         )),
         _ => None,
@@ -2528,6 +2901,9 @@ fn model_specific_surface_field_gap(field: &GribFieldSpec, model: ModelId) -> Op
         (_, "wind_chill_2m_agl") => Some(
             "2m Wind Chill is surface-derived rather than native; the direct/native recipe registry does not yet wire the required T2/U10/V10 dependency bundle into one renderable product".to_string(),
         ),
+        (ModelId::WrfGdex, "visibility_surface") => Some(
+            "Visibility is not part of the current WRF/GDEX one-off path; no verified wrfout visibility field is wired yet".to_string(),
+        ),
         (_, "cloud_cover_levels") => None,
         (ModelId::Hrrr, "one_hour_qpf") => Some(
             "1h QPF is handled honestly in the HRRR windowed lane as 'qpf_1h' (legacy plot-recipe slug '1h_qpf'); do not treat it as a native/direct APCP recipe.".to_string(),
@@ -2548,7 +2924,7 @@ fn model_specific_surface_field_gap(field: &GribFieldSpec, model: ModelId) -> Op
 }
 
 fn is_supported_upper_air_level(level_hpa: u16) -> bool {
-    matches!(level_hpa, 200 | 300 | 500 | 700 | 850)
+    matches!(level_hpa, 200 | 250 | 300 | 500 | 700 | 850)
 }
 
 fn unsupported_selector_reason(selector: FieldSelector, model: ModelId) -> String {
@@ -2638,6 +3014,10 @@ fn unsupported_source(source: SourceId, model: ModelId) -> String {
     format!("unsupported://{source}/{model}")
 }
 
+fn is_supported_hrrr_smoke_hybrid_level(level: u16) -> bool {
+    (1..=50).contains(&level)
+}
+
 impl fmt::Display for ModelSummary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.id, self.description)
@@ -2650,8 +3030,12 @@ mod tests {
 
     #[test]
     fn built_in_models_are_real() {
-        assert_eq!(built_in_models().len(), 4);
+        assert_eq!(built_in_models().len(), 5);
         assert_eq!(model_summary(ModelId::RrfsA).default_product, "prs-conus");
+        assert_eq!(
+            model_summary(ModelId::WrfGdex).default_product,
+            WRF_GDEX_DEFAULT_SURFACE_PRODUCT
+        );
     }
 
     #[test]
@@ -2683,21 +3067,41 @@ mod tests {
         );
         assert_eq!(rrfs_pressure.family, CanonicalDataFamily::Pressure);
         assert_eq!(rrfs_pressure.native_product, "prs-na");
+
+        let wrf_surface = resolve_canonical_bundle_product(
+            ModelId::WrfGdex,
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+            None,
+        );
+        assert_eq!(wrf_surface.native_product, WRF_GDEX_DEFAULT_SURFACE_PRODUCT);
+
+        let wrf_pressure = resolve_canonical_bundle_product(
+            ModelId::WrfGdex,
+            CanonicalBundleDescriptor::PressureAnalysis,
+            None,
+        );
+        assert_eq!(
+            wrf_pressure.native_product,
+            WRF_GDEX_DEFAULT_PRESSURE_PRODUCT
+        );
     }
 
     #[test]
     fn built_in_plot_recipes_cover_current_direct_atmos_surface_and_radar_maps() {
         assert!(plot_recipe("200mb_height_winds").is_some());
         assert!(plot_recipe("300mb_height_winds").is_some());
+        assert!(plot_recipe("250mb_height_winds").is_some());
         assert!(plot_recipe("500mb_height_winds").is_some());
         assert!(plot_recipe("700mb_height_winds").is_some());
         assert!(plot_recipe("850mb_height_winds").is_some());
         assert!(plot_recipe("200mb_temperature_height_winds").is_some());
         assert!(plot_recipe("300mb_temperature_height_winds").is_some());
+        assert!(plot_recipe("250mb_temperature_height_winds").is_some());
         assert!(plot_recipe("500mb_temperature_height_winds").is_some());
         assert!(plot_recipe("700mb_temperature_height_winds").is_some());
         assert!(plot_recipe("850mb_temperature_height_winds").is_some());
         assert!(plot_recipe("2m_relative_humidity").is_some());
+        assert!(plot_recipe("2m_relative_humidity_10m_winds").is_some());
         assert!(plot_recipe("2m_temperature").is_some());
         assert!(plot_recipe("2m_temperature_10m_winds").is_some());
         assert!(plot_recipe("2m_dewpoint").is_some());
@@ -2721,6 +3125,8 @@ mod tests {
         assert!(plot_recipe("1km_reflectivity").is_some());
         assert!(plot_recipe("composite_reflectivity").is_some());
         assert!(plot_recipe("composite_reflectivity_uh").is_some());
+        assert!(plot_recipe("smoke_pm25_native").is_some());
+        assert!(plot_recipe("smoke_column").is_some());
     }
 
     #[test]
@@ -2738,6 +3144,16 @@ mod tests {
             provenance.selector,
             Some(FieldSelector::isobaric(CanonicalField::Temperature, 500))
         );
+
+        let smoke_metadata = FIELD_SMOKE_MASS_DENSITY_8M.product_metadata();
+        assert_eq!(smoke_metadata.display_name, "8m AGL Smoke Mass Density");
+        assert_eq!(smoke_metadata.category.as_deref(), Some("native"));
+        assert_eq!(smoke_metadata.native_units.as_deref(), Some("kg/m^3"));
+
+        let column_metadata = FIELD_COLUMN_INTEGRATED_SMOKE.product_metadata();
+        assert_eq!(column_metadata.display_name, "Column-Integrated Smoke");
+        assert_eq!(column_metadata.category.as_deref(), Some("native"));
+        assert_eq!(column_metadata.native_units.as_deref(), Some("kg/m^2"));
     }
 
     #[test]
@@ -2834,6 +3250,33 @@ mod tests {
         );
         assert!(recipe.barbs_u.is_none());
         assert!(recipe.barbs_v.is_none());
+    }
+
+    #[test]
+    fn smoke_recipes_are_selector_backed_native_hrrr_products() {
+        let smoke = plot_recipe("smoke_pm25_native").unwrap();
+        assert_eq!(smoke.filled.family, ProductFamily::Native);
+        assert_eq!(
+            smoke.filled.selector,
+            Some(FieldSelector::height_agl(
+                CanonicalField::SmokeMassDensity,
+                8
+            ))
+        );
+        assert_eq!(smoke.filled.idx_patterns()[0], "MASSDEN:8 m above ground");
+
+        let column = plot_recipe("smoke_column").unwrap();
+        assert_eq!(column.filled.family, ProductFamily::Native);
+        assert_eq!(
+            column.filled.selector,
+            Some(FieldSelector::entire_atmosphere(
+                CanonicalField::ColumnIntegratedSmoke
+            ))
+        );
+        assert_eq!(
+            column.filled.idx_patterns()[0],
+            "COLMD:entire atmosphere (considered as a single layer)"
+        );
     }
 
     #[test]
@@ -2945,6 +3388,7 @@ mod tests {
             ModelId::Gfs,
             ModelId::EcmwfOpenData,
             ModelId::RrfsA,
+            ModelId::WrfGdex,
         ] {
             if selectors
                 .iter()
@@ -2970,7 +3414,7 @@ mod tests {
                 let reason = &blockers[0].reason;
                 assert!(reason.contains("700 hPa temperature/height/wind selectors"));
                 match model {
-                    ModelId::EcmwfOpenData => {
+                    ModelId::EcmwfOpenData | ModelId::WrfGdex => {
                         assert!(reason.contains("whole-file structured extraction"));
                     }
                     ModelId::Hrrr | ModelId::Gfs | ModelId::RrfsA => {
@@ -3329,6 +3773,33 @@ mod tests {
     }
 
     #[test]
+    fn smoke_recipes_use_hrrr_native_fetch_plan() {
+        let smoke = plot_recipe_fetch_plan("smoke_pm25_native", ModelId::Hrrr).unwrap();
+        assert_eq!(smoke.product, "nat");
+        assert_eq!(smoke.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
+        assert_eq!(
+            smoke.fetch_mode,
+            PlotRecipeFetchMode::WholeFileStructuredExtract
+        );
+        assert_eq!(
+            smoke.selectors(),
+            vec![FieldSelector::height_agl(
+                CanonicalField::SmokeMassDensity,
+                8
+            )]
+        );
+
+        let column = plot_recipe_fetch_plan("smoke_column", ModelId::Hrrr).unwrap();
+        assert_eq!(column.product, "nat");
+        assert_eq!(
+            column.selectors(),
+            vec![FieldSelector::entire_atmosphere(
+                CanonicalField::ColumnIntegratedSmoke
+            )]
+        );
+    }
+
+    #[test]
     fn supported_recipe_has_no_fetch_blockers() {
         let blockers =
             plot_recipe_fetch_blockers("850mb_temperature_height_winds", ModelId::EcmwfOpenData)
@@ -3350,6 +3821,16 @@ mod tests {
         );
         assert!(
             plot_recipe_fetch_blockers("uh_2to5km", ModelId::Hrrr)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            plot_recipe_fetch_blockers("smoke_pm25_native", ModelId::Hrrr)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            plot_recipe_fetch_blockers("smoke_column", ModelId::Hrrr)
                 .unwrap()
                 .is_empty()
         );
@@ -3400,6 +3881,10 @@ mod tests {
             ModelId::Gfs,
         ));
         assert!(selector_supported_for_model(
+            FieldSelector::isobaric(CanonicalField::Temperature, 250),
+            ModelId::WrfGdex,
+        ));
+        assert!(selector_supported_for_model(
             FieldSelector::isobaric(CanonicalField::Dewpoint, 700),
             ModelId::RrfsA,
         ));
@@ -3424,6 +3909,10 @@ mod tests {
             ModelId::RrfsA,
         ));
         assert!(selector_supported_for_model(
+            FieldSelector::height_agl(CanonicalField::RadarReflectivity, 1000),
+            ModelId::WrfGdex,
+        ));
+        assert!(selector_supported_for_model(
             FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel),
             ModelId::Hrrr,
         ));
@@ -3438,6 +3927,30 @@ mod tests {
         assert!(!selector_supported_for_model(
             FieldSelector::nominal_top(CanonicalField::SimulatedInfraredBrightnessTemperature),
             ModelId::Gfs,
+        ));
+        assert!(selector_supported_for_model(
+            FieldSelector::height_agl(CanonicalField::SmokeMassDensity, 8),
+            ModelId::Hrrr,
+        ));
+        assert!(selector_supported_for_model(
+            FieldSelector::entire_atmosphere(CanonicalField::ColumnIntegratedSmoke),
+            ModelId::Hrrr,
+        ));
+        assert!(selector_supported_for_model(
+            FieldSelector::hybrid_level(CanonicalField::SmokeMassDensity, 50),
+            ModelId::Hrrr,
+        ));
+        assert!(selector_supported_for_model(
+            FieldSelector::hybrid_level(CanonicalField::Pressure, 1),
+            ModelId::Hrrr,
+        ));
+        assert!(!selector_supported_for_model(
+            FieldSelector::height_agl(CanonicalField::SmokeMassDensity, 8),
+            ModelId::RrfsA,
+        ));
+        assert!(!selector_supported_for_model(
+            FieldSelector::hybrid_level(CanonicalField::SmokeMassDensity, 51),
+            ModelId::Hrrr,
         ));
     }
 
@@ -3466,6 +3979,71 @@ mod tests {
             PlotRecipeFetchMode::WholeFileStructuredExtract
         );
         assert!(plan.variable_patterns().is_empty());
+    }
+
+    #[test]
+    fn wrf_gdex_pressure_recipe_prefers_whole_file_fetches() {
+        let plan =
+            plot_recipe_fetch_plan("500mb_temperature_height_winds", ModelId::WrfGdex).unwrap();
+        assert_eq!(plan.product, WRF_GDEX_DEFAULT_PRESSURE_PRODUCT);
+        assert_eq!(plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
+        assert_eq!(
+            plan.fetch_mode,
+            PlotRecipeFetchMode::WholeFileStructuredExtract
+        );
+        assert!(plan.variable_patterns().is_empty());
+    }
+
+    #[test]
+    fn wrf_gdex_native_reflectivity_recipe_uses_whole_file_structured_extract() {
+        let plan = plot_recipe_fetch_plan("composite_reflectivity", ModelId::WrfGdex).unwrap();
+        assert_eq!(plan.product, WRF_GDEX_DEFAULT_SURFACE_PRODUCT);
+        assert_eq!(plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
+        assert_eq!(
+            plan.fetch_mode,
+            PlotRecipeFetchMode::WholeFileStructuredExtract
+        );
+        assert_eq!(
+            plan.selectors(),
+            vec![FieldSelector::entire_atmosphere(
+                CanonicalField::CompositeReflectivity
+            )]
+        );
+    }
+
+    #[test]
+    fn wrf_gdex_native_combo_and_uh_recipes_use_surface_fetch_plan() {
+        for slug in ["1km_reflectivity", "uh_2to5km", "composite_reflectivity_uh"] {
+            let plan = plot_recipe_fetch_plan(slug, ModelId::WrfGdex).unwrap();
+            assert_eq!(plan.product, WRF_GDEX_DEFAULT_SURFACE_PRODUCT, "{slug}");
+            assert_eq!(
+                plan.fetch_policy,
+                PlotRecipeFetchPolicy::WholeFile,
+                "{slug}"
+            );
+            assert_eq!(
+                plan.fetch_mode,
+                PlotRecipeFetchMode::WholeFileStructuredExtract,
+                "{slug}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrf_gdex_wind_gust_recipe_is_unblocked_and_uses_surface_fetch_plan() {
+        let blockers = plot_recipe_fetch_blockers("10m_wind_gusts", ModelId::WrfGdex).unwrap();
+        assert!(blockers.is_empty());
+
+        let recipe = plot_recipe("10m_wind_gusts").expect("gust recipe should exist");
+        assert!(recipe.filled.idx_patterns().contains(&"WSPD10MAX"));
+
+        let plan = plot_recipe_fetch_plan("10m_wind_gusts", ModelId::WrfGdex).unwrap();
+        assert_eq!(plan.product, WRF_GDEX_DEFAULT_SURFACE_PRODUCT);
+        assert_eq!(plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
+        assert_eq!(
+            plan.selectors(),
+            vec![FieldSelector::height_agl(CanonicalField::WindGust, 10)]
+        );
     }
 
     #[test]
@@ -3572,6 +4150,17 @@ mod tests {
                 .reason
                 .contains("GRIB signature is not verified yet")
         );
+    }
+
+    #[test]
+    fn smoke_recipes_remain_blocked_for_unverified_models() {
+        let rrfs_smoke = plot_recipe_fetch_blockers("smoke_pm25_native", ModelId::RrfsA).unwrap();
+        assert_eq!(rrfs_smoke.len(), 1);
+        assert!(rrfs_smoke[0].reason.contains("HRRR wrfnat"));
+
+        let gfs_column = plot_recipe_fetch_blockers("smoke_column", ModelId::Gfs).unwrap();
+        assert_eq!(gfs_column.len(), 1);
+        assert!(gfs_column[0].reason.contains("native smoke GRIB signature"));
     }
 
     #[test]
@@ -3707,6 +4296,119 @@ mod tests {
         assert_eq!(
             urls[0].grib_url,
             "https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_a/rrfs.20260414/20/rrfs.t20z.prslev.2p5km.subh.f002.hi.grib2"
+        );
+    }
+
+    #[test]
+    fn wrf_gdex_urls_match_gdex_wrfout_pattern() {
+        let request = ModelRunRequest::new(
+            ModelId::WrfGdex,
+            CycleSpec::new("20150101", 0).unwrap(),
+            0,
+            "d010047-d01",
+        )
+        .unwrap();
+        let urls = resolve_urls(&request).unwrap();
+        assert_eq!(
+            urls[0].grib_url,
+            "https://tds.gdex.ucar.edu/thredds/fileServer/files/d010047/201501/wrfout_d01_2015-01-01_00:00:00.nc"
+        );
+        assert!(urls[0].idx_url.is_none());
+    }
+
+    #[test]
+    fn wrf_gdex_urls_roll_forward_by_forecast_hour() {
+        let request = ModelRunRequest::new(
+            ModelId::WrfGdex,
+            CycleSpec::new("20150101", 0).unwrap(),
+            15,
+            "d010047-d01",
+        )
+        .unwrap();
+        let urls = resolve_urls(&request).unwrap();
+        assert_eq!(
+            urls[0].grib_url,
+            "https://tds.gdex.ucar.edu/thredds/fileServer/files/d010047/201501/wrfout_d01_2015-01-01_15:00:00.nc"
+        );
+    }
+
+    #[test]
+    fn wrf_gdex_hist2d_urls_match_osdf_pattern() {
+        let request = ModelRunRequest::new(
+            ModelId::WrfGdex,
+            CycleSpec::new("19950101", 0).unwrap(),
+            12,
+            "d612005-hist2d",
+        )
+        .unwrap();
+        let urls = resolve_urls(&request).unwrap();
+        assert_eq!(
+            urls[0].grib_url,
+            "https://tds.gdex.ucar.edu/thredds/fileServer/files/g/d612005/hist2D/199501/wrf2d_d01_1995-01-01_12:00:00.nc"
+        );
+    }
+
+    #[test]
+    fn wrf_gdex_hist3d_urls_match_osdf_pattern() {
+        let request = ModelRunRequest::new(
+            ModelId::WrfGdex,
+            CycleSpec::new("19950101", 0).unwrap(),
+            12,
+            "d612005-hist3d",
+        )
+        .unwrap();
+        let urls = resolve_urls(&request).unwrap();
+        assert_eq!(
+            urls[0].grib_url,
+            "https://tds.gdex.ucar.edu/thredds/fileServer/files/g/d612005/hist3D/199501/wrf3d_d01_1995-01-01_12:00:00.nc"
+        );
+    }
+
+    #[test]
+    fn wrf_gdex_future2d_urls_match_osdf_pattern() {
+        let request = ModelRunRequest::new(
+            ModelId::WrfGdex,
+            CycleSpec::new("20800101", 0).unwrap(),
+            0,
+            "d612005-future2d",
+        )
+        .unwrap();
+        let urls = resolve_urls(&request).unwrap();
+        assert_eq!(
+            urls[0].grib_url,
+            "https://tds.gdex.ucar.edu/thredds/fileServer/files/g/d612005/future2D/208001/wrf2d_d01_2080-01-01_00:00:00.nc"
+        );
+    }
+
+    #[test]
+    fn wrf_gdex_future3d_urls_match_osdf_pattern() {
+        let request = ModelRunRequest::new(
+            ModelId::WrfGdex,
+            CycleSpec::new("20800101", 0).unwrap(),
+            0,
+            "d612005-future3d",
+        )
+        .unwrap();
+        let urls = resolve_urls(&request).unwrap();
+        assert_eq!(
+            urls[0].grib_url,
+            "https://tds.gdex.ucar.edu/thredds/fileServer/files/g/d612005/future3D/208001/wrf3d_d01_2080-01-01_00:00:00.nc"
+        );
+    }
+
+    #[test]
+    fn wrf_gdex_hist3d_rejects_off_cadence_valid_times() {
+        let request = ModelRunRequest::new(
+            ModelId::WrfGdex,
+            CycleSpec::new("19950101", 0).unwrap(),
+            1,
+            "d612005-hist3d",
+        )
+        .unwrap();
+        let err = resolve_urls(&request).unwrap_err();
+        assert!(
+            err.to_string().contains("every 3 hours"),
+            "unexpected error: {err}"
         );
     }
 }

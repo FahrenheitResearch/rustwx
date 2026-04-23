@@ -1,4 +1,4 @@
-use crate::direct::build_projected_map;
+use crate::direct::build_projected_map_with_projection;
 use crate::ecape::compute_ecape8_panel_fields_with_prepared_volume;
 use crate::gridded::{
     CroppedHeavyDomain, PressureFields, ProjectedGridIntersection, SharedTiming, SurfaceFields,
@@ -14,7 +14,7 @@ use crate::severe::{
     compute_severe_panel_fields_with_prepared_volume,
 };
 use crate::shared_context::{
-    DomainSpec, ProjectedMap, Solar07PanelField, build_solar07_map_request,
+    DomainSpec, ProjectedMap, WeatherPanelField, build_weather_map_request,
 };
 use rustwx_core::{LatLonGrid, ModelId, SourceId};
 use rustwx_render::{ProductVisualMode, map_frame_aspect_ratio_for_mode, save_png_profile};
@@ -169,9 +169,9 @@ pub fn render_heavy_map_group(
     family_slug: &str,
     grid: &LatLonGrid,
     projected: &ProjectedMap,
-    fields: &[Solar07PanelField],
+    fields: &[WeatherPanelField],
     subtitle_left: &str,
-    subtitle_right: impl Fn(&Solar07PanelField) -> Option<String>,
+    subtitle_right: impl Fn(&WeatherPanelField) -> Option<String>,
 ) -> Result<(Vec<HeavyRenderedArtifact>, u128), Box<dyn std::error::Error>> {
     let mut outputs = Vec::with_capacity(fields.len());
     let mut render_ms = 0;
@@ -186,7 +186,7 @@ pub fn render_heavy_map_group(
             family_slug,
             field.artifact_slug()
         ));
-        let request = build_solar07_map_request(
+        let request = build_weather_map_request(
             grid,
             projected,
             field,
@@ -328,9 +328,10 @@ pub fn run_heavy_panel_hour(
     let target_ratio = heavy_map_target_aspect_ratio();
     let owned_full_grid = full_surface.core_grid()?;
     let project_start = Instant::now();
-    let full_projected = build_projected_map(
+    let full_projected = build_projected_map_with_projection(
         &owned_full_grid.lat_deg,
         &owned_full_grid.lon_deg,
+        full_surface.projection.as_ref(),
         request.domain.bounds,
         target_ratio,
     )?;
@@ -345,9 +346,10 @@ pub fn run_heavy_panel_hour(
     let (surface, pressure, grid) =
         heavy_domain.bind(full_surface, full_pressure, &owned_full_grid);
     let projected = if heavy_domain.cropped.is_some() {
-        build_projected_map(
+        build_projected_map_with_projection(
             &grid.lat_deg,
             &grid.lon_deg,
+            surface.projection.as_ref(),
             request.domain.bounds,
             target_ratio,
         )?

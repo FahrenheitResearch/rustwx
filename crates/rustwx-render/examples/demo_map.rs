@@ -1,7 +1,7 @@
 use rustwx_render::{
     Field2D, GridShape, LatLonGrid, MapRenderRequest, ProductKey, ProjectedDomain, ProjectedExtent,
     save_png,
-    solar07::{ECAPE_SEVERE_PANEL_PRODUCTS, Solar07Product},
+    weather::{ECAPE_SEVERE_PANEL_PRODUCTS, WeatherProduct},
 };
 use std::path::PathBuf;
 
@@ -30,11 +30,11 @@ fn main() {
 
     let grid = LatLonGrid::new(shape, lat, lon).expect("grid");
     let field = Field2D::new(ProductKey::named("SBECAPE"), "J/kg", grid, values).expect("field");
-    let mut request = MapRenderRequest::for_solar07_product(field, Solar07Product::Sbecape);
+    let mut request = MapRenderRequest::for_weather_product(field, WeatherProduct::Sbecape);
     request.title = Some("rustwx Demo SBECAPE".to_string());
     request.subtitle_left = Some("Synthetic field".to_string());
     request.subtitle_right = Some(format!(
-        "Solar07 palette | panel={}",
+        "Weather palette | panel={}",
         ECAPE_SEVERE_PANEL_PRODUCTS.len()
     ));
     request.projected_domain = Some(ProjectedDomain {

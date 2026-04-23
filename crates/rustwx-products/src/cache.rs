@@ -43,7 +43,13 @@ pub fn load_bincode<T: DeserializeOwned>(
                 quarantine_cache_file(path, "payload_attestation_mismatch");
                 return Ok(None);
             }
-            return Ok(Some(bincode::deserialize::<T>(&wrapper.payload_bytes)?));
+            match bincode::deserialize::<T>(&wrapper.payload_bytes) {
+                Ok(value) => return Ok(Some(value)),
+                Err(_) => {
+                    quarantine_cache_file(path, "payload_decode_error");
+                    return Ok(None);
+                }
+            }
         }
         if wrapper.schema_version == LEGACY_BINCODE_CACHE_SCHEMA_VERSION {
             quarantine_cache_file(path, "schema_mismatch");
@@ -97,6 +103,40 @@ mod tests {
     struct Fixture {
         name: String,
         value: u16,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    enum LegacyProjectionFixture {
+        Geographic,
+        LambertConformal {
+            standard_parallel_1_deg: f64,
+            standard_parallel_2_deg: f64,
+            central_meridian_deg: f64,
+        },
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+    struct LegacyProjectionPayload {
+        name: String,
+        projection: LegacyProjectionFixture,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum ProjectionFixture {
+        Geographic,
+        LambertConformal {
+            standard_parallel_1_deg: f64,
+            standard_parallel_2_deg: f64,
+            central_meridian_deg: f64,
+        },
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+    struct ProjectionPayload {
+        name: String,
+        projection: ProjectionFixture,
     }
 
     #[test]
@@ -210,6 +250,49 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(&path, b"not-bincode").unwrap();
         let loaded = load_bincode::<Fixture>(&path).unwrap();
+        assert!(loaded.is_none());
+        assert!(!path.exists());
+        let quarantined = fs::read_dir(&root)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            quarantined
+                .iter()
+                .any(|entry| entry.file_name().to_string_lossy().contains("corrupt"))
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn incompatible_inner_payload_is_quarantined_and_treated_as_cache_miss() {
+        let root = std::env::temp_dir().join(format!(
+            "rustwx_products_cache_incompatible_{}",
+            std::process::id()
+        ));
+        let path = root.join("fixture.bin");
+        let legacy = LegacyProjectionPayload {
+            name: "legacy".into(),
+            projection: LegacyProjectionFixture::LambertConformal {
+                standard_parallel_1_deg: 38.5,
+                standard_parallel_2_deg: 38.5,
+                central_meridian_deg: -97.5,
+            },
+        };
+
+        fs::create_dir_all(&root).unwrap();
+        let payload_bytes = bincode::serialize(&legacy).unwrap();
+        let bytes = bincode::serialize(&VersionedCachePayload {
+            schema_version: BINCODE_CACHE_SCHEMA_VERSION,
+            payload_bincode_len: payload_bytes.len(),
+            payload_sha256: sha256_hex(&payload_bytes),
+            payload_bytes,
+        })
+        .unwrap();
+        fs::write(&path, bytes).unwrap();
+
+        let loaded = load_bincode::<ProjectionPayload>(&path).unwrap();
         assert!(loaded.is_none());
         assert!(!path.exists());
         let quarantined = fs::read_dir(&root)

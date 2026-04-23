@@ -4,7 +4,7 @@ use std::time::Instant;
 use clap::{Parser, ValueEnum};
 use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, CycleSpec, ModelId, SourceId};
 use rustwx_models::{
-    LatestRun, latest_available_run_at_forecast_hour,
+    LatestRun, default_bundle_product, latest_available_run_at_forecast_hour,
     latest_available_run_for_products_at_forecast_hour, model_summary,
 };
 use rustwx_products::cache::ensure_dir;
@@ -233,16 +233,7 @@ fn override_for_bundle(args: &Args, bundle: CanonicalBundleDescriptor) -> Option
 }
 
 fn default_product_for_bundle(model: ModelId, bundle: CanonicalBundleDescriptor) -> &'static str {
-    match (model, bundle) {
-        (ModelId::Hrrr, CanonicalBundleDescriptor::SurfaceAnalysis) => "sfc",
-        (ModelId::Hrrr, CanonicalBundleDescriptor::PressureAnalysis) => "prs",
-        (ModelId::Hrrr, CanonicalBundleDescriptor::NativeAnalysis) => "nat",
-        (ModelId::Gfs, _) => "pgrb2.0p25",
-        (ModelId::EcmwfOpenData, _) => "oper",
-        (ModelId::RrfsA, CanonicalBundleDescriptor::SurfaceAnalysis) => "nat-na",
-        (ModelId::RrfsA, CanonicalBundleDescriptor::PressureAnalysis) => "prs-na",
-        (ModelId::RrfsA, CanonicalBundleDescriptor::NativeAnalysis) => "nat-na",
-    }
+    default_bundle_product(model, bundle)
 }
 
 /// Cache warm strategy: use the staged planner/runtime loader path to

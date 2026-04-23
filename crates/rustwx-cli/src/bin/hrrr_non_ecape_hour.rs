@@ -10,6 +10,7 @@ use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::derived::supported_derived_recipe_slugs;
 use rustwx_products::direct::supported_direct_recipe_slugs;
 use rustwx_products::non_ecape::{HrrrNonEcapeHourRequest, run_hrrr_non_ecape_hour};
+use rustwx_products::places::{PlaceLabelDensityTier, default_place_label_overlay_for_domain};
 use rustwx_products::publication::{
     atomic_write_json, canonical_run_slug, publish_failure_manifest,
 };
@@ -40,6 +41,35 @@ impl From<WindowedProductArg> for HrrrWindowedProduct {
             WindowedProductArg::Uh25km1h => HrrrWindowedProduct::Uh25km1h,
             WindowedProductArg::Uh25km3h => HrrrWindowedProduct::Uh25km3h,
             WindowedProductArg::Uh25kmRunMax => HrrrWindowedProduct::Uh25kmRunMax,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+#[value(rename_all = "kebab-case")]
+enum PlaceLabelDensityArg {
+    /// Disable place labels.
+    #[value(alias("0"), alias("off"))]
+    None,
+    /// Major anchor labels only.
+    #[default]
+    #[value(alias("1"))]
+    Major,
+    /// Major anchors plus nearby auxiliary labels.
+    #[value(alias("2"))]
+    MajorAndAux,
+    /// The densest supported label set.
+    #[value(alias("3"), alias("full"))]
+    Dense,
+}
+
+impl From<PlaceLabelDensityArg> for PlaceLabelDensityTier {
+    fn from(value: PlaceLabelDensityArg) -> Self {
+        match value {
+            PlaceLabelDensityArg::None => Self::None,
+            PlaceLabelDensityArg::Major => Self::Major,
+            PlaceLabelDensityArg::MajorAndAux => Self::MajorAndAux,
+            PlaceLabelDensityArg::Dense => Self::Dense,
         }
     }
 }
@@ -87,6 +117,13 @@ struct Args {
     no_cache: bool,
     #[arg(long = "source-mode", alias = "thermo-path", value_enum, default_value_t = SourceModeArg::Canonical)]
     source_mode: SourceModeArg,
+    #[arg(
+        long = "place-label-density",
+        value_enum,
+        default_value_t = PlaceLabelDensityArg::None,
+        help = "Place-label density: none, major, major-and-aux, or dense. Numeric aliases 0-3 also work."
+    )]
+    place_label_density: PlaceLabelDensityArg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -109,8 +146,10 @@ fn default_direct_recipes() -> Vec<String> {
         "composite_reflectivity",
         "2m_temperature_10m_winds",
         "2m_dewpoint_10m_winds",
-        "2m_relative_humidity",
+        "2m_relative_humidity_10m_winds",
+        "250mb_height_winds",
         "500mb_height_winds",
+        "250mb_temperature_height_winds",
         "700mb_height_winds",
         "850mb_height_winds",
         "500mb_rh_height_winds",
@@ -209,12 +248,13 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         args.derived_recipes.clone()
     };
 
+    let domain = DomainSpec::new(args.region.slug(), args.region.bounds());
     let request = HrrrNonEcapeHourRequest {
         date_yyyymmdd: args.date.clone(),
         cycle_override_utc: args.cycle,
         forecast_hour: args.forecast_hour,
         source: args.source,
-        domain: DomainSpec::new(args.region.slug(), args.region.bounds()),
+        domain: domain.clone(),
         out_dir: args.out_dir.clone(),
         cache_root,
         use_cache: !args.no_cache,
@@ -230,6 +270,11 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         output_width: 1200,
         output_height: 900,
         png_compression: rustwx_render::PngCompressionMode::Default,
+        custom_poi_overlay: None,
+        place_label_overlay: default_place_label_overlay_for_domain(
+            &domain,
+            args.place_label_density.into(),
+        ),
     };
     let report = run_hrrr_non_ecape_hour(&request)?;
     let report_path = args.out_dir.join(format!(

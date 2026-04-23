@@ -22,8 +22,8 @@ use rustwx_render::{
     Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode, LevelDensity,
     LineworkRole, MapRenderRequest, ProductVisualMode, ProjectedDomain, ProjectedMap,
     RenderDensity, WindBarbLayer, build_projected_map as build_projected_map_from_latlon,
-    map_frame_aspect_ratio_for_mode, render_image, solar07::Solar07Palette,
-    solar07::solar07_palette,
+    map_frame_aspect_ratio_for_mode, render_image, weather::WeatherPalette,
+    weather::weather_palette,
 };
 use serde::Serialize;
 
@@ -434,7 +434,7 @@ fn visual_mode_for_recipe(
     if overlay_only {
         return ProductVisualMode::OverlayAnalysis;
     }
-    if matches!(recipe.style, rustwx_models::RenderStyle::Solar07Height)
+    if matches!(recipe.style, rustwx_models::RenderStyle::WeatherHeight)
         || matches!(selector.vertical, VerticalSelector::IsobaricHpa(_))
     {
         return ProductVisualMode::UpperAirAnalysis;
@@ -473,8 +473,8 @@ fn convert_filled_field(
     let mut core = field.clone().into_field2d();
     if matches!(
         recipe.style,
-        rustwx_models::RenderStyle::Solar07Temperature
-            | rustwx_models::RenderStyle::Solar07Dewpoint
+        rustwx_models::RenderStyle::WeatherTemperature
+            | rustwx_models::RenderStyle::WeatherDewpoint
     ) {
         for value in &mut core.values {
             *value -= 273.15;
@@ -498,7 +498,7 @@ fn derived_height_winds_fill(
     field: &rustwx_core::SelectedField2D,
     extracted: &HashMap<FieldSelector, rustwx_core::SelectedField2D>,
 ) -> Option<rustwx_core::Field2D> {
-    if recipe.style != rustwx_models::RenderStyle::Solar07Height
+    if recipe.style != rustwx_models::RenderStyle::WeatherHeight
         || field.selector.field != CanonicalField::GeopotentialHeight
     {
         return None;
@@ -542,7 +542,7 @@ fn should_render_overlay_only(selector: FieldSelector, has_contours: bool) -> bo
 
 fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> ColorScale {
     let discrete = match recipe.style {
-        rustwx_models::RenderStyle::Solar07Temperature => {
+        rustwx_models::RenderStyle::WeatherTemperature => {
             let (lo, hi) = match filled_selector.vertical {
                 rustwx_core::VerticalSelector::IsobaricHpa(500) => (-50.0, 5.0),
                 rustwx_core::VerticalSelector::IsobaricHpa(850) => (-40.0, 40.0),
@@ -550,51 +550,52 @@ fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> Colo
             };
             DiscreteColorScale {
                 levels: range_step(lo, hi, 1.0),
-                colors: solar07_palette(Solar07Palette::Temperature),
+                colors: weather_palette(WeatherPalette::Temperature),
                 extend: ExtendMode::Both,
                 mask_below: None,
             }
         }
-        rustwx_models::RenderStyle::Solar07Reflectivity => DiscreteColorScale {
+        rustwx_models::RenderStyle::WeatherReflectivity => DiscreteColorScale {
             levels: range_step(5.0, 80.0, 5.0),
-            colors: solar07_palette(Solar07Palette::Reflectivity),
+            colors: weather_palette(WeatherPalette::Reflectivity),
             extend: ExtendMode::Both,
             mask_below: Some(5.0),
         },
-        rustwx_models::RenderStyle::Solar07Rh => DiscreteColorScale {
+        rustwx_models::RenderStyle::WeatherRh => DiscreteColorScale {
             levels: range_step(0.0, 105.0, 5.0),
-            colors: solar07_palette(Solar07Palette::Rh),
+            colors: weather_palette(WeatherPalette::Rh),
             extend: ExtendMode::Both,
             mask_below: None,
         },
-        rustwx_models::RenderStyle::Solar07Vorticity => DiscreteColorScale {
+        rustwx_models::RenderStyle::WeatherVorticity => DiscreteColorScale {
             levels: range_step(0.0, 48.0, 2.0),
-            colors: solar07_palette(Solar07Palette::RelVort),
+            colors: weather_palette(WeatherPalette::RelVort),
             extend: ExtendMode::Both,
             mask_below: None,
         },
-        rustwx_models::RenderStyle::Solar07Dewpoint => DiscreteColorScale {
+        rustwx_models::RenderStyle::WeatherDewpoint => DiscreteColorScale {
             levels: range_step(-40.0, 30.0, 2.0),
-            colors: solar07_palette(Solar07Palette::Dewpoint),
+            colors: weather_palette(WeatherPalette::Dewpoint),
             extend: ExtendMode::Both,
             mask_below: None,
         },
-        rustwx_models::RenderStyle::Solar07Height => DiscreteColorScale {
+        rustwx_models::RenderStyle::WeatherHeight => DiscreteColorScale {
             levels: match filled_selector.vertical {
                 rustwx_core::VerticalSelector::IsobaricHpa(200)
+                | rustwx_core::VerticalSelector::IsobaricHpa(250)
                 | rustwx_core::VerticalSelector::IsobaricHpa(300) => range_step(50.0, 170.0, 5.0),
                 rustwx_core::VerticalSelector::IsobaricHpa(500) => range_step(20.0, 150.0, 5.0),
                 rustwx_core::VerticalSelector::IsobaricHpa(700) => range_step(10.0, 90.0, 5.0),
                 rustwx_core::VerticalSelector::IsobaricHpa(850) => range_step(10.0, 70.0, 5.0),
                 _ => range_step(10.0, 120.0, 5.0),
             },
-            colors: solar07_palette(Solar07Palette::Winds),
+            colors: weather_palette(WeatherPalette::Winds),
             extend: ExtendMode::Both,
             mask_below: None,
         },
         _ => DiscreteColorScale {
             levels: range_step(-50.0, 5.0, 1.0),
-            colors: solar07_palette(Solar07Palette::Temperature),
+            colors: weather_palette(WeatherPalette::Temperature),
             extend: ExtendMode::Both,
             mask_below: None,
         },

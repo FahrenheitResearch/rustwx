@@ -1,5 +1,6 @@
 use crate::gridded::{
-    FetchRuntimeInfo, decode_cache_path, load_surface_geometry_from_latest, resolve_model_run,
+    FetchRuntimeInfo, decode_cache_path, decode_surface_grid, load_surface_geometry_from_latest,
+    resolve_model_run,
 };
 use crate::hrrr::HrrrFetchRuntimeInfo;
 use crate::planner::ExecutionPlanBuilder;
@@ -14,7 +15,7 @@ use crate::windowed_decoder::{
 };
 use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
 use rustwx_models::LatestRun;
-use rustwx_render::{MapRenderRequest, Solar07Product, save_png};
+use rustwx_render::{MapRenderRequest, WeatherProduct, save_png};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -173,6 +174,19 @@ pub struct HrrrWindowedBatchReport {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct WindowedSampledProductField {
+    pub product: HrrrWindowedProduct,
+    pub field: rustwx_core::Field2D,
+    pub input_fetches: Vec<PublishedFetchIdentity>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WindowedSampledProductSet {
+    pub fields: Vec<WindowedSampledProductField>,
+    pub blockers: Vec<HrrrWindowedBlocker>,
+}
+
+#[derive(Debug, Clone)]
 struct PreparedWindowedGeometryContext {
     fetch_geometry_ms: u128,
     decode_geometry_ms: u128,
@@ -313,6 +327,138 @@ pub fn windowed_product_input_fetch_keys(
     keys
 }
 
+pub(crate) fn required_windowed_fetch_products(products: &[HrrrWindowedProduct]) -> Vec<String> {
+    (!products.is_empty())
+        .then(|| vec!["sfc".to_string()])
+        .unwrap_or_default()
+}
+
+pub(crate) fn load_windowed_sampled_fields_from_latest(
+    latest: &LatestRun,
+    forecast_hour: u16,
+    cache_root: &std::path::Path,
+    use_cache: bool,
+    products: &[HrrrWindowedProduct],
+) -> Result<WindowedSampledProductSet, Box<dyn std::error::Error>> {
+    let (planned_products, mut blockers, surface_hours, nat_hours) =
+        plan_windowed_products(products, forecast_hour);
+    if planned_products.is_empty() {
+        return Ok(WindowedSampledProductSet {
+            fields: Vec::new(),
+            blockers,
+        });
+    }
+
+    let mut plan_builder = ExecutionPlanBuilder::new(latest, forecast_hour);
+    let mut all_hours: BTreeSet<u16> = surface_hours.iter().copied().collect();
+    all_hours.extend(nat_hours.iter().copied());
+    for &hour in &all_hours {
+        let requirement = BundleRequirement::new(CanonicalBundleDescriptor::NativeAnalysis, hour)
+            .with_native_override("sfc");
+        if surface_hours.contains(&hour) {
+            plan_builder.require_with_logical_family(&requirement, Some("sfc"));
+        }
+        if nat_hours.contains(&hour) {
+            plan_builder.require_with_logical_family(&requirement, Some("nat"));
+        }
+    }
+    let loaded = load_execution_plan(
+        plan_builder.build(),
+        &BundleLoaderConfig::new(cache_root.to_path_buf(), use_cache),
+    )?;
+    let geometry = lookup_planner_bundle_for_hour(&loaded, forecast_hour)
+        .ok_or("windowed sampling missing surface bundle for query grid")?;
+    let surface_grid = decode_surface_grid(&geometry.file.bytes)?;
+    let grid = rustwx_core::LatLonGrid::new(
+        rustwx_core::GridShape::new(surface_grid.nx, surface_grid.ny)?,
+        surface_grid
+            .lat
+            .iter()
+            .copied()
+            .map(|value| value as f32)
+            .collect(),
+        surface_grid
+            .lon
+            .iter()
+            .copied()
+            .map(|value| value as f32)
+            .collect(),
+    )?;
+    let request = sampling_windowed_request(forecast_hour, latest.source, cache_root, use_cache);
+    let (apcp_by_hour, surface_hour_fetches, _, _) =
+        load_apcp_hours_from_plan(Some(&loaded), &request, &surface_hours)?;
+    let (uh_by_hour, uh_hour_fetches, _, _) =
+        load_uh_hours_from_plan(Some(&loaded), &request, &nat_hours)?;
+
+    let mut fields = Vec::new();
+    for &product in &planned_products {
+        let computed = if product.is_qpf() {
+            compute_qpf_product(product, forecast_hour, &grid, &apcp_by_hour)
+        } else {
+            compute_uh_product(product, forecast_hour, &grid, &uh_by_hour)
+        };
+        match computed {
+            Ok(computed) => fields.push(WindowedSampledProductField {
+                product,
+                input_fetches: input_fetches_for_windowed_product(
+                    product,
+                    &computed.metadata.contributing_forecast_hours,
+                    &surface_hour_fetches,
+                    &uh_hour_fetches,
+                ),
+                field: computed.field,
+            }),
+            Err(reason) => blockers.push(HrrrWindowedBlocker { product, reason }),
+        }
+    }
+
+    Ok(WindowedSampledProductSet { fields, blockers })
+}
+
+fn sampling_windowed_request(
+    forecast_hour: u16,
+    source: SourceId,
+    cache_root: &std::path::Path,
+    use_cache: bool,
+) -> HrrrWindowedBatchRequest {
+    HrrrWindowedBatchRequest {
+        date_yyyymmdd: String::new(),
+        cycle_override_utc: None,
+        forecast_hour,
+        source,
+        domain: DomainSpec::new("sampling", (-180.0, 180.0, -90.0, 90.0)),
+        out_dir: PathBuf::new(),
+        cache_root: cache_root.to_path_buf(),
+        use_cache,
+        products: Vec::new(),
+        output_width: OUTPUT_WIDTH,
+        output_height: OUTPUT_HEIGHT,
+    }
+}
+
+fn input_fetches_for_windowed_product(
+    product: HrrrWindowedProduct,
+    contributing_forecast_hours: &[u16],
+    surface_hour_fetches: &[HrrrWindowedHourFetchInfo],
+    uh_hour_fetches: &[HrrrWindowedHourFetchInfo],
+) -> Vec<PublishedFetchIdentity> {
+    let fetches = if product.is_qpf() {
+        surface_hour_fetches
+    } else {
+        uh_hour_fetches
+    };
+    let mut by_key = BTreeMap::<String, PublishedFetchIdentity>::new();
+    for fetch in fetches
+        .iter()
+        .filter(|fetch| contributing_forecast_hours.contains(&fetch.hour))
+    {
+        if let Some(identity) = fetch.input_fetch.clone() {
+            by_key.entry(identity.fetch_key.clone()).or_insert(identity);
+        }
+    }
+    by_key.into_values().collect()
+}
+
 pub fn run_hrrr_windowed_batch(
     request: &HrrrWindowedBatchRequest,
 ) -> Result<HrrrWindowedBatchReport, Box<dyn std::error::Error>> {
@@ -446,9 +592,9 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
                             | HrrrWindowedProduct::Uh25km3h
                             | HrrrWindowedProduct::Uh25kmRunMax
                     ) {
-                        MapRenderRequest::for_core_solar07_product(
+                        MapRenderRequest::for_core_weather_product(
                             computed.field.clone(),
-                            Solar07Product::Uh,
+                            WeatherProduct::Uh,
                         )
                     } else {
                         MapRenderRequest::from_core_field(

@@ -7,7 +7,7 @@ mod metro;
 mod region;
 
 use clap::{Parser, ValueEnum};
-use metro::major_us_city_domains;
+use metro::{major_us_city_domains, select_major_us_city_domains};
 use region::RegionPreset;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::derived::supported_derived_recipe_inventory;
@@ -15,6 +15,7 @@ use rustwx_products::direct::supported_direct_recipe_slugs;
 use rustwx_products::non_ecape::{
     HrrrNonEcapeMultiDomainRequest, run_hrrr_non_ecape_hour_multi_domain,
 };
+use rustwx_products::places::{PlaceLabelDensityTier, PlaceLabelOverlay, PlaceSelectionOptions};
 use rustwx_products::publication::atomic_write_json;
 use rustwx_products::shared_context::DomainSpec;
 use rustwx_products::source::ProductSourceMode;
@@ -80,6 +81,35 @@ impl From<PngCompressionArg> for PngCompressionMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+#[value(rename_all = "kebab-case")]
+enum PlaceLabelDensityArg {
+    /// Disable place labels.
+    #[value(alias("0"), alias("off"))]
+    None,
+    /// Major anchor labels only.
+    #[default]
+    #[value(alias("1"))]
+    Major,
+    /// Major anchors plus nearby auxiliary labels.
+    #[value(alias("2"))]
+    MajorAndAux,
+    /// The densest supported label set.
+    #[value(alias("3"), alias("full"))]
+    Dense,
+}
+
+impl From<PlaceLabelDensityArg> for PlaceLabelDensityTier {
+    fn from(value: PlaceLabelDensityArg) -> Self {
+        match value {
+            PlaceLabelDensityArg::None => Self::None,
+            PlaceLabelDensityArg::Major => Self::Major,
+            PlaceLabelDensityArg::MajorAndAux => Self::MajorAndAux,
+            PlaceLabelDensityArg::Dense => Self::Dense,
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "hrrr-major-city-hour",
@@ -121,6 +151,13 @@ struct Args {
     render_threads: Option<usize>,
     #[arg(long = "png-compression", value_enum, default_value_t = PngCompressionArg::Default)]
     png_compression: PngCompressionArg,
+    #[arg(
+        long = "place-label-density",
+        value_enum,
+        default_value_t = PlaceLabelDensityArg::Major,
+        help = "Place-label density: none, major, major-and-aux, or dense. Numeric aliases 0-3 also work."
+    )]
+    place_label_density: PlaceLabelDensityArg,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -157,10 +194,16 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             RegionPreset::Conus.bounds(),
         ));
     }
-    let mut city_domains = major_us_city_domains();
-    if let Some(limit) = args.max_cities {
-        city_domains.truncate(limit);
-    }
+    let city_domains = match args.max_cities {
+        Some(limit) => select_major_us_city_domains(
+            RegionPreset::Conus.bounds(),
+            PlaceSelectionOptions::for_city_crops().with_max_count(limit),
+        ),
+        None => major_us_city_domains(),
+    };
+    let place_label_overlay = (!city_domains.is_empty()).then(|| {
+        PlaceLabelOverlay::major_us_cities().with_density(args.place_label_density.into())
+    });
     domains.extend(city_domains);
 
     let direct_recipe_slugs = if args.direct_recipes.is_empty() {
@@ -198,6 +241,8 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         output_width: 1200,
         output_height: 900,
         png_compression: args.png_compression.into(),
+        custom_poi_overlay: None,
+        place_label_overlay,
         domain_jobs: Some(args.domain_jobs),
     };
 

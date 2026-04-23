@@ -51,7 +51,7 @@ impl Rgba {
 }
 
 // ---------------------------------------------------------------------------
-// Colour interpolation helpers (mirrors Solar's _lerp_colors)
+// Colour interpolation helpers used by the weather palette anchor tables.
 // ---------------------------------------------------------------------------
 
 /// Linearly interpolate `n` colours across a list of anchor hex strings.

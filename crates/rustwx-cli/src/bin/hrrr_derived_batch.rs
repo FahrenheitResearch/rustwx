@@ -1,19 +1,52 @@
 use std::fs;
 use std::path::PathBuf;
 
+#[path = "../contour_mode.rs"]
+mod contour_mode;
 #[path = "../region.rs"]
 mod region;
 
 use clap::{Parser, ValueEnum};
+use contour_mode::ContourModeArg;
 use region::RegionPreset;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::derived::{HrrrDerivedBatchRequest, run_hrrr_derived_batch};
+use rustwx_products::places::{PlaceLabelDensityTier, default_place_label_overlay_for_domain};
 use rustwx_products::publication::{
     ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
     canonical_run_slug, finalize_and_publish_run_manifest, publish_failure_manifest,
 };
 use rustwx_products::shared_context::DomainSpec;
 use rustwx_products::source::ProductSourceMode;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+#[value(rename_all = "kebab-case")]
+enum PlaceLabelDensityArg {
+    /// Disable place labels.
+    #[value(alias("0"), alias("off"))]
+    None,
+    /// Major anchor labels only.
+    #[default]
+    #[value(alias("1"))]
+    Major,
+    /// Major anchors plus nearby auxiliary labels.
+    #[value(alias("2"))]
+    MajorAndAux,
+    /// The densest supported label set.
+    #[value(alias("3"), alias("full"))]
+    Dense,
+}
+
+impl From<PlaceLabelDensityArg> for PlaceLabelDensityTier {
+    fn from(value: PlaceLabelDensityArg) -> Self {
+        match value {
+            PlaceLabelDensityArg::None => Self::None,
+            PlaceLabelDensityArg::Major => Self::Major,
+            PlaceLabelDensityArg::MajorAndAux => Self::MajorAndAux,
+            PlaceLabelDensityArg::Dense => Self::Dense,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -47,6 +80,17 @@ struct Args {
         help = "Allow very large heavy ECAPE domains instead of refusing the run"
     )]
     allow_large_heavy_domain: bool,
+    #[arg(long, value_enum, default_value_t = ContourModeArg::Automatic)]
+    contour_mode: ContourModeArg,
+    #[arg(long, default_value_t = 1)]
+    native_fill_level_multiplier: usize,
+    #[arg(
+        long = "place-label-density",
+        value_enum,
+        default_value_t = PlaceLabelDensityArg::None,
+        help = "Place-label density: none, major, major-and-aux, or dense. Numeric aliases 0-3 also work."
+    )]
+    place_label_density: PlaceLabelDensityArg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -98,21 +142,29 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         ensure_dir(&cache_root)?;
     }
 
+    let domain = DomainSpec::new(args.region.slug(), args.region.bounds());
     let request = HrrrDerivedBatchRequest {
         date_yyyymmdd: args.date.clone(),
         cycle_override_utc: args.cycle,
         forecast_hour: args.forecast_hour,
         source: args.source,
-        domain: DomainSpec::new(args.region.slug(), args.region.bounds()),
+        domain: domain.clone(),
         out_dir: args.out_dir.clone(),
         cache_root: cache_root.clone(),
         use_cache: !args.no_cache,
         recipe_slugs: args.recipes.clone(),
         source_mode: args.source_mode.into(),
         allow_large_heavy_domain: args.allow_large_heavy_domain,
+        contour_mode: args.contour_mode.into(),
+        native_fill_level_multiplier: args.native_fill_level_multiplier.max(1),
         output_width: 1200,
         output_height: 900,
         png_compression: rustwx_render::PngCompressionMode::Default,
+        custom_poi_overlay: None,
+        place_label_overlay: default_place_label_overlay_for_domain(
+            &domain,
+            args.place_label_density.into(),
+        ),
     };
     let report = run_hrrr_derived_batch(&request)?;
 

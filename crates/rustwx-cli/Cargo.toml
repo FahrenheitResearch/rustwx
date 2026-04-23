@@ -15,6 +15,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 grib-core = { path = "../../vendor/grib-core" }
 rustwx-calc = { path = "../rustwx-calc" }
 rustwx-core = { path = "../rustwx-core" }
+rustwx-cross-section = { path = "../rustwx-cross-section" }
 rustwx-io = { path = "../rustwx-io" }
 rustwx-models = { path = "../rustwx-models" }
 rustwx-products = { path = "../rustwx-products" }

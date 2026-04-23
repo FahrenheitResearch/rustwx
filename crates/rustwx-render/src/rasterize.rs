@@ -158,6 +158,10 @@ fn rasterize_triangle(
     v2: f64,
     cmap: &LeveledColormap,
 ) {
+    if !v0.is_finite() || !v1.is_finite() || !v2.is_finite() {
+        return;
+    }
+
     let min_x = p0.0.min(p1.0).min(p2.0).floor().max(0.0) as i32;
     let max_x =
         p0.0.max(p1.0)
@@ -181,7 +185,6 @@ fn rasterize_triangle(
     }
 
     let inv_area = 1.0 / area;
-    let fallback = nearest_finite(&[(p0, v0), (p1, v1), (p2, v2)]);
 
     for py in min_y..=max_y {
         for px in min_x..=max_x {
@@ -194,11 +197,7 @@ fn rasterize_triangle(
                 continue;
             }
 
-            let value = if v0.is_finite() && v1.is_finite() && v2.is_finite() {
-                v0 * w0 + v1 * w1 + v2 * w2
-            } else {
-                fallback.unwrap_or(f64::NAN)
-            };
+            let value = v0 * w0 + v1 * w1 + v2 * w2;
             let color = cmap.map(value).to_image_rgba();
             if color.0[3] > 0 {
                 img.put_pixel(px as u32, py as u32, color);
@@ -253,10 +252,6 @@ fn edge_fn(a: (f64, f64), b: (f64, f64), p: (f64, f64)) -> f64 {
     (p.0 - a.0) * (b.1 - a.1) - (p.1 - a.1) * (b.0 - a.0)
 }
 
-fn nearest_finite(points: &[((f64, f64), f64)]) -> Option<f64> {
-    points.iter().find_map(|(_, v)| v.is_finite().then_some(*v))
-}
-
 fn feather_projected_raster_edges(img: &mut RgbaImage) {
     if img.width() < 2 || img.height() < 2 {
         return;
@@ -271,10 +266,6 @@ fn feather_projected_raster_edges(img: &mut RgbaImage) {
             let center = src.get_pixel(px as u32, py as u32);
             let center_alpha = center.0[3];
             let mut transparent_neighbor = false;
-            let mut opaque_count = 0u32;
-            let mut r_sum = 0u32;
-            let mut g_sum = 0u32;
-            let mut b_sum = 0u32;
 
             for dy in -1..=1 {
                 for dx in -1..=1 {
@@ -289,10 +280,6 @@ fn feather_projected_raster_edges(img: &mut RgbaImage) {
                     }
                     let neighbor = src.get_pixel(nx as u32, ny as u32);
                     if neighbor.0[3] > 0 {
-                        opaque_count += 1;
-                        r_sum += neighbor.0[0] as u32;
-                        g_sum += neighbor.0[1] as u32;
-                        b_sum += neighbor.0[2] as u32;
                     } else {
                         transparent_neighbor = true;
                     }
@@ -303,15 +290,38 @@ fn feather_projected_raster_edges(img: &mut RgbaImage) {
                 let mut softened = *center;
                 softened.0[3] = softened.0[3].min(216);
                 img.put_pixel(px as u32, py as u32, softened);
-            } else if center_alpha == 0 && opaque_count > 0 {
-                let feather = image::Rgba([
-                    (r_sum / opaque_count) as u8,
-                    (g_sum / opaque_count) as u8,
-                    (b_sum / opaque_count) as u8,
-                    72,
-                ]);
-                img.put_pixel(px as u32, py as u32, feather);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rasterize_projected_grid;
+    use crate::color::Rgba;
+    use crate::colormap::{Extend, LeveledColormap};
+
+    #[test]
+    fn projected_raster_keeps_nan_mask_holes_transparent() {
+        let data = [f64::NAN, 1.0, 1.0, 1.0];
+        let pixel_points = [
+            Some((0.0, 0.0)),
+            Some((3.0, 0.0)),
+            Some((0.0, 3.0)),
+            Some((3.0, 3.0)),
+        ];
+        let cmap = LeveledColormap::from_palette(
+            &[Rgba::new(255, 0, 0)],
+            &[0.0, 2.0],
+            Extend::Neither,
+            None,
+        );
+
+        let image = rasterize_projected_grid(&data, 2, 2, &pixel_points, &cmap, 4, 4);
+
+        assert!(
+            image.pixels().all(|px| px.0[3] == 0),
+            "mixed-validity projected cells should remain masked instead of bleeding a nearby finite value",
+        );
     }
 }

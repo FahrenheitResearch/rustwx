@@ -17,6 +17,7 @@ use rustwx_products::non_ecape::{
     HrrrNonEcapeFanoutTiming, HrrrNonEcapeMultiDomainReport, HrrrNonEcapeMultiDomainRequest,
     HrrrNonEcapeSharedTiming, run_hrrr_non_ecape_hour_multi_domain,
 };
+use rustwx_products::places::{PlaceLabelDensityTier, PlaceLabelOverlay};
 use rustwx_products::publication::atomic_write_json;
 use rustwx_products::source::ProductSourceMode;
 use rustwx_render::PngCompressionMode;
@@ -54,6 +55,35 @@ impl From<PngCompressionArg> for PngCompressionMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+#[value(rename_all = "kebab-case")]
+enum PlaceLabelDensityArg {
+    /// Disable place labels.
+    #[value(alias("0"), alias("off"))]
+    None,
+    /// Major anchor labels only.
+    #[default]
+    #[value(alias("1"))]
+    Major,
+    /// Major anchors plus nearby auxiliary labels.
+    #[value(alias("2"))]
+    MajorAndAux,
+    /// The densest supported label set.
+    #[value(alias("3"), alias("full"))]
+    Dense,
+}
+
+impl From<PlaceLabelDensityArg> for PlaceLabelDensityTier {
+    fn from(value: PlaceLabelDensityArg) -> Self {
+        match value {
+            PlaceLabelDensityArg::None => Self::None,
+            PlaceLabelDensityArg::Major => Self::Major,
+            PlaceLabelDensityArg::MajorAndAux => Self::MajorAndAux,
+            PlaceLabelDensityArg::Dense => Self::Dense,
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "hrrr-us-region-hours",
@@ -87,6 +117,13 @@ struct Args {
     hour_jobs: usize,
     #[arg(long, default_value_t = 8)]
     domain_jobs: usize,
+    #[arg(
+        long = "place-label-density",
+        value_enum,
+        default_value_t = PlaceLabelDensityArg::Major,
+        help = "Place-label density: none, major, major-and-aux, or dense. Numeric aliases 0-3 also work."
+    )]
+    place_label_density: PlaceLabelDensityArg,
     #[arg(long)]
     render_threads: Option<usize>,
     #[arg(long = "png-compression", value_enum, default_value_t = PngCompressionArg::Fast)]
@@ -205,6 +242,8 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let cache_root = cache_root.clone();
     let source_mode: ProductSourceMode = args.source_mode.into();
     let png_compression: PngCompressionMode = args.png_compression.into();
+    let place_label_overlay =
+        Some(PlaceLabelOverlay::major_us_cities().with_density(args.place_label_density.into()));
 
     thread::scope(|scope| {
         for _ in 0..hour_jobs {
@@ -218,6 +257,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             let source = args.source;
             let direct_recipe_slugs = direct_recipe_slugs.clone();
             let derived_recipe_slugs = derived_recipe_slugs.clone();
+            let place_label_overlay = place_label_overlay.clone();
             scope.spawn(move || {
                 loop {
                     let next_hour = {
@@ -244,6 +284,8 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                         output_width: 1200,
                         output_height: 900,
                         png_compression,
+                        custom_poi_overlay: None,
+                        place_label_overlay: place_label_overlay.clone(),
                         domain_jobs: Some(domain_jobs),
                     };
 

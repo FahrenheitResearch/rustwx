@@ -206,6 +206,6 @@ mod tests {
         assert!(source.contains("run_ecape_batch("));
         assert!(!source.contains(&["compute_", "ecape8_panel_fields("].concat()));
         assert!(!source.contains(&["build_", "projected_map("].concat()));
-        assert!(!source.contains(&["render_two_by_four_", "solar07_panel("].concat()));
+        assert!(!source.contains(&["render_two_by_four_", "weather_panel("].concat()));
     }
 }

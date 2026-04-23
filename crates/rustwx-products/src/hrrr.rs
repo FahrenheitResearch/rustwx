@@ -14,8 +14,8 @@ use crate::severe::{
     severe_panel_fields_from_supported as generic_severe_panel_fields_from_supported,
 };
 pub use crate::shared_context::{
-    DomainSpec, PreparedProjectedContext, ProjectedMap, Solar07PanelField, Solar07PanelHeader,
-    Solar07PanelLayout, layout_key, render_two_by_four_solar07_panel,
+    DomainSpec, PreparedProjectedContext, ProjectedMap, WeatherPanelField, WeatherPanelHeader,
+    WeatherPanelLayout, layout_key, render_two_by_four_weather_panel,
 };
 use rustwx_calc::SupportedSevereFields;
 use rustwx_core::{CycleSpec, ModelId, SourceId};
@@ -42,13 +42,13 @@ impl HrrrBatchProduct {
         }
     }
 
-    pub fn layout(self) -> Solar07PanelLayout {
+    pub fn layout(self) -> WeatherPanelLayout {
         match self {
-            Self::SevereProofPanel => Solar07PanelLayout {
+            Self::SevereProofPanel => WeatherPanelLayout {
                 top_padding: 86,
                 ..Default::default()
             },
-            Self::Ecape8Panel => Solar07PanelLayout::default(),
+            Self::Ecape8Panel => WeatherPanelLayout::default(),
         }
     }
 }
@@ -200,9 +200,10 @@ pub(crate) fn run_hrrr_batch_from_loaded(
         .unwrap_or(1.0);
     let owned_full_grid;
     let base_grid = surface_full.core_grid()?;
-    let full_projected_for_crop = crate::direct::build_projected_map(
+    let full_projected_for_crop = crate::direct::build_projected_map_with_projection(
         &base_grid.lat_deg,
         &base_grid.lon_deg,
+        surface_full.projection.as_ref(),
         request.domain.bounds,
         crop_target_ratio,
     )?;
@@ -230,9 +231,10 @@ pub(crate) fn run_hrrr_batch_from_loaded(
         let key = self::layout_key(layout);
         let project_start = Instant::now();
         if !projected_maps.contains_key(&key) {
-            let projected = crate::direct::build_projected_map(
+            let projected = crate::direct::build_projected_map_with_projection(
                 &grid.lat_deg,
                 &grid.lon_deg,
+                surface.projection.as_ref(),
                 request.domain.bounds,
                 layout.target_aspect_ratio(),
             )?;
@@ -302,7 +304,7 @@ pub(crate) fn run_hrrr_batch_from_loaded(
             pending.push_back(
                 scope.spawn(move || -> Result<HrrrRenderedProduct, io::Error> {
                     let render_start = Instant::now();
-                    render_two_by_four_solar07_panel(
+                    render_two_by_four_weather_panel(
                         &output_path,
                         grid,
                         projected,
@@ -432,8 +434,8 @@ fn build_hrrr_shared_timing_from_loaded(
 
 #[derive(Debug)]
 struct ComputedHrrrProduct {
-    fields: Vec<Solar07PanelField>,
-    header: Solar07PanelHeader,
+    fields: Vec<WeatherPanelField>,
+    header: WeatherPanelHeader,
     metadata: HrrrProductMetadata,
 }
 
@@ -454,7 +456,7 @@ fn compute_hrrr_batch_product(
                 )?,
                 None => crate::severe::compute_severe_panel_fields(surface, pressure)?,
             };
-            let header = Solar07PanelHeader::new(format!(
+            let header = WeatherPanelHeader::new(format!(
                 "HRRR Severe Proof Panel  Run: {} {:02}:00 UTC  Forecast Hour: F{:02}",
                 date_yyyymmdd, cycle_utc, forecast_hour
             ))
@@ -477,7 +479,7 @@ fn compute_hrrr_batch_product(
                 )?,
                 None => crate::ecape::compute_ecape8_panel_fields(surface, pressure)?,
             };
-            let header = Solar07PanelHeader::new(format!(
+            let header = WeatherPanelHeader::new(format!(
                 "HRRR ECAPE Product Panel  Run: {} {:02}:00 UTC  Forecast Hour: F{:02}  zero-fill columns: {}",
                 date_yyyymmdd, cycle_utc, forecast_hour, failure_count
             ))
@@ -509,7 +511,7 @@ fn dedupe_products(products: &[HrrrBatchProduct]) -> Vec<HrrrBatchProduct> {
 /// Re-export for callers that still want the supported-severe → panel
 /// fields conversion under the HRRR-pinned name. Implementation lives in
 /// `crate::severe`; preserved here so external consumers do not break.
-pub fn severe_panel_fields_from_supported(fields: SupportedSevereFields) -> Vec<Solar07PanelField> {
+pub fn severe_panel_fields_from_supported(fields: SupportedSevereFields) -> Vec<WeatherPanelField> {
     generic_severe_panel_fields_from_supported(fields)
 }
 
@@ -561,7 +563,7 @@ fn panic_message(panic: Box<dyn std::any::Any + Send + 'static>) -> String {
 mod tests {
     use super::*;
     use rustwx_calc::SupportedSevereFields;
-    use rustwx_render::Solar07Product;
+    use rustwx_render::WeatherProduct;
 
     #[test]
     fn explicit_hrrr_cycle_avoids_latest_probe() {
@@ -598,7 +600,7 @@ mod tests {
 
     #[test]
     fn panel_field_keeps_title_override() {
-        let field = Solar07PanelField::new(Solar07Product::StpFixed, "dimensionless", vec![1.0])
+        let field = WeatherPanelField::new(WeatherProduct::StpFixed, "dimensionless", vec![1.0])
             .with_title_override("STP (FIXED)");
         assert_eq!(field.title_override.as_deref(), Some("STP (FIXED)"));
     }
@@ -634,7 +636,7 @@ mod tests {
         });
 
         assert_eq!(fields.len(), 8);
-        assert_eq!(fields[5].product, Solar07Product::StpFixed);
+        assert_eq!(fields[5].product, WeatherProduct::StpFixed);
         assert_eq!(
             fields[6].title_override.as_deref(),
             Some("SCP (MU / 0-3 KM / 0-6 KM PROXY)")

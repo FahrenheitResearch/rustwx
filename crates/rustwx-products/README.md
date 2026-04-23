@@ -18,7 +18,7 @@ Current scope is intentionally conservative:
 - reusable proof-gallery/index generation from existing manifests plus the
   product catalog, including a static HTML viewer
 - shared projection/basemap assembly for cropped panel products
-- shared Solar07 two-by-four panel rendering with header text
+- shared Weather two-by-four panel rendering with header text
 - a typed HRRR batch request/runner that generates multiple products from one
   fetched/decoded timestep
 

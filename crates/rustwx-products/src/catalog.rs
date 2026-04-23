@@ -486,7 +486,7 @@ mod tests {
             .expect("cloud_cover_levels should stay in the direct lane");
         assert_eq!(
             cloud_levels.render_style.as_deref(),
-            Some("solar07_panel_grid")
+            Some("weather_panel_grid")
         );
         assert!(
             cloud_levels
@@ -506,7 +506,7 @@ mod tests {
             .expect("precipitation_type should stay in the direct lane");
         assert_eq!(
             precipitation_type.render_style.as_deref(),
-            Some("solar07_panel_grid")
+            Some("weather_panel_grid")
         );
         assert!(
             precipitation_type

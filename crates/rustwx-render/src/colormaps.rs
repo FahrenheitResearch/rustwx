@@ -1,9 +1,9 @@
-//! Port of every colormap from Solarpower07/WRF-Runner colormaps.py.
+//! Weather-focused colormap anchor tables used by the Rust renderer.
 
 use crate::color::{Rgba, lerp_hex};
 
 // -----------------------------------------------------------------------
-// Raw anchor data (hex strings) — exact copies from colormaps.py
+// Raw anchor data (hex strings).
 // -----------------------------------------------------------------------
 
 const WINDS: &[&str] = &[
@@ -118,6 +118,21 @@ pub fn winds(n: usize) -> Vec<Rgba> {
 /// Temperature palette (19 anchors → n segments).
 pub fn temperature(n: usize) -> Vec<Rgba> {
     lerp_hex(TEMPERATURE, n)
+}
+
+/// Temperature palette cropped using the upstream Fahrenheit-range slicing.
+pub fn temperature_cropped(n: usize, crop_f: Option<(f64, f64)>) -> Vec<Rgba> {
+    let anchors = if let Some((start, end)) = crop_f {
+        let last = TEMPERATURE.len().saturating_sub(1) as f64;
+        let start_index = (((start + 60.0) / 180.0) * last).floor() as usize;
+        let end_index = (((end + 60.0) / 180.0) * last).floor() as usize;
+        let start_index = start_index.min(TEMPERATURE.len().saturating_sub(1));
+        let end_index = end_index.min(TEMPERATURE.len().saturating_sub(1));
+        &TEMPERATURE[start_index..=end_index]
+    } else {
+        TEMPERATURE
+    };
+    lerp_hex(anchors, n)
 }
 
 /// Dewpoint palette (dry 80 + moist 5×10 = 130 segments).

@@ -2,6 +2,7 @@ mod color;
 mod colorbar;
 mod colormap;
 mod colormaps;
+mod contour_fill;
 mod draw;
 mod error;
 mod features;
@@ -13,19 +14,29 @@ mod projection;
 mod rasterize;
 mod render;
 mod request;
-pub mod solar07;
 mod text;
+pub mod weather;
 
+pub use contour_fill::{
+    ProjectedContourGeometry, ProjectedContourGeometryTiming, ProjectedContourLineStyle,
+    build_projected_contour_geometry, build_projected_contour_geometry_profile,
+};
 pub use error::RustwxRenderError;
 pub use features::{
-    BasemapStyle, StyledLonLatLayer, StyledLonLatPolygonLayer, load_styled_conus_features_for,
+    BasemapStyle, StyledLonLatLayer, StyledLonLatPolygonLayer, load_styled_basemap_features,
+    load_styled_basemap_features_for, load_styled_basemap_polygons,
+    load_styled_basemap_polygons_for, load_styled_conus_features_for,
     load_styled_conus_polygons_for,
 };
 pub use image::RgbaImage;
 pub use panel::{PanelGridLayout, PanelPadding, compose_panel_images, render_panel_grid};
 pub use presentation::{LineworkRole, PolygonRole, ProductVisualMode, RenderPresentation};
-pub use projected_map::{ProjectedMap, build_projected_map};
-pub use projection::LambertConformal;
+pub use projected_map::{
+    GeographicBounds, ProjectedBasemap, ProjectedBasemapBuildOptions, ProjectedDomainBuildOptions,
+    ProjectedFrameSource, ProjectedMap, ProjectedMapBuildOptions, build_projected_domain,
+    build_projected_map, build_projected_map_with_options,
+};
+pub use projection::{LambertConformal, ProjectionSpec};
 pub use render::{
     PngCompressionMode, PngWriteOptions, RenderImageTiming, RenderPngTiming,
     map_frame_aspect_ratio, map_frame_aspect_ratio_for_mode, render_to_image_profile,
@@ -34,25 +45,29 @@ pub use render::{
 pub use request::{
     ChromeScale, Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, DomainFrame,
     ExtendMode, Field2D, GridShape, LatLonGrid, MapRenderRequest, ProductKey, ProductMaturity,
-    ProductSemanticFlag, ProductSemantics, ProjectedDomain, ProjectedExtent, ProjectedLineOverlay,
-    ProjectedPolygonFill, WindBarbLayer, WindBarbStyle,
+    ProductSemanticFlag, ProductSemantics, ProjectedDomain, ProjectedExtent,
+    ProjectedLabelPlacement, ProjectedLineOverlay, ProjectedPlaceLabel,
+    ProjectedPlaceLabelPriority, ProjectedPlaceLabelStyle, ProjectedPolygonFill, WindBarbLayer,
+    WindBarbStyle,
 };
 pub use rustwx_core::{
-    Field2D as CoreField2D, GridShape as CoreGridShape, LatLonGrid as CoreLatLonGrid,
-    ProductKey as CoreProductKey,
+    Field2D as CoreField2D, GridProjection as CoreGridProjection, GridShape as CoreGridShape,
+    LatLonGrid as CoreLatLonGrid, ProductKey as CoreProductKey,
 };
-pub use solar07::{
+pub use weather::{
     DerivedProductStyle, DerivedScalePreset, ECAPE_SEVERE_PANEL_PRODUCTS,
-    SEVERE_CLASSIC_PANEL_PRODUCTS, Solar07Palette, Solar07Preset, Solar07Product, palette_scale,
+    SEVERE_CLASSIC_PANEL_PRODUCTS, WeatherPalette, WeatherPreset, WeatherProduct, palette_scale,
 };
 
 use crate::color::Rgba;
 pub use crate::colormap::{
     ColormapBuildOptions, LegendControls, LegendMode, LevelDensity, RenderDensity,
+    densify_discrete_scale,
 };
 use crate::colormap::{Extend, LeveledColormap};
 use crate::overlay::{
-    BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPolygon, ProjectedPolyline,
+    BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPlaceLabelOverlay,
+    ProjectedPolygon, ProjectedPolyline,
 };
 use crate::render::{
     RenderOpts, encode_rgba_png_profile_with_options, render_to_image as native_render_to_image,
@@ -159,6 +174,12 @@ impl RenderScratch {
         }
 
         for poly in opts.projected_polygons.drain(..) {
+            for ring in poly.rings {
+                self.reclaim_point_buffer(ring);
+            }
+        }
+
+        for poly in opts.projected_data_polygons.drain(..) {
             for ring in poly.rings {
                 self.reclaim_point_buffer(ring);
             }
@@ -410,6 +431,44 @@ fn with_render_state_profile<T>(
         }
         let projected_polygons_ms = projected_polygons_start.elapsed().as_millis();
 
+        let mut projected_data_polygons = Vec::with_capacity(request.projected_data_polygons.len());
+        for poly in &request.projected_data_polygons {
+            let rings = poly
+                .rings
+                .iter()
+                .map(|ring| scratch.fill_point_buffer(ring))
+                .collect();
+            projected_data_polygons.push(ProjectedPolygon {
+                rings,
+                color: poly.color.into(),
+                role: poly.role,
+            });
+        }
+
+        let mut projected_place_labels = Vec::with_capacity(request.projected_place_labels.len());
+        for place_label in &request.projected_place_labels {
+            projected_place_labels.push(ProjectedPlaceLabelOverlay {
+                x: place_label.x,
+                y: place_label.y,
+                label: place_label.label.clone(),
+                priority: place_label.priority,
+                style: crate::overlay::ProjectedPlaceLabelStyle {
+                    marker_radius_px: place_label.style.marker_radius_px,
+                    marker_fill: place_label.style.marker_fill.into(),
+                    marker_outline: place_label.style.marker_outline.into(),
+                    marker_outline_width: place_label.style.marker_outline_width,
+                    label_color: place_label.style.label_color.into(),
+                    label_halo: place_label.style.label_halo.into(),
+                    label_halo_width_px: place_label.style.label_halo_width_px,
+                    label_scale: place_label.style.label_scale,
+                    label_offset_x_px: place_label.style.label_offset_x_px,
+                    label_offset_y_px: place_label.style.label_offset_y_px,
+                    label_placement: place_label.style.label_placement,
+                    label_bold: place_label.style.label_bold,
+                },
+            });
+        }
+
         let contour_start = Instant::now();
         let mut contours = Vec::with_capacity(request.contours.len());
         for layer in &request.contours {
@@ -451,6 +510,7 @@ fn with_render_state_profile<T>(
             colorbar: request.colorbar,
             title: request.title.clone().or(default_title),
             subtitle_left: request.subtitle_left.clone(),
+            subtitle_center: request.subtitle_center.clone(),
             subtitle_right: request.subtitle_right.clone(),
             cbar_tick_step: request.cbar_tick_step,
             colorbar_mode: request.legend.mode,
@@ -465,6 +525,8 @@ fn with_render_state_profile<T>(
             }),
             projected_grid,
             projected_polygons,
+            projected_data_polygons,
+            projected_place_labels,
             projected_lines,
             contours,
             barbs,
@@ -489,10 +551,7 @@ fn with_render_state_profile<T>(
 }
 
 fn build_colormap(scale: &ColorScale, options: ColormapBuildOptions) -> LeveledColormap {
-    let discrete = match scale {
-        ColorScale::Solar07(preset) => preset.scale(),
-        ColorScale::Discrete(scale) => scale.clone(),
-    };
+    let discrete = scale.resolved_discrete();
 
     let colors: Vec<Rgba> = discrete.colors.into_iter().map(Into::into).collect();
     LeveledColormap::from_palette_with_options(
@@ -608,6 +667,21 @@ pub fn draw_centered_text_line(img: &mut RgbaImage, text: &str, y: i32, color: C
     text::draw_text_centered(img, text, y, color.into(), scale);
 }
 
+pub fn draw_text_line(img: &mut RgbaImage, text: &str, x: i32, y: i32, color: Color, scale: u32) {
+    text::draw_text(img, text, x, y, color.into(), scale);
+}
+
+pub fn draw_right_text_line(
+    img: &mut RgbaImage,
+    text: &str,
+    x_right: i32,
+    y: i32,
+    color: Color,
+    scale: u32,
+) {
+    text::draw_text_right(img, text, x_right, y, color.into(), scale);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -626,22 +700,22 @@ mod tests {
     }
 
     #[test]
-    fn solar07_product_mapping_covers_ecape_and_severe_aliases() {
+    fn weather_product_mapping_covers_ecape_and_severe_aliases() {
         assert_eq!(
-            Solar07Product::from_product_name("sbecape"),
-            Some(Solar07Product::Sbecape)
+            WeatherProduct::from_product_name("sbecape"),
+            Some(WeatherProduct::Sbecape)
         );
         assert_eq!(
-            Solar07Product::from_product_name("mlecin"),
-            Some(Solar07Product::Mlecin)
+            WeatherProduct::from_product_name("mlecin"),
+            Some(WeatherProduct::Mlecin)
         );
         assert_eq!(
-            Solar07Product::from_product_name("ecape_scp"),
-            Some(Solar07Product::EcapeScpExperimental)
+            WeatherProduct::from_product_name("ecape_scp"),
+            Some(WeatherProduct::EcapeScpExperimental)
         );
         assert_eq!(
-            Solar07Product::from_product_name("ecape_ehi"),
-            Some(Solar07Product::EcapeEhiExperimental)
+            WeatherProduct::from_product_name("ecape_ehi"),
+            Some(WeatherProduct::EcapeEhiExperimental)
         );
     }
 
@@ -652,11 +726,12 @@ mod tests {
             product_metadata: None,
             width: 320,
             height: 240,
-            scale: ColorScale::Solar07(crate::solar07::Solar07Preset::Cape),
+            scale: ColorScale::Weather(crate::weather::WeatherPreset::Cape),
             background: Color::WHITE,
             colorbar: true,
             title: Some("SBECAPE".into()),
             subtitle_left: Some("HRRR 2026-04-14 20Z F00".into()),
+            subtitle_center: Some("rustwx-render".into()),
             subtitle_right: Some("rustwx-render".into()),
             cbar_tick_step: Some(500.0),
             render_density: RenderDensity::default(),
@@ -667,6 +742,8 @@ mod tests {
             domain_frame: None,
             projected_domain: None,
             projected_polygons: Vec::new(),
+            projected_data_polygons: Vec::new(),
+            projected_place_labels: Vec::new(),
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),
@@ -692,7 +769,7 @@ mod tests {
     #[test]
     fn save_png_writes_file() {
         let request =
-            MapRenderRequest::for_solar07_product(sample_field("scp"), Solar07Product::Scp);
+            MapRenderRequest::for_weather_product(sample_field("scp"), WeatherProduct::Scp);
 
         let path = std::env::temp_dir().join(format!("rustwx-render-{}.png", std::process::id()));
         save_png(&request, &path).unwrap();
@@ -710,11 +787,12 @@ mod tests {
             product_metadata: None,
             width: 320,
             height: 240,
-            scale: ColorScale::Solar07(crate::solar07::Solar07Preset::Cape),
+            scale: ColorScale::Weather(crate::weather::WeatherPreset::Cape),
             background: Color::WHITE,
             colorbar: false,
             title: Some("MUCAPE".into()),
             subtitle_left: None,
+            subtitle_center: None,
             subtitle_right: None,
             cbar_tick_step: Some(500.0),
             render_density: RenderDensity::default(),
@@ -725,6 +803,8 @@ mod tests {
             domain_frame: None,
             projected_domain: None,
             projected_polygons: Vec::new(),
+            projected_data_polygons: Vec::new(),
+            projected_place_labels: Vec::new(),
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),
@@ -743,17 +823,52 @@ mod tests {
     }
 
     #[test]
-    fn for_solar07_product_sets_expected_titles_for_experimental_fields() {
-        let request = MapRenderRequest::for_solar07_product(
+    fn with_render_state_carries_projected_place_labels_into_render_opts() {
+        let mut request = MapRenderRequest::contour_only(sample_field("overlay"));
+        request.projected_domain = Some(ProjectedDomain {
+            x: vec![0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 2.0, 3.0],
+            y: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0],
+            extent: ProjectedExtent {
+                x_min: 0.0,
+                x_max: 3.0,
+                y_min: 0.0,
+                y_max: 2.0,
+            },
+        });
+        request.projected_place_labels.push(
+            ProjectedPlaceLabel::new(1.5, 1.0)
+                .with_label("Tulsa")
+                .with_priority(ProjectedPlaceLabelPriority::Micro),
+        );
+
+        let carried = with_render_state(&request, |_data, _ny, _nx, opts| {
+            Ok((
+                opts.projected_place_labels.len(),
+                opts.projected_place_labels[0].label.clone(),
+                opts.projected_place_labels[0].style.marker_radius_px,
+                opts.projected_place_labels[0].priority,
+            ))
+        })
+        .unwrap();
+
+        assert_eq!(carried.0, 1);
+        assert_eq!(carried.1.as_deref(), Some("Tulsa"));
+        assert_eq!(carried.2, 3);
+        assert_eq!(carried.3, ProjectedPlaceLabelPriority::Micro);
+    }
+
+    #[test]
+    fn for_weather_product_sets_expected_titles_for_experimental_fields() {
+        let request = MapRenderRequest::for_weather_product(
             sample_field("ecape_scp"),
-            Solar07Product::EcapeScpExperimental,
+            WeatherProduct::EcapeScpExperimental,
         );
 
         assert_eq!(request.title.as_deref(), Some("ECAPE SCP (EXP)"));
         assert_eq!(request.cbar_tick_step, Some(1.0));
         assert!(matches!(
             request.scale,
-            ColorScale::Solar07(Solar07Preset::Scp)
+            ColorScale::Weather(WeatherPreset::Scp)
         ));
     }
 

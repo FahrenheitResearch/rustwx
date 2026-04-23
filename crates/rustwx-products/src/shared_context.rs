@@ -3,7 +3,7 @@ use rustwx_core::{Field2D, LatLonGrid, ProductKey};
 pub use rustwx_render::ProjectedMap;
 use rustwx_render::{
     Color, DomainFrame, MapRenderRequest, PanelGridLayout, PanelPadding, ProductVisualMode,
-    ProjectedDomain, Solar07Product, draw_centered_text_line, map_frame_aspect_ratio_for_mode,
+    ProjectedDomain, WeatherProduct, draw_centered_text_line, map_frame_aspect_ratio_for_mode,
     render_panel_grid,
 };
 use serde::{Deserialize, Serialize};
@@ -60,16 +60,16 @@ impl ProjectedMapProvider for PreparedProjectedContext {
 }
 
 #[derive(Debug, Clone)]
-pub struct Solar07PanelField {
-    pub product: Solar07Product,
+pub struct WeatherPanelField {
+    pub product: WeatherProduct,
     pub artifact_slug: Option<String>,
     pub title_override: Option<String>,
     pub units: String,
     pub values: Vec<f64>,
 }
 
-impl Solar07PanelField {
-    pub fn new<S: Into<String>>(product: Solar07Product, units: S, values: Vec<f64>) -> Self {
+impl WeatherPanelField {
+    pub fn new<S: Into<String>>(product: WeatherProduct, units: S, values: Vec<f64>) -> Self {
         Self {
             product,
             artifact_slug: None,
@@ -103,12 +103,12 @@ impl Solar07PanelField {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct Solar07PanelHeader {
+pub struct WeatherPanelHeader {
     pub title: String,
     pub subtitle_lines: Vec<String>,
 }
 
-impl Solar07PanelHeader {
+impl WeatherPanelHeader {
     pub fn new<S: Into<String>>(title: S) -> Self {
         Self {
             title: title.into(),
@@ -123,13 +123,13 @@ impl Solar07PanelHeader {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Solar07PanelLayout {
+pub struct WeatherPanelLayout {
     pub panel_width: u32,
     pub panel_height: u32,
     pub top_padding: u32,
 }
 
-impl Default for Solar07PanelLayout {
+impl Default for WeatherPanelLayout {
     fn default() -> Self {
         Self {
             panel_width: 700,
@@ -139,7 +139,7 @@ impl Default for Solar07PanelLayout {
     }
 }
 
-impl Solar07PanelLayout {
+impl WeatherPanelLayout {
     pub fn target_aspect_ratio(self) -> f64 {
         map_frame_aspect_ratio_for_mode(
             ProductVisualMode::PanelMember,
@@ -151,14 +151,14 @@ impl Solar07PanelLayout {
     }
 }
 
-pub fn layout_key(layout: Solar07PanelLayout) -> (u32, u32, u32) {
+pub fn layout_key(layout: WeatherPanelLayout) -> (u32, u32, u32) {
     (layout.panel_width, layout.panel_height, layout.top_padding)
 }
 
-pub fn build_solar07_map_request(
+pub fn build_weather_map_request(
     grid: &LatLonGrid,
     projected: &ProjectedMap,
-    field_spec: &Solar07PanelField,
+    field_spec: &WeatherPanelField,
     width: u32,
     height: u32,
     subtitle_left: Option<String>,
@@ -170,7 +170,7 @@ pub fn build_solar07_map_request(
         grid.clone(),
         field_spec.values.iter().map(|&v| v as f32).collect(),
     )?;
-    let mut request = MapRenderRequest::for_core_solar07_product(field, field_spec.product);
+    let mut request = MapRenderRequest::for_core_weather_product(field, field_spec.product);
     request.width = width;
     request.height = height;
     request.supersample_factor = 2;
@@ -189,13 +189,13 @@ pub fn build_solar07_map_request(
     Ok(request)
 }
 
-pub fn render_two_by_four_solar07_panel(
+pub fn render_two_by_four_weather_panel(
     output_path: &Path,
     grid: &LatLonGrid,
     projected: &ProjectedMap,
-    fields: &[Solar07PanelField],
-    header: &Solar07PanelHeader,
-    layout: Solar07PanelLayout,
+    fields: &[WeatherPanelField],
+    header: &WeatherPanelHeader,
+    layout: WeatherPanelLayout,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let grid_layout = PanelGridLayout::two_by_four(layout.panel_width, layout.panel_height)?
         .with_padding(PanelPadding {
@@ -211,7 +211,7 @@ pub fn render_two_by_four_solar07_panel(
             grid.clone(),
             field_spec.values.iter().map(|&v| v as f32).collect(),
         )?;
-        let mut request = MapRenderRequest::for_core_solar07_product(field, field_spec.product);
+        let mut request = MapRenderRequest::for_core_weather_product(field, field_spec.product);
         request.width = layout.panel_width;
         request.height = layout.panel_height;
         request.visual_mode = ProductVisualMode::PanelMember;
@@ -272,15 +272,22 @@ mod tests {
 
     #[test]
     fn panel_field_keeps_title_override() {
-        let field = Solar07PanelField::new(Solar07Product::StpFixed, "dimensionless", vec![1.0])
+        let field = WeatherPanelField::new(WeatherProduct::StpFixed, "dimensionless", vec![1.0])
             .with_title_override("STP (FIXED)");
         assert_eq!(field.title_override.as_deref(), Some("STP (FIXED)"));
     }
 
     #[test]
     fn panel_field_keeps_artifact_slug_override() {
-        let field = Solar07PanelField::new(Solar07Product::Scp, "dimensionless", vec![1.0])
+        let field = WeatherPanelField::new(WeatherProduct::Scp, "dimensionless", vec![1.0])
             .with_artifact_slug("scp_mu_0_3km_0_6km_proxy");
         assert_eq!(field.artifact_slug(), "scp_mu_0_3km_0_6km_proxy");
+    }
+
+    #[test]
+    fn panel_field_default_artifact_slug_stays_on_product_slug() {
+        let field = WeatherPanelField::new(WeatherProduct::StpFixed, "dimensionless", vec![1.0])
+            .with_title_override("STP (fixed layer)");
+        assert_eq!(field.artifact_slug(), WeatherProduct::StpFixed.slug());
     }
 }

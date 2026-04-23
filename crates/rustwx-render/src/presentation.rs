@@ -141,15 +141,19 @@ impl RenderPresentation {
             ProductVisualMode::UpperAirAnalysis => match role {
                 PolygonRole::Ocean => PolygonStyle {
                     visible: true,
-                    color: Rgba::new(246, 249, 252),
+                    color: Rgba::new(242, 246, 250),
                 },
                 PolygonRole::Land => PolygonStyle {
                     visible: true,
-                    color: Rgba::new(250, 250, 247),
+                    // Upper-air products can legitimately mask below-ground
+                    // isobaric surfaces over higher terrain. Use a faint
+                    // terrain-tinted land fill so those regions do not read as
+                    // a rendering hole.
+                    color: Rgba::new(232, 228, 217),
                 },
                 PolygonRole::Lake => PolygonStyle {
                     visible: true,
-                    color: Rgba::new(238, 246, 250),
+                    color: Rgba::new(232, 241, 247),
                 },
                 PolygonRole::Generic => PolygonStyle {
                     visible: true,
@@ -355,7 +359,7 @@ fn common_colorbar() -> ColorbarPresentation {
 fn normal_layout() -> LayoutMetrics {
     LayoutMetrics {
         margin_x: 18,
-        title_h: 34,
+        title_h: 42,
         footer_h: 30,
         colorbar_h: 12,
         colorbar_gap: 8,
@@ -366,7 +370,7 @@ fn normal_layout() -> LayoutMetrics {
 fn compact_layout() -> LayoutMetrics {
     LayoutMetrics {
         margin_x: 8,
-        title_h: 28,
+        title_h: 34,
         footer_h: 24,
         colorbar_h: 10,
         colorbar_gap: 8,
@@ -390,7 +394,7 @@ fn upper_air_analysis() -> RenderPresentation {
     RenderPresentation {
         mode: ProductVisualMode::UpperAirAnalysis,
         canvas_background: Rgba::new(246, 247, 249),
-        map_background: Rgba::new(250, 250, 248),
+        map_background: Rgba::new(238, 235, 227),
         domain_boundary: None,
         chrome: common_chrome(TitleAnchor::Left, None),
         colorbar: common_colorbar(),

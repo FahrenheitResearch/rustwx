@@ -19,8 +19,13 @@
 
 - Build product assembly on top of `rustwx-render`
 - Add proper projection metadata instead of synthetic demo geometry
+- Replace the current renderer-local map contour overlay path with `rustwx-contour` once the shared topology-to-render contract settles
 - Wire `rustwx-prep` lake-aware surface thermo correction into the surface/severe product builders
 - Add panel composition and GIF/animation output in Rust
+- Decide whether `hrrr_native_proof` should call a real cross-section lane directly or continue publishing a hook contract for a separate section runner
+- Unify bounded native proof manifests and cross-section proof manifests once the publication shape is stable enough to stop churning
+- Freeze a small set of canonical render-request fixtures in `crates/rustwx-render/verify` for filled, overlay-only, and mixed-panel smoke coverage
+- Add artifact-manifest or image-diff checks only after the request/legend chrome settles enough to avoid brittle proofs
 
 ## Phase 4: Python layer
 

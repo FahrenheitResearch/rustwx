@@ -1,4 +1,4 @@
-use crate::direct::build_projected_map;
+use crate::direct::build_projected_map_with_projection;
 use crate::gridded::{
     PressureFields, SharedTiming, SurfaceFields, prepare_heavy_volume, prepare_heavy_volume_timed,
     resolve_thermo_pair_run,
@@ -12,14 +12,14 @@ use crate::runtime::{BundleLoaderConfig, load_execution_plan};
 use crate::severe::{
     build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
 };
-use crate::shared_context::{DomainSpec, Solar07PanelField};
+use crate::shared_context::{DomainSpec, WeatherPanelField};
 use rustwx_calc::{
     EcapeTripletOptions, EcapeVolumeInputs, ScpEhiInputs, SurfaceInputs, WindGridInputs,
     compute_ecape_triplet_with_failure_mask_from_parts, compute_scp_ehi,
     compute_wind_diagnostics_bundle,
 };
 use rustwx_core::{ModelId, SourceId};
-use rustwx_render::Solar07Product;
+use rustwx_render::WeatherProduct;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -102,9 +102,10 @@ pub fn run_ecape_batch(
     let full_pressure = &pressure_decode.value;
     let owned_full_grid = full_surface.core_grid()?;
     let project_start = Instant::now();
-    let full_projected = build_projected_map(
+    let full_projected = build_projected_map_with_projection(
         &owned_full_grid.lat_deg,
         &owned_full_grid.lon_deg,
+        full_surface.projection.as_ref(),
         request.domain.bounds,
         heavy_map_target_aspect_ratio(),
     )?;
@@ -124,9 +125,10 @@ pub fn run_ecape_batch(
         heavy_domain.bind(full_surface, full_pressure, &owned_full_grid);
 
     let projected = if heavy_domain.cropped.is_some() {
-        build_projected_map(
+        build_projected_map_with_projection(
             &grid.lat_deg,
             &grid.lon_deg,
+            surface.projection.as_ref(),
             request.domain.bounds,
             heavy_map_target_aspect_ratio(),
         )?
@@ -206,7 +208,7 @@ pub fn run_ecape_batch(
 pub fn compute_ecape8_panel_fields(
     surface: &SurfaceFields,
     pressure: &PressureFields,
-) -> Result<(Vec<Solar07PanelField>, usize), Box<dyn std::error::Error>> {
+) -> Result<(Vec<WeatherPanelField>, usize), Box<dyn std::error::Error>> {
     let prepared = prepare_heavy_volume(surface, pressure, false)?;
     compute_ecape8_panel_fields_with_prepared_volume(surface, pressure, &prepared)
 }
@@ -215,11 +217,14 @@ pub fn compute_ecape8_panel_fields_with_prepared_volume(
     surface: &SurfaceFields,
     pressure: &PressureFields,
     prepared: &crate::gridded::PreparedHeavyVolume,
-) -> Result<(Vec<Solar07PanelField>, usize), Box<dyn std::error::Error>> {
+) -> Result<(Vec<WeatherPanelField>, usize), Box<dyn std::error::Error>> {
     let triplet = compute_ecape_triplet_with_failure_mask_from_parts(
         prepared.grid,
         EcapeVolumeInputs {
-            pressure_pa: &prepared.pressure_levels_pa,
+            pressure_pa: prepared
+                .pressure_3d_pa
+                .as_deref()
+                .unwrap_or(&prepared.pressure_levels_pa),
             temperature_c: &pressure.temperature_c_3d,
             qvapor_kgkg: &pressure.qvapor_kgkg_3d,
             height_agl_m: &prepared.height_agl_3d,
@@ -254,19 +259,19 @@ pub fn compute_ecape8_panel_fields_with_prepared_volume(
     let failure_count = triplet.total_failure_count();
 
     let fields = vec![
-        Solar07PanelField::new(Solar07Product::Sbecape, "J/kg", triplet.sb.fields.ecape_jkg),
-        Solar07PanelField::new(Solar07Product::Mlecape, "J/kg", triplet.ml.fields.ecape_jkg),
-        Solar07PanelField::new(Solar07Product::Muecape, "J/kg", triplet.mu.fields.ecape_jkg),
-        Solar07PanelField::new(Solar07Product::Sbncape, "J/kg", triplet.sb.fields.ncape_jkg),
-        Solar07PanelField::new(Solar07Product::Sbecin, "J/kg", triplet.sb.fields.cin_jkg),
-        Solar07PanelField::new(Solar07Product::Mlecin, "J/kg", triplet.ml.fields.cin_jkg),
-        Solar07PanelField::new(
-            Solar07Product::EcapeScpExperimental,
+        WeatherPanelField::new(WeatherProduct::Sbecape, "J/kg", triplet.sb.fields.ecape_jkg),
+        WeatherPanelField::new(WeatherProduct::Mlecape, "J/kg", triplet.ml.fields.ecape_jkg),
+        WeatherPanelField::new(WeatherProduct::Muecape, "J/kg", triplet.mu.fields.ecape_jkg),
+        WeatherPanelField::new(WeatherProduct::Sbncape, "J/kg", triplet.sb.fields.ncape_jkg),
+        WeatherPanelField::new(WeatherProduct::Sbecin, "J/kg", triplet.sb.fields.cin_jkg),
+        WeatherPanelField::new(WeatherProduct::Mlecin, "J/kg", triplet.ml.fields.cin_jkg),
+        WeatherPanelField::new(
+            WeatherProduct::EcapeScpExperimental,
             "dimensionless",
             experimental.scp,
         ),
-        Solar07PanelField::new(
-            Solar07Product::EcapeEhiExperimental,
+        WeatherPanelField::new(
+            WeatherProduct::EcapeEhiExperimental,
             "dimensionless",
             experimental.ehi,
         ),

@@ -1,22 +1,28 @@
-use grib_core::grib2::Grib2File;
+use crate::derived::NativeContourRenderMode;
 use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, CanonicalField, CycleSpec, FieldSelector,
     ModelId, SelectedField2D, SourceId, VerticalSelector,
 };
 use rustwx_io::{
-    extract_fields_from_grib2_partial, load_cached_selected_field, store_cached_selected_field,
+    extract_fields_partial_from_model_bytes, load_cached_selected_field,
+    store_cached_selected_field,
 };
 use rustwx_models::{
     LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
     latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan,
 };
 use rustwx_render::{
-    Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode, MapRenderRequest,
-    PanelGridLayout, PanelPadding, PngCompressionMode, PngWriteOptions, ProductVisualMode,
-    ProjectedDomain, ProjectedMap, RenderImageTiming, RenderStateTiming, WindBarbLayer,
+    ChromeScale, Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode,
+    LegendControls, LegendMode, LevelDensity, MapRenderRequest, PanelGridLayout, PanelPadding,
+    PngCompressionMode, PngWriteOptions, ProductVisualMode, ProjectedContourLineStyle,
+    ProjectedDomain, ProjectedMap, RenderDensity, RenderImageTiming, RenderStateTiming,
+    WindBarbLayer, build_projected_contour_geometry_profile, densify_discrete_scale,
     draw_centered_text_line, map_frame_aspect_ratio_for_mode, render_panel_grid,
     save_png_profile_with_options, save_rgba_png_profile_with_options,
-    solar07::{Solar07Palette, solar07_palette},
+    weather::{
+        WeatherPalette, dewpoint_palette_params, temperature_palette_cropped_f, weather_palette,
+        winds_palette_segments,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -26,6 +32,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
+use crate::custom_poi::{CustomPoiOverlay, apply_custom_poi_overlay};
+use crate::places::PlaceLabelOverlay;
 use crate::planner::{ExecutionPlan, ExecutionPlanBuilder};
 use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
@@ -61,6 +69,10 @@ fn default_png_compression() -> PngCompressionMode {
     PngCompressionMode::Default
 }
 
+fn default_native_fill_level_multiplier() -> usize {
+    1
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectBatchRequest {
     pub model: ModelId,
@@ -74,12 +86,20 @@ pub struct DirectBatchRequest {
     pub use_cache: bool,
     pub recipe_slugs: Vec<String>,
     pub product_overrides: HashMap<String, String>,
+    #[serde(default)]
+    pub contour_mode: NativeContourRenderMode,
+    #[serde(default = "default_native_fill_level_multiplier")]
+    pub native_fill_level_multiplier: usize,
     #[serde(default = "default_output_width")]
     pub output_width: u32,
     #[serde(default = "default_output_height")]
     pub output_height: u32,
     #[serde(default = "default_png_compression")]
     pub png_compression: PngCompressionMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_poi_overlay: Option<CustomPoiOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place_label_overlay: Option<PlaceLabelOverlay>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,12 +113,20 @@ pub struct HrrrDirectBatchRequest {
     pub cache_root: PathBuf,
     pub use_cache: bool,
     pub recipe_slugs: Vec<String>,
+    #[serde(default)]
+    pub contour_mode: NativeContourRenderMode,
+    #[serde(default = "default_native_fill_level_multiplier")]
+    pub native_fill_level_multiplier: usize,
     #[serde(default = "default_output_width")]
     pub output_width: u32,
     #[serde(default = "default_output_height")]
     pub output_height: u32,
     #[serde(default = "default_png_compression")]
     pub png_compression: PngCompressionMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_poi_overlay: Option<CustomPoiOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place_label_overlay: Option<PlaceLabelOverlay>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -225,6 +253,23 @@ struct DirectRequestBuildTiming {
     barb_prepare_ms: u128,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct DirectSampledProductField {
+    pub recipe_slug: String,
+    pub title: String,
+    pub source_route: ProductSourceRoute,
+    pub field_selector: Option<FieldSelector>,
+    pub field: rustwx_core::Field2D,
+    pub input_fetches: Vec<PublishedFetchIdentity>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DirectSampledProductSet {
+    pub latest: LatestRun,
+    pub fields: Vec<DirectSampledProductField>,
+    pub blockers: Vec<DirectRecipeBlocker>,
+}
+
 fn direct_data_layer_draw_ms(image_timing: &RenderImageTiming) -> u128 {
     image_timing.polygon_fill_ms
         + image_timing.projected_pixel_ms
@@ -310,9 +355,13 @@ impl DirectBatchRequest {
             use_cache: request.use_cache,
             recipe_slugs: request.recipe_slugs.clone(),
             product_overrides: HashMap::new(),
+            contour_mode: request.contour_mode,
+            native_fill_level_multiplier: request.native_fill_level_multiplier,
             output_width: request.output_width,
             output_height: request.output_height,
             png_compression: request.png_compression,
+            custom_poi_overlay: request.custom_poi_overlay.clone(),
+            place_label_overlay: request.place_label_overlay.clone(),
         }
     }
 
@@ -330,6 +379,35 @@ impl DirectBatchRequest {
         PngWriteOptions {
             compression: self.png_compression,
         }
+    }
+}
+
+fn sampling_direct_request(
+    model: ModelId,
+    source: SourceId,
+    forecast_hour: u16,
+    cache_root: &std::path::Path,
+    use_cache: bool,
+) -> DirectBatchRequest {
+    DirectBatchRequest {
+        model,
+        date_yyyymmdd: String::new(),
+        cycle_override_utc: None,
+        forecast_hour,
+        source,
+        domain: DomainSpec::new("sampling", (-180.0, 180.0, -90.0, 90.0)),
+        out_dir: PathBuf::new(),
+        cache_root: cache_root.to_path_buf(),
+        use_cache,
+        recipe_slugs: Vec::new(),
+        product_overrides: HashMap::new(),
+        contour_mode: NativeContourRenderMode::Automatic,
+        native_fill_level_multiplier: 1,
+        output_width: OUTPUT_WIDTH,
+        output_height: OUTPUT_HEIGHT,
+        png_compression: PngCompressionMode::Default,
+        custom_poi_overlay: None,
+        place_label_overlay: None,
     }
 }
 
@@ -382,6 +460,246 @@ pub fn run_hrrr_direct_batch(
     request: &HrrrDirectBatchRequest,
 ) -> Result<HrrrDirectBatchReport, Box<dyn std::error::Error>> {
     run_direct_batch(&DirectBatchRequest::from_hrrr(request))
+}
+
+pub(crate) fn required_direct_fetch_products(
+    model: ModelId,
+    recipe_slugs: &[String],
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let planned = plan_direct_recipes(model, recipe_slugs)?;
+    let request =
+        sampling_direct_request(model, SourceId::Aws, 0, std::path::Path::new("."), false);
+    Ok(group_direct_fetches(&request, &planned)
+        .into_iter()
+        .map(|group| group.product)
+        .collect())
+}
+
+pub(crate) fn load_direct_sampled_fields_from_latest(
+    latest: &LatestRun,
+    forecast_hour: u16,
+    cache_root: &std::path::Path,
+    use_cache: bool,
+    recipe_slugs: &[String],
+) -> Result<DirectSampledProductSet, Box<dyn std::error::Error>> {
+    let request = sampling_direct_request(
+        latest.model,
+        latest.source,
+        forecast_hour,
+        cache_root,
+        use_cache,
+    );
+    let planned = plan_direct_recipes(latest.model, recipe_slugs)?;
+    if planned.is_empty() {
+        return Ok(DirectSampledProductSet {
+            latest: latest.clone(),
+            fields: Vec::new(),
+            blockers: Vec::new(),
+        });
+    }
+
+    let groups = group_direct_fetches(&request, &planned);
+    let plan = build_direct_execution_plan(latest, forecast_hour, &groups);
+    let loaded = load_execution_plan(
+        plan,
+        &BundleLoaderConfig::new(cache_root.to_path_buf(), use_cache),
+    )?;
+
+    let mut extracted = HashMap::<FieldSelector, SelectedField2D>::new();
+    let mut missing_selectors = HashSet::<FieldSelector>::new();
+    let mut blockers = Vec::<DirectRecipeBlocker>::new();
+    let mut fetches_by_product = HashMap::<String, PublishedFetchIdentity>::new();
+
+    for group in &groups {
+        let fetched = match find_loaded_bytes_for_group(&loaded, group) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                let reason = err.to_string();
+                for selector in &group.selectors {
+                    missing_selectors.insert(*selector);
+                }
+                for recipe_slug in recipe_slugs_depending_on_group(&planned, group) {
+                    blockers.push(DirectRecipeBlocker {
+                        recipe_slug,
+                        reason: reason.clone(),
+                    });
+                }
+                continue;
+            }
+        };
+        let (fields, unmatched, timing) =
+            extract_direct_fetch_group_from_loaded(&request, group, fetched, use_cache)?;
+        extracted.extend(fields.into_iter().map(|field| (field.selector, field)));
+        for selector in unmatched {
+            missing_selectors.insert(selector);
+        }
+        fetches_by_product.insert(group.product.clone(), timing.input_fetch.clone());
+    }
+
+    let (renderable, selector_blockers) =
+        partition_recipes_by_selector_availability(&planned, &missing_selectors);
+    blockers.extend(selector_blockers);
+
+    let mut fields = Vec::new();
+    for item in renderable {
+        if composite_panel_spec(item.recipe.slug).is_some() {
+            blockers.push(DirectRecipeBlocker {
+                recipe_slug: item.recipe.slug.to_string(),
+                reason: "composite direct recipe does not expose a single sampled filled field"
+                    .to_string(),
+            });
+            continue;
+        }
+        let Some(filled_selector) = item.recipe.filled.selector else {
+            blockers.push(DirectRecipeBlocker {
+                recipe_slug: item.recipe.slug.to_string(),
+                reason: "direct recipe is missing a filled selector binding".to_string(),
+            });
+            continue;
+        };
+        let Some(filled) = extracted.get(&filled_selector) else {
+            blockers.push(DirectRecipeBlocker {
+                recipe_slug: item.recipe.slug.to_string(),
+                reason: format!(
+                    "direct recipe '{}' was renderable but missing selector {}",
+                    item.recipe.slug,
+                    filled_selector.key()
+                ),
+            });
+            continue;
+        };
+        let field = render_filled_field(item.recipe, filled, &extracted)?;
+        let canonical_product = canonical_fetch_product_for_selectors(
+            &request,
+            item.plan.product.as_ref(),
+            &item.plan.selectors(),
+        );
+        let input_fetches = fetches_by_product
+            .get(&canonical_product)
+            .cloned()
+            .into_iter()
+            .collect();
+        fields.push(DirectSampledProductField {
+            recipe_slug: item.recipe.slug.to_string(),
+            title: item.recipe.title.to_string(),
+            source_route: direct_route_for_recipe_slug(item.recipe.slug),
+            field_selector: Some(filled_selector),
+            field,
+            input_fetches,
+        });
+    }
+
+    Ok(DirectSampledProductSet {
+        latest: loaded.latest.clone(),
+        fields,
+        blockers,
+    })
+}
+
+pub(crate) fn load_single_direct_sampled_field_from_latest(
+    latest: &LatestRun,
+    forecast_hour: u16,
+    cache_root: &std::path::Path,
+    use_cache: bool,
+    recipe_slug: &str,
+    allow_composite_filled_field: bool,
+) -> Result<DirectSampledProductField, Box<dyn std::error::Error>> {
+    let request = sampling_direct_request(
+        latest.model,
+        latest.source,
+        forecast_hour,
+        cache_root,
+        use_cache,
+    );
+    let planned = plan_direct_recipes(latest.model, &[recipe_slug.to_string()])?;
+    let planned_item = planned
+        .first()
+        .ok_or_else(|| format!("direct recipe '{recipe_slug}' did not plan"))?;
+
+    let groups = group_direct_fetches(&request, &planned);
+    let plan = build_direct_execution_plan(latest, forecast_hour, &groups);
+    let loaded = load_execution_plan(
+        plan,
+        &BundleLoaderConfig::new(cache_root.to_path_buf(), use_cache),
+    )?;
+
+    let mut extracted = HashMap::<FieldSelector, SelectedField2D>::new();
+    let mut missing_selectors = HashSet::<FieldSelector>::new();
+    let mut fetches_by_product = HashMap::<String, PublishedFetchIdentity>::new();
+
+    for group in &groups {
+        let fetched = match find_loaded_bytes_for_group(&loaded, group) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                for selector in &group.selectors {
+                    missing_selectors.insert(*selector);
+                }
+                return Err(format!(
+                    "direct recipe '{}' fetch group '{}' failed: {}",
+                    recipe_slug, group.product, err
+                )
+                .into());
+            }
+        };
+        let (fields, unmatched, timing) =
+            extract_direct_fetch_group_from_loaded(&request, group, fetched, use_cache)?;
+        extracted.extend(fields.into_iter().map(|field| (field.selector, field)));
+        for selector in unmatched {
+            missing_selectors.insert(selector);
+        }
+        fetches_by_product.insert(group.product.clone(), timing.input_fetch.clone());
+    }
+
+    if let Some(reason) = recipe_block_reason(planned_item.recipe, &missing_selectors) {
+        return Err(format!(
+            "direct sampled field '{}' is blocked: {}",
+            recipe_slug, reason
+        )
+        .into());
+    }
+
+    if composite_panel_spec(planned_item.recipe.slug).is_some() && !allow_composite_filled_field {
+        return Err(format!(
+            "direct recipe '{}' is composite and does not expose a single sampled filled field by default",
+            recipe_slug
+        )
+        .into());
+    }
+
+    let Some(filled_selector) = planned_item.recipe.filled.selector else {
+        return Err(format!(
+            "direct recipe '{}' is missing a filled selector binding",
+            recipe_slug
+        )
+        .into());
+    };
+    let Some(filled) = extracted.get(&filled_selector) else {
+        return Err(format!(
+            "direct recipe '{}' did not resolve filled selector {}",
+            recipe_slug,
+            filled_selector.key()
+        )
+        .into());
+    };
+    let field = render_filled_field(planned_item.recipe, filled, &extracted)?;
+    let canonical_product = canonical_fetch_product_for_selectors(
+        &request,
+        planned_item.plan.product.as_ref(),
+        &planned_item.plan.selectors(),
+    );
+    let input_fetches = fetches_by_product
+        .get(&canonical_product)
+        .cloned()
+        .into_iter()
+        .collect();
+    Ok(DirectSampledProductField {
+        recipe_slug: planned_item.recipe.slug.to_string(),
+        title: planned_item.recipe.title.to_string(),
+        source_route: direct_route_for_recipe_slug(planned_item.recipe.slug),
+        field_selector: Some(filled_selector),
+        field,
+        input_fetches,
+    })
 }
 
 /// Planner-loaded entry point used by `hrrr_non_ecape_hour`. Direct
@@ -442,7 +760,22 @@ pub(crate) fn run_direct_batch_from_loaded(
             }
         };
         let (fields, unmatched, timing) =
-            extract_direct_fetch_group_from_loaded(request, group, fetched, use_cache)?;
+            match extract_direct_fetch_group_from_loaded(request, group, fetched, use_cache) {
+                Ok(result) => result,
+                Err(err) => {
+                    let reason = err.to_string();
+                    for selector in &group.selectors {
+                        missing_selectors.insert(*selector);
+                    }
+                    for recipe_slug in recipe_slugs_depending_on_group(&planned, group) {
+                        blockers.push(DirectRecipeBlocker {
+                            recipe_slug,
+                            reason: reason.clone(),
+                        });
+                    }
+                    continue;
+                }
+            };
         extracted.extend(fields.into_iter().map(|field| (field.selector, field)));
         for selector in unmatched {
             missing_selectors.insert(selector);
@@ -529,8 +862,27 @@ fn run_direct_batch_with_context(
                 continue;
             }
         };
-        let (fields, unmatched, timing) =
-            extract_direct_fetch_group_from_loaded(request, group, fetched, request.use_cache)?;
+        let (fields, unmatched, timing) = match extract_direct_fetch_group_from_loaded(
+            request,
+            group,
+            fetched,
+            request.use_cache,
+        ) {
+            Ok(result) => result,
+            Err(err) => {
+                let reason = err.to_string();
+                for selector in &group.selectors {
+                    missing_selectors.insert(*selector);
+                }
+                for recipe_slug in recipe_slugs_depending_on_group(&planned, group) {
+                    blockers.push(DirectRecipeBlocker {
+                        recipe_slug,
+                        reason: reason.clone(),
+                    });
+                }
+                continue;
+            }
+        };
         extracted.extend(fields.into_iter().map(|field| (field.selector, field)));
         for selector in unmatched {
             missing_selectors.insert(selector);
@@ -684,7 +1036,9 @@ fn group_direct_fetches(
     let mut grouped = HashMap::<String, FetchGroup>::new();
     for item in recipes {
         let planned_family = item.plan.product.to_string();
-        let key = canonical_fetch_product(request, planned_family.as_str());
+        let selectors = item.plan.selectors();
+        let key =
+            canonical_fetch_product_for_selectors(request, planned_family.as_str(), &selectors);
         let entry = grouped.entry(key.clone()).or_insert_with(|| FetchGroup {
             product: key.clone(),
             fetch_mode: PlotRecipeFetchMode::WholeFileStructuredExtract,
@@ -698,9 +1052,27 @@ fn group_direct_fetches(
                 entry.variable_patterns.push(pattern.to_string());
             }
         }
-        for selector in item.plan.selectors() {
+        for selector in selectors {
             if !entry.selectors.contains(&selector) {
                 entry.selectors.push(selector);
+            }
+        }
+        for (product, selector) in
+            extra_direct_selectors(request, item.plan.product.as_ref(), item.recipe)
+        {
+            let extra_key = canonical_fetch_product_for_selectors(request, &product, &[selector]);
+            let extra_entry = grouped
+                .entry(extra_key.clone())
+                .or_insert_with(|| FetchGroup {
+                    product: extra_key.clone(),
+                    fetch_mode: PlotRecipeFetchMode::WholeFileStructuredExtract,
+                    variable_patterns: Vec::new(),
+                    selectors: Vec::new(),
+                    planned_family_aliases: std::collections::BTreeSet::new(),
+                });
+            extra_entry.planned_family_aliases.insert(product);
+            if !extra_entry.selectors.contains(&selector) {
+                extra_entry.selectors.push(selector);
             }
         }
     }
@@ -709,15 +1081,74 @@ fn group_direct_fetches(
     groups
 }
 
+fn extra_direct_selectors(
+    request: &DirectBatchRequest,
+    planned_product: &str,
+    recipe: &PlotRecipe,
+) -> Vec<(String, FieldSelector)> {
+    if request.model == ModelId::WrfGdex {
+        if let Some(FieldSelector {
+            vertical: VerticalSelector::IsobaricHpa(_),
+            ..
+        }) = recipe.filled.selector
+        {
+            return vec![(
+                wrf_gdex_surface_pressure_product(request, planned_product),
+                FieldSelector::surface(CanonicalField::Pressure),
+            )];
+        }
+    }
+    Vec::new()
+}
+
 fn canonical_fetch_product(request: &DirectBatchRequest, planned_product: &str) -> String {
+    canonical_fetch_product_for_selectors(request, planned_product, &[])
+}
+
+fn wrf_gdex_surface_pressure_product(
+    request: &DirectBatchRequest,
+    planned_product: &str,
+) -> String {
+    let product = canonical_fetch_product(request, planned_product);
+    let normalized = product.replace('_', "-").to_ascii_lowercase();
+    let Some((dataset, suffix)) = normalized.split_once('-') else {
+        return product;
+    };
+    if !is_gdex_dataset_token(dataset) {
+        return product;
+    }
+    match suffix {
+        "hist3d" => format!("{dataset}-hist2d"),
+        "future3d" => format!("{dataset}-future2d"),
+        _ => product,
+    }
+}
+
+fn canonical_fetch_product_for_selectors(
+    request: &DirectBatchRequest,
+    planned_product: &str,
+    selectors: &[FieldSelector],
+) -> String {
     if let Some(overridden) = request.product_overrides.get(planned_product) {
         return overridden.clone();
     }
 
     match (request.model, planned_product) {
+        (ModelId::Hrrr, "nat") if hrrr_native_selectors_require_wrfnat(selectors) => {
+            "nat".to_string()
+        }
         (ModelId::Hrrr, "nat") => "sfc".to_string(),
         _ => planned_product.to_string(),
     }
+}
+
+fn hrrr_native_selectors_require_wrfnat(selectors: &[FieldSelector]) -> bool {
+    selectors.iter().any(|selector| {
+        matches!(
+            selector.field,
+            CanonicalField::SmokeMassDensity | CanonicalField::ColumnIntegratedSmoke
+        )
+    })
 }
 
 fn build_direct_execution_plan(
@@ -740,6 +1171,58 @@ fn build_direct_execution_plan(
         }
     }
     builder.build()
+}
+
+fn dataset_token_from_product(product: &str) -> Option<&str> {
+    let token = product.split(['-', '_']).next().unwrap_or(product);
+    if is_gdex_dataset_token(token) {
+        Some(token)
+    } else {
+        None
+    }
+}
+
+fn is_gdex_dataset_token(token: &str) -> bool {
+    token.len() > 1 && token.starts_with('d') && token[1..].chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn direct_title_for_request(
+    request: &DirectBatchRequest,
+    planned_product: Option<&str>,
+    base_title: &str,
+) -> String {
+    if request.model != ModelId::WrfGdex {
+        return base_title.to_string();
+    }
+
+    let dataset = planned_product
+        .and_then(|planned| {
+            request
+                .product_overrides
+                .get(planned)
+                .and_then(|product| dataset_token_from_product(product))
+                .or_else(|| dataset_token_from_product(planned))
+        })
+        .or_else(|| {
+            request
+                .product_overrides
+                .values()
+                .find_map(|product| dataset_token_from_product(product))
+        })
+        .unwrap_or("d612005");
+    format!("{base_title} ({dataset})")
+}
+
+fn direct_title_for_planned_product(
+    request: &DirectBatchRequest,
+    planned_product: &str,
+    base_title: &str,
+) -> String {
+    direct_title_for_request(request, Some(planned_product), base_title)
+}
+
+fn direct_panel_title_for_request(request: &DirectBatchRequest, base_title: &str) -> String {
+    direct_title_for_request(request, None, base_title)
 }
 
 fn find_loaded_bytes_for_group<'a>(
@@ -790,20 +1273,18 @@ fn extract_direct_fetch_group_from_loaded(
         missing.extend(group.selectors.iter().copied());
     }
 
-    let parse_start = Instant::now();
-    let grib = if missing.is_empty() {
-        None
-    } else {
-        Some(Grib2File::from_bytes(&fetched.file.bytes)?)
-    };
-    let parse_ms = parse_start.elapsed().as_millis();
-
     // Selectors whose GRIB message wasn't present in the file go here;
     // the caller uses them to mark dependent recipes as blockers
     // instead of the whole batch tripping on the first missing message.
     let mut unmatched = Vec::<FieldSelector>::new();
-    if let Some(grib) = grib.as_ref() {
-        let partial = extract_fields_from_grib2_partial(grib, &missing)?;
+    let parse_start = Instant::now();
+    if !missing.is_empty() {
+        let partial = extract_fields_partial_from_model_bytes(
+            fetch_request.request.model,
+            &fetched.file.bytes,
+            Some(cached_result.bytes_path.as_path()),
+            &missing,
+        )?;
         if use_cache {
             for field in &partial.extracted {
                 store_cached_selected_field(&request.cache_root, fetch_request, field)?;
@@ -817,6 +1298,7 @@ fn extract_direct_fetch_group_from_loaded(
         // truly-unmatched selectors from the count we actually pulled.
         let _ = fetched_count;
     }
+    let parse_ms = parse_start.elapsed().as_millis();
     let extract_ms = extract_start.elapsed().as_millis();
 
     let extract_cache_misses = missing.len().saturating_sub(unmatched.len());
@@ -1108,9 +1590,10 @@ fn build_prepared_projected_maps(
             5 => ProductVisualMode::ComparisonPanel,
             _ => ProductVisualMode::FilledMeteorology,
         };
-        let projected = build_projected_map(
+        let projected = build_projected_map_with_projection(
             &sample_field.grid.lat_deg,
             &sample_field.grid.lon_deg,
+            sample_field.projection.as_ref(),
             request.domain.bounds,
             map_frame_aspect_ratio_for_mode(visual_mode, width, height, true, true),
         )?;
@@ -1142,7 +1625,11 @@ fn render_direct_recipe(
         request.domain.slug,
         item.recipe.slug
     ));
-    let canonical_product = canonical_fetch_product(request, item.plan.product.as_ref());
+    let canonical_product = canonical_fetch_product_for_selectors(
+        request,
+        item.plan.product.as_ref(),
+        &item.plan.selectors(),
+    );
     let runtime_fetch = fetch_truth_by_actual_product
         .get::<str>(canonical_product.as_str())
         .ok_or_else(|| {
@@ -1213,9 +1700,10 @@ fn render_direct_recipe(
         {
             projected
         } else {
-            let projected = build_projected_map(
+            let projected = build_projected_map_with_projection(
                 &filled.grid.lat_deg,
                 &filled.grid.lon_deg,
+                filled.projection.as_ref(),
                 request.domain.bounds,
                 map_frame_aspect_ratio_for_mode(
                     visual_mode,
@@ -1245,13 +1733,40 @@ fn render_direct_recipe(
             contour_layer_cache,
             barb_layer_cache,
             barb_stride_cache,
+            request.contour_mode,
+            request.native_fill_level_multiplier,
         )?;
         let request_build_ms = request_build_start.elapsed().as_millis();
+        render_request.title = Some(direct_title_for_planned_product(
+            request,
+            item.plan.product.as_ref(),
+            item.recipe.title,
+        ));
         render_request.subtitle_left = Some(format!(
             "{} {}Z F{:03}  {}",
             request.date_yyyymmdd, latest.cycle.hour_utc, request.forecast_hour, request.model
         ));
         render_request.subtitle_right = Some(format!("source: {}", latest.source));
+        if let Some(overlay) = request.custom_poi_overlay.as_ref() {
+            apply_custom_poi_overlay(
+                &mut render_request,
+                overlay,
+                request.domain.bounds,
+                &filled.grid.lat_deg,
+                &filled.grid.lon_deg,
+                filled.projection.as_ref(),
+            )?;
+        }
+        if let Some(overlay) = request.place_label_overlay.as_ref() {
+            crate::apply_place_label_overlay_with_density_styling(
+                &mut render_request,
+                overlay,
+                &request.domain,
+                &filled.grid.lat_deg,
+                &filled.grid.lon_deg,
+                filled.projection.as_ref(),
+            )?;
+        }
         let save_timing = save_png_profile_with_options(
             &render_request,
             &output_path,
@@ -1370,9 +1885,10 @@ fn render_direct_composite_panel(
     {
         projected
     } else {
-        let projected = build_projected_map(
+        let projected = build_projected_map_with_projection(
             &first_field.grid.lat_deg,
             &first_field.grid.lon_deg,
+            first_field.projection.as_ref(),
             request.domain.bounds,
             map_frame_aspect_ratio_for_mode(
                 ProductVisualMode::PanelMember,
@@ -1414,6 +1930,8 @@ fn render_direct_composite_panel(
             contour_layer_cache,
             barb_layer_cache,
             barb_stride_cache,
+            request.contour_mode,
+            request.native_fill_level_multiplier,
         )?;
         build_timing.field_prepare_ms += panel_timing.field_prepare_ms;
         build_timing.contour_prepare_ms += panel_timing.contour_prepare_ms;
@@ -1423,6 +1941,26 @@ fn render_direct_composite_panel(
         panel_request.visual_mode = ProductVisualMode::PanelMember;
         panel_request.subtitle_left = None;
         panel_request.subtitle_right = None;
+        if let Some(overlay) = request.custom_poi_overlay.as_ref() {
+            apply_custom_poi_overlay(
+                &mut panel_request,
+                overlay,
+                request.domain.bounds,
+                &filled.grid.lat_deg,
+                &filled.grid.lon_deg,
+                filled.projection.as_ref(),
+            )?;
+        }
+        if let Some(overlay) = request.place_label_overlay.as_ref() {
+            crate::apply_place_label_overlay_with_density_styling(
+                &mut panel_request,
+                overlay,
+                &request.domain,
+                &filled.grid.lat_deg,
+                &filled.grid.lon_deg,
+                filled.projection.as_ref(),
+            )?;
+        }
         panel_requests.push(panel_request);
     }
     let request_build_ms = request_build_start.elapsed().as_millis();
@@ -1436,7 +1974,8 @@ fn render_direct_composite_panel(
     let render_start = Instant::now();
     let mut canvas = render_panel_grid(&layout, &panel_requests)?;
     let render_ms = render_start.elapsed().as_millis();
-    draw_centered_text_line(&mut canvas, recipe.title, 10, Color::BLACK, 2);
+    let title = direct_panel_title_for_request(request, recipe.title);
+    draw_centered_text_line(&mut canvas, &title, 10, Color::BLACK, 2);
     draw_centered_text_line(
         &mut canvas,
         &format!(
@@ -1484,6 +2023,8 @@ fn build_render_request(
     contour_layer_cache: &SharedContourLayerCache,
     barb_layer_cache: &SharedBarbLayerCache,
     barb_stride_cache: &SharedBarbStrideCache,
+    contour_mode: NativeContourRenderMode,
+    native_fill_level_multiplier: usize,
 ) -> Result<(MapRenderRequest, DirectRequestBuildTiming), Box<dyn std::error::Error>> {
     let mut timing = DirectRequestBuildTiming::default();
     let field_prepare_start = Instant::now();
@@ -1511,6 +2052,15 @@ fn build_render_request(
     request.title = Some(recipe.title.to_string());
     request.width = output_width;
     request.height = output_height;
+    request.chrome_scale = ChromeScale::Fixed(1.5);
+    request.render_density = RenderDensity {
+        fill: LevelDensity::default(),
+        palette_multiplier: 1,
+    };
+    request.legend = LegendControls {
+        density: LevelDensity::default(),
+        mode: LegendMode::Stepped,
+    };
     request.supersample_factor = 2;
     request.domain_frame = Some(DomainFrame::model_data_default());
     request.projected_domain = Some(ProjectedDomain {
@@ -1538,7 +2088,201 @@ fn build_render_request(
         barb_stride_cache,
     );
     timing.barb_prepare_ms = barb_prepare_start.elapsed().as_millis();
+    if !overlay_only {
+        let contour_fill_start = Instant::now();
+        maybe_apply_below_ground_mask_overlay(filled.selector, extracted, &mut request)?;
+        maybe_apply_experimental_projected_contours(
+            recipe,
+            &mut request,
+            contour_mode,
+            native_fill_level_multiplier,
+        )?;
+        timing.contour_prepare_ms += contour_fill_start.elapsed().as_millis();
+    }
     Ok((request, timing))
+}
+
+fn maybe_apply_below_ground_mask_overlay(
+    filled_selector: FieldSelector,
+    extracted: &HashMap<FieldSelector, SelectedField2D>,
+    request: &mut MapRenderRequest,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let VerticalSelector::IsobaricHpa(level_hpa) = filled_selector.vertical else {
+        return Ok(());
+    };
+    let Some(projected_domain) = request.projected_domain.as_ref() else {
+        return Ok(());
+    };
+    let Some(surface_pressure) = extracted.get(&FieldSelector::surface(CanonicalField::Pressure))
+    else {
+        return Ok(());
+    };
+
+    let nx = surface_pressure.grid.shape.nx;
+    let ny = surface_pressure.grid.shape.ny;
+    if nx < 2 || ny < 2 {
+        return Ok(());
+    }
+    if projected_domain.x.len() != nx * ny || projected_domain.y.len() != nx * ny {
+        return Ok(());
+    }
+
+    let target_pa = level_hpa as f32 * 100.0;
+    let masked: Vec<bool> = surface_pressure
+        .values
+        .iter()
+        .map(|value| value.is_finite() && *value < target_pa)
+        .collect();
+    if !masked.iter().any(|value| *value) {
+        return Ok(());
+    }
+
+    let render_mask = dilate_mask(&masked, nx, ny);
+    apply_below_ground_nan_mask(&render_mask, &mut request.field.values);
+    for contour in &mut request.contours {
+        apply_below_ground_nan_mask(&render_mask, &mut contour.data);
+    }
+    for barb in &mut request.wind_barbs {
+        apply_below_ground_nan_mask(&render_mask, &mut barb.u);
+        apply_below_ground_nan_mask(&render_mask, &mut barb.v);
+    }
+
+    let idx = |j: usize, i: usize| j * nx + i;
+    let cell_masked = |j: usize, i: usize| {
+        render_mask[idx(j, i)]
+            && render_mask[idx(j, i + 1)]
+            && render_mask[idx(j + 1, i)]
+            && render_mask[idx(j + 1, i + 1)]
+    };
+
+    for j in 0..(ny - 1) {
+        let mut i = 0usize;
+        while i < nx - 1 {
+            if !cell_masked(j, i) {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            let mut end = i;
+            while end + 1 < nx - 1 && cell_masked(j, end + 1) {
+                end += 1;
+            }
+
+            let mut ring = Vec::with_capacity(((end - start + 2) * 2) + 1);
+            for col in start..=end + 1 {
+                ring.push((
+                    projected_domain.x[idx(j, col)],
+                    projected_domain.y[idx(j, col)],
+                ));
+            }
+            for col in (start..=end + 1).rev() {
+                ring.push((
+                    projected_domain.x[idx(j + 1, col)],
+                    projected_domain.y[idx(j + 1, col)],
+                ));
+            }
+            if let Some(first) = ring.first().copied() {
+                ring.push(first);
+            }
+            if ring.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
+                request
+                    .projected_data_polygons
+                    .push(rustwx_render::ProjectedPolygonFill {
+                        rings: vec![ring],
+                        color: Color::rgba(210, 200, 181, 255),
+                        role: rustwx_render::PolygonRole::Generic,
+                    });
+            }
+            i = end + 1;
+        }
+    }
+    Ok(())
+}
+
+fn dilate_mask(mask: &[bool], nx: usize, ny: usize) -> Vec<bool> {
+    let mut dilated = vec![false; mask.len()];
+    for j in 0..ny {
+        let j0 = j.saturating_sub(1);
+        let j1 = (j + 1).min(ny - 1);
+        for i in 0..nx {
+            let i0 = i.saturating_sub(1);
+            let i1 = (i + 1).min(nx - 1);
+            let masked = (j0..=j1).any(|jj| (i0..=i1).any(|ii| mask[jj * nx + ii]));
+            dilated[j * nx + i] = masked;
+        }
+    }
+    dilated
+}
+
+fn apply_below_ground_nan_mask(mask: &[bool], values: &mut [f32]) {
+    if values.len() != mask.len() {
+        return;
+    }
+    for (value, masked) in values.iter_mut().zip(mask.iter().copied()) {
+        if masked {
+            *value = f32::NAN;
+        }
+    }
+}
+
+fn maybe_apply_experimental_projected_contours(
+    recipe: &PlotRecipe,
+    request: &mut MapRenderRequest,
+    contour_mode: NativeContourRenderMode,
+    native_fill_level_multiplier: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let enabled = match contour_mode {
+        NativeContourRenderMode::Automatic | NativeContourRenderMode::LegacyRaster => false,
+        NativeContourRenderMode::ExperimentalAllProjected => true,
+        NativeContourRenderMode::Signature => signature_contour_direct_recipe_enabled(recipe),
+    };
+    if !enabled {
+        return Ok(());
+    }
+    let Some(projected_domain) = request.projected_domain.as_ref() else {
+        return Ok(());
+    };
+    request.scale =
+        densify_direct_native_contour_scale(request.scale.clone(), native_fill_level_multiplier);
+    let (geometry, _) = build_projected_contour_geometry_profile(
+        &request.field,
+        projected_domain,
+        &request.scale,
+        &[],
+        ProjectedContourLineStyle::default(),
+    )?;
+    request.projected_data_polygons.extend(geometry.fills);
+    request.projected_lines.extend(geometry.lines);
+    request.field.values.fill(f32::NAN);
+    Ok(())
+}
+
+fn signature_contour_direct_recipe_enabled(recipe: &PlotRecipe) -> bool {
+    matches!(
+        recipe.slug,
+        "mslp_10m_winds"
+            | "200mb_height_winds"
+            | "200mb_absolute_vorticity_height_winds"
+            | "300mb_temperature_height_winds"
+            | "700mb_height_winds"
+    )
+}
+
+fn densify_direct_native_contour_scale(
+    scale: ColorScale,
+    native_fill_level_multiplier: usize,
+) -> ColorScale {
+    if native_fill_level_multiplier <= 1 {
+        return scale;
+    }
+    let discrete = scale.resolved_discrete();
+    ColorScale::Discrete(densify_discrete_scale(
+        &discrete,
+        LevelDensity {
+            multiplier: native_fill_level_multiplier,
+            min_source_level_count: 2,
+        },
+    ))
 }
 
 fn visual_mode_for_direct_recipe(
@@ -1550,7 +2294,7 @@ fn visual_mode_for_direct_recipe(
         return ProductVisualMode::OverlayAnalysis;
     }
 
-    if matches!(recipe.style, RenderStyle::Solar07Height)
+    if matches!(recipe.style, RenderStyle::WeatherHeight)
         || matches!(selector.vertical, VerticalSelector::IsobaricHpa(_))
     {
         return ProductVisualMode::UpperAirAnalysis;
@@ -1585,7 +2329,7 @@ fn derived_height_winds_fill(
     field: &SelectedField2D,
     extracted: &HashMap<FieldSelector, SelectedField2D>,
 ) -> Result<Option<rustwx_core::Field2D>, Box<dyn std::error::Error>> {
-    if recipe.style != RenderStyle::Solar07Height
+    if recipe.style != RenderStyle::WeatherHeight
         || field.selector.field != CanonicalField::GeopotentialHeight
     {
         return Ok(None);
@@ -1622,9 +2366,19 @@ fn derived_height_winds_fill(
 
 fn convert_filled_field(recipe: &PlotRecipe, field: &SelectedField2D) -> rustwx_core::Field2D {
     let mut core = field.clone().into_field2d();
-    if matches!(
+    if field.selector.field == CanonicalField::SmokeMassDensity {
+        for value in &mut core.values {
+            *value *= 1_000_000_000.0;
+        }
+        core.units = "ug/m^3".to_string();
+    } else if field.selector.field == CanonicalField::ColumnIntegratedSmoke {
+        for value in &mut core.values {
+            *value *= 1_000_000.0;
+        }
+        core.units = "mg/m^2".to_string();
+    } else if matches!(
         recipe.style,
-        RenderStyle::Solar07Temperature | RenderStyle::Solar07Dewpoint
+        RenderStyle::WeatherTemperature | RenderStyle::WeatherDewpoint
     ) {
         for value in &mut core.values {
             *value -= 273.15;
@@ -1656,7 +2410,14 @@ fn convert_filled_field(recipe: &PlotRecipe, field: &SelectedField2D) -> rustwx_
         }
         core.units = "kt".to_string();
     } else if field.selector.field == CanonicalField::TotalPrecipitation {
-        core.units = "mm".to_string();
+        if matches!(recipe.style, RenderStyle::WeatherQpf) {
+            for value in &mut core.values {
+                *value /= 25.4;
+            }
+            core.units = "in".to_string();
+        } else {
+            core.units = "mm".to_string();
+        }
     }
     core
 }
@@ -1665,100 +2426,159 @@ fn should_render_overlay_only(selector: FieldSelector, has_explicit_contours: bo
     if has_explicit_contours {
         return false;
     }
-    matches!(
-        selector.field,
-        CanonicalField::GeopotentialHeight | CanonicalField::PressureReducedToMeanSeaLevel
-    )
+    matches!(selector.field, CanonicalField::GeopotentialHeight)
 }
 
 fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> ColorScale {
+    if filled_selector.field == CanonicalField::SmokeMassDensity {
+        return ColorScale::Discrete(DiscreteColorScale {
+            levels: vec![0.0, 5.0, 10.0, 20.0, 35.0, 55.0, 100.0, 150.0, 250.0, 500.0],
+            colors: smoke_scale_colors(),
+            extend: ExtendMode::Max,
+            mask_below: Some(1.0),
+        });
+    }
+    if filled_selector.field == CanonicalField::ColumnIntegratedSmoke {
+        return ColorScale::Discrete(DiscreteColorScale {
+            levels: vec![0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 40.0, 80.0, 160.0, 320.0],
+            colors: smoke_scale_colors(),
+            extend: ExtendMode::Max,
+            mask_below: Some(0.5),
+        });
+    }
     let discrete = match recipe.style {
-        RenderStyle::Solar07Temperature => {
-            let (lo, hi) = match filled_selector.vertical {
-                rustwx_core::VerticalSelector::IsobaricHpa(500) => (-50.0, 5.0),
-                rustwx_core::VerticalSelector::IsobaricHpa(850) => (-40.0, 40.0),
-                _ => (-60.0, 40.0),
+        RenderStyle::WeatherTemperature => {
+            let (lo, hi, step, crop_f) = match filled_selector.vertical {
+                rustwx_core::VerticalSelector::IsobaricHpa(200) => {
+                    (-70.0, -29.0, 1.0, Some((-40.0, 70.0)))
+                }
+                rustwx_core::VerticalSelector::IsobaricHpa(250) => {
+                    (-70.0, -29.0, 1.0, Some((-40.0, 70.0)))
+                }
+                rustwx_core::VerticalSelector::IsobaricHpa(300) => {
+                    (-70.0, -29.0, 1.0, Some((-40.0, 70.0)))
+                }
+                rustwx_core::VerticalSelector::IsobaricHpa(500) => {
+                    (-50.0, 6.0, 1.0, Some((-40.0, 70.0)))
+                }
+                rustwx_core::VerticalSelector::IsobaricHpa(700) => {
+                    (-40.0, 26.0, 1.0, Some((-40.0, 90.0)))
+                }
+                rustwx_core::VerticalSelector::IsobaricHpa(850) => {
+                    (-40.0, 41.0, 1.0, Some((-40.0, 110.0)))
+                }
+                _ => (-50.0, 50.5, 0.5, Some((-40.0, 120.0))),
             };
             DiscreteColorScale {
-                levels: range_step(lo, hi, 1.0),
-                colors: solar07_palette(Solar07Palette::Temperature),
+                levels: range_step(lo, hi, step),
+                colors: temperature_palette_cropped_f(
+                    crop_f,
+                    (((hi - lo) / step).round() as usize).max(2),
+                ),
                 extend: ExtendMode::Both,
                 mask_below: None,
             }
         }
-        RenderStyle::Solar07Reflectivity | RenderStyle::Solar07RadarReflectivity => {
+        RenderStyle::WeatherReflectivity | RenderStyle::WeatherRadarReflectivity => {
             DiscreteColorScale {
-                levels: range_step(5.0, 80.0, 5.0),
-                colors: solar07_palette(Solar07Palette::Reflectivity),
+                levels: range_step(5.0, 70.1, 2.5),
+                colors: weather_palette(WeatherPalette::Reflectivity),
                 extend: ExtendMode::Both,
-                // Mask clear-air cells (<5 dBZ) so the basemap shows through —
-                // matches how NWS/NOAA radar products render.
-                mask_below: Some(5.0),
+                mask_below: None,
             }
         }
-        RenderStyle::Solar07Rh => DiscreteColorScale {
-            levels: range_step(0.0, 105.0, 5.0),
-            colors: solar07_palette(Solar07Palette::Rh),
+        RenderStyle::WeatherRh => DiscreteColorScale {
+            levels: range_step(0.0, 101.0, 1.0),
+            colors: weather_palette(WeatherPalette::Rh),
             extend: ExtendMode::Both,
             mask_below: None,
         },
-        RenderStyle::Solar07Vorticity => DiscreteColorScale {
-            levels: range_step(0.0, 48.0, 2.0),
-            colors: solar07_palette(Solar07Palette::RelVort),
+        RenderStyle::WeatherVorticity => DiscreteColorScale {
+            levels: range_step(-40.0, 60.1, 1.0),
+            colors: weather_palette(WeatherPalette::RelVort),
             extend: ExtendMode::Both,
             mask_below: None,
         },
-        RenderStyle::Solar07Dewpoint => DiscreteColorScale {
-            levels: range_step(-40.0, 30.0, 2.0),
-            colors: solar07_palette(Solar07Palette::Dewpoint),
+        RenderStyle::WeatherDewpoint => DiscreteColorScale {
+            levels: range_step(-40.0, 31.0, 1.0),
+            colors: match filled_selector.vertical {
+                rustwx_core::VerticalSelector::IsobaricHpa(_) => dewpoint_palette_params(45, 25),
+                _ => dewpoint_palette_params(90, 50),
+            },
             extend: ExtendMode::Both,
             mask_below: None,
         },
-        RenderStyle::Solar07Pressure => DiscreteColorScale {
+        RenderStyle::WeatherPressure => DiscreteColorScale {
             levels: range_step(960.0, 1045.0, 2.0),
-            colors: solar07_palette(Solar07Palette::Winds),
+            colors: weather_palette(WeatherPalette::Winds),
             extend: ExtendMode::Both,
             mask_below: None,
         },
-        RenderStyle::Solar07Height => DiscreteColorScale {
+        RenderStyle::WeatherHeight => DiscreteColorScale {
             levels: match filled_selector.vertical {
                 rustwx_core::VerticalSelector::IsobaricHpa(200)
-                | rustwx_core::VerticalSelector::IsobaricHpa(300) => range_step(50.0, 170.0, 5.0),
-                rustwx_core::VerticalSelector::IsobaricHpa(500) => range_step(20.0, 150.0, 5.0),
-                rustwx_core::VerticalSelector::IsobaricHpa(700) => range_step(10.0, 90.0, 5.0),
-                rustwx_core::VerticalSelector::IsobaricHpa(850) => range_step(10.0, 70.0, 5.0),
-                _ => range_step(10.0, 120.0, 5.0),
+                | rustwx_core::VerticalSelector::IsobaricHpa(250) => range_step(25.0, 176.0, 1.0),
+                rustwx_core::VerticalSelector::IsobaricHpa(300) => range_step(20.0, 161.0, 1.0),
+                rustwx_core::VerticalSelector::IsobaricHpa(500) => range_step(20.0, 141.0, 1.0),
+                rustwx_core::VerticalSelector::IsobaricHpa(700) => range_step(15.0, 101.0, 1.0),
+                rustwx_core::VerticalSelector::IsobaricHpa(850) => range_step(15.0, 81.0, 1.0),
+                _ => range_step(10.0, 71.0, 1.0),
             },
-            colors: solar07_palette(Solar07Palette::Winds),
+            colors: match filled_selector.vertical {
+                rustwx_core::VerticalSelector::IsobaricHpa(200)
+                | rustwx_core::VerticalSelector::IsobaricHpa(250) => winds_palette_segments(150),
+                rustwx_core::VerticalSelector::IsobaricHpa(300) => winds_palette_segments(140),
+                rustwx_core::VerticalSelector::IsobaricHpa(500) => winds_palette_segments(120),
+                rustwx_core::VerticalSelector::IsobaricHpa(700) => winds_palette_segments(85),
+                rustwx_core::VerticalSelector::IsobaricHpa(850) => winds_palette_segments(65),
+                _ => winds_palette_segments(60),
+            },
             extend: ExtendMode::Both,
             mask_below: None,
         },
-        RenderStyle::Solar07WindGust | RenderStyle::Solar07Winds => DiscreteColorScale {
-            levels: range_step(0.0, 85.0, 5.0),
-            colors: solar07_palette(Solar07Palette::Winds),
-            extend: ExtendMode::Max,
+        RenderStyle::WeatherWindGust | RenderStyle::WeatherWinds => DiscreteColorScale {
+            levels: range_step(10.0, 71.0, 1.0),
+            colors: winds_palette_segments(60),
+            extend: ExtendMode::Both,
             mask_below: None,
         },
-        RenderStyle::Solar07CloudCover => DiscreteColorScale {
+        RenderStyle::WeatherUh => DiscreteColorScale {
+            levels: {
+                let mut levels = range_step(0.0, 200.0, 5.0);
+                levels.extend(range_step(200.0, 401.0, 10.0).into_iter().skip(1));
+                levels
+            },
+            colors: weather_palette(WeatherPalette::Uh),
+            extend: ExtendMode::Both,
+            // WRF/GDEX can surface negative UH noise over broad terrain
+            // areas; hide it so the standalone product and overlays focus
+            // on the operational positive signal.
+            mask_below: Some(0.0),
+        },
+        RenderStyle::WeatherCloudCover => DiscreteColorScale {
             levels: range_step(0.0, 110.0, 10.0),
-            colors: solar07_palette(Solar07Palette::Rh),
+            colors: weather_palette(WeatherPalette::Rh),
             extend: ExtendMode::Both,
             mask_below: None,
         },
-        RenderStyle::Solar07PrecipitableWater => DiscreteColorScale {
+        RenderStyle::WeatherPrecipitableWater => DiscreteColorScale {
             levels: range_step(0.0, 2.6, 0.1),
-            colors: solar07_palette(Solar07Palette::Precip),
+            colors: weather_palette(WeatherPalette::Precip),
             extend: ExtendMode::Max,
             mask_below: None,
         },
-        RenderStyle::Solar07Qpf => DiscreteColorScale {
-            levels: range_step(0.0, 100.0, 5.0),
-            colors: solar07_palette(Solar07Palette::Precip),
-            extend: ExtendMode::Max,
-            // Reveal basemap where no precipitation has accumulated.
-            mask_below: Some(0.25),
+        RenderStyle::WeatherQpf => DiscreteColorScale {
+            levels: vec![
+                0.0, 0.01, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+                0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5,
+                1.6, 1.7, 1.8, 1.9, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0, 4.5, 5.0, 5.5,
+                6.0, 7.0, 8.0, 9.0, 10.0, 12.0, 15.0,
+            ],
+            colors: weather_palette(WeatherPalette::Precip),
+            extend: ExtendMode::Both,
+            mask_below: None,
         },
-        RenderStyle::Solar07Categorical => DiscreteColorScale {
+        RenderStyle::WeatherCategorical => DiscreteColorScale {
             levels: vec![0.0, 0.5, 1.0],
             colors: vec![
                 Color::rgba(242, 242, 242, 255),
@@ -1767,21 +2587,21 @@ fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> Colo
             extend: ExtendMode::Neither,
             mask_below: None,
         },
-        RenderStyle::Solar07Visibility => DiscreteColorScale {
+        RenderStyle::WeatherVisibility => DiscreteColorScale {
             levels: range_step(0.0, 10.5, 0.5),
-            colors: solar07_palette(Solar07Palette::MlMetric),
+            colors: weather_palette(WeatherPalette::MlMetric),
             extend: ExtendMode::Both,
             mask_below: None,
         },
-        RenderStyle::Solar07Satellite => DiscreteColorScale {
+        RenderStyle::WeatherSatellite => DiscreteColorScale {
             levels: range_step(170.0, 321.0, 2.0),
-            colors: solar07_palette(Solar07Palette::SimIr),
+            colors: weather_palette(WeatherPalette::SimIr),
             extend: ExtendMode::Both,
             mask_below: None,
         },
-        RenderStyle::Solar07Lightning => DiscreteColorScale {
+        RenderStyle::WeatherLightning => DiscreteColorScale {
             levels: range_step(0.0, 20.5, 0.5),
-            colors: solar07_palette(Solar07Palette::Uh),
+            colors: weather_palette(WeatherPalette::Uh),
             extend: ExtendMode::Max,
             // Pragmatic near-zero cutoff (units: flashes km^-2 day^-1) so
             // cells with no meaningful flash activity reveal basemap. Not
@@ -1797,12 +2617,27 @@ fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> Colo
         },
         _ => DiscreteColorScale {
             levels: range_step(-50.0, 5.0, 1.0),
-            colors: solar07_palette(Solar07Palette::Temperature),
+            colors: weather_palette(WeatherPalette::Temperature),
             extend: ExtendMode::Both,
             mask_below: None,
         },
     };
     ColorScale::Discrete(discrete)
+}
+
+fn smoke_scale_colors() -> Vec<Color> {
+    vec![
+        Color::rgba(230, 243, 255, 255),
+        Color::rgba(135, 206, 235, 255),
+        Color::rgba(144, 238, 144, 255),
+        Color::rgba(255, 255, 0, 255),
+        Color::rgba(255, 165, 0, 255),
+        Color::rgba(255, 69, 0, 255),
+        Color::rgba(255, 0, 0, 255),
+        Color::rgba(128, 0, 128, 255),
+        Color::rgba(92, 0, 168, 255),
+        Color::rgba(64, 0, 128, 255),
+    ]
 }
 
 fn build_contour_layers(
@@ -1861,11 +2696,15 @@ fn contour_layer_for_values(selector: FieldSelector, values: &[f32]) -> Option<C
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(200),
-        } => (range_step(1020.0, 1290.0, 6.0), Color::BLACK, 1, true),
+        } => (range_step(1020.0, 1321.0, 4.0), Color::BLACK, 1, true),
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(300),
-        } => (range_step(780.0, 1020.0, 6.0), Color::BLACK, 1, true),
+        } => (range_step(700.0, 1101.0, 4.0), Color::BLACK, 1, true),
+        FieldSelector {
+            field: CanonicalField::GeopotentialHeight,
+            vertical: rustwx_core::VerticalSelector::IsobaricHpa(250),
+        } => (range_step(900.0, 1201.0, 4.0), Color::BLACK, 1, true),
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(500),
@@ -1873,7 +2712,7 @@ fn contour_layer_for_values(selector: FieldSelector, values: &[f32]) -> Option<C
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(700),
-        } => (range_step(180.0, 361.0, 3.0), Color::BLACK, 1, true),
+        } => (range_step(100.0, 401.0, 3.0), Color::BLACK, 1, true),
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(850),
@@ -1890,9 +2729,11 @@ fn contour_layer_for_values(selector: FieldSelector, values: &[f32]) -> Option<C
                     top_m: 5000,
                 },
         } => (
-            vec![25.0, 50.0, 75.0, 100.0, 150.0, 200.0],
-            Color::rgba(166, 0, 255, 255),
-            2,
+            // Match the classic compref/UH combo threshold now that the
+            // WRF/GDEX path prefers the native UP_HELI_MAX diagnostic.
+            vec![75.0],
+            Color::BLACK,
+            1,
             false,
         ),
         _ => (range_step(0.0, 200.0, 10.0), Color::BLACK, 1, true),
@@ -1999,7 +2840,28 @@ fn cached_barb_strides(
     *cache.entry(key).or_insert(strides)
 }
 
-pub use rustwx_render::build_projected_map;
+pub fn build_projected_map(
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+    bounds: (f64, f64, f64, f64),
+    target_ratio: f64,
+) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
+    rustwx_render::build_projected_map(lat_deg, lon_deg, bounds, target_ratio)
+}
+
+pub fn build_projected_map_with_projection(
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+    projection: Option<&rustwx_core::GridProjection>,
+    bounds: (f64, f64, f64, f64),
+    target_ratio: f64,
+) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
+    let mut options = rustwx_render::ProjectedMapBuildOptions::from_bounds(bounds, target_ratio);
+    if let Some(projection) = projection.cloned() {
+        options = options.with_projection(projection);
+    }
+    rustwx_render::build_projected_map_with_options(lat_deg, lon_deg, &options)
+}
 
 #[cfg(test)]
 mod tests {
@@ -2098,10 +2960,22 @@ mod tests {
             use_cache: false,
             recipe_slugs: Vec::new(),
             product_overrides: HashMap::new(),
+            contour_mode: NativeContourRenderMode::Automatic,
+            native_fill_level_multiplier: 1,
             output_width: OUTPUT_WIDTH,
             output_height: OUTPUT_HEIGHT,
             png_compression: PngCompressionMode::Default,
+            custom_poi_overlay: None,
+            place_label_overlay: None,
         }
+    }
+
+    #[test]
+    fn signature_contour_direct_recipe_list_is_curated() {
+        let mslp_recipe = plot_recipe("mslp_10m_winds").unwrap();
+        let temperature_recipe = plot_recipe("2m_temperature").unwrap();
+        assert!(signature_contour_direct_recipe_enabled(mslp_recipe));
+        assert!(!signature_contour_direct_recipe_enabled(temperature_recipe));
     }
 
     /// Test-only equivalent of the legacy `build_direct_fetch_request`
@@ -2237,6 +3111,38 @@ mod tests {
         };
         let fetch = build_direct_fetch_request(&request, &latest, 6, &group).unwrap();
         assert_eq!(fetch.request.product, "sfc");
+    }
+
+    #[test]
+    fn smoke_fetches_stay_on_hrrr_wrfnat_family() {
+        let planned = plan_direct_recipes(
+            ModelId::Hrrr,
+            &[
+                "smoke_pm25_native".to_string(),
+                "2m_temperature_10m_winds".to_string(),
+            ],
+        )
+        .unwrap();
+        let request = sample_direct_request(ModelId::Hrrr);
+        let groups = group_direct_fetches(&request, &planned);
+
+        assert!(groups.iter().any(|group| group.product == "nat"));
+        assert!(groups.iter().any(|group| group.product == "sfc"));
+
+        let smoke_group = groups
+            .iter()
+            .find(|group| {
+                group.selectors.contains(&FieldSelector::height_agl(
+                    CanonicalField::SmokeMassDensity,
+                    8,
+                ))
+            })
+            .expect("expected a dedicated smoke wrfnat group");
+        assert_eq!(smoke_group.product, "nat");
+        assert_eq!(
+            smoke_group.planned_family_aliases,
+            std::collections::BTreeSet::from(["nat".to_string()])
+        );
     }
 
     #[test]
@@ -2453,12 +3359,12 @@ mod tests {
     }
 
     #[test]
-    fn overlay_only_rule_catches_height_and_mslp_products() {
+    fn overlay_only_rule_only_catches_height_products() {
         assert!(should_render_overlay_only(
             FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500),
             false
         ));
-        assert!(should_render_overlay_only(
+        assert!(!should_render_overlay_only(
             FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel),
             false
         ));
@@ -2470,6 +3376,21 @@ mod tests {
             FieldSelector::surface(CanonicalField::Visibility),
             false
         ));
+    }
+
+    #[test]
+    fn weather_uh_scale_uses_operational_levels_and_masks_negative_noise() {
+        let recipe = plot_recipe("uh_2to5km").unwrap();
+        let scale = scale_for_recipe(
+            recipe,
+            FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000),
+        );
+        let ColorScale::Discrete(discrete) = scale else {
+            panic!("expected discrete UH scale");
+        };
+        assert_eq!(discrete.levels.first().copied(), Some(0.0));
+        assert_eq!(discrete.levels.last().copied(), Some(400.0));
+        assert_eq!(discrete.mask_below, Some(0.0));
     }
 
     #[test]

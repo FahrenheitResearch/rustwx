@@ -2,11 +2,11 @@
 
 `rustwx-render` is the Rust map-rendering crate for `rustwx`.
 
-It owns the `rustwx` map-rendering engine directly: request types, Solar07 palettes, contour layers, barb layers, basemap helpers, projection prep, and panel helpers all live in this crate.
+It owns the `rustwx` map-rendering engine directly: request types, Weather palettes, contour layers, barb layers, basemap helpers, projection prep, and panel helpers all live in this crate.
 
 ## What is implemented
 
-- Solar07-backed filled maps
+- Weather-backed filled maps
 - generic palette-backed filled maps
 - built-in derived field helpers for:
   - lifted index
@@ -38,9 +38,9 @@ It owns the `rustwx` map-rendering engine directly: request types, Solar07 palet
 ## Minimal example
 
 ```rust
-use rustwx_render::{MapRenderRequest, Solar07Product, save_png};
+use rustwx_render::{MapRenderRequest, WeatherProduct, save_png};
 
-let request = MapRenderRequest::for_solar07_product(field, Solar07Product::Sbecape);
+let request = MapRenderRequest::for_weather_product(field, WeatherProduct::Sbecape);
 save_png(&request, "out.png")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
@@ -48,11 +48,11 @@ save_png(&request, "out.png")?;
 ## Generic filled product example
 
 ```rust
-use rustwx_render::{ExtendMode, MapRenderRequest, Solar07Palette, save_png};
+use rustwx_render::{ExtendMode, MapRenderRequest, WeatherPalette, save_png};
 
 let mut request = MapRenderRequest::for_palette_fill(
     field,
-    Solar07Palette::Temperature,
+    WeatherPalette::Temperature,
     vec![-30.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0],
     ExtendMode::Both,
 );

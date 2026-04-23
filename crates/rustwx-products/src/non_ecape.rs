@@ -1,14 +1,17 @@
+use crate::custom_poi::CustomPoiOverlay;
 use crate::derived::{
     DerivedBatchRequest, HrrrDerivedBatchReport, PlannedDerivedSourceRoutes,
     is_heavy_derived_recipe_slug, maybe_load_special_pair_for_derived, plan_derived_recipes,
-    plan_native_thermo_routes, prepare_shared_derived_fields, run_model_derived_batch_from_loaded,
-    run_model_derived_batch_from_loaded_with_precomputed, run_model_derived_batch_without_loaded,
+    plan_native_thermo_routes_with_surface_product, prepare_shared_derived_fields,
+    run_model_derived_batch_from_loaded, run_model_derived_batch_from_loaded_with_precomputed,
+    run_model_derived_batch_without_loaded,
 };
 use crate::direct::{
     DirectBatchRequest, FetchGroup, HrrrDirectBatchReport, run_direct_batch_from_loaded,
 };
 use crate::hrrr::{DomainSpec, resolve_hrrr_run};
 use crate::orchestrator::{lane, run_fanout3};
+use crate::places::PlaceLabelOverlay;
 use crate::planner::ExecutionPlanBuilder;
 use crate::publication::{
     ArtifactPublicationState, PublishedArtifactRecord, PublishedFetchIdentity,
@@ -68,6 +71,10 @@ pub struct HrrrNonEcapeHourRequest {
     pub output_height: u32,
     #[serde(default = "default_png_compression")]
     pub png_compression: PngCompressionMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_poi_overlay: Option<CustomPoiOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place_label_overlay: Option<PlaceLabelOverlay>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +98,10 @@ pub struct HrrrNonEcapeMultiDomainRequest {
     pub output_height: u32,
     #[serde(default = "default_png_compression")]
     pub png_compression: PngCompressionMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_poi_overlay: Option<CustomPoiOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place_label_overlay: Option<PlaceLabelOverlay>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain_jobs: Option<usize>,
 }
@@ -216,6 +227,14 @@ pub struct NonEcapeHourRequest {
     pub direct_recipe_slugs: Vec<String>,
     pub derived_recipe_slugs: Vec<String>,
     #[serde(default)]
+    pub direct_product_overrides: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_product_override: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pressure_product_override: Option<String>,
+    #[serde(default)]
+    pub allow_large_heavy_domain: bool,
+    #[serde(default)]
     pub windowed_products: Vec<HrrrWindowedProduct>,
     #[serde(default = "default_output_width")]
     pub output_width: u32,
@@ -223,6 +242,10 @@ pub struct NonEcapeHourRequest {
     pub output_height: u32,
     #[serde(default = "default_png_compression")]
     pub png_compression: PngCompressionMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_poi_overlay: Option<CustomPoiOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place_label_overlay: Option<PlaceLabelOverlay>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,6 +264,14 @@ pub struct NonEcapeMultiDomainRequest {
     pub direct_recipe_slugs: Vec<String>,
     pub derived_recipe_slugs: Vec<String>,
     #[serde(default)]
+    pub direct_product_overrides: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_product_override: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pressure_product_override: Option<String>,
+    #[serde(default)]
+    pub allow_large_heavy_domain: bool,
+    #[serde(default)]
     pub windowed_products: Vec<HrrrWindowedProduct>,
     #[serde(default = "default_output_width")]
     pub output_width: u32,
@@ -248,6 +279,10 @@ pub struct NonEcapeMultiDomainRequest {
     pub output_height: u32,
     #[serde(default = "default_png_compression")]
     pub png_compression: PngCompressionMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_poi_overlay: Option<CustomPoiOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place_label_overlay: Option<PlaceLabelOverlay>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain_jobs: Option<usize>,
 }
@@ -336,10 +371,16 @@ fn non_ecape_request_from_hrrr(request: &HrrrNonEcapeHourRequest) -> NonEcapeHou
         source_mode: request.source_mode,
         direct_recipe_slugs: request.direct_recipe_slugs.clone(),
         derived_recipe_slugs: request.derived_recipe_slugs.clone(),
+        direct_product_overrides: HashMap::new(),
+        surface_product_override: None,
+        pressure_product_override: None,
+        allow_large_heavy_domain: false,
         windowed_products: request.windowed_products.clone(),
         output_width: request.output_width,
         output_height: request.output_height,
         png_compression: request.png_compression,
+        custom_poi_overlay: request.custom_poi_overlay.clone(),
+        place_label_overlay: request.place_label_overlay.clone(),
     }
 }
 
@@ -359,10 +400,16 @@ fn non_ecape_multi_request_from_hrrr(
         source_mode: request.source_mode,
         direct_recipe_slugs: request.direct_recipe_slugs.clone(),
         derived_recipe_slugs: request.derived_recipe_slugs.clone(),
+        direct_product_overrides: HashMap::new(),
+        surface_product_override: None,
+        pressure_product_override: None,
+        allow_large_heavy_domain: false,
         windowed_products: request.windowed_products.clone(),
         output_width: request.output_width,
         output_height: request.output_height,
         png_compression: request.png_compression,
+        custom_poi_overlay: request.custom_poi_overlay.clone(),
+        place_label_overlay: request.place_label_overlay.clone(),
         domain_jobs: request.domain_jobs,
     }
 }
@@ -439,10 +486,16 @@ pub fn run_model_non_ecape_hour(
         source_mode: request.source_mode,
         direct_recipe_slugs: request.direct_recipe_slugs.clone(),
         derived_recipe_slugs: request.derived_recipe_slugs.clone(),
+        direct_product_overrides: request.direct_product_overrides.clone(),
+        surface_product_override: request.surface_product_override.clone(),
+        pressure_product_override: request.pressure_product_override.clone(),
+        allow_large_heavy_domain: request.allow_large_heavy_domain,
         windowed_products: request.windowed_products.clone(),
         output_width: request.output_width,
         output_height: request.output_height,
         png_compression: request.png_compression,
+        custom_poi_overlay: request.custom_poi_overlay.clone(),
+        place_label_overlay: request.place_label_overlay.clone(),
         domain_jobs: None,
     };
     let report = run_model_non_ecape_hour_multi_domain(&multi_request)?;
@@ -675,10 +728,14 @@ fn prepare_non_ecape_hour(
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
             recipe_slugs: normalized.direct_recipe_slugs.clone(),
-            product_overrides: HashMap::new(),
+            product_overrides: request.direct_product_overrides.clone(),
+            contour_mode: crate::derived::NativeContourRenderMode::Automatic,
+            native_fill_level_multiplier: 1,
             output_width: request.output_width,
             output_height: request.output_height,
             png_compression: request.png_compression,
+            custom_poi_overlay: request.custom_poi_overlay.clone(),
+            place_label_overlay: request.place_label_overlay.clone(),
         };
         crate::direct::plan_direct_fetch_groups(&direct_request)?
     };
@@ -690,10 +747,11 @@ fn prepare_non_ecape_hour(
     let derived_routes = if derived_recipes.is_empty() {
         None
     } else {
-        Some(plan_native_thermo_routes(
+        Some(plan_native_thermo_routes_with_surface_product(
             request.model,
             &derived_recipes,
             request.source_mode,
+            request.surface_product_override.as_deref(),
         )?)
     };
 
@@ -708,13 +766,17 @@ fn prepare_non_ecape_hour(
         cache_root: request.cache_root.clone(),
         use_cache: request.use_cache,
         recipe_slugs: normalized.derived_recipe_slugs.clone(),
-        surface_product_override: None,
-        pressure_product_override: None,
+        surface_product_override: request.surface_product_override.clone(),
+        pressure_product_override: request.pressure_product_override.clone(),
         source_mode: request.source_mode,
-        allow_large_heavy_domain: false,
+        allow_large_heavy_domain: request.allow_large_heavy_domain,
+        contour_mode: crate::derived::NativeContourRenderMode::Automatic,
+        native_fill_level_multiplier: 1,
         output_width: request.output_width,
         output_height: request.output_height,
         png_compression: request.png_compression,
+        custom_poi_overlay: request.custom_poi_overlay.clone(),
+        place_label_overlay: request.place_label_overlay.clone(),
     });
 
     let mut shared_load_decode_ms = 0u128;
@@ -741,6 +803,8 @@ fn prepare_non_ecape_hour(
             &direct_groups,
             derived_routes.as_ref(),
             derived_loaded_override.is_none(),
+            request.surface_product_override.as_deref(),
+            request.pressure_product_override.as_deref(),
         );
         let load_start = Instant::now();
         main_loaded = if plan.bundles.is_empty() {
@@ -828,6 +892,8 @@ fn build_shared_non_ecape_execution_plan(
     direct_groups: &[FetchGroup],
     derived_routes: Option<&PlannedDerivedSourceRoutes>,
     include_pair_compute: bool,
+    surface_product_override: Option<&str>,
+    pressure_product_override: Option<&str>,
 ) -> crate::planner::ExecutionPlan {
     let mut plan_builder = ExecutionPlanBuilder::new(latest, forecast_hour);
     if include_pair_compute
@@ -835,7 +901,13 @@ fn build_shared_non_ecape_execution_plan(
             .map(|routes| !routes.compute_recipes.is_empty())
             .unwrap_or(false)
     {
-        add_pair_requirements(&mut plan_builder, latest, forecast_hour);
+        add_pair_requirements(
+            &mut plan_builder,
+            latest,
+            forecast_hour,
+            surface_product_override,
+            pressure_product_override,
+        );
     }
     if let Some(routes) = derived_routes {
         add_native_route_requirements(&mut plan_builder, forecast_hour, routes);
@@ -848,8 +920,15 @@ fn add_pair_requirements(
     plan_builder: &mut ExecutionPlanBuilder,
     latest: &LatestRun,
     forecast_hour: u16,
+    surface_product_override: Option<&str>,
+    pressure_product_override: Option<&str>,
 ) {
-    let pair_plan = build_severe_execution_plan(latest, forecast_hour, None, None);
+    let pair_plan = build_severe_execution_plan(
+        latest,
+        forecast_hour,
+        surface_product_override,
+        pressure_product_override,
+    );
     for bundle in &pair_plan.bundles {
         for alias in &bundle.aliases {
             let mut requirement =
@@ -945,10 +1024,14 @@ fn run_prepared_non_ecape_domain(
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
             recipe_slugs: prepared.normalized.direct_recipe_slugs.clone(),
-            product_overrides: HashMap::new(),
+            product_overrides: request.direct_product_overrides.clone(),
+            contour_mode: crate::derived::NativeContourRenderMode::Automatic,
+            native_fill_level_multiplier: 1,
             output_width: request.output_width,
             output_height: request.output_height,
             png_compression: request.png_compression,
+            custom_poi_overlay: request.custom_poi_overlay.clone(),
+            place_label_overlay: request.place_label_overlay.clone(),
         });
 
     let derived_request = (!prepared.normalized.derived_recipe_slugs.is_empty()).then(|| {
@@ -964,13 +1047,17 @@ fn run_prepared_non_ecape_domain(
                 cache_root: request.cache_root.clone(),
                 use_cache: request.use_cache,
                 recipe_slugs: prepared.normalized.derived_recipe_slugs.clone(),
-                surface_product_override: None,
-                pressure_product_override: None,
+                surface_product_override: request.surface_product_override.clone(),
+                pressure_product_override: request.pressure_product_override.clone(),
                 source_mode: request.source_mode,
-                allow_large_heavy_domain: false,
+                allow_large_heavy_domain: request.allow_large_heavy_domain,
+                contour_mode: crate::derived::NativeContourRenderMode::Automatic,
+                native_fill_level_multiplier: 1,
                 output_width: request.output_width,
                 output_height: request.output_height,
                 png_compression: request.png_compression,
+                custom_poi_overlay: request.custom_poi_overlay.clone(),
+                place_label_overlay: request.place_label_overlay.clone(),
             },
             prepared.derived_recipes.clone(),
         )
@@ -1156,7 +1243,7 @@ fn normalize_requested_products_from_parts(
 }
 
 fn should_run_lanes_concurrently(model: ModelId, source: SourceId) -> bool {
-    model == ModelId::Hrrr && !matches!(source, SourceId::Nomads)
+    matches!(model, ModelId::Hrrr | ModelId::WrfGdex) && !matches!(source, SourceId::Nomads)
 }
 
 fn domain_worker_count(requested_jobs: Option<usize>, domain_count: usize) -> usize {
@@ -1602,6 +1689,8 @@ mod tests {
             output_width: 1200,
             output_height: 900,
             png_compression: PngCompressionMode::Default,
+            custom_poi_overlay: None,
+            place_label_overlay: None,
         }
     }
 
@@ -1691,6 +1780,10 @@ mod tests {
             SourceId::Nomads
         ));
         assert!(should_run_lanes_concurrently(ModelId::Hrrr, SourceId::Aws));
+        assert!(should_run_lanes_concurrently(
+            ModelId::WrfGdex,
+            SourceId::Gdex
+        ));
     }
 
     #[test]
@@ -1708,15 +1801,23 @@ mod tests {
             use_cache: true,
             recipe_slugs: vec!["mslp_10m_winds".into()],
             product_overrides: HashMap::new(),
+            contour_mode: crate::derived::NativeContourRenderMode::Automatic,
+            native_fill_level_multiplier: 1,
             output_width: 1200,
             output_height: 900,
             png_compression: PngCompressionMode::Default,
+            custom_poi_overlay: None,
+            place_label_overlay: None,
         };
         let direct_groups = plan_direct_fetch_groups(&direct_request).unwrap();
         let derived_recipes = plan_derived_recipes(&["sbcape".to_string()]).unwrap();
-        let derived_routes =
-            plan_native_thermo_routes(ModelId::Gfs, &derived_recipes, ProductSourceMode::Canonical)
-                .unwrap();
+        let derived_routes = plan_native_thermo_routes_with_surface_product(
+            ModelId::Gfs,
+            &derived_recipes,
+            ProductSourceMode::Canonical,
+            None,
+        )
+        .unwrap();
 
         let plan = build_shared_non_ecape_execution_plan(
             &latest,
@@ -1724,6 +1825,8 @@ mod tests {
             &direct_groups,
             Some(&derived_routes),
             true,
+            None,
+            None,
         );
 
         assert_eq!(plan.fetch_keys().len(), 1);
@@ -1745,16 +1848,21 @@ mod tests {
             use_cache: true,
             recipe_slugs: vec!["500mb_height_winds".into()],
             product_overrides: HashMap::new(),
+            contour_mode: crate::derived::NativeContourRenderMode::Automatic,
+            native_fill_level_multiplier: 1,
             output_width: 1200,
             output_height: 900,
             png_compression: PngCompressionMode::Default,
+            custom_poi_overlay: None,
+            place_label_overlay: None,
         };
         let direct_groups = plan_direct_fetch_groups(&direct_request).unwrap();
         let derived_recipes = plan_derived_recipes(&["sbcape".to_string()]).unwrap();
-        let derived_routes = plan_native_thermo_routes(
+        let derived_routes = plan_native_thermo_routes_with_surface_product(
             ModelId::EcmwfOpenData,
             &derived_recipes,
             ProductSourceMode::Canonical,
+            None,
         )
         .unwrap();
 
@@ -1764,6 +1872,8 @@ mod tests {
             &direct_groups,
             Some(&derived_routes),
             true,
+            None,
+            None,
         );
 
         assert_eq!(plan.fetch_keys().len(), 1);

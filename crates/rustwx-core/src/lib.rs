@@ -23,6 +23,10 @@ pub enum RustwxError {
     EmptyPressureLevels,
     #[error("invalid pressure level at index {index}: {value}")]
     InvalidPressureLevel { index: usize, value: f32 },
+    #[error("hybrid-level volume requires at least one level")]
+    EmptyHybridLevels,
+    #[error("invalid hybrid level at index {index}: {value}")]
+    InvalidHybridLevel { index: usize, value: u16 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +45,41 @@ impl GridShape {
 
     pub fn len(self) -> usize {
         self.nx * self.ny
+    }
+}
+
+/// Native map-projection metadata carried alongside a lat/lon grid when the
+/// upstream source knows the model's actual projection family.
+///
+/// This is intentionally lightweight: it captures the projection parameters
+/// needed to project model footprints and overlays consistently, while keeping
+/// the public core model independent of any GRIB-specific parser types.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GridProjection {
+    Geographic,
+    LambertConformal {
+        standard_parallel_1_deg: f64,
+        standard_parallel_2_deg: f64,
+        central_meridian_deg: f64,
+    },
+    PolarStereographic {
+        true_latitude_deg: f64,
+        central_meridian_deg: f64,
+        south_pole_on_projection_plane: bool,
+    },
+    Mercator {
+        latitude_of_true_scale_deg: f64,
+        central_meridian_deg: f64,
+    },
+    Other {
+        template: u16,
+    },
+}
+
+impl GridProjection {
+    pub fn is_projected(&self) -> bool {
+        !matches!(self, Self::Geographic)
     }
 }
 
@@ -69,6 +108,125 @@ impl LatLonGrid {
             lon_deg,
         })
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GeoPoint {
+    pub lat_deg: f64,
+    pub lon_deg: f64,
+}
+
+impl GeoPoint {
+    pub const fn new(lat_deg: f64, lon_deg: f64) -> Self {
+        Self { lat_deg, lon_deg }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GeoBounds {
+    pub west_lon_deg: f64,
+    pub east_lon_deg: f64,
+    pub south_lat_deg: f64,
+    pub north_lat_deg: f64,
+}
+
+impl GeoBounds {
+    pub const fn new(
+        west_lon_deg: f64,
+        east_lon_deg: f64,
+        south_lat_deg: f64,
+        north_lat_deg: f64,
+    ) -> Self {
+        Self {
+            west_lon_deg,
+            east_lon_deg,
+            south_lat_deg,
+            north_lat_deg,
+        }
+    }
+
+    pub fn contains(self, point: GeoPoint) -> bool {
+        point.lon_deg >= self.west_lon_deg
+            && point.lon_deg <= self.east_lon_deg
+            && point.lat_deg >= self.south_lat_deg
+            && point.lat_deg <= self.north_lat_deg
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GeoPolygon {
+    pub exterior: Vec<GeoPoint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub holes: Vec<Vec<GeoPoint>>,
+}
+
+impl GeoPolygon {
+    pub fn new(exterior: Vec<GeoPoint>, holes: Vec<Vec<GeoPoint>>) -> Self {
+        Self { exterior, holes }
+    }
+
+    pub fn bounds(&self) -> Option<GeoBounds> {
+        let mut iter = self.exterior.iter().copied();
+        let first = iter.next()?;
+        let mut west = first.lon_deg;
+        let mut east = first.lon_deg;
+        let mut south = first.lat_deg;
+        let mut north = first.lat_deg;
+        for point in iter {
+            west = west.min(point.lon_deg);
+            east = east.max(point.lon_deg);
+            south = south.min(point.lat_deg);
+            north = north.max(point.lat_deg);
+        }
+        Some(GeoBounds::new(west, east, south, north))
+    }
+
+    pub fn contains(&self, point: GeoPoint) -> bool {
+        if self.exterior.len() < 3 || !point_in_ring(point, &self.exterior) {
+            return false;
+        }
+        !self.holes.iter().any(|ring| point_in_ring(point, ring))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldPointSampleMethod {
+    Nearest,
+    InverseDistance4,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FieldPointSampleContribution {
+    pub grid_index: usize,
+    pub location: GeoPoint,
+    pub weight: f64,
+    pub value: Option<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FieldPointSample {
+    pub point: GeoPoint,
+    pub method: FieldPointSampleMethod,
+    pub value: Option<f32>,
+    pub contributors: Vec<FieldPointSampleContribution>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldAreaSummaryMethod {
+    CellCentersWithinPolygon,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FieldAreaSummary {
+    pub method: FieldAreaSummaryMethod,
+    pub included_cell_count: usize,
+    pub valid_cell_count: usize,
+    pub missing_cell_count: usize,
+    pub min: Option<f32>,
+    pub max: Option<f32>,
+    pub mean: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +273,7 @@ impl std::fmt::Display for ProductKey {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CanonicalField {
+    Pressure,
     GeopotentialHeight,
     Temperature,
     RelativeHumidity,
@@ -142,11 +301,14 @@ pub enum CanonicalField {
     LandSeaMask,
     CompositeReflectivity,
     UpdraftHelicity,
+    SmokeMassDensity,
+    ColumnIntegratedSmoke,
 }
 
 impl CanonicalField {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Pressure => "pressure",
             Self::GeopotentialHeight => "geopotential_height",
             Self::Temperature => "temperature",
             Self::RelativeHumidity => "relative_humidity",
@@ -176,11 +338,14 @@ impl CanonicalField {
             Self::LandSeaMask => "land_sea_mask",
             Self::CompositeReflectivity => "composite_reflectivity",
             Self::UpdraftHelicity => "updraft_helicity",
+            Self::SmokeMassDensity => "smoke_mass_density",
+            Self::ColumnIntegratedSmoke => "column_integrated_smoke",
         }
     }
 
     pub fn display_name(self) -> &'static str {
         match self {
+            Self::Pressure => "Pressure",
             Self::GeopotentialHeight => "Geopotential Height",
             Self::Temperature => "Temperature",
             Self::RelativeHumidity => "Relative Humidity",
@@ -210,11 +375,14 @@ impl CanonicalField {
             Self::LandSeaMask => "Land-Sea Mask",
             Self::CompositeReflectivity => "Composite Reflectivity",
             Self::UpdraftHelicity => "Updraft Helicity",
+            Self::SmokeMassDensity => "Smoke Mass Density",
+            Self::ColumnIntegratedSmoke => "Column-Integrated Smoke",
         }
     }
 
     pub fn native_units(self) -> &'static str {
         match self {
+            Self::Pressure => "Pa",
             Self::GeopotentialHeight => "gpm",
             Self::Temperature => "K",
             Self::RelativeHumidity => "%",
@@ -238,6 +406,8 @@ impl CanonicalField {
             Self::LandSeaMask => "fraction",
             Self::CompositeReflectivity => "dBZ",
             Self::UpdraftHelicity => "m^2/s^2",
+            Self::SmokeMassDensity => "kg/m^3",
+            Self::ColumnIntegratedSmoke => "kg/m^2",
         }
     }
 }
@@ -254,6 +424,7 @@ pub enum VerticalSelector {
     MeanSeaLevel,
     HeightAboveGroundMeters(u16),
     HeightAboveGroundLayerMeters { bottom_m: u16, top_m: u16 },
+    HybridLevel(u16),
     IsobaricHpa(u16),
     EntireAtmosphere,
     NominalTop,
@@ -268,6 +439,7 @@ impl VerticalSelector {
             Self::HeightAboveGroundLayerMeters { bottom_m, top_m } => {
                 format!("{bottom_m}m_to_{top_m}m_agl")
             }
+            Self::HybridLevel(level) => format!("hybrid_level_{level}"),
             Self::IsobaricHpa(level_hpa) => format!("{level_hpa}hpa"),
             Self::EntireAtmosphere => "entire_atmosphere".to_string(),
             Self::NominalTop => "nominal_top".to_string(),
@@ -284,6 +456,7 @@ impl std::fmt::Display for VerticalSelector {
             Self::HeightAboveGroundLayerMeters { bottom_m, top_m } => {
                 write!(f, "{bottom_m}-{top_m}m_agl")
             }
+            Self::HybridLevel(level) => write!(f, "hybrid_level_{level}"),
             Self::IsobaricHpa(level_hpa) => write!(f, "{level_hpa}hpa"),
             Self::EntireAtmosphere => f.write_str("entire_atmosphere"),
             Self::NominalTop => f.write_str("nominal_top"),
@@ -304,6 +477,10 @@ impl FieldSelector {
 
     pub const fn isobaric(field: CanonicalField, level_hpa: u16) -> Self {
         Self::new(field, VerticalSelector::IsobaricHpa(level_hpa))
+    }
+
+    pub const fn hybrid_level(field: CanonicalField, level: u16) -> Self {
+        Self::new(field, VerticalSelector::HybridLevel(level))
     }
 
     pub const fn surface(field: CanonicalField) -> Self {
@@ -549,6 +726,7 @@ pub struct SelectedField2D {
     pub units: String,
     pub grid: LatLonGrid,
     pub values: Vec<f32>,
+    pub projection: Option<GridProjection>,
 }
 
 impl SelectedField2D {
@@ -570,7 +748,13 @@ impl SelectedField2D {
             units: units.into(),
             grid,
             values,
+            projection: None,
         })
+    }
+
+    pub fn with_projection(mut self, projection: GridProjection) -> Self {
+        self.projection = Some(projection);
+        self
     }
 
     pub fn into_field2d(self) -> Field2D {
@@ -581,11 +765,83 @@ impl SelectedField2D {
             values: self.values,
         }
     }
+
+    pub fn sample_point(
+        &self,
+        point: GeoPoint,
+        method: FieldPointSampleMethod,
+    ) -> FieldPointSample {
+        sample_field_point(&self.grid, &self.values, point, method)
+    }
+
+    pub fn summarize_polygon(&self, polygon: &GeoPolygon) -> FieldAreaSummary {
+        summarize_field_polygon(&self.grid, &self.values, polygon)
+    }
 }
 
 impl From<SelectedField2D> for Field2D {
     fn from(value: SelectedField2D) -> Self {
         value.into_field2d()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SelectedHybridLevelVolume {
+    pub field: CanonicalField,
+    pub levels_hybrid: Vec<u16>,
+    pub units: String,
+    pub grid: LatLonGrid,
+    pub values: Vec<f32>,
+    pub projection: Option<GridProjection>,
+}
+
+impl SelectedHybridLevelVolume {
+    pub fn new<S: Into<String>>(
+        field: CanonicalField,
+        levels_hybrid: Vec<u16>,
+        units: S,
+        grid: LatLonGrid,
+        values: Vec<f32>,
+    ) -> Result<Self, RustwxError> {
+        validate_hybrid_levels(&levels_hybrid)?;
+        let expected = levels_hybrid.len() * grid.shape.len();
+        if values.len() != expected {
+            return Err(RustwxError::InvalidFieldDataLength {
+                expected,
+                actual: values.len(),
+            });
+        }
+        Ok(Self {
+            field,
+            levels_hybrid,
+            units: units.into(),
+            grid,
+            values,
+            projection: None,
+        })
+    }
+
+    pub fn level_count(&self) -> usize {
+        self.levels_hybrid.len()
+    }
+
+    pub fn level_slice(&self, level_index: usize) -> Option<&[f32]> {
+        let layer_len = self.grid.shape.len();
+        let start = level_index.checked_mul(layer_len)?;
+        let end = start.checked_add(layer_len)?;
+        self.values.get(start..end)
+    }
+
+    pub fn selector_at(&self, level_index: usize) -> Option<FieldSelector> {
+        self.levels_hybrid
+            .get(level_index)
+            .copied()
+            .map(|level| FieldSelector::hybrid_level(self.field, level))
+    }
+
+    pub fn with_projection(mut self, projection: GridProjection) -> Self {
+        self.projection = Some(projection);
+        self
     }
 }
 
@@ -758,6 +1014,255 @@ impl Field2D {
             values,
         })
     }
+
+    pub fn sample_point(
+        &self,
+        point: GeoPoint,
+        method: FieldPointSampleMethod,
+    ) -> FieldPointSample {
+        sample_field_point(&self.grid, &self.values, point, method)
+    }
+
+    pub fn summarize_polygon(&self, polygon: &GeoPolygon) -> FieldAreaSummary {
+        summarize_field_polygon(&self.grid, &self.values, polygon)
+    }
+}
+
+fn sample_field_point(
+    grid: &LatLonGrid,
+    values: &[f32],
+    point: GeoPoint,
+    method: FieldPointSampleMethod,
+) -> FieldPointSample {
+    let keep = match method {
+        FieldPointSampleMethod::Nearest => 1usize,
+        FieldPointSampleMethod::InverseDistance4 => 4usize,
+    };
+    let mut nearest = Vec::<(usize, f64)>::new();
+    for idx in 0..grid.shape.len() {
+        let distance = geographic_distance_score(grid, idx, point);
+        insert_best_sample_candidate(&mut nearest, keep, idx, distance);
+    }
+    if nearest.is_empty() {
+        return FieldPointSample {
+            point,
+            method,
+            value: None,
+            contributors: Vec::new(),
+        };
+    }
+
+    let exact_match = nearest[0].1 <= 1.0e-12;
+    let mut contributions = if exact_match || matches!(method, FieldPointSampleMethod::Nearest) {
+        vec![point_sample_contribution(grid, values, nearest[0].0, 1.0)]
+    } else {
+        let mut weights = nearest
+            .iter()
+            .map(|(_, distance)| 1.0 / distance.max(1.0e-12))
+            .collect::<Vec<_>>();
+        let weight_sum = weights.iter().sum::<f64>().max(1.0e-12);
+        for weight in &mut weights {
+            *weight /= weight_sum;
+        }
+        nearest
+            .iter()
+            .zip(weights.iter())
+            .map(|((idx, _), weight)| point_sample_contribution(grid, values, *idx, *weight))
+            .collect::<Vec<_>>()
+    };
+
+    let finite_weight_sum = contributions
+        .iter()
+        .filter(|entry| entry.value.map(|value| value.is_finite()).unwrap_or(false))
+        .map(|entry| entry.weight)
+        .sum::<f64>();
+    let value = if finite_weight_sum <= 0.0 {
+        None
+    } else {
+        for contribution in &mut contributions {
+            if contribution
+                .value
+                .map(|sample| sample.is_finite())
+                .unwrap_or(false)
+            {
+                contribution.weight /= finite_weight_sum;
+            } else {
+                contribution.weight = 0.0;
+            }
+        }
+        Some(
+            contributions
+                .iter()
+                .filter_map(|entry| entry.value.map(|sample| sample as f64 * entry.weight))
+                .sum::<f64>() as f32,
+        )
+    };
+
+    FieldPointSample {
+        point,
+        method,
+        value,
+        contributors: contributions,
+    }
+}
+
+fn summarize_field_polygon(
+    grid: &LatLonGrid,
+    values: &[f32],
+    polygon: &GeoPolygon,
+) -> FieldAreaSummary {
+    let Some(bounds) = polygon.bounds() else {
+        return FieldAreaSummary {
+            method: FieldAreaSummaryMethod::CellCentersWithinPolygon,
+            included_cell_count: 0,
+            valid_cell_count: 0,
+            missing_cell_count: 0,
+            min: None,
+            max: None,
+            mean: None,
+        };
+    };
+
+    let mut included_cell_count = 0usize;
+    let mut valid_cell_count = 0usize;
+    let mut missing_cell_count = 0usize;
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    let mut sum = 0.0f64;
+
+    for idx in 0..grid.shape.len() {
+        let point = GeoPoint::new(grid.lat_deg[idx] as f64, grid.lon_deg[idx] as f64);
+        if !bounds.contains(point) || !polygon.contains(point) {
+            continue;
+        }
+        included_cell_count += 1;
+        let value = values[idx];
+        if value.is_finite() {
+            valid_cell_count += 1;
+            min = min.min(value);
+            max = max.max(value);
+            sum += value as f64;
+        } else {
+            missing_cell_count += 1;
+        }
+    }
+
+    FieldAreaSummary {
+        method: FieldAreaSummaryMethod::CellCentersWithinPolygon,
+        included_cell_count,
+        valid_cell_count,
+        missing_cell_count,
+        min: (valid_cell_count > 0).then_some(min),
+        max: (valid_cell_count > 0).then_some(max),
+        mean: (valid_cell_count > 0).then_some(sum / valid_cell_count as f64),
+    }
+}
+
+fn point_sample_contribution(
+    grid: &LatLonGrid,
+    values: &[f32],
+    idx: usize,
+    weight: f64,
+) -> FieldPointSampleContribution {
+    FieldPointSampleContribution {
+        grid_index: idx,
+        location: GeoPoint::new(grid.lat_deg[idx] as f64, grid.lon_deg[idx] as f64),
+        weight,
+        value: values.get(idx).copied(),
+    }
+}
+
+fn insert_best_sample_candidate(
+    nearest: &mut Vec<(usize, f64)>,
+    keep: usize,
+    idx: usize,
+    distance: f64,
+) {
+    let keep = keep.max(1);
+    let insert_at = nearest
+        .iter()
+        .position(|&(existing_idx, existing_distance)| {
+            distance < existing_distance
+                || ((distance - existing_distance).abs() <= 1.0e-12 && idx < existing_idx)
+        })
+        .unwrap_or(nearest.len());
+    if insert_at >= keep {
+        return;
+    }
+    nearest.insert(insert_at, (idx, distance));
+    if nearest.len() > keep {
+        nearest.truncate(keep);
+    }
+}
+
+fn geographic_distance_score(grid: &LatLonGrid, idx: usize, point: GeoPoint) -> f64 {
+    let cos_lat = point.lat_deg.to_radians().cos().abs().max(0.2);
+    let dlat = grid.lat_deg[idx] as f64 - point.lat_deg;
+    let dlon = normalized_longitude_delta(grid.lon_deg[idx] as f64 - point.lon_deg) * cos_lat;
+    dlat * dlat + dlon * dlon
+}
+
+fn point_in_ring(point: GeoPoint, ring: &[GeoPoint]) -> bool {
+    if ring.len() < 3 {
+        return false;
+    }
+    let point_x = 0.0f64;
+    let point_y = point.lat_deg;
+    let mut inside = false;
+    let mut previous = *ring.last().expect("ring length checked");
+
+    for current in ring {
+        let current_x = normalized_longitude_delta(current.lon_deg - point.lon_deg);
+        let current_y = current.lat_deg;
+        let previous_x = normalized_longitude_delta(previous.lon_deg - point.lon_deg);
+        let previous_y = previous.lat_deg;
+
+        if point_on_segment(
+            point_x, point_y, current_x, current_y, previous_x, previous_y,
+        ) {
+            return true;
+        }
+
+        let intersects = ((current_y > point_y) != (previous_y > point_y))
+            && (point_x
+                < (previous_x - current_x) * (point_y - current_y) / (previous_y - current_y)
+                    + current_x);
+        if intersects {
+            inside = !inside;
+        }
+        previous = *current;
+    }
+    inside
+}
+
+fn point_on_segment(
+    point_x: f64,
+    point_y: f64,
+    start_x: f64,
+    start_y: f64,
+    end_x: f64,
+    end_y: f64,
+) -> bool {
+    let cross = (point_y - start_y) * (end_x - start_x) - (point_x - start_x) * (end_y - start_y);
+    if cross.abs() > 1.0e-9 {
+        return false;
+    }
+    let min_x = start_x.min(end_x) - 1.0e-9;
+    let max_x = start_x.max(end_x) + 1.0e-9;
+    let min_y = start_y.min(end_y) - 1.0e-9;
+    let max_y = start_y.max(end_y) + 1.0e-9;
+    point_x >= min_x && point_x <= max_x && point_y >= min_y && point_y <= max_y
+}
+
+fn normalized_longitude_delta(delta_deg: f64) -> f64 {
+    let mut delta = delta_deg;
+    while delta <= -180.0 {
+        delta += 360.0;
+    }
+    while delta > 180.0 {
+        delta -= 360.0;
+    }
+    delta
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -902,6 +1407,7 @@ pub enum ModelId {
     Gfs,
     EcmwfOpenData,
     RrfsA,
+    WrfGdex,
 }
 
 impl ModelId {
@@ -911,6 +1417,7 @@ impl ModelId {
             Self::Gfs => "gfs",
             Self::EcmwfOpenData => "ecmwf-open-data",
             Self::RrfsA => "rrfs-a",
+            Self::WrfGdex => "wrf-gdex",
         }
     }
 }
@@ -930,6 +1437,7 @@ impl std::str::FromStr for ModelId {
             "gfs" => Ok(Self::Gfs),
             "ecmwf" | "ifs" | "ecmwf-open-data" | "ecmwf_open_data" => Ok(Self::EcmwfOpenData),
             "rrfs-a" | "rrfsa" | "rrfs_a" => Ok(Self::RrfsA),
+            "wrf-gdex" | "wrf_gdex" | "wrfgdex" | "wrf" => Ok(Self::WrfGdex),
             other => Err(RustwxError::UnknownModel(other.to_string())),
         }
     }
@@ -1077,6 +1585,7 @@ pub enum SourceId {
     Azure,
     Ecmwf,
     Ncei,
+    Gdex,
 }
 
 impl SourceId {
@@ -1088,6 +1597,7 @@ impl SourceId {
             Self::Azure => "azure",
             Self::Ecmwf => "ecmwf",
             Self::Ncei => "ncei",
+            Self::Gdex => "gdex",
         }
     }
 }
@@ -1109,6 +1619,7 @@ impl std::str::FromStr for SourceId {
             "azure" => Ok(Self::Azure),
             "ecmwf" => Ok(Self::Ecmwf),
             "ncei" => Ok(Self::Ncei),
+            "gdex" => Ok(Self::Gdex),
             other => Err(RustwxError::UnknownSource(other.to_string())),
         }
     }
@@ -1291,6 +1802,20 @@ fn validate_pressure_levels(levels_hpa: &[f32]) -> Result<(), RustwxError> {
     Ok(())
 }
 
+fn validate_hybrid_levels(levels_hybrid: &[u16]) -> Result<(), RustwxError> {
+    if levels_hybrid.is_empty() {
+        return Err(RustwxError::EmptyHybridLevels);
+    }
+
+    for (index, value) in levels_hybrid.iter().copied().enumerate() {
+        if value == 0 {
+            return Err(RustwxError::InvalidHybridLevel { index, value });
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1305,7 +1830,11 @@ mod tests {
     fn model_id_aliases_round_trip() {
         assert_eq!("rrfs_a".parse::<ModelId>().unwrap(), ModelId::RrfsA);
         assert_eq!("ecmwf".parse::<ModelId>().unwrap(), ModelId::EcmwfOpenData);
+        assert_eq!("wrf".parse::<ModelId>().unwrap(), ModelId::WrfGdex);
         assert_eq!(ModelId::Hrrr.to_string(), "hrrr");
+        assert_eq!(ModelId::WrfGdex.to_string(), "wrf-gdex");
+        assert_eq!("gdex".parse::<SourceId>().unwrap(), SourceId::Gdex);
+        assert_eq!(SourceId::Gdex.to_string(), "gdex");
     }
 
     #[test]
@@ -1348,6 +1877,10 @@ mod tests {
 
     #[test]
     fn field_selector_builds_keys_and_units() {
+        let hybrid_pressure = FieldSelector::hybrid_level(CanonicalField::Pressure, 17);
+        assert_eq!(hybrid_pressure.key(), "pressure_hybrid_level_17");
+        assert_eq!(hybrid_pressure.native_units(), "Pa");
+
         let selector = FieldSelector::isobaric(CanonicalField::Temperature, 500);
         assert_eq!(selector.to_string(), "temperature@500hpa");
         assert_eq!(selector.key(), "temperature_500hpa");
@@ -1444,6 +1977,21 @@ mod tests {
 
         let uh = FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000);
         assert_eq!(uh.key(), "updraft_helicity_2000m_to_5000m_agl");
+
+        let smoke_8m = FieldSelector::height_agl(CanonicalField::SmokeMassDensity, 8);
+        assert_eq!(smoke_8m.key(), "smoke_mass_density_8m_agl");
+        assert_eq!(smoke_8m.native_units(), "kg/m^3");
+
+        let smoke_hybrid = FieldSelector::hybrid_level(CanonicalField::SmokeMassDensity, 50);
+        assert_eq!(smoke_hybrid.key(), "smoke_mass_density_hybrid_level_50");
+        assert_eq!(smoke_hybrid.native_units(), "kg/m^3");
+
+        let smoke_column = FieldSelector::entire_atmosphere(CanonicalField::ColumnIntegratedSmoke);
+        assert_eq!(
+            smoke_column.key(),
+            "column_integrated_smoke_entire_atmosphere"
+        );
+        assert_eq!(smoke_column.native_units(), "kg/m^2");
     }
 
     #[test]
@@ -1609,8 +2157,13 @@ mod tests {
         let grid = LatLonGrid::new(shape, vec![35.0, 35.0], vec![-99.0, -98.0]).unwrap();
         let selector = FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500);
 
-        let selected =
-            SelectedField2D::new(selector, "gpm", grid.clone(), vec![5700.0, 5712.0]).unwrap();
+        let selected = SelectedField2D::new(selector, "gpm", grid.clone(), vec![5700.0, 5712.0])
+            .unwrap()
+            .with_projection(GridProjection::LambertConformal {
+                standard_parallel_1_deg: 38.5,
+                standard_parallel_2_deg: 38.5,
+                central_meridian_deg: -97.5,
+            });
         let legacy: Field2D = selected.into();
 
         assert_eq!(
@@ -1620,6 +2173,80 @@ mod tests {
         assert_eq!(legacy.units, "gpm");
         assert_eq!(legacy.grid, grid);
         assert_eq!(legacy.values, vec![5700.0, 5712.0]);
+    }
+
+    #[test]
+    fn selected_field_keeps_projection_metadata() {
+        let shape = GridShape::new(2, 1).unwrap();
+        let grid = LatLonGrid::new(shape, vec![35.0, 35.0], vec![-99.0, -98.0]).unwrap();
+        let selector = FieldSelector::surface(CanonicalField::Temperature);
+
+        let selected = SelectedField2D::new(selector, "K", grid, vec![290.0, 291.0])
+            .unwrap()
+            .with_projection(GridProjection::Mercator {
+                latitude_of_true_scale_deg: 20.0,
+                central_meridian_deg: -95.0,
+            });
+
+        assert_eq!(
+            selected.projection,
+            Some(GridProjection::Mercator {
+                latitude_of_true_scale_deg: 20.0,
+                central_meridian_deg: -95.0,
+            })
+        );
+    }
+
+    #[test]
+    fn selected_hybrid_level_volume_tracks_levels_slices_and_projection() {
+        let shape = GridShape::new(2, 1).unwrap();
+        let grid = LatLonGrid::new(shape, vec![35.0, 35.0], vec![-99.0, -98.0]).unwrap();
+        let volume = SelectedHybridLevelVolume::new(
+            CanonicalField::SmokeMassDensity,
+            vec![1, 2],
+            "kg/m^3",
+            grid,
+            vec![1.0, 2.0, 3.0, 4.0],
+        )
+        .unwrap()
+        .with_projection(GridProjection::LambertConformal {
+            standard_parallel_1_deg: 38.5,
+            standard_parallel_2_deg: 38.5,
+            central_meridian_deg: -97.5,
+        });
+
+        assert_eq!(volume.level_count(), 2);
+        assert_eq!(volume.level_slice(0), Some(&[1.0, 2.0][..]));
+        assert_eq!(volume.level_slice(1), Some(&[3.0, 4.0][..]));
+        assert_eq!(
+            volume.selector_at(1),
+            Some(FieldSelector::hybrid_level(
+                CanonicalField::SmokeMassDensity,
+                2
+            ))
+        );
+        assert_eq!(
+            volume.projection,
+            Some(GridProjection::LambertConformal {
+                standard_parallel_1_deg: 38.5,
+                standard_parallel_2_deg: 38.5,
+                central_meridian_deg: -97.5,
+            })
+        );
+    }
+
+    #[test]
+    fn grid_projection_bincode_round_trip_works() {
+        let projection = GridProjection::PolarStereographic {
+            true_latitude_deg: 60.0,
+            central_meridian_deg: -105.0,
+            south_pole_on_projection_plane: false,
+        };
+
+        let bytes = bincode::serialize(&projection).unwrap();
+        let round_trip = bincode::deserialize::<GridProjection>(&bytes).unwrap();
+
+        assert_eq!(round_trip, projection);
     }
 
     #[test]
@@ -1769,5 +2396,151 @@ mod tests {
                 actual: 3
             })
         ));
+    }
+
+    #[test]
+    fn hybrid_level_volume_validates_levels_and_lengths() {
+        let shape = GridShape::new(2, 1).unwrap();
+        let grid = LatLonGrid::new(shape, vec![35.0, 35.0], vec![-99.0, -98.0]).unwrap();
+
+        assert!(matches!(
+            SelectedHybridLevelVolume::new(
+                CanonicalField::SmokeMassDensity,
+                Vec::new(),
+                "kg/m^3",
+                grid.clone(),
+                vec![1.0, 2.0],
+            ),
+            Err(RustwxError::EmptyHybridLevels)
+        ));
+        assert!(matches!(
+            SelectedHybridLevelVolume::new(
+                CanonicalField::SmokeMassDensity,
+                vec![1, 0],
+                "kg/m^3",
+                grid.clone(),
+                vec![1.0, 2.0, 3.0, 4.0],
+            ),
+            Err(RustwxError::InvalidHybridLevel { index: 1, value: 0 })
+        ));
+        assert!(matches!(
+            SelectedHybridLevelVolume::new(
+                CanonicalField::Pressure,
+                vec![1, 2],
+                "Pa",
+                grid,
+                vec![1.0, 2.0, 3.0],
+            ),
+            Err(RustwxError::InvalidFieldDataLength {
+                expected: 4,
+                actual: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn field_point_sampling_uses_nearest_and_inverse_distance_modes() {
+        let grid = LatLonGrid::new(
+            GridShape::new(2, 2).unwrap(),
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 1.0, 0.0, 1.0],
+        )
+        .unwrap();
+        let field = Field2D::new(
+            ProductKey::named("sample"),
+            "unitless",
+            grid,
+            vec![0.0, 10.0, 20.0, 30.0],
+        )
+        .unwrap();
+
+        let nearest =
+            field.sample_point(GeoPoint::new(0.95, 0.95), FieldPointSampleMethod::Nearest);
+        assert_eq!(nearest.value, Some(30.0));
+        assert_eq!(nearest.contributors.len(), 1);
+        assert_eq!(nearest.contributors[0].grid_index, 3);
+
+        let blended = field.sample_point(
+            GeoPoint::new(0.5, 0.5),
+            FieldPointSampleMethod::InverseDistance4,
+        );
+        assert_eq!(blended.contributors.len(), 4);
+        assert!((blended.value.expect("blended value") - 15.0).abs() < 1.0e-5);
+        let total_weight = blended
+            .contributors
+            .iter()
+            .map(|entry| entry.weight)
+            .sum::<f64>();
+        assert!((total_weight - 1.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn field_polygon_summary_counts_finite_cells_inside_polygon() {
+        let grid = LatLonGrid::new(
+            GridShape::new(3, 2).unwrap(),
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![0.0, 1.0, 2.0, 0.0, 1.0, 2.0],
+        )
+        .unwrap();
+        let field = Field2D::new(
+            ProductKey::named("sample"),
+            "unitless",
+            grid,
+            vec![1.0, 2.0, f32::NAN, 4.0, 5.0, 6.0],
+        )
+        .unwrap();
+        let polygon = GeoPolygon::new(
+            vec![
+                GeoPoint::new(-0.5, -0.5),
+                GeoPoint::new(-0.5, 1.5),
+                GeoPoint::new(1.5, 1.5),
+                GeoPoint::new(1.5, -0.5),
+            ],
+            Vec::new(),
+        );
+
+        let summary = field.summarize_polygon(&polygon);
+        assert_eq!(summary.included_cell_count, 4);
+        assert_eq!(summary.valid_cell_count, 4);
+        assert_eq!(summary.missing_cell_count, 0);
+        assert_eq!(summary.min, Some(1.0));
+        assert_eq!(summary.max, Some(5.0));
+        assert_eq!(summary.mean, Some(3.0));
+    }
+
+    #[test]
+    fn polygon_holes_exclude_cells_from_area_summary() {
+        let grid = LatLonGrid::new(
+            GridShape::new(3, 1).unwrap(),
+            vec![0.0, 0.0, 0.0],
+            vec![0.0, 1.0, 2.0],
+        )
+        .unwrap();
+        let field = Field2D::new(
+            ProductKey::named("sample"),
+            "unitless",
+            grid,
+            vec![10.0, 20.0, 30.0],
+        )
+        .unwrap();
+        let polygon = GeoPolygon::new(
+            vec![
+                GeoPoint::new(-1.0, -1.0),
+                GeoPoint::new(-1.0, 3.0),
+                GeoPoint::new(1.0, 3.0),
+                GeoPoint::new(1.0, -1.0),
+            ],
+            vec![vec![
+                GeoPoint::new(-0.5, 0.5),
+                GeoPoint::new(-0.5, 1.5),
+                GeoPoint::new(0.5, 1.5),
+                GeoPoint::new(0.5, 0.5),
+            ]],
+        );
+
+        let summary = field.summarize_polygon(&polygon);
+        assert_eq!(summary.included_cell_count, 2);
+        assert_eq!(summary.valid_cell_count, 2);
+        assert_eq!(summary.mean, Some(20.0));
     }
 }

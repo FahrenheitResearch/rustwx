@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -12,6 +13,7 @@ use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::derived::supported_derived_recipe_slugs;
 use rustwx_products::direct::supported_direct_recipe_slugs;
 use rustwx_products::non_ecape::{NonEcapeHourRequest, run_model_non_ecape_hour};
+use rustwx_products::places::{PlaceLabelDensityTier, default_place_label_overlay_for_domain};
 use rustwx_products::publication::{
     atomic_write_json, canonical_run_slug, publish_failure_manifest,
 };
@@ -66,8 +68,10 @@ fn default_direct_recipes() -> Vec<String> {
         "composite_reflectivity",
         "2m_temperature_10m_winds",
         "2m_dewpoint_10m_winds",
-        "2m_relative_humidity",
+        "2m_relative_humidity_10m_winds",
+        "250mb_height_winds",
         "500mb_height_winds",
+        "250mb_temperature_height_winds",
         "700mb_height_winds",
         "850mb_height_winds",
         "500mb_rh_height_winds",
@@ -129,6 +133,12 @@ struct Args {
     direct_recipes: Vec<String>,
     #[arg(long = "derived-recipe", value_delimiter = ',', num_args = 1..)]
     derived_recipes: Vec<String>,
+    #[arg(long = "product-override", value_delimiter = ',', num_args = 0..)]
+    product_overrides: Vec<String>,
+    #[arg(long)]
+    surface_product: Option<String>,
+    #[arg(long)]
+    pressure_product: Option<String>,
     #[arg(
         long = "windowed-product",
         value_enum,
@@ -143,8 +153,12 @@ struct Args {
     cache_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_cache: bool,
+    #[arg(long, default_value_t = false)]
+    allow_large_heavy_domain: bool,
     #[arg(long = "source-mode", alias = "thermo-path", value_enum, default_value_t = SourceModeArg::Canonical)]
     source_mode: SourceModeArg,
+    #[arg(long = "place-label-density", default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=3))]
+    place_label_density: u8,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -202,19 +216,25 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         args.derived_recipes.clone()
     };
+    let domain = DomainSpec::new(args.region.slug(), args.region.bounds());
+    let direct_product_overrides = build_direct_product_overrides(args)?;
     let request = NonEcapeHourRequest {
         model: args.model,
         date_yyyymmdd: args.date.clone(),
         cycle_override_utc: args.cycle,
         forecast_hour: args.forecast_hour,
         source,
-        domain: DomainSpec::new(args.region.slug(), args.region.bounds()),
+        domain: domain.clone(),
         out_dir: args.out_dir.clone(),
         cache_root,
         use_cache: !args.no_cache,
         source_mode: args.source_mode.into(),
         direct_recipe_slugs,
         derived_recipe_slugs,
+        direct_product_overrides,
+        surface_product_override: args.surface_product.clone(),
+        pressure_product_override: args.pressure_product.clone(),
+        allow_large_heavy_domain: args.allow_large_heavy_domain,
         windowed_products: args
             .windowed_products
             .iter()
@@ -224,6 +244,11 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         output_width: 1200,
         output_height: 900,
         png_compression: rustwx_render::PngCompressionMode::Default,
+        custom_poi_overlay: None,
+        place_label_overlay: default_place_label_overlay_for_domain(
+            &domain,
+            PlaceLabelDensityTier::from_numeric(args.place_label_density),
+        ),
     };
     let report = run_model_non_ecape_hour(&request)?;
     let model_slug = report.model.as_str().replace('-', "_");
@@ -267,4 +292,40 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("{}", report_path.display());
     Ok(())
+}
+
+fn build_direct_product_overrides(
+    args: &Args,
+) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+    let mut parsed = parse_product_overrides(&args.product_overrides)?;
+    if args.model == ModelId::WrfGdex {
+        if let Some(product) = &args.surface_product {
+            parsed.insert("d612005-hist2d".to_string(), product.clone());
+        }
+        if let Some(product) = &args.pressure_product {
+            parsed.insert("d612005-hist3d".to_string(), product.clone());
+        }
+    }
+    Ok(parsed)
+}
+
+fn parse_product_overrides(
+    values: &[String],
+) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+    let mut parsed = HashMap::new();
+    for value in values {
+        let (planned, actual) = value.split_once('=').ok_or_else(|| {
+            format!("invalid --product-override '{value}', expected planned=actual")
+        })?;
+        let planned = planned.trim();
+        let actual = actual.trim();
+        if planned.is_empty() || actual.is_empty() {
+            return Err(format!(
+                "invalid --product-override '{value}', expected non-empty planned=actual"
+            )
+            .into());
+        }
+        parsed.insert(planned.to_string(), actual.to_string());
+    }
+    Ok(parsed)
 }

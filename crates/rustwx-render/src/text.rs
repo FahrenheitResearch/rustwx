@@ -7,6 +7,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+const SOURCE_SANS_3_REGULAR: &[u8] = include_bytes!("../assets/fonts/SourceSans3-Regular.ttf");
+const SOURCE_SANS_3_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/SourceSans3-Semibold.ttf");
+
 struct FontSet {
     regular: Option<Font<'static>>,
     bold: Option<Font<'static>>,
@@ -21,11 +24,11 @@ enum FontKind {
 static FONTS: OnceLock<FontSet> = OnceLock::new();
 
 pub fn draw_text(img: &mut RgbaImage, text: &str, x: i32, y: i32, color: Rgba, scale: u32) {
-    draw_text_inner(img, text, x, y, color, scale, FontKind::Regular);
+    draw_text_inner(img, text, x, y, color, scale, 1.0, FontKind::Regular);
 }
 
 pub fn draw_text_bold(img: &mut RgbaImage, text: &str, x: i32, y: i32, color: Rgba, scale: u32) {
-    draw_text_inner(img, text, x, y, color, scale, FontKind::Bold);
+    draw_text_inner(img, text, x, y, color, scale, 1.0, FontKind::Bold);
 }
 
 pub fn draw_text_centered(img: &mut RgbaImage, text: &str, y: i32, color: Rgba, scale: u32) {
@@ -50,24 +53,74 @@ pub fn draw_text_right(
         y,
         color,
         scale,
+        1.0,
         FontKind::Regular,
     );
 }
 
 pub fn text_width(text: &str, scale: u32) -> u32 {
-    measure_text(text, scale, FontKind::Regular)
+    measure_text(text, scale, 1.0, FontKind::Regular)
 }
 
 pub fn text_width_bold(text: &str, scale: u32) -> u32 {
-    measure_text(text, scale, FontKind::Bold)
+    measure_text(text, scale, 1.0, FontKind::Bold)
 }
 
 pub(crate) fn regular_line_height(scale: u32) -> u32 {
-    line_height(scale, FontKind::Regular)
+    line_height(scale, 1.0, FontKind::Regular)
 }
 
 pub(crate) fn bold_line_height(scale: u32) -> u32 {
-    line_height(scale, FontKind::Bold)
+    line_height(scale, 1.0, FontKind::Bold)
+}
+
+pub(crate) fn draw_text_with_factor(
+    img: &mut RgbaImage,
+    text: &str,
+    x: i32,
+    y: i32,
+    color: Rgba,
+    scale: u32,
+    size_factor: f32,
+) {
+    draw_text_inner(
+        img,
+        text,
+        x,
+        y,
+        color,
+        scale,
+        size_factor,
+        FontKind::Regular,
+    );
+}
+
+pub(crate) fn draw_text_bold_with_factor(
+    img: &mut RgbaImage,
+    text: &str,
+    x: i32,
+    y: i32,
+    color: Rgba,
+    scale: u32,
+    size_factor: f32,
+) {
+    draw_text_inner(img, text, x, y, color, scale, size_factor, FontKind::Bold);
+}
+
+pub(crate) fn text_width_with_factor(text: &str, scale: u32, size_factor: f32) -> u32 {
+    measure_text(text, scale, size_factor, FontKind::Regular)
+}
+
+pub(crate) fn text_width_bold_with_factor(text: &str, scale: u32, size_factor: f32) -> u32 {
+    measure_text(text, scale, size_factor, FontKind::Bold)
+}
+
+pub(crate) fn regular_line_height_with_factor(scale: u32, size_factor: f32) -> u32 {
+    line_height(scale, size_factor, FontKind::Regular)
+}
+
+pub(crate) fn bold_line_height_with_factor(scale: u32, size_factor: f32) -> u32 {
+    line_height(scale, size_factor, FontKind::Bold)
 }
 
 pub fn format_tick(value: f64) -> String {
@@ -86,18 +139,26 @@ fn draw_text_inner(
     y: i32,
     color: Rgba,
     scale: u32,
+    size_factor: f32,
     kind: FontKind,
 ) {
     if let Some(font) = get_font(kind) {
-        draw_ttf_text(img, text, x, y, color, scale, font, kind);
+        draw_ttf_text(img, text, x, y, color, scale, size_factor, font, kind);
     } else {
-        draw_bitmap_text(img, text, x, y, color, scale);
+        draw_bitmap_text(
+            img,
+            text,
+            x,
+            y,
+            color,
+            effective_bitmap_scale(scale, size_factor),
+        );
     }
 }
 
-fn measure_text(text: &str, scale: u32, kind: FontKind) -> u32 {
+fn measure_text(text: &str, scale: u32, size_factor: f32, kind: FontKind) -> u32 {
     if let Some(font) = get_font(kind) {
-        let scale = Scale::uniform(font_size_px(scale, kind));
+        let scale = Scale::uniform(font_size_px(scale, size_factor, kind));
         let v_metrics = font.v_metrics(scale);
         let glyphs: Vec<_> = font
             .layout(text, scale, point(0.0, v_metrics.ascent))
@@ -114,7 +175,7 @@ fn measure_text(text: &str, scale: u32, kind: FontKind) -> u32 {
             })
             .unwrap_or(0)
     } else {
-        text.len() as u32 * 8 * scale
+        text.len() as u32 * 8 * effective_bitmap_scale(scale, size_factor)
     }
 }
 
@@ -125,10 +186,11 @@ fn draw_ttf_text(
     y: i32,
     color: Rgba,
     scale_tag: u32,
+    size_factor: f32,
     font: &Font<'static>,
     kind: FontKind,
 ) {
-    let scale = match font_size_px(scale_tag, kind) {
+    let scale = match font_size_px(scale_tag, size_factor, kind) {
         s if s > 0.0 => Scale::uniform(s),
         _ => Scale::uniform(12.0),
     };
@@ -216,7 +278,7 @@ fn blend_pixel(img: &mut RgbaImage, x: i32, y: i32, color: Rgba) {
     img.put_pixel(x as u32, y as u32, blended);
 }
 
-fn font_size_px(scale: u32, kind: FontKind) -> f32 {
+fn font_size_px(scale: u32, size_factor: f32, kind: FontKind) -> f32 {
     let base = match (scale.max(1), kind) {
         (1, FontKind::Regular) => 12.0,
         (1, FontKind::Bold) => 15.0,
@@ -225,15 +287,13 @@ fn font_size_px(scale: u32, kind: FontKind) -> f32 {
         (s, FontKind::Regular) => 12.0 + (s as f32 - 1.0) * 4.0,
         (s, FontKind::Bold) => 15.0 + (s as f32 - 1.0) * 4.0,
     };
-    base * 1.33
+    base * size_factor.clamp(0.65, 2.0)
 }
 
-fn line_height(scale: u32, kind: FontKind) -> u32 {
-    if get_font(kind).is_some() {
-        font_size_px(scale, kind).ceil() as u32
-    } else {
-        ((8 * scale.max(1)) as f32 * 1.33).ceil() as u32
-    }
+fn effective_bitmap_scale(scale: u32, size_factor: f32) -> u32 {
+    ((scale.max(1) as f32) * size_factor.clamp(0.65, 2.0))
+        .round()
+        .max(1.0) as u32
 }
 
 fn get_font(kind: FontKind) -> Option<&'static Font<'static>> {
@@ -246,32 +306,108 @@ fn get_font(kind: FontKind) -> Option<&'static Font<'static>> {
 
 fn load_fonts() -> FontSet {
     FontSet {
-        regular: load_font_candidates(false),
-        bold: load_font_candidates(true),
+        regular: load_font(false),
+        bold: load_font(true),
     }
+}
+
+fn load_font(bold: bool) -> Option<Font<'static>> {
+    load_font_override(bold)
+        .or_else(|| load_embedded_font(bold))
+        .or_else(|| load_font_candidates(bold))
+}
+
+fn load_font_override(bold: bool) -> Option<Font<'static>> {
+    let env_keys = if bold {
+        ["RUSTWX_RENDER_FONT_BOLD", "WRF_RENDER_FONT_BOLD"]
+    } else {
+        ["RUSTWX_RENDER_FONT_REGULAR", "WRF_RENDER_FONT_REGULAR"]
+    };
+    env_keys
+        .iter()
+        .find_map(|key| env::var(key).ok())
+        .and_then(|value| load_font_from_path(PathBuf::from(value)))
+}
+
+fn load_embedded_font(bold: bool) -> Option<Font<'static>> {
+    let bytes = if bold {
+        SOURCE_SANS_3_SEMIBOLD
+    } else {
+        SOURCE_SANS_3_REGULAR
+    };
+    Font::try_from_bytes(bytes)
 }
 
 fn load_font_candidates(bold: bool) -> Option<Font<'static>> {
     for path in font_candidates(bold) {
-        if let Ok(bytes) = fs::read(&path) {
-            if let Some(font) = Font::try_from_vec(bytes) {
-                return Some(font);
-            }
+        if let Some(font) = load_font_from_path(path) {
+            return Some(font);
         }
     }
     None
 }
 
+fn load_font_from_path(path: PathBuf) -> Option<Font<'static>> {
+    fs::read(path).ok().and_then(Font::try_from_vec)
+}
+
 fn font_candidates(bold: bool) -> Vec<PathBuf> {
     let mut out = Vec::new();
-
-    let env_key = if bold {
-        "WRF_RENDER_FONT_BOLD"
+    let dejavu_name = if bold {
+        "DejaVuSans-Bold.ttf"
     } else {
-        "WRF_RENDER_FONT_REGULAR"
+        "DejaVuSans.ttf"
     };
-    if let Ok(value) = env::var(env_key) {
-        out.push(PathBuf::from(value));
+    let liberation_name = if bold {
+        "LiberationSans-Bold.ttf"
+    } else {
+        "LiberationSans-Regular.ttf"
+    };
+    let noto_name = if bold {
+        "NotoSans-Bold.ttf"
+    } else {
+        "NotoSans-Regular.ttf"
+    };
+    let arial_name = if bold { "arialbd.ttf" } else { "arial.ttf" };
+    let segoe_name = if bold { "segoeuib.ttf" } else { "segoeui.ttf" };
+
+    if let Ok(xdg_data_home) = env::var("XDG_DATA_HOME") {
+        out.push(
+            PathBuf::from(&xdg_data_home)
+                .join("fonts")
+                .join(dejavu_name),
+        );
+        out.push(
+            PathBuf::from(&xdg_data_home)
+                .join("fonts")
+                .join(liberation_name),
+        );
+        out.push(PathBuf::from(&xdg_data_home).join("fonts").join(noto_name));
+    }
+
+    if let Ok(home) = env::var("HOME") {
+        let home = PathBuf::from(home);
+        out.push(
+            home.join(".local")
+                .join("share")
+                .join("fonts")
+                .join(dejavu_name),
+        );
+        out.push(
+            home.join(".local")
+                .join("share")
+                .join("fonts")
+                .join(liberation_name),
+        );
+        out.push(
+            home.join(".local")
+                .join("share")
+                .join("fonts")
+                .join(noto_name),
+        );
+        out.push(home.join(".fonts").join(dejavu_name));
+        out.push(home.join(".fonts").join(liberation_name));
+        out.push(home.join(".fonts").join(noto_name));
     }
 
     if let Ok(home) = env::var("USERPROFILE") {
@@ -286,44 +422,65 @@ fn font_candidates(bold: bool) -> Vec<PathBuf> {
             .join("mpl-data")
             .join("fonts")
             .join("ttf");
-        out.push(mpl.join(if bold {
-            "DejaVuSans-Bold.ttf"
-        } else {
-            "DejaVuSans.ttf"
-        }));
+        out.push(mpl.join(dejavu_name));
         out.push(
             home.join("AppData")
                 .join("Local")
                 .join("Microsoft")
                 .join("Windows")
                 .join("Fonts")
-                .join(if bold {
-                    "DejaVuSans-Bold.ttf"
-                } else {
-                    "DejaVuSans.ttf"
-                }),
+                .join(dejavu_name),
         );
     }
 
+    out.push(PathBuf::from("/usr/share/fonts/truetype/dejavu").join(dejavu_name));
+    out.push(PathBuf::from("/usr/share/fonts/dejavu").join(dejavu_name));
+    out.push(PathBuf::from("/usr/share/fonts/truetype/liberation2").join(liberation_name));
+    out.push(PathBuf::from("/usr/share/fonts/truetype/liberation").join(liberation_name));
+    out.push(PathBuf::from("/usr/share/fonts/truetype/noto").join(noto_name));
+    out.push(PathBuf::from("/usr/share/fonts/opentype/noto").join(noto_name));
+    out.push(PathBuf::from("/usr/local/share/fonts").join(dejavu_name));
+    out.push(PathBuf::from("/usr/local/share/fonts").join(liberation_name));
+    out.push(PathBuf::from("/mnt/c/Windows/Fonts").join(arial_name));
+    out.push(PathBuf::from("/mnt/c/Windows/Fonts").join(segoe_name));
     out.push(
-        PathBuf::from(r"C:\Python313\Lib\site-packages\matplotlib\mpl-data\fonts\ttf").join(
-            if bold {
-                "DejaVuSans-Bold.ttf"
-            } else {
-                "DejaVuSans.ttf"
-            },
-        ),
+        PathBuf::from(r"C:\Python313\Lib\site-packages\matplotlib\mpl-data\fonts\ttf")
+            .join(dejavu_name),
     );
-    out.push(PathBuf::from(r"C:\Windows\Fonts").join(if bold {
-        "arialbd.ttf"
-    } else {
-        "arial.ttf"
-    }));
-    out.push(PathBuf::from(r"C:\Windows\Fonts").join(if bold {
-        "segoeuib.ttf"
-    } else {
-        "segoeui.ttf"
-    }));
+    out.push(PathBuf::from(r"C:\Windows\Fonts").join(segoe_name));
+    out.push(PathBuf::from(r"C:\Windows\Fonts").join(arial_name));
 
     out
+}
+
+fn line_height(scale: u32, size_factor: f32, kind: FontKind) -> u32 {
+    if let Some(font) = get_font(kind) {
+        let px = font_size_px(scale, size_factor, kind);
+        let scale = Scale::uniform(px);
+        let metrics = font.v_metrics(scale);
+        (metrics.ascent - metrics.descent + metrics.line_gap)
+            .ceil()
+            .max(px.ceil()) as u32
+    } else {
+        (8 * effective_bitmap_scale(scale, size_factor)).max(12)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FontKind, get_font, line_height, load_embedded_font, text_width};
+
+    #[test]
+    fn embedded_source_sans_fonts_load() {
+        assert!(load_embedded_font(false).is_some());
+        assert!(load_embedded_font(true).is_some());
+    }
+
+    #[test]
+    fn renderer_has_outline_fonts_available_by_default() {
+        assert!(get_font(FontKind::Regular).is_some());
+        assert!(get_font(FontKind::Bold).is_some());
+        assert!(text_width("RustWX", 1) > 0);
+        assert!(line_height(1, 1.0, FontKind::Regular) >= 12);
+    }
 }

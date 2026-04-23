@@ -2,7 +2,7 @@ use crate::presentation::ProductVisualMode;
 use crate::request::{Color, DiscreteColorScale, ExtendMode, ProductSemantics};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Solar07Palette {
+pub enum WeatherPalette {
     Cape,
     ThreeCape,
     Ehi,
@@ -25,7 +25,7 @@ pub enum Solar07Palette {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum Solar07Preset {
+pub enum WeatherPreset {
     Cape,
     ThreeCape,
     Cin,
@@ -61,7 +61,7 @@ pub enum DerivedProductStyle {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum Solar07Product {
+pub enum WeatherProduct {
     Sbcape,
     Mlcape,
     Mucape,
@@ -96,29 +96,29 @@ pub enum Solar07Product {
     EcapeEhiExperimental,
 }
 
-pub const SEVERE_CLASSIC_PANEL_PRODUCTS: [Solar07Product; 8] = [
-    Solar07Product::Sbcape,
-    Solar07Product::Mlcape,
-    Solar07Product::Mucape,
-    Solar07Product::Mlcin,
-    Solar07Product::Srh01km,
-    Solar07Product::Srh03km,
-    Solar07Product::Stp,
-    Solar07Product::Scp,
+pub const SEVERE_CLASSIC_PANEL_PRODUCTS: [WeatherProduct; 8] = [
+    WeatherProduct::Sbcape,
+    WeatherProduct::Mlcape,
+    WeatherProduct::Mucape,
+    WeatherProduct::Mlcin,
+    WeatherProduct::Srh01km,
+    WeatherProduct::Srh03km,
+    WeatherProduct::Stp,
+    WeatherProduct::Scp,
 ];
 
-pub const ECAPE_SEVERE_PANEL_PRODUCTS: [Solar07Product; 8] = [
-    Solar07Product::Sbecape,
-    Solar07Product::Mlecape,
-    Solar07Product::Muecape,
-    Solar07Product::Sbncape,
-    Solar07Product::Sbecin,
-    Solar07Product::Mlecin,
-    Solar07Product::EcapeScpExperimental,
-    Solar07Product::EcapeEhiExperimental,
+pub const ECAPE_SEVERE_PANEL_PRODUCTS: [WeatherProduct; 8] = [
+    WeatherProduct::Sbecape,
+    WeatherProduct::Mlecape,
+    WeatherProduct::Muecape,
+    WeatherProduct::Sbncape,
+    WeatherProduct::Sbecin,
+    WeatherProduct::Mlecin,
+    WeatherProduct::EcapeScpExperimental,
+    WeatherProduct::EcapeEhiExperimental,
 ];
 
-impl Solar07Product {
+impl WeatherProduct {
     pub fn from_product_name(name: &str) -> Option<Self> {
         match normalize(name).as_str() {
             "sbcape" => Some(Self::Sbcape),
@@ -231,7 +231,7 @@ impl Solar07Product {
         }
     }
 
-    pub fn scale_preset(self) -> Solar07Preset {
+    pub fn scale_preset(self) -> WeatherPreset {
         match self {
             Self::Sbcape
             | Self::Mlcape
@@ -242,39 +242,39 @@ impl Solar07Product {
             | Self::Sbncape
             | Self::Mlncape
             | Self::Muncape
-            | Self::EcapeCape => Solar07Preset::Cape,
+            | Self::EcapeCape => WeatherPreset::Cape,
             Self::Sbcin
             | Self::Mlcin
             | Self::Mucin
             | Self::Sbecin
             | Self::Mlecin
             | Self::Muecin
-            | Self::EcapeCin => Solar07Preset::Cin,
-            Self::Lcl => Solar07Preset::Lcl,
-            Self::Lfc | Self::EcapeLfc => Solar07Preset::Lfc,
-            Self::El | Self::EcapeEl => Solar07Preset::El,
-            Self::Srh01km | Self::Srh03km => Solar07Preset::Srh,
-            Self::Stp | Self::StpFixed | Self::StpEffective => Solar07Preset::Stp,
-            Self::Scp | Self::EcapeScpExperimental => Solar07Preset::Scp,
-            Self::Ehi | Self::EcapeEhiExperimental => Solar07Preset::Ehi,
-            Self::Uh => Solar07Preset::Uh,
+            | Self::EcapeCin => WeatherPreset::Cin,
+            Self::Lcl => WeatherPreset::Lcl,
+            Self::Lfc | Self::EcapeLfc => WeatherPreset::Lfc,
+            Self::El | Self::EcapeEl => WeatherPreset::El,
+            Self::Srh01km | Self::Srh03km => WeatherPreset::Srh,
+            Self::Stp | Self::StpFixed | Self::StpEffective => WeatherPreset::Stp,
+            Self::Scp | Self::EcapeScpExperimental => WeatherPreset::Scp,
+            Self::Ehi | Self::EcapeEhiExperimental => WeatherPreset::Ehi,
+            Self::Uh => WeatherPreset::Uh,
         }
     }
 
     pub fn default_tick_step(self) -> Option<f64> {
         match self.scale_preset() {
-            Solar07Preset::Cape => Some(500.0),
-            Solar07Preset::ThreeCape => Some(500.0),
-            Solar07Preset::Cin => Some(50.0),
-            Solar07Preset::Lcl => Some(500.0),
-            Solar07Preset::Lfc => Some(500.0),
-            Solar07Preset::El => Some(1000.0),
-            Solar07Preset::Srh => Some(50.0),
-            Solar07Preset::Stp => Some(1.0),
-            Solar07Preset::Scp => Some(1.0),
-            Solar07Preset::Ehi => Some(0.5),
-            Solar07Preset::Uh => Some(20.0),
-            Solar07Preset::LapseRate => Some(0.5),
+            WeatherPreset::Cape => Some(500.0),
+            WeatherPreset::ThreeCape => Some(50.0),
+            WeatherPreset::Cin => Some(50.0),
+            WeatherPreset::Lcl => Some(500.0),
+            WeatherPreset::Lfc => Some(500.0),
+            WeatherPreset::El => Some(1000.0),
+            WeatherPreset::Srh => Some(50.0),
+            WeatherPreset::Stp => Some(1.0),
+            WeatherPreset::Scp => Some(1.0),
+            WeatherPreset::Ehi => Some(1.0),
+            WeatherPreset::Uh => Some(20.0),
+            WeatherPreset::LapseRate => Some(1.0),
         }
     }
 
@@ -298,8 +298,8 @@ impl Solar07Product {
     }
 }
 
-impl From<Solar07Product> for Solar07Preset {
-    fn from(value: Solar07Product) -> Self {
+impl From<WeatherProduct> for WeatherPreset {
+    fn from(value: WeatherProduct) -> Self {
         value.scale_preset()
     }
 }
@@ -397,9 +397,9 @@ impl From<DerivedProductStyle> for DerivedScalePreset {
     }
 }
 
-impl Solar07Preset {
+impl WeatherPreset {
     pub fn from_product_name(name: &str) -> Option<Self> {
-        if let Some(product) = Solar07Product::from_product_name(name) {
+        if let Some(product) = WeatherProduct::from_product_name(name) {
             return Some(product.scale_preset());
         }
 
@@ -428,74 +428,74 @@ impl Solar07Preset {
     pub fn scale(self) -> DiscreteColorScale {
         match self {
             Self::Cape => DiscreteColorScale {
-                levels: range_step(0.0, 4250.0, 250.0),
-                colors: solar07_palette(Solar07Palette::Cape),
+                levels: range_step(0.0, 8100.0, 100.0),
+                colors: weather_palette(WeatherPalette::Cape),
                 extend: ExtendMode::Max,
                 mask_below: None,
             },
             Self::ThreeCape => DiscreteColorScale {
-                levels: range_step(0.0, 4250.0, 250.0),
-                colors: solar07_palette(Solar07Palette::ThreeCape),
+                levels: concat_ranges(&[(0.0, 300.0, 5.0), (300.0, 501.0, 20.0)]),
+                colors: weather_palette(WeatherPalette::ThreeCape),
                 extend: ExtendMode::Max,
                 mask_below: None,
             },
             Self::Cin => DiscreteColorScale {
                 levels: range_step(-300.0, 1.0, 25.0),
-                colors: solar07_palette(Solar07Palette::Cape),
+                colors: weather_palette(WeatherPalette::Cape),
                 extend: ExtendMode::Min,
                 mask_below: None,
             },
             Self::Lcl => DiscreteColorScale {
                 levels: range_step(0.0, 4200.0, 200.0),
-                colors: solar07_palette(Solar07Palette::Cape),
+                colors: weather_palette(WeatherPalette::Cape),
                 extend: ExtendMode::Max,
                 mask_below: None,
             },
             Self::Lfc => DiscreteColorScale {
                 levels: range_step(0.0, 5500.0, 500.0),
-                colors: solar07_palette(Solar07Palette::Cape),
+                colors: weather_palette(WeatherPalette::Cape),
                 extend: ExtendMode::Max,
                 mask_below: None,
             },
             Self::El => DiscreteColorScale {
                 levels: range_step(0.0, 16000.0, 1000.0),
-                colors: solar07_palette(Solar07Palette::Cape),
+                colors: weather_palette(WeatherPalette::Cape),
                 extend: ExtendMode::Max,
                 mask_below: None,
             },
             Self::Srh => DiscreteColorScale {
-                levels: range_step(0.0, 525.0, 25.0),
-                colors: solar07_palette(Solar07Palette::Srh),
+                levels: range_step(0.0, 1001.0, 10.0),
+                colors: weather_palette(WeatherPalette::Srh),
                 extend: ExtendMode::Max,
                 mask_below: None,
             },
             Self::Stp => DiscreteColorScale {
-                levels: range_step(0.0, 11.0, 1.0),
-                colors: solar07_palette(Solar07Palette::Stp),
+                levels: range_step(0.0, 10.1, 0.1),
+                colors: weather_palette(WeatherPalette::Stp),
                 extend: ExtendMode::Max,
                 mask_below: None,
             },
             Self::Scp => DiscreteColorScale {
                 levels: range_step(0.0, 11.0, 1.0),
-                colors: solar07_palette(Solar07Palette::Cape),
+                colors: weather_palette(WeatherPalette::Cape),
                 extend: ExtendMode::Max,
                 mask_below: None,
             },
             Self::Ehi => DiscreteColorScale {
-                levels: range_step(0.0, 5.5, 0.5),
-                colors: solar07_palette(Solar07Palette::Ehi),
+                levels: concat_ranges(&[(0.0, 2.0, 0.1), (2.0, 16.2, 0.2)]),
+                colors: weather_palette(WeatherPalette::Ehi),
                 extend: ExtendMode::Max,
                 mask_below: None,
             },
             Self::Uh => DiscreteColorScale {
-                levels: range_step(0.0, 210.0, 10.0),
-                colors: solar07_palette(Solar07Palette::Uh),
+                levels: concat_ranges(&[(0.0, 200.0, 5.0), (200.0, 401.0, 10.0)]),
+                colors: weather_palette(WeatherPalette::Uh),
                 extend: ExtendMode::Max,
                 mask_below: None,
             },
             Self::LapseRate => DiscreteColorScale {
-                levels: range_step(4.0, 10.5, 0.5),
-                colors: solar07_palette(Solar07Palette::LapseRate),
+                levels: range_step(2.0, 10.1, 0.1),
+                colors: weather_palette(WeatherPalette::LapseRate),
                 extend: ExtendMode::Both,
                 mask_below: None,
             },
@@ -507,7 +507,7 @@ impl DerivedScalePreset {
     pub fn scale(self) -> DiscreteColorScale {
         match self {
             Self::LiftedIndex => {
-                let mut colors = solar07_palette(Solar07Palette::Advection);
+                let mut colors = weather_palette(WeatherPalette::Advection);
                 colors.reverse();
                 DiscreteColorScale {
                     levels: range_step(-12.0, 14.0, 2.0),
@@ -518,19 +518,19 @@ impl DerivedScalePreset {
             }
             Self::TemperatureAdvection => DiscreteColorScale {
                 levels: range_step(-12.0, 14.0, 2.0),
-                colors: solar07_palette(Solar07Palette::Advection),
+                colors: weather_palette(WeatherPalette::Advection),
                 extend: ExtendMode::Both,
                 mask_below: None,
             },
             Self::BulkShear => DiscreteColorScale {
                 levels: range_step(0.0, 65.0, 5.0),
-                colors: solar07_palette(Solar07Palette::Winds),
+                colors: weather_palette(WeatherPalette::Winds),
                 extend: ExtendMode::Max,
                 mask_below: None,
             },
             Self::SurfaceComfort => DiscreteColorScale {
                 levels: range_step(-30.0, 50.0, 5.0),
-                colors: solar07_palette(Solar07Palette::Temperature),
+                colors: weather_palette(WeatherPalette::Temperature),
                 extend: ExtendMode::Both,
                 mask_below: None,
             },
@@ -547,43 +547,64 @@ impl DerivedScalePreset {
     }
 }
 
-pub fn solar07_palette(palette: Solar07Palette) -> Vec<Color> {
+pub fn weather_palette(palette: WeatherPalette) -> Vec<Color> {
     use crate::colormaps;
 
     let colors = match palette {
-        Solar07Palette::Cape => colormaps::cape(),
-        Solar07Palette::ThreeCape => colormaps::three_cape(),
-        Solar07Palette::Ehi => colormaps::ehi(),
-        Solar07Palette::Srh => colormaps::srh(),
-        Solar07Palette::Stp => colormaps::stp(),
-        Solar07Palette::LapseRate => colormaps::lapse_rate(),
-        Solar07Palette::Uh => colormaps::uh(),
-        Solar07Palette::MlMetric => colormaps::ml_metric(),
-        Solar07Palette::Reflectivity => colormaps::reflectivity(),
-        Solar07Palette::Winds => colormaps::winds(60),
-        Solar07Palette::Temperature => colormaps::temperature(180),
-        Solar07Palette::Dewpoint => colormaps::dewpoint(80, 50),
-        Solar07Palette::Rh => colormaps::rh(),
-        Solar07Palette::RelVort => colormaps::relvort(100),
-        Solar07Palette::Advection => advection_palette(),
-        Solar07Palette::SimIr => colormaps::sim_ir(),
-        Solar07Palette::GeopotAnomaly => colormaps::geopot_anomaly(100),
-        Solar07Palette::Precip => colormaps::precip_in(),
-        Solar07Palette::ShadedOverlay => colormaps::shaded_overlay(),
+        WeatherPalette::Cape => colormaps::cape(),
+        WeatherPalette::ThreeCape => colormaps::three_cape(),
+        WeatherPalette::Ehi => colormaps::ehi(),
+        WeatherPalette::Srh => colormaps::srh(),
+        WeatherPalette::Stp => colormaps::stp(),
+        WeatherPalette::LapseRate => colormaps::lapse_rate(),
+        WeatherPalette::Uh => colormaps::uh(),
+        WeatherPalette::MlMetric => colormaps::ml_metric(),
+        WeatherPalette::Reflectivity => colormaps::reflectivity(),
+        WeatherPalette::Winds => colormaps::winds(60),
+        WeatherPalette::Temperature => colormaps::temperature(180),
+        WeatherPalette::Dewpoint => colormaps::dewpoint(80, 50),
+        WeatherPalette::Rh => colormaps::rh(),
+        WeatherPalette::RelVort => colormaps::relvort(100),
+        WeatherPalette::Advection => advection_palette(),
+        WeatherPalette::SimIr => colormaps::sim_ir(),
+        WeatherPalette::GeopotAnomaly => colormaps::geopot_anomaly(100),
+        WeatherPalette::Precip => colormaps::precip_in(),
+        WeatherPalette::ShadedOverlay => colormaps::shaded_overlay(),
     };
 
     colors.into_iter().map(Into::into).collect()
 }
 
+pub fn winds_palette_segments(n_segments: usize) -> Vec<Color> {
+    crate::colormaps::winds(n_segments)
+        .into_iter()
+        .map(Into::into)
+        .collect()
+}
+
+pub fn temperature_palette_cropped_f(crop_f: Option<(f64, f64)>, n_segments: usize) -> Vec<Color> {
+    crate::colormaps::temperature_cropped(n_segments, crop_f)
+        .into_iter()
+        .map(Into::into)
+        .collect()
+}
+
+pub fn dewpoint_palette_params(dry_points: usize, moist_points_total: usize) -> Vec<Color> {
+    crate::colormaps::dewpoint(dry_points, moist_points_total)
+        .into_iter()
+        .map(Into::into)
+        .collect()
+}
+
 pub fn palette_scale(
-    palette: Solar07Palette,
+    palette: WeatherPalette,
     levels: Vec<f64>,
     extend: ExtendMode,
     mask_below: Option<f64>,
 ) -> DiscreteColorScale {
     DiscreteColorScale {
         levels,
-        colors: solar07_palette(palette),
+        colors: weather_palette(palette),
         extend,
         mask_below,
     }
@@ -628,6 +649,21 @@ fn range_step(start: f64, stop: f64, step: f64) -> Vec<f64> {
     values
 }
 
+fn concat_ranges(parts: &[(f64, f64, f64)]) -> Vec<f64> {
+    let mut values: Vec<f64> = Vec::new();
+    for (start, stop, step) in parts {
+        let part = range_step(*start, *stop, *step);
+        if let (Some(last), Some(first)) = (values.last().copied(), part.first().copied()) {
+            if (last - first).abs() < 1.0e-9 {
+                values.extend(part.into_iter().skip(1));
+                continue;
+            }
+        }
+        values.extend(part);
+    }
+    values
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,17 +671,17 @@ mod tests {
 
     #[test]
     fn explicit_ecape_panel_products_have_expected_titles_and_experimental_flags() {
-        assert_eq!(Solar07Product::Sbecape.display_title(), "SBECAPE");
-        assert_eq!(Solar07Product::Mlecin.display_title(), "MLECIN");
-        assert!(Solar07Product::EcapeScpExperimental.is_experimental());
-        assert!(Solar07Product::EcapeEhiExperimental.is_experimental());
-        assert!(!Solar07Product::Muecape.is_experimental());
+        assert_eq!(WeatherProduct::Sbecape.display_title(), "SBECAPE");
+        assert_eq!(WeatherProduct::Mlecin.display_title(), "MLECIN");
+        assert!(WeatherProduct::EcapeScpExperimental.is_experimental());
+        assert!(WeatherProduct::EcapeEhiExperimental.is_experimental());
+        assert!(!WeatherProduct::Muecape.is_experimental());
         assert_eq!(
-            Solar07Product::EcapeScpExperimental.semantics().maturity,
+            WeatherProduct::EcapeScpExperimental.semantics().maturity,
             ProductMaturity::Experimental
         );
         assert_eq!(
-            Solar07Product::Sbcape.semantics().maturity,
+            WeatherProduct::Sbcape.semantics().maturity,
             ProductMaturity::Operational
         );
     }
@@ -655,14 +691,14 @@ mod tests {
         assert_eq!(
             ECAPE_SEVERE_PANEL_PRODUCTS,
             [
-                Solar07Product::Sbecape,
-                Solar07Product::Mlecape,
-                Solar07Product::Muecape,
-                Solar07Product::Sbncape,
-                Solar07Product::Sbecin,
-                Solar07Product::Mlecin,
-                Solar07Product::EcapeScpExperimental,
-                Solar07Product::EcapeEhiExperimental,
+                WeatherProduct::Sbecape,
+                WeatherProduct::Mlecape,
+                WeatherProduct::Muecape,
+                WeatherProduct::Sbncape,
+                WeatherProduct::Sbecin,
+                WeatherProduct::Mlecin,
+                WeatherProduct::EcapeScpExperimental,
+                WeatherProduct::EcapeEhiExperimental,
             ]
         );
     }
@@ -672,14 +708,14 @@ mod tests {
         assert_eq!(
             SEVERE_CLASSIC_PANEL_PRODUCTS,
             [
-                Solar07Product::Sbcape,
-                Solar07Product::Mlcape,
-                Solar07Product::Mucape,
-                Solar07Product::Mlcin,
-                Solar07Product::Srh01km,
-                Solar07Product::Srh03km,
-                Solar07Product::Stp,
-                Solar07Product::Scp,
+                WeatherProduct::Sbcape,
+                WeatherProduct::Mlcape,
+                WeatherProduct::Mucape,
+                WeatherProduct::Mlcin,
+                WeatherProduct::Srh01km,
+                WeatherProduct::Srh03km,
+                WeatherProduct::Stp,
+                WeatherProduct::Scp,
             ]
         );
     }
@@ -687,23 +723,23 @@ mod tests {
     #[test]
     fn product_name_resolution_covers_parcel_explicit_ecape_fields() {
         assert_eq!(
-            Solar07Product::from_product_name("mlecin"),
-            Some(Solar07Product::Mlecin)
+            WeatherProduct::from_product_name("mlecin"),
+            Some(WeatherProduct::Mlecin)
         );
         assert_eq!(
-            Solar07Product::from_product_name("ecape_scp"),
-            Some(Solar07Product::EcapeScpExperimental)
+            WeatherProduct::from_product_name("ecape_scp"),
+            Some(WeatherProduct::EcapeScpExperimental)
         );
         assert_eq!(
-            Solar07Preset::from_product_name("ecape_ehi"),
-            Some(Solar07Preset::Ehi)
+            WeatherPreset::from_product_name("ecape_ehi"),
+            Some(WeatherPreset::Ehi)
         );
     }
 
     #[test]
     fn palette_scale_wraps_palette_and_levels_into_discrete_scale() {
         let scale = palette_scale(
-            Solar07Palette::Reflectivity,
+            WeatherPalette::Reflectivity,
             vec![5.0, 15.0, 25.0, 35.0],
             ExtendMode::Max,
             Some(5.0),
@@ -749,6 +785,38 @@ mod tests {
     }
 
     #[test]
+    fn severe_reference_scales_match_upstream_wrf_runner_bins() {
+        assert_eq!(
+            WeatherPreset::Cape.scale().levels,
+            range_step(0.0, 8100.0, 100.0)
+        );
+        assert_eq!(
+            WeatherPreset::ThreeCape.scale().levels,
+            concat_ranges(&[(0.0, 300.0, 5.0), (300.0, 501.0, 20.0)])
+        );
+        assert_eq!(
+            WeatherPreset::Srh.scale().levels,
+            range_step(0.0, 1001.0, 10.0)
+        );
+        assert_eq!(
+            WeatherPreset::Stp.scale().levels,
+            range_step(0.0, 10.1, 0.1)
+        );
+        assert_eq!(
+            WeatherPreset::Ehi.scale().levels,
+            concat_ranges(&[(0.0, 2.0, 0.1), (2.0, 16.2, 0.2)])
+        );
+        assert_eq!(
+            WeatherPreset::Uh.scale().levels,
+            concat_ranges(&[(0.0, 200.0, 5.0), (200.0, 401.0, 10.0)])
+        );
+        assert_eq!(
+            WeatherPreset::LapseRate.scale().levels,
+            range_step(2.0, 10.1, 0.1)
+        );
+    }
+
+    #[test]
     fn bulk_shear_and_surface_comfort_have_sane_tick_steps() {
         assert_eq!(DerivedScalePreset::BulkShear.default_tick_step(), Some(5.0));
         assert_eq!(
@@ -763,11 +831,11 @@ mod tests {
 
     #[test]
     fn semantic_flags_stay_narrow_in_render_presets() {
-        let severe = Solar07Product::Scp.semantics();
+        let severe = WeatherProduct::Scp.semantics();
         assert_eq!(severe.maturity, ProductMaturity::Operational);
         assert!(!severe.has_flag(ProductSemanticFlag::Proxy));
 
-        let ecape = Solar07Product::EcapeEhiExperimental.semantics();
+        let ecape = WeatherProduct::EcapeEhiExperimental.semantics();
         assert_eq!(ecape.maturity, ProductMaturity::Experimental);
         assert!(!ecape.has_flag(ProductSemanticFlag::ProofOriented));
     }

@@ -89,6 +89,12 @@ struct Args {
     derived_recipes: Option<Vec<String>>,
     #[arg(long = "source-mode", value_enum, default_value_t = SourceModeArg::Canonical)]
     source_mode: SourceModeArg,
+    #[arg(long)]
+    surface_product: Option<String>,
+    #[arg(long)]
+    pressure_product: Option<String>,
+    #[arg(long = "product-override", value_delimiter = ',', num_args = 0..)]
+    product_overrides: Vec<String>,
     #[arg(long = "png-compression", value_enum, default_value_t = PngCompressionArg::Default)]
     png_compression: PngCompressionArg,
     #[arg(long, default_value_t = 1)]
@@ -378,6 +384,9 @@ struct RunnerConfig {
     skip_derived: bool,
     direct_recipes: BTreeMap<ModelId, Vec<String>>,
     derived_recipes: BTreeMap<ModelId, Vec<String>>,
+    surface_product_override: Option<String>,
+    pressure_product_override: Option<String>,
+    direct_product_overrides: HashMap<String, String>,
     token_budget: TokenBudget,
     failure_cooldown_seconds: u64,
 }
@@ -447,6 +456,9 @@ fn run(args: &Args, date_yyyymmdd: &str) -> Result<(), Box<dyn std::error::Error
         skip_derived: args.skip_derived,
         direct_recipes: build_direct_recipe_map(args),
         derived_recipes: build_derived_recipe_map(args),
+        surface_product_override: args.surface_product.clone(),
+        pressure_product_override: args.pressure_product.clone(),
+        direct_product_overrides: build_direct_product_overrides(args)?,
         token_budget: TokenBudget {
             light: args.light_tokens,
             warm: args.warm_tokens,
@@ -959,8 +971,8 @@ fn execute_hrrr_heavy(
         out_dir: config.out_dir.join(&job.key.region_slug),
         cache_root: config.cache_dir.clone(),
         use_cache: config.use_cache,
-        surface_product_override: None,
-        pressure_product_override: None,
+        surface_product_override: config.surface_product_override.clone(),
+        pressure_product_override: config.pressure_product_override.clone(),
         allow_large_heavy_domain: false,
     };
     match run_heavy_panel_hour(&request) {
@@ -1012,12 +1024,13 @@ fn execute_hrrr_non_ecape(
     context: &JobExecutionContext,
     config: &RunnerConfig,
 ) -> JobExecutionResult {
+    let domain = domain_from_region_slug(&job.key.region_slug);
     let request = HrrrNonEcapeHourRequest {
         date_yyyymmdd: context.latest.cycle.date_yyyymmdd.clone(),
         cycle_override_utc: Some(context.latest.cycle.hour_utc),
         forecast_hour: job.key.forecast_hour,
         source: context.latest.source,
-        domain: domain_from_region_slug(&job.key.region_slug),
+        domain: domain.clone(),
         out_dir: config.out_dir.join(&job.key.region_slug),
         cache_root: config.cache_dir.clone(),
         use_cache: config.use_cache,
@@ -1036,6 +1049,8 @@ fn execute_hrrr_non_ecape(
         output_width: config.output_width,
         output_height: config.output_height,
         png_compression: config.png_compression,
+        custom_poi_overlay: None,
+        place_label_overlay: None,
     };
     match run_hrrr_non_ecape_hour(&request) {
         Ok(report) => JobExecutionResult {
@@ -1083,13 +1098,14 @@ fn execute_non_hrrr_non_ecape(
     context: &JobExecutionContext,
     config: &RunnerConfig,
 ) -> JobExecutionResult {
+    let domain = domain_from_region_slug(&job.key.region_slug);
     let request = NonEcapeHourRequest {
         model: job.key.model,
         date_yyyymmdd: context.latest.cycle.date_yyyymmdd.clone(),
         cycle_override_utc: Some(context.latest.cycle.hour_utc),
         forecast_hour: job.key.forecast_hour,
         source: context.latest.source,
-        domain: domain_from_region_slug(&job.key.region_slug),
+        domain: domain.clone(),
         out_dir: config.out_dir.join(&job.key.region_slug),
         cache_root: config.cache_dir.clone(),
         use_cache: config.use_cache,
@@ -1104,10 +1120,16 @@ fn execute_non_hrrr_non_ecape(
         } else {
             context.derived_recipes.clone()
         },
+        direct_product_overrides: config.direct_product_overrides.clone(),
+        surface_product_override: config.surface_product_override.clone(),
+        pressure_product_override: config.pressure_product_override.clone(),
+        allow_large_heavy_domain: false,
         windowed_products: Vec::new(),
         output_width: config.output_width,
         output_height: config.output_height,
         png_compression: config.png_compression,
+        custom_poi_overlay: None,
+        place_label_overlay: None,
     };
     match run_model_non_ecape_hour(&request) {
         Ok(report) => JobExecutionResult {
@@ -1165,8 +1187,8 @@ fn execute_severe(
         out_dir: config.out_dir.join(&job.key.region_slug),
         cache_root: config.cache_dir.clone(),
         use_cache: config.use_cache,
-        surface_product_override: None,
-        pressure_product_override: None,
+        surface_product_override: config.surface_product_override.clone(),
+        pressure_product_override: config.pressure_product_override.clone(),
         allow_large_heavy_domain: false,
     };
     match run_severe_batch(&request) {
@@ -1202,8 +1224,8 @@ fn execute_ecape(
         out_dir: config.out_dir.join(&job.key.region_slug),
         cache_root: config.cache_dir.clone(),
         use_cache: config.use_cache,
-        surface_product_override: None,
-        pressure_product_override: None,
+        surface_product_override: config.surface_product_override.clone(),
+        pressure_product_override: config.pressure_product_override.clone(),
         allow_large_heavy_domain: false,
     };
     match run_ecape_batch(&request) {
@@ -1236,21 +1258,26 @@ fn execute_direct(
             detail: Some("direct lane has no configured recipes".to_string()),
         };
     }
+    let domain = domain_from_region_slug(&job.key.region_slug);
     let request = DirectBatchRequest {
         model: job.key.model,
         date_yyyymmdd: context.latest.cycle.date_yyyymmdd.clone(),
         cycle_override_utc: Some(context.latest.cycle.hour_utc),
         forecast_hour: job.key.forecast_hour,
         source: context.latest.source,
-        domain: domain_from_region_slug(&job.key.region_slug),
+        domain: domain.clone(),
         out_dir: config.out_dir.join(&job.key.region_slug),
         cache_root: config.cache_dir.clone(),
         use_cache: config.use_cache,
         recipe_slugs: context.direct_recipes.clone(),
-        product_overrides: HashMap::new(),
+        product_overrides: config.direct_product_overrides.clone(),
+        contour_mode: rustwx_products::derived::NativeContourRenderMode::Automatic,
+        native_fill_level_multiplier: 1,
         output_width: config.output_width,
         output_height: config.output_height,
         png_compression: config.png_compression,
+        custom_poi_overlay: None,
+        place_label_overlay: None,
     };
     match run_direct_batch(&request) {
         Ok(report) => JobExecutionResult {
@@ -1290,24 +1317,29 @@ fn execute_derived(
             detail: Some("derived lane has no configured recipes".to_string()),
         };
     }
+    let domain = domain_from_region_slug(&job.key.region_slug);
     let request = DerivedBatchRequest {
         model: job.key.model,
         date_yyyymmdd: context.latest.cycle.date_yyyymmdd.clone(),
         cycle_override_utc: Some(context.latest.cycle.hour_utc),
         forecast_hour: job.key.forecast_hour,
         source: context.latest.source,
-        domain: domain_from_region_slug(&job.key.region_slug),
+        domain: domain.clone(),
         out_dir: config.out_dir.join(&job.key.region_slug),
         cache_root: config.cache_dir.clone(),
         use_cache: config.use_cache,
         recipe_slugs: context.derived_recipes.clone(),
-        surface_product_override: None,
-        pressure_product_override: None,
+        surface_product_override: config.surface_product_override.clone(),
+        pressure_product_override: config.pressure_product_override.clone(),
         source_mode: config.source_mode,
         allow_large_heavy_domain: false,
+        contour_mode: rustwx_products::derived::NativeContourRenderMode::Automatic,
+        native_fill_level_multiplier: 1,
         output_width: config.output_width,
         output_height: config.output_height,
         png_compression: config.png_compression,
+        custom_poi_overlay: None,
+        place_label_overlay: None,
     };
     match run_derived_batch(&request) {
         Ok(report) => JobExecutionResult {
@@ -1461,15 +1493,56 @@ fn filter_heavy_derived_recipes(recipes: Vec<String>, skip_ecape: bool) -> Vec<S
         .collect()
 }
 
+fn build_direct_product_overrides(
+    args: &Args,
+) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+    let mut parsed = parse_product_overrides(&args.product_overrides)?;
+    if args.models.iter().any(|model| *model == ModelId::WrfGdex) {
+        if let Some(product) = &args.surface_product {
+            parsed.insert("d612005-hist2d".to_string(), product.clone());
+        }
+        if let Some(product) = &args.pressure_product {
+            parsed.insert("d612005-hist3d".to_string(), product.clone());
+        }
+    }
+    Ok(parsed)
+}
+
+fn parse_product_overrides(
+    values: &[String],
+) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+    let mut parsed = HashMap::new();
+    for value in values {
+        let (planned, actual) = value.split_once('=').ok_or_else(|| {
+            format!("invalid --product-override '{value}', expected planned=actual")
+        })?;
+        let planned = planned.trim();
+        let actual = actual.trim();
+        if planned.is_empty() || actual.is_empty() {
+            return Err(format!(
+                "invalid --product-override '{value}', expected non-empty planned=actual"
+            )
+            .into());
+        }
+        parsed.insert(planned.to_string(), actual.to_string());
+    }
+    Ok(parsed)
+}
+
 fn default_direct_recipes() -> Vec<String> {
     vec![
         "composite_reflectivity",
         "2m_temperature_10m_winds",
         "2m_dewpoint_10m_winds",
-        "2m_relative_humidity",
+        "2m_relative_humidity_10m_winds",
+        "250mb_height_winds",
         "500mb_height_winds",
+        "250mb_temperature_height_winds",
         "700mb_height_winds",
         "850mb_height_winds",
+        "500mb_rh_height_winds",
+        "700mb_temperature_height_winds",
+        "850mb_temperature_height_winds",
         "mslp_10m_winds",
         "precipitable_water",
         "10m_wind_gusts",
@@ -1682,6 +1755,9 @@ mod tests {
             skip_derived: false,
             direct_recipes,
             derived_recipes,
+            surface_product_override: None,
+            pressure_product_override: None,
+            direct_product_overrides: HashMap::new(),
             token_budget: TokenBudget {
                 light: 1,
                 warm: 1,

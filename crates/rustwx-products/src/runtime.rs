@@ -16,7 +16,7 @@ use rustwx_core::{
     ModelRunRequest, RustwxError, SourceId,
 };
 use rustwx_io::{FetchRequest, fetch_bytes_with_cache};
-use rustwx_models::LatestRun;
+use rustwx_models::{LatestRun, default_bundle_product};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -622,17 +622,7 @@ fn default_planned_family_slug(
     model: rustwx_core::ModelId,
     bundle: CanonicalBundleDescriptor,
 ) -> &'static str {
-    use rustwx_core::ModelId;
-    match (model, bundle) {
-        (ModelId::Hrrr, CanonicalBundleDescriptor::SurfaceAnalysis) => "sfc",
-        (ModelId::Hrrr, CanonicalBundleDescriptor::PressureAnalysis) => "prs",
-        (ModelId::Hrrr, CanonicalBundleDescriptor::NativeAnalysis) => "nat",
-        (ModelId::Gfs, _) => "pgrb2.0p25",
-        (ModelId::EcmwfOpenData, _) => "oper",
-        (ModelId::RrfsA, CanonicalBundleDescriptor::SurfaceAnalysis) => "nat-na",
-        (ModelId::RrfsA, CanonicalBundleDescriptor::PressureAnalysis) => "prs-na",
-        (ModelId::RrfsA, CanonicalBundleDescriptor::NativeAnalysis) => "nat-na",
-    }
+    default_bundle_product(model, bundle)
 }
 
 #[cfg(test)]

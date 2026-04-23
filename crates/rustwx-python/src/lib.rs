@@ -3,11 +3,21 @@ pub fn python_bindings_enabled() -> bool {
 }
 
 #[cfg(feature = "python")]
+mod wrf_render;
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
 #[cfg(feature = "python")]
 use rustwx_core::{CycleSpec, ModelId, ModelRunRequest, SourceId};
 #[cfg(feature = "python")]
 use rustwx_io::{FetchRequest, available_forecast_hours, probe_sources};
+#[cfg(feature = "python")]
+use wrf_render::{
+    build_projected_basemap_overlays, build_projected_basemap_overlays_json,
+    describe_projected_geometry, describe_projected_geometry_json, describe_projected_projection,
+    describe_projected_projection_json, normalize_cross_section_request,
+    normalize_cross_section_request_json, render_projected_map, render_projected_map_json,
+    render_wrf_map, render_wrf_map_json,
+};
 
 #[cfg(feature = "python")]
 #[pyfunction]
@@ -146,5 +156,26 @@ fn rustwx_python(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> 
     module.add_function(wrap_pyfunction!(latest_run_json, module)?)?;
     module.add_function(wrap_pyfunction!(available_forecast_hours_json, module)?)?;
     module.add_function(wrap_pyfunction!(probe_sources_json, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        describe_projected_projection_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(describe_projected_projection, module)?)?;
+    module.add_function(wrap_pyfunction!(describe_projected_geometry_json, module)?)?;
+    module.add_function(wrap_pyfunction!(describe_projected_geometry, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        build_projected_basemap_overlays_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(build_projected_basemap_overlays, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        normalize_cross_section_request_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(normalize_cross_section_request, module)?)?;
+    module.add_function(wrap_pyfunction!(render_projected_map, module)?)?;
+    module.add_function(wrap_pyfunction!(render_projected_map_json, module)?)?;
+    module.add_function(wrap_pyfunction!(render_wrf_map, module)?)?;
+    module.add_function(wrap_pyfunction!(render_wrf_map_json, module)?)?;
     Ok(())
 }

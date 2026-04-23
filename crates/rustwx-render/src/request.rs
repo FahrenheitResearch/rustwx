@@ -1,6 +1,7 @@
 use crate::RustwxRenderError;
-use crate::colormap::{LegendControls, RenderDensity};
+use crate::colormap::{LegendControls, LegendMode, LevelDensity, RenderDensity};
 use crate::presentation::{LineworkRole, PolygonRole, ProductVisualMode};
+use crate::projected_map::{ProjectedBasemap, ProjectedMap};
 use rustwx_core as core;
 use serde::{Deserialize, Serialize};
 
@@ -299,8 +300,17 @@ pub struct DiscreteColorScale {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ColorScale {
-    Solar07(crate::solar07::Solar07Preset),
+    Weather(crate::weather::WeatherPreset),
     Discrete(DiscreteColorScale),
+}
+
+impl ColorScale {
+    pub fn resolved_discrete(&self) -> DiscreteColorScale {
+        match self {
+            Self::Weather(preset) => preset.scale(),
+            Self::Discrete(scale) => scale.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -325,6 +335,106 @@ pub struct ProjectedLineOverlay {
     pub width: u32,
     #[serde(default)]
     pub role: LineworkRole,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectedLabelPlacement {
+    Center,
+    Left,
+    Right,
+    Above,
+    Below,
+    AboveLeft,
+    #[default]
+    AboveRight,
+    BelowLeft,
+    BelowRight,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectedPlaceLabelPriority {
+    #[default]
+    Primary,
+    Auxiliary,
+    Micro,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectedPlaceLabelStyle {
+    pub marker_radius_px: u32,
+    pub marker_fill: Color,
+    pub marker_outline: Color,
+    pub marker_outline_width: u32,
+    pub label_color: Color,
+    pub label_halo: Color,
+    pub label_halo_width_px: u32,
+    pub label_scale: u32,
+    pub label_offset_x_px: i32,
+    pub label_offset_y_px: i32,
+    #[serde(default)]
+    pub label_placement: ProjectedLabelPlacement,
+    #[serde(default)]
+    pub label_bold: bool,
+}
+
+impl Default for ProjectedPlaceLabelStyle {
+    fn default() -> Self {
+        Self {
+            marker_radius_px: 3,
+            marker_fill: Color::rgba(255, 255, 255, 235),
+            marker_outline: Color::rgba(24, 28, 34, 240),
+            marker_outline_width: 1,
+            label_color: Color::rgba(24, 28, 34, 255),
+            label_halo: Color::rgba(255, 255, 255, 235),
+            label_halo_width_px: 2,
+            label_scale: 1,
+            label_offset_x_px: 6,
+            label_offset_y_px: -2,
+            label_placement: ProjectedLabelPlacement::AboveRight,
+            label_bold: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectedPlaceLabel {
+    pub x: f64,
+    pub y: f64,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub priority: ProjectedPlaceLabelPriority,
+    #[serde(default)]
+    pub style: ProjectedPlaceLabelStyle,
+}
+
+impl ProjectedPlaceLabel {
+    pub fn new(x: f64, y: f64) -> Self {
+        Self {
+            x,
+            y,
+            label: None,
+            priority: ProjectedPlaceLabelPriority::Primary,
+            style: ProjectedPlaceLabelStyle::default(),
+        }
+    }
+
+    pub fn with_label<S: Into<String>>(mut self, label: S) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn with_priority(mut self, priority: ProjectedPlaceLabelPriority) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    pub fn with_style(mut self, style: ProjectedPlaceLabelStyle) -> Self {
+        self.style = style;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -459,6 +569,7 @@ pub struct MapRenderRequest {
     pub colorbar: bool,
     pub title: Option<String>,
     pub subtitle_left: Option<String>,
+    pub subtitle_center: Option<String>,
     pub subtitle_right: Option<String>,
     pub cbar_tick_step: Option<f64>,
     #[serde(default)]
@@ -478,6 +589,11 @@ pub struct MapRenderRequest {
     /// data raster; ordering within the list is bottom-to-top.
     #[serde(default)]
     pub projected_polygons: Vec<ProjectedPolygonFill>,
+    /// Dynamic projected fill polygons drawn during the variable-data pass.
+    #[serde(default)]
+    pub projected_data_polygons: Vec<ProjectedPolygonFill>,
+    #[serde(default)]
+    pub projected_place_labels: Vec<ProjectedPlaceLabel>,
     pub projected_lines: Vec<ProjectedLineOverlay>,
     pub contours: Vec<ContourLayer>,
     pub wind_barbs: Vec<WindBarbLayer>,
@@ -500,6 +616,7 @@ impl MapRenderRequest {
             colorbar: true,
             title: None,
             subtitle_left: None,
+            subtitle_center: None,
             subtitle_right: None,
             cbar_tick_step: None,
             render_density: RenderDensity::default(),
@@ -510,6 +627,8 @@ impl MapRenderRequest {
             domain_frame: None,
             projected_domain: None,
             projected_polygons: Vec::new(),
+            projected_data_polygons: Vec::new(),
+            projected_place_labels: Vec::new(),
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),
@@ -521,8 +640,9 @@ impl MapRenderRequest {
         Self::new(field.into(), scale)
     }
 
-    pub fn for_solar07_product(field: Field2D, product: crate::solar07::Solar07Product) -> Self {
-        let mut request = Self::new(field, ColorScale::Solar07(product.scale_preset()));
+    pub fn for_weather_product(field: Field2D, product: crate::weather::WeatherProduct) -> Self {
+        let mut request = Self::new(field, ColorScale::Weather(product.scale_preset()));
+        apply_reference_discrete_defaults(&mut request);
         request.title = Some(product.display_title().to_string());
         request.cbar_tick_step = product.default_tick_step();
         request.semantics = Some(product.semantics());
@@ -534,18 +654,19 @@ impl MapRenderRequest {
         request
     }
 
-    pub fn for_core_solar07_product(
+    pub fn for_core_weather_product(
         field: core::Field2D,
-        product: crate::solar07::Solar07Product,
+        product: crate::weather::WeatherProduct,
     ) -> Self {
-        Self::for_solar07_product(field.into(), product)
+        Self::for_weather_product(field.into(), product)
     }
 
     pub fn for_derived_product(
         field: Field2D,
-        product: crate::solar07::DerivedProductStyle,
+        product: crate::weather::DerivedProductStyle,
     ) -> Self {
         let mut request = Self::new(field, ColorScale::Discrete(product.scale()));
+        apply_reference_discrete_defaults(&mut request);
         request.title = Some(product.display_title().to_string());
         request.cbar_tick_step = product.default_tick_step();
         request.semantics = Some(product.semantics());
@@ -560,21 +681,23 @@ impl MapRenderRequest {
 
     pub fn for_core_derived_product(
         field: core::Field2D,
-        product: crate::solar07::DerivedProductStyle,
+        product: crate::weather::DerivedProductStyle,
     ) -> Self {
         Self::for_derived_product(field.into(), product)
     }
 
     pub fn for_palette_fill(
         field: Field2D,
-        palette: crate::solar07::Solar07Palette,
+        palette: crate::weather::WeatherPalette,
         levels: Vec<f64>,
         extend: ExtendMode,
     ) -> Self {
-        Self::new(
+        let mut request = Self::new(
             field,
-            ColorScale::Discrete(crate::solar07::palette_scale(palette, levels, extend, None)),
-        )
+            ColorScale::Discrete(crate::weather::palette_scale(palette, levels, extend, None)),
+        );
+        apply_reference_discrete_defaults(&mut request);
+        request
     }
 
     pub fn contour_only(field: Field2D) -> Self {
@@ -609,6 +732,49 @@ impl MapRenderRequest {
             });
         self.product_metadata = Some(metadata.with_provenance(provenance.clone()));
         self.semantics = Some(provenance.into());
+        self
+    }
+
+    pub fn set_projected_domain(&mut self, domain: ProjectedDomain) -> &mut Self {
+        self.projected_domain = Some(domain);
+        self
+    }
+
+    pub fn with_projected_domain(mut self, domain: ProjectedDomain) -> Self {
+        self.projected_domain = Some(domain);
+        self
+    }
+
+    pub fn apply_projected_basemap(&mut self, basemap: &ProjectedBasemap) -> &mut Self {
+        self.projected_lines = basemap.lines.clone();
+        self.projected_polygons = basemap.polygons.clone();
+        self
+    }
+
+    pub fn with_projected_basemap(mut self, basemap: &ProjectedBasemap) -> Self {
+        self.apply_projected_basemap(basemap);
+        self
+    }
+
+    pub fn apply_projected_map(&mut self, projected: &ProjectedMap) -> &mut Self {
+        self.projected_domain = Some(projected.domain());
+        self.projected_lines = projected.lines.clone();
+        self.projected_polygons = projected.polygons.clone();
+        self
+    }
+
+    pub fn with_projected_map(mut self, projected: &ProjectedMap) -> Self {
+        self.apply_projected_map(projected);
+        self
+    }
+
+    pub fn add_projected_place_label(&mut self, place_label: ProjectedPlaceLabel) -> &mut Self {
+        self.projected_place_labels.push(place_label);
+        self
+    }
+
+    pub fn with_projected_place_label(mut self, place_label: ProjectedPlaceLabel) -> Self {
+        self.projected_place_labels.push(place_label);
         self
     }
 
@@ -678,6 +844,17 @@ impl MapRenderRequest {
     }
 }
 
+fn apply_reference_discrete_defaults(request: &mut MapRenderRequest) {
+    request.render_density = RenderDensity {
+        fill: LevelDensity::default(),
+        palette_multiplier: 1,
+    };
+    request.legend = LegendControls {
+        density: LevelDensity::default(),
+        mode: LegendMode::Stepped,
+    };
+}
+
 fn ensure_same_grid(
     base: &Field2D,
     overlay: &Field2D,
@@ -706,7 +883,7 @@ fn is_blank_fill_scale(scale: &ColorScale) -> bool {
                 && scale.extend == ExtendMode::Neither
                 && scale.mask_below.is_none()
         }
-        ColorScale::Solar07(_) => false,
+        ColorScale::Weather(_) => false,
     }
 }
 
@@ -817,16 +994,16 @@ mod tests {
     }
 
     #[test]
-    fn solar07_builder_accepts_core_field() {
+    fn weather_builder_accepts_core_field() {
         let core_field: core::Field2D = sample_render_field().into();
-        let request = MapRenderRequest::for_core_solar07_product(
+        let request = MapRenderRequest::for_core_weather_product(
             core_field,
-            crate::solar07::Solar07Product::Mlecape,
+            crate::weather::WeatherProduct::Mlecape,
         );
 
         assert!(matches!(
             request.scale,
-            ColorScale::Solar07(crate::solar07::Solar07Preset::Cape)
+            ColorScale::Weather(crate::weather::WeatherPreset::Cape)
         ));
         assert_eq!(request.title.as_deref(), Some("MLECAPE"));
         assert_eq!(request.cbar_tick_step, Some(500.0));
@@ -852,6 +1029,33 @@ mod tests {
             ColorScale::Discrete(scale) => assert_eq!(scale.colors, vec![Color::TRANSPARENT]),
             _ => panic!("expected discrete blank fill scale"),
         }
+    }
+
+    #[test]
+    fn projected_place_label_defaults_to_city_friendly_marker_and_label_style() {
+        let label = ProjectedPlaceLabel::new(12.5, -97.25).with_label("Norman");
+
+        assert_eq!(label.x, 12.5);
+        assert_eq!(label.y, -97.25);
+        assert_eq!(label.label.as_deref(), Some("Norman"));
+        assert_eq!(label.priority, ProjectedPlaceLabelPriority::Primary);
+        assert_eq!(
+            label.style.label_placement,
+            ProjectedLabelPlacement::AboveRight
+        );
+        assert_eq!(label.style.marker_radius_px, 3);
+        assert_eq!(label.style.label_scale, 1);
+        assert!(!label.style.label_bold);
+    }
+
+    #[test]
+    fn new_render_requests_start_without_projected_place_labels() {
+        let request = MapRenderRequest::new(
+            sample_render_field(),
+            ColorScale::Weather(crate::weather::WeatherPreset::Cape),
+        );
+
+        assert!(request.projected_place_labels.is_empty());
     }
 
     #[test]
@@ -883,7 +1087,7 @@ mod tests {
     fn palette_fill_builder_uses_requested_palette_scale() {
         let request = MapRenderRequest::for_palette_fill(
             sample_render_field(),
-            crate::solar07::Solar07Palette::Temperature,
+            crate::weather::WeatherPalette::Temperature,
             vec![-40.0, -20.0, 0.0, 20.0, 40.0],
             ExtendMode::Both,
         );
@@ -899,10 +1103,30 @@ mod tests {
     }
 
     #[test]
+    fn weather_family_builders_default_to_reference_stepped_density() {
+        let weather = MapRenderRequest::for_weather_product(
+            sample_render_field(),
+            crate::weather::WeatherProduct::Sbcape,
+        );
+        assert_eq!(weather.render_density.fill, LevelDensity::default());
+        assert_eq!(weather.render_density.palette_multiplier, 1);
+        assert_eq!(weather.legend.density, LevelDensity::default());
+        assert_eq!(weather.legend.mode, LegendMode::Stepped);
+
+        let derived = MapRenderRequest::for_derived_product(
+            sample_render_field(),
+            crate::weather::DerivedProductStyle::BulkShear06km,
+        );
+        assert_eq!(derived.render_density.fill, LevelDensity::default());
+        assert_eq!(derived.render_density.palette_multiplier, 1);
+        assert_eq!(derived.legend.mode, LegendMode::Stepped);
+    }
+
+    #[test]
     fn derived_builder_sets_titles_scale_and_tick_steps() {
         let request = MapRenderRequest::for_derived_product(
             sample_render_field(),
-            crate::solar07::DerivedProductStyle::BulkShear06km,
+            crate::weather::DerivedProductStyle::BulkShear06km,
         );
 
         assert_eq!(request.title.as_deref(), Some("0-6 KM BULK SHEAR"));
@@ -940,6 +1164,43 @@ mod tests {
         assert_eq!(semantics.maturity, ProductMaturity::Proof);
         assert!(semantics.has_flag(ProductSemanticFlag::ProofOriented));
         assert!(semantics.has_flag(ProductSemanticFlag::Proxy));
+    }
+
+    #[test]
+    fn projected_map_helpers_apply_domain_and_basemap_together() {
+        let projected = ProjectedMap {
+            projected_x: vec![0.0, 1.0, 2.0],
+            projected_y: vec![0.0, 1.0, 2.0],
+            extent: ProjectedExtent {
+                x_min: 0.0,
+                x_max: 2.0,
+                y_min: 0.0,
+                y_max: 2.0,
+            },
+            lines: vec![ProjectedLineOverlay {
+                points: vec![(0.0, 0.0), (1.0, 1.0)],
+                color: Color::BLACK,
+                width: 2,
+                role: LineworkRole::Generic,
+            }],
+            polygons: vec![ProjectedPolygonFill {
+                rings: vec![vec![(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]],
+                color: Color::WHITE,
+                role: PolygonRole::Generic,
+            }],
+        };
+
+        let request =
+            MapRenderRequest::contour_only(sample_render_field()).with_projected_map(&projected);
+        assert_eq!(
+            request
+                .projected_domain
+                .as_ref()
+                .map(|domain| domain.x.clone()),
+            Some(vec![0.0, 1.0, 2.0])
+        );
+        assert_eq!(request.projected_lines.len(), 1);
+        assert_eq!(request.projected_polygons.len(), 1);
     }
 
     #[test]

@@ -15,7 +15,7 @@ use crate::windowed::{HrrrWindowedProduct, HrrrWindowedProductMetadata};
 use grib_core::grib2::{Grib2File, Grib2Message, unpack_message_normalized};
 use rustwx_calc::{max_window_fields, sum_window_fields};
 use rustwx_core::{Field2D, ProductKey};
-use rustwx_render::{ColorScale, ExtendMode, Solar07Palette, Solar07Product, palette_scale};
+use rustwx_render::{ColorScale, ExtendMode, WeatherPalette, WeatherProduct, palette_scale};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -300,7 +300,7 @@ pub(crate) fn compute_uh_product(
             contributing_forecast_hours: contributing_hours,
             window_hours,
         },
-        scale: ColorScale::Solar07(Solar07Product::Uh.scale_preset()),
+        scale: ColorScale::Weather(WeatherProduct::Uh.scale_preset()),
     })
 }
 
@@ -359,7 +359,7 @@ pub(crate) fn select_window(records: &[WindowedFieldRecord], hours: u16) -> Opti
 
 pub(crate) fn qpf_scale() -> rustwx_render::DiscreteColorScale {
     palette_scale(
-        Solar07Palette::Precip,
+        WeatherPalette::Precip,
         vec![
             0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0,
         ],

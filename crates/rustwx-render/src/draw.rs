@@ -45,13 +45,61 @@ fn blend_pixel_coverage(img: &mut RgbaImage, x: i32, y: i32, color: Rgba, covera
     );
 }
 
-fn draw_disc(img: &mut RgbaImage, x: i32, y: i32, radius: i32, color: Rgba) {
-    let r = radius.max(0);
-    for dy in -r..=r {
-        for dx in -r..=r {
-            if dx * dx + dy * dy <= r * r {
-                blend_pixel(img, x + dx, y + dy, color);
-            }
+pub fn draw_circle_fill_aa(img: &mut RgbaImage, cx: f64, cy: f64, radius: f64, color: Rgba) {
+    if !cx.is_finite() || !cy.is_finite() || !radius.is_finite() || radius <= 0.0 || color.a == 0 {
+        return;
+    }
+
+    let radius = radius.max(0.0);
+    let bounds = radius + 1.0;
+    let min_x = (cx - bounds).floor() as i32;
+    let max_x = (cx + bounds).ceil() as i32;
+    let min_y = (cy - bounds).floor() as i32;
+    let max_y = (cy + bounds).ceil() as i32;
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let dx = (x as f64 + 0.5) - cx;
+            let dy = (y as f64 + 0.5) - cy;
+            let distance = (dx * dx + dy * dy).sqrt();
+            let coverage = (radius + 0.5 - distance).clamp(0.0, 1.0);
+            blend_pixel_coverage(img, x, y, color, coverage);
+        }
+    }
+}
+
+pub fn draw_circle_stroke_aa(
+    img: &mut RgbaImage,
+    cx: f64,
+    cy: f64,
+    radius: f64,
+    color: Rgba,
+    width: u32,
+) {
+    if !cx.is_finite()
+        || !cy.is_finite()
+        || !radius.is_finite()
+        || radius <= 0.0
+        || color.a == 0
+        || width == 0
+    {
+        return;
+    }
+
+    let half_width = width.max(1) as f64 * 0.5;
+    let bounds = radius + half_width + 1.0;
+    let min_x = (cx - bounds).floor() as i32;
+    let max_x = (cx + bounds).ceil() as i32;
+    let min_y = (cy - bounds).floor() as i32;
+    let max_y = (cy + bounds).ceil() as i32;
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let dx = (x as f64 + 0.5) - cx;
+            let dy = (y as f64 + 0.5) - cy;
+            let distance = (dx * dx + dy * dy).sqrt();
+            let coverage = (half_width + 0.5 - (distance - radius).abs()).clamp(0.0, 1.0);
+            blend_pixel_coverage(img, x, y, color, coverage);
         }
     }
 }
@@ -279,7 +327,7 @@ pub fn draw_wind_barb(
 
     let speed = (u * u + v * v).sqrt();
     if speed < 2.5 {
-        draw_disc(img, x_tip.round() as i32, y_tip.round() as i32, 2, color);
+        draw_circle_fill_aa(img, x_tip, y_tip, 2.0, color);
         return;
     }
 
@@ -413,6 +461,28 @@ mod tests {
         }
 
         assert!(blended_neighbor_found);
+    }
+
+    #[test]
+    fn anti_aliased_circle_fill_blends_edge_pixels() {
+        let mut img = RgbaImage::from_pixel(24, 24, image::Rgba([255, 255, 255, 255]));
+        draw_circle_fill_aa(&mut img, 12.0, 12.0, 5.5, Rgba::BLACK);
+
+        let blended = img
+            .pixels()
+            .any(|pixel| pixel.0[..3] != [255, 255, 255] && pixel.0[..3] != [0, 0, 0]);
+        assert!(blended);
+    }
+
+    #[test]
+    fn anti_aliased_circle_stroke_blends_edge_pixels() {
+        let mut img = RgbaImage::from_pixel(24, 24, image::Rgba([255, 255, 255, 255]));
+        draw_circle_stroke_aa(&mut img, 12.0, 12.0, 6.0, Rgba::BLACK, 2);
+
+        let blended = img
+            .pixels()
+            .any(|pixel| pixel.0[..3] != [255, 255, 255] && pixel.0[..3] != [0, 0, 0]);
+        assert!(blended);
     }
 }
 

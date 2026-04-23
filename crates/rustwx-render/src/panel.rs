@@ -263,7 +263,7 @@ mod tests {
         .unwrap();
         let mut request = MapRenderRequest::new(
             field,
-            ColorScale::Solar07(crate::solar07::Solar07Preset::Cape),
+            ColorScale::Weather(crate::weather::WeatherPreset::Cape),
         );
         request.width = width;
         request.height = height;

@@ -14,82 +14,73 @@ Current top-level commands:
 - `probe`
 - `fetch`
 
-## Proof binaries
+## Proof binaries that matter right now
 
-This crate also contains targeted proof executables such as:
-
-- `direct_batch`
-- `derived_batch`
-- `ecape8_batch`
-- `heavy_panel_hour`
-- `plot_recipe_proof`
-- `hrrr_ecape8`
-- `hrrr_severe_proof`
-- `hrrr_batch`
-- `hrrr_direct_batch`
-- `hrrr_derived_batch`
-- `hrrr_windowed_batch`
-- `non_ecape_hour`
-- `product_catalog`
-- `proof_gallery`
-
-These are currently the fastest way to validate new model/selector/render wiring.
-`derived_batch` / `hrrr_derived_batch` are now the canonical per-map lane for
-derived, severe-style, and ECAPE-style products. `ecape8_batch` remains as a
-convenience bundle runner for the full ECAPE family.
-
-For HRRR operator-facing batch generation, the main non-ECAPE hour runner now
-defaults to `NOMADS` and the full-family ingest path.
+- `hrrr_native_proof`
+  - Current bounded HRRR weather-native proof runner.
+  - Default suite currently selects only `conus_contour`.
+  - Add `--case` to widen coverage with `midwest-core` and `southern-plains-severe`.
+  - `--mode custom` keeps ad hoc single-region reruns.
+  - Also runs the bounded HRRR cross-section proof lane and writes summary plus cross-section hook JSON.
+- `hrrr_temperature_xsection`
+  - Standalone real-data HRRR cross-section proof runner.
+  - Supports `temperature`, `relative_humidity`, `theta_e`, and `wind_speed` through the shared `rustwx_cli::cross_section_proof` module.
+  - Exposes optional `--palette` overrides on top of the public `rustwx-cross-section` palette catalog.
+- `weather_native_bench`
+  - Release-mode benchmark/profiling runner for the native contour map lane.
+  - Compares Rust native contour render timings against forced legacy raster renders and Python `matplotlib/cartopy` equivalents on the same cached HRRR fields.
+  - Current default benchmark set is `stp_fixed`, `sbcape`, and `srh_0_1km`; writes PNGs plus summary JSON/Markdown under `proof/bench/`.
+- `hrrr_derived_batch` / `derived_batch`
+  - Best lane for iterating derived weather-native maps.
+  - Native projected contour-filled derived products are currently `stp_fixed`, `sbcape`, `mlcape`, `srh_0_1km`, `srh_0_3km`, `ehi_0_1km`, and `ehi_0_3km`.
+- `hrrr_direct_batch` / `direct_batch`
+  - Direct field proof lane.
+  - Useful for contour-sensitive projected products such as `mslp_10m_winds` that still use the standard `rustwx-render` contour/overlay path.
+- `product_catalog` and `proof_gallery`
+  - Small inspection helpers for published proof output.
 
 ## Current limits
 
-- the main CLI and proof binaries are still separate
-- proof binaries are specialized, not a final user-facing product interface
+- The main CLI and the proof binaries are still separate surfaces.
+- Native projected contour-fill is live for the derived products above, not yet for every direct/synoptic contour product.
+- The real-data cross-section proof lane now covers a small multi-product family, but it is still pressure-axis only and not yet the full `wxsection_ref` product inventory.
 
-## Minimal example
+## Minimal examples
 
 ```powershell
 cargo run -p rustwx-cli -- list
 ```
 
 ```powershell
-cargo run -p rustwx-cli --bin hrrr_batch -- --product severe-proof,ecape8
+cargo run -p rustwx-cli --release --bin hrrr_native_proof -- --date 20260414 --cycle 23 --forecast-hour 0 --out-dir proof
 ```
 
 ```powershell
-cargo run -p rustwx-cli --bin direct_batch -- --model gfs --all-supported --date 20260414 --cycle 18 --forecast-hour 12 --region midwest
+cargo run -p rustwx-cli --release --bin hrrr_native_proof -- --case conus-contour,southern-plains-severe --date 20260414 --cycle 23 --forecast-hour 0 --out-dir proof
 ```
 
 ```powershell
-cargo run -p rustwx-cli --bin derived_batch -- --model rrfs-a --all-supported --date 20260414 --cycle 20 --forecast-hour 2 --source aws --region midwest
+cargo run -p rustwx-cli --release --bin hrrr_native_proof -- --mode custom --date 20260414 --cycle 23 --forecast-hour 0 --region southern-plains --direct-recipe 500mb_temperature_height_winds --derived-recipe stp_fixed,sbcape --out-dir proof
 ```
 
 ```powershell
-cargo run -p rustwx-cli --bin derived_batch -- --model ecmwf-open-data --recipe sbecape,mlecape,muecape,sbncape,sbecin,mlecin,ecape_scp,ecape_ehi --date 20260414 --cycle 12 --forecast-hour 6 --source ecmwf --region midwest
+cargo run -p rustwx-cli --release --bin hrrr_temperature_xsection -- --date 20260414 --cycle 23 --forecast-hour 0 --out-dir proof
 ```
 
 ```powershell
-cargo run -p rustwx-cli --bin heavy_panel_hour -- --model hrrr --date 20260414 --cycle 23 --forecast-hour 1 --region midwest
+cargo run -p rustwx-cli --release --bin hrrr_temperature_xsection -- --product wind-speed --date 20260414 --cycle 23 --forecast-hour 0 --out-dir proof
 ```
 
 ```powershell
-cargo run -p rustwx-cli --bin hrrr_direct_batch -- --recipe 500mb_temperature_height_winds,700mb_temperature_height_winds,composite_reflectivity
+cargo run -p rustwx-cli --release --bin weather_native_bench -- --date 20260414 --cycle 23 --forecast-hour 0 --region southern-plains --product stp_fixed,sbcape,srh_0_1km --rust-runs 5 --python-runs 3 --out-dir proof
 ```
 
 ```powershell
-cargo run -p rustwx-cli --bin hrrr_derived_batch -- --recipe sbcape,stp_fixed,sbecape,ecape_scp,temperature_advection_700mb
+cargo run -p rustwx-cli --bin hrrr_derived_batch -- --recipe stp_fixed,sbcape,mlcape,srh_0_1km,ehi_0_1km
 ```
 
 ```powershell
-cargo run -p rustwx-cli --bin hrrr_windowed_batch -- --forecast-hour 6 --product qpf6h,qpf-total,uh25km-run-max
-```
-
-```powershell
-cargo run -p rustwx-cli --release --bin hrrr_non_ecape_hour -- --date 20260414 --cycle 23 --forecast-hour 1 --region conus
-```
-
-```powershell
-cargo run -p rustwx-cli --release --bin non_ecape_hour -- --model gfs --date 20260414 --cycle 18 --forecast-hour 12 --region midwest
+cargo run -p rustwx-cli --bin hrrr_direct_batch -- --recipe mslp_10m_winds,500mb_temperature_height_winds,composite_reflectivity
 ```
 
 ```powershell

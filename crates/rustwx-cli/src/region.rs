@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use clap::ValueEnum;
 use rustwx_products::shared_context::DomainSpec;
 

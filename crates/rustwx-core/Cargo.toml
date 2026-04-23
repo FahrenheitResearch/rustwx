@@ -10,3 +10,6 @@ rust-version.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+bincode = "1.3"
+
