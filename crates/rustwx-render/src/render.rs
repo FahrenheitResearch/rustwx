@@ -16,7 +16,7 @@ use image::ExtendedColorType;
 use image::ImageEncoder;
 use image::RgbaImage;
 use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
-use image::imageops::{FilterType, crop_imm, resize};
+use image::imageops::{FilterType, crop_imm, filter3x3, resize};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
@@ -278,16 +278,13 @@ fn compute_layout(
         TitleAnchor::Left => text::regular_line_height(text_scale),
     };
     let subtitle_line_h = text::regular_line_height(text_scale);
-    let header_top_pad = scale_u32(3, chrome_scale);
-    let header_line_gap = scale_u32(2, chrome_scale);
-    let header_bottom_pad = scale_u32(2, chrome_scale);
+    let header_top_pad = scale_u32(5, chrome_scale);
+    let header_bottom_pad = scale_u32(5, chrome_scale);
     let map_x = metrics.margin_x.min(total_w.saturating_sub(1));
     let title_h = if has_title {
         metrics.title_h.max(
             header_top_pad
-                .saturating_add(title_line_h)
-                .saturating_add(header_line_gap)
-                .saturating_add(subtitle_line_h)
+                .saturating_add(title_line_h.max(subtitle_line_h))
                 .saturating_add(header_bottom_pad),
         )
     } else {
@@ -344,15 +341,9 @@ fn compute_layout(
         cbar_w,
         cbar_h,
         title_y: if has_title { header_top_pad } else { 0 },
-        subtitle_y: if has_title {
-            header_top_pad
-                .saturating_add(title_line_h)
-                .saturating_add(header_line_gap)
-        } else {
-            0
-        },
+        subtitle_y: if has_title { header_top_pad } else { 0 },
         text_scale,
-        label_gap: scale_u32(10, chrome_scale),
+        label_gap: scale_u32(12, chrome_scale),
     }
 }
 
@@ -391,7 +382,9 @@ fn scaled_layout_metrics(
 }
 
 fn text_scale_from_chrome(chrome_scale: f32) -> u32 {
-    (chrome_scale.round().clamp(1.0, 4.0) as u32).max(1)
+    ((chrome_scale * 3.0).ceil() as u32)
+        .saturating_add(1)
+        .clamp(3, 12)
 }
 
 pub fn map_frame_aspect_ratio(total_w: u32, total_h: u32, has_cbar: bool, has_title: bool) -> f64 {
@@ -1602,17 +1595,45 @@ fn chrome_anchor_rows(
     if matches!(frame, Some(frame) if frame.chrome_follows_frame) {
         if let Some(rect) = frame_rect {
             let frame_top = layout.map_y + rect.min_y;
-            let subtitle_h = text::regular_line_height(layout.text_scale);
-            let title_h = text::bold_line_height(layout.text_scale);
-            let subtitle_gap = 6u32.saturating_mul(layout.text_scale.max(1));
-            let title_gap = 4u32.saturating_mul(layout.text_scale.max(1));
-            let subtitle_y = frame_top.saturating_sub(subtitle_h.saturating_add(subtitle_gap));
-            let title_y = subtitle_y.saturating_sub(title_h.saturating_add(title_gap));
-            return (title_y, subtitle_y);
+            let row_h = text::bold_line_height(layout.text_scale)
+                .max(text::regular_line_height(layout.text_scale));
+            let row_gap = 8u32.saturating_mul(layout.text_scale.max(1));
+            let row_y = frame_top.saturating_sub(row_h.saturating_add(row_gap));
+            return (row_y, row_y);
         }
     }
 
     (layout.title_y, layout.subtitle_y)
+}
+
+fn joined_subtitle_metadata(opts: &RenderOpts) -> Option<String> {
+    let mut parts = Vec::with_capacity(3);
+    if let Some(text) = opts
+        .subtitle_left
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        parts.push(text);
+    }
+    if let Some(text) = opts
+        .subtitle_center
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        parts.push(text);
+    }
+    if let Some(text) = opts
+        .subtitle_right
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        parts.push(text);
+    }
+
+    (!parts.is_empty()).then(|| parts.join(" | "))
 }
 
 fn colorbar_anchor_rect(
@@ -2474,119 +2495,49 @@ fn draw_chrome_and_colorbar(
     let (title_y, subtitle_y) = chrome_anchor_rows(layout, opts.domain_frame, domain_frame_rect);
     let title_color = opts.presentation.chrome.title_color;
     let subtitle_color = opts.presentation.chrome.subtitle_color;
-    if let Some(ref t) = opts.title {
-        match opts.presentation.chrome.title_anchor {
-            TitleAnchor::Center => {
-                let title = ellipsize_text_to_width(
-                    t,
-                    chrome_right.saturating_sub(chrome_left).max(1),
-                    layout.text_scale,
-                    true,
-                );
-                text::draw_text_bold(
-                    img,
-                    &title,
-                    centered_text_left(&title, chrome_center, layout.text_scale, true),
-                    title_y as i32,
-                    title_color,
-                    layout.text_scale,
-                );
-            }
-            TitleAnchor::Left => {
-                let title = ellipsize_text_to_width(
-                    t,
-                    chrome_right.saturating_sub(chrome_left).max(1),
-                    layout.text_scale,
-                    false,
-                );
-                text::draw_text(
-                    img,
-                    &title,
-                    chrome_left as i32,
-                    title_y as i32,
-                    title_color,
-                    layout.text_scale,
-                );
-            }
-        }
+    let metadata = joined_subtitle_metadata(opts);
+    let row_gap = 14u32.saturating_mul(layout.text_scale.max(1));
+    let row_width = chrome_right.saturating_sub(chrome_left).max(1);
+    let metadata_width_limit = if opts.title.is_some() {
+        row_width.saturating_mul(2).checked_div(5).unwrap_or(1)
+    } else {
+        row_width
     }
-    let subtitle_pair_gap = 8u32.saturating_mul(layout.text_scale.max(1));
-    let center_subtitle_gap = 10u32.saturating_mul(layout.text_scale.max(1));
-    let center_subtitle = opts.subtitle_center.as_ref().map(|text| {
-        let max_width = chrome_right
-            .saturating_sub(chrome_left)
-            .saturating_mul(2)
-            .checked_div(5)
-            .unwrap_or(1)
-            .max(1);
-        ellipsize_text_to_width(text, max_width, layout.text_scale, false)
-    });
-    let center_subtitle_width = center_subtitle
+    .max(1);
+    let fitted_metadata = metadata
+        .map(|text| ellipsize_text_to_width(&text, metadata_width_limit, layout.text_scale, false));
+    let metadata_width = fitted_metadata
         .as_ref()
         .map(|text| text::text_width(text, layout.text_scale) as u32)
         .unwrap_or(0);
-    let center_left_bound = if center_subtitle.is_some() {
-        chrome_center
-            .saturating_sub(center_subtitle_width / 2)
-            .saturating_sub(center_subtitle_gap)
-    } else {
-        chrome_center
-    };
-    let center_right_bound = if center_subtitle.is_some() {
-        chrome_center
-            .saturating_add(center_subtitle_width / 2)
-            .saturating_add(center_subtitle_gap)
-            .min(chrome_right)
-    } else {
-        chrome_center
-    };
-    let left_subtitle_width = if opts.subtitle_left.is_some() && opts.subtitle_right.is_some() {
-        center_left_bound
-            .saturating_sub(chrome_left)
-            .saturating_sub(subtitle_pair_gap)
-            .max(1)
-    } else if center_subtitle.is_some() {
-        center_left_bound.saturating_sub(chrome_left).max(1)
-    } else {
-        chrome_right.saturating_sub(chrome_left).max(1)
-    };
-    let right_subtitle_width = if opts.subtitle_left.is_some() && opts.subtitle_right.is_some() {
-        chrome_right
-            .saturating_sub(center_right_bound)
-            .saturating_sub(subtitle_pair_gap)
-            .max(1)
-    } else if center_subtitle.is_some() {
-        chrome_right.saturating_sub(center_right_bound).max(1)
-    } else {
-        chrome_right.saturating_sub(chrome_left).max(1)
-    };
-    if let Some(ref t) = opts.subtitle_left {
-        let subtitle = ellipsize_text_to_width(t, left_subtitle_width, layout.text_scale, false);
-        text::draw_text(
+    let title_width_limit = row_width
+        .saturating_sub(metadata_width)
+        .saturating_sub(if metadata_width > 0 { row_gap } else { 0 })
+        .max(1);
+
+    if let Some(ref t) = opts.title {
+        let title = ellipsize_text_to_width(t, title_width_limit, layout.text_scale, true);
+        let title_x = if fitted_metadata.is_none()
+            && matches!(opts.presentation.chrome.title_anchor, TitleAnchor::Center)
+        {
+            centered_text_left(&title, chrome_center, layout.text_scale, true)
+        } else {
+            chrome_left as i32
+        };
+        text::draw_text_bold(
             img,
-            &subtitle,
-            chrome_left as i32,
-            subtitle_y as i32,
-            subtitle_color,
+            &title,
+            title_x,
+            title_y as i32,
+            title_color,
             layout.text_scale,
         );
     }
-    if let Some(ref t) = opts.subtitle_right {
-        let subtitle = ellipsize_text_to_width(t, right_subtitle_width, layout.text_scale, false);
+    if let Some(ref metadata) = fitted_metadata {
         text::draw_text_right(
             img,
-            &subtitle,
+            metadata,
             chrome_right as i32,
-            subtitle_y as i32,
-            subtitle_color,
-            layout.text_scale,
-        );
-    }
-    if let Some(ref subtitle) = center_subtitle {
-        text::draw_text(
-            img,
-            subtitle,
-            centered_text_left(subtitle, chrome_center, layout.text_scale, false),
             subtitle_y as i32,
             subtitle_color,
             layout.text_scale,
@@ -2864,10 +2815,18 @@ pub fn render_to_image_profile(
     let (hires, mut timing) = render_to_image_profile_inner(data, ny, nx, &scaled_opts);
     let downsample_start = Instant::now();
     let image = resize(&hires, opts.width, opts.height, FilterType::Lanczos3);
+    let image = sharpen_downsampled_image(&image);
     timing.downsample_ms = downsample_start.elapsed().as_millis();
     timing.postprocess_ms = timing.downsample_ms;
     timing.total_ms = total_start.elapsed().as_millis();
     (image, timing)
+}
+
+fn sharpen_downsampled_image(image: &RgbaImage) -> RgbaImage {
+    filter3x3(
+        image,
+        &[0.0, -0.22, 0.0, -0.22, 1.88, -0.22, 0.0, -0.22, 0.0],
+    )
 }
 
 pub fn render_to_image(data: &[f64], ny: usize, nx: usize, opts: &RenderOpts) -> RgbaImage {
@@ -3481,12 +3440,13 @@ mod tests {
 
         let (title_y, subtitle_y) = chrome_anchor_rows(&layout, Some(frame), Some(rect));
         let frame_top = layout.map_y + rect.min_y;
-        let max_gap = text::regular_line_height(layout.text_scale)
-            .saturating_add(6u32.saturating_mul(layout.text_scale.max(1)));
+        let max_gap = text::bold_line_height(layout.text_scale)
+            .max(text::regular_line_height(layout.text_scale))
+            .saturating_add(8u32.saturating_mul(layout.text_scale.max(1)));
 
-        assert!(title_y < subtitle_y);
-        assert!(subtitle_y < frame_top);
-        assert!(frame_top.saturating_sub(subtitle_y) <= max_gap);
+        assert_eq!(title_y, subtitle_y);
+        assert!(title_y < frame_top);
+        assert!(frame_top.saturating_sub(title_y) <= max_gap);
     }
 
     #[test]
@@ -3662,9 +3622,9 @@ mod tests {
             ChromeScale::Fixed(1.0),
         );
 
-        assert_eq!(layout.map_y, 34);
-        assert_eq!(layout.title_y, 3);
-        assert_eq!(layout.subtitle_y, 17);
+        assert_eq!(layout.map_y, 42);
+        assert_eq!(layout.title_y, 5);
+        assert_eq!(layout.subtitle_y, 5);
         assert_eq!(layout.cbar_y + layout.cbar_h, 892);
     }
 
