@@ -473,13 +473,14 @@ fn dewpoint_from_vapor_pressure(vapor_pressure_pa: f64) -> f64 {
 }
 
 fn dewpoint_from_specific_humidity(pressure_pa: f64, qv_kgkg: f64) -> f64 {
-    dewpoint_from_vapor_pressure(vapor_pressure_from_specific_humidity(pressure_pa, qv_kgkg))
+    wx_math::thermo::dewpoint_from_specific_humidity(pressure_pa / 100.0, qv_kgkg) + KELVIN_OFFSET
 }
 
 fn specific_humidity_from_dewpoint(pressure_pa: f64, dewpoint_k: f64) -> f64 {
-    let vapor_pressure_pa =
-        611.2 * ((17.67 * (dewpoint_k - KELVIN_OFFSET)) / (dewpoint_k - 29.65)).exp();
-    specific_humidity_from_vapor_pressure(pressure_pa, vapor_pressure_pa)
+    wx_math::thermo::specific_humidity_from_dewpoint(
+        pressure_pa / 100.0,
+        dewpoint_k - KELVIN_OFFSET,
+    )
 }
 
 fn potential_temperature(temp_k: f64, pressure_pa: f64) -> f64 {
@@ -946,33 +947,54 @@ fn profile_to_met_inputs(
     (pressure_hpa, temperature_c, dewpoint_c)
 }
 
+fn profile_to_met_inputs_from_dewpoint(
+    pressure_pa: &[f64],
+    temperature_k: &[f64],
+    dewpoint_k: &[f64],
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let pressure_hpa: Vec<f64> = pressure_pa.iter().map(|p| p / 100.0).collect();
+    let temperature_c: Vec<f64> = temperature_k.iter().map(|t| t - KELVIN_OFFSET).collect();
+    let dewpoint_c: Vec<f64> = dewpoint_k.iter().map(|td| td - KELVIN_OFFSET).collect();
+    (pressure_hpa, temperature_c, dewpoint_c)
+}
+
 fn metpy_style_mixed_parcel_start(
     pressure_hpa: &[f64],
     temperature_c: &[f64],
     dewpoint_c: &[f64],
     depth_hpa: f64,
 ) -> (f64, f64, f64) {
-    let theta_k: Vec<f64> = pressure_hpa
+    let parcel_pressure_hpa = pressure_hpa[0];
+    let top_pressure_hpa = parcel_pressure_hpa - depth_hpa;
+    let mut theta_sum = 0.0;
+    let mut q_sum = 0.0;
+    let mut count = 0usize;
+
+    for ((&p_hpa, &t_c), &td_c) in pressure_hpa
         .iter()
         .zip(temperature_c.iter())
-        .map(|(p, t)| wx_math::thermo::potential_temperature(*p, *t))
-        .collect();
-    let mixing_ratio_kgkg: Vec<f64> = pressure_hpa
-        .iter()
         .zip(dewpoint_c.iter())
-        .map(|(p, td)| wx_math::thermo::saturation_mixing_ratio(*p, *td) / 1000.0)
-        .collect();
+    {
+        if p_hpa >= top_pressure_hpa {
+            theta_sum += wx_math::thermo::potential_temperature(p_hpa, t_c);
+            q_sum += specific_humidity_from_dewpoint(p_hpa * 100.0, td_c + KELVIN_OFFSET);
+            count += 1;
+        }
+    }
 
-    let parcel_pressure_hpa = pressure_hpa[0];
-    let mean_theta_k = wx_math::thermo::mixed_layer(pressure_hpa, &theta_k, depth_hpa);
-    let mean_mixing_ratio_kgkg =
-        wx_math::thermo::mixed_layer(pressure_hpa, &mixing_ratio_kgkg, depth_hpa);
-    let parcel_temperature_c =
-        mean_theta_k * wx_math::thermo::exner_function(parcel_pressure_hpa) - KELVIN_OFFSET;
-    let parcel_dewpoint_c =
-        wx_math::thermo::temp_at_mixrat(mean_mixing_ratio_kgkg * 1000.0, parcel_pressure_hpa);
+    let count = count.max(1) as f64;
+    let mean_theta_k = theta_sum / count;
+    let mean_q_kgkg = q_sum / count;
+    let parcel_temperature_k =
+        temperature_from_potential_temperature(mean_theta_k, parcel_pressure_hpa * 100.0);
+    let parcel_dewpoint_k =
+        dewpoint_from_specific_humidity(parcel_pressure_hpa * 100.0, mean_q_kgkg);
 
-    (parcel_pressure_hpa, parcel_temperature_c, parcel_dewpoint_c)
+    (
+        parcel_pressure_hpa,
+        parcel_temperature_k - KELVIN_OFFSET,
+        parcel_dewpoint_k - KELVIN_OFFSET,
+    )
 }
 
 fn parcel_profile_with_lcl_native(
@@ -1078,11 +1100,15 @@ fn reference_parcel_start(
     _heights: &[f64],
     pressure_pa: &[f64],
     temperature_k: &[f64],
+    dewpoint_k: Option<&[f64]>,
     qv_kgkg: &[f64],
     options: &ParcelOptions,
 ) -> (usize, f64, f64, f64) {
-    let (pressure_hpa, temperature_c, dewpoint_c) =
-        profile_to_met_inputs(pressure_pa, temperature_k, qv_kgkg);
+    let (pressure_hpa, temperature_c, dewpoint_c) = if let Some(dewpoint_k) = dewpoint_k {
+        profile_to_met_inputs_from_dewpoint(pressure_pa, temperature_k, dewpoint_k)
+    } else {
+        profile_to_met_inputs(pressure_pa, temperature_k, qv_kgkg)
+    };
     match options.cape_type {
         CapeType::MixedLayer => {
             let depth_hpa = options.mixed_layer_depth_pa.unwrap_or(10000.0) / 100.0;
@@ -1216,7 +1242,7 @@ fn package_style_reference_cape_cin_lfc_el(
     }
 
     let (origin_index, p_start_hpa, t_start_c, td_start_c) =
-        reference_parcel_start(height_m, pressure_pa, temperature_k, qv_kgkg, options);
+        reference_parcel_start(height_m, pressure_pa, temperature_k, None, qv_kgkg, options);
     let (cape_pressure_hpa, cape_temperature_c, cape_dewpoint_c) = match options.cape_type {
         CapeType::SurfaceBased => (
             pressure_hpa.clone(),
@@ -1418,6 +1444,7 @@ fn resolve_parcel_origin(
     heights: &[f64],
     pressures: &[f64],
     temperatures: &[f64],
+    dewpoint_k: Option<&[f64]>,
     qv: &[f64],
     options: &ParcelOptions,
 ) -> Result<ParcelOriginState, EcapeError> {
@@ -1448,7 +1475,7 @@ fn resolve_parcel_origin(
         }),
         CapeType::MixedLayer => {
             let (_, p_start_hpa, t_start_c, td_start_c) =
-                reference_parcel_start(heights, pressures, temperatures, qv, options);
+                reference_parcel_start(heights, pressures, temperatures, dewpoint_k, qv, options);
             Ok(ParcelOriginState {
                 index: 0,
                 theta_override_k: Some(potential_temperature(
@@ -1464,17 +1491,19 @@ fn resolve_parcel_origin(
         }
         CapeType::MostUnstable => {
             let (best_idx, p_start_hpa, t_start_c, td_start_c) =
-                reference_parcel_start(heights, pressures, temperatures, qv, options);
+                reference_parcel_start(heights, pressures, temperatures, dewpoint_k, qv, options);
+            let best_dewpoint_k = dewpoint_k
+                .and_then(|dewpoint_k| dewpoint_k.get(best_idx).copied())
+                .unwrap_or_else(|| {
+                    dewpoint_from_specific_humidity(pressures[best_idx], qv[best_idx])
+                });
             Ok(ParcelOriginState {
                 index: best_idx,
                 theta_override_k: None,
                 qv_override_kgkg: None,
                 height_override_m: if (pressures[best_idx] - p_start_hpa * 100.0).abs() < 1.0
                     && (temperatures[best_idx] - (t_start_c + KELVIN_OFFSET)).abs() < 1e-6
-                    && (dewpoint_from_specific_humidity(pressures[best_idx], qv[best_idx])
-                        - (td_start_c + KELVIN_OFFSET))
-                        .abs()
-                        < 1e-6
+                    && (best_dewpoint_k - (td_start_c + KELVIN_OFFSET)).abs() < 1e-6
                 {
                     None
                 } else {
@@ -1713,7 +1742,8 @@ fn continuous_cape_cin_lfc_el(
         &zero_wind,
         &zero_wind,
     )?;
-    let origin = resolve_parcel_origin(height_m, pressure_pa, temperature_k, qv_kgkg, options)?;
+    let origin =
+        resolve_parcel_origin(height_m, pressure_pa, temperature_k, None, qv_kgkg, options)?;
     let origin_idx = origin.index;
 
     let profile = parcel_profile_from(
@@ -2090,7 +2120,14 @@ pub fn calc_ecape_parcel(
         u_wind_ms,
         v_wind_ms,
     )?;
-    let origin = resolve_parcel_origin(height_m, pressure_pa, temperature_k, &qv, options)?;
+    let origin = resolve_parcel_origin(
+        height_m,
+        pressure_pa,
+        temperature_k,
+        Some(dewpoint_k),
+        &qv,
+        options,
+    )?;
     let origin_idx = origin.index;
     let origin_z = origin.height_override_m.unwrap_or(height_m[origin_idx]);
     let pseudoadiabatic = options.pseudoadiabatic.unwrap_or(true);
