@@ -195,7 +195,7 @@ impl ExternalEcapeSummary {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EcapeIntegrationStatus {
-    ExternalAnnotationBridge,
+    NativeVerifiedTableAndExternalAnnotationBridge,
 }
 
 pub fn supported_parcels() -> [ParcelFlavor; 3] {
@@ -207,7 +207,7 @@ pub fn supported_parcels() -> [ParcelFlavor; 3] {
 }
 
 pub fn ecape_status() -> EcapeIntegrationStatus {
-    EcapeIntegrationStatus::ExternalAnnotationBridge
+    EcapeIntegrationStatus::NativeVerifiedTableAndExternalAnnotationBridge
 }
 
 pub fn require_future_ecape_bridge(
@@ -215,7 +215,7 @@ pub fn require_future_ecape_bridge(
     request: PendingEcapeRequest,
 ) -> Result<(), SoundingBridgeError> {
     Err(SoundingBridgeError::EcapeUnavailable(format!(
-        "{} parcel ECAPE must be supplied externally; rustwx-sounding can render an annotation block, but sharprs does not compute ECAPE internally",
+        "{} parcel ECAPE is computed by rustwx-sounding for native table rendering through the verified ecape-rs path; caller-supplied external annotation blocks are still supported when an outside ECAPE source needs to be shown separately",
         request.parcel.long_label()
     )))
 }

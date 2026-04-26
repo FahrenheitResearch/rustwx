@@ -37,6 +37,9 @@ fn sample_column() -> SoundingColumn {
             latitude_deg: Some(35.22),
             longitude_deg: Some(-97.44),
             elevation_m: Some(397.0),
+            sample_method: Some("nearest".into()),
+            box_radius_lat_deg: None,
+            box_radius_lon_deg: None,
         },
     }
 }
@@ -182,6 +185,17 @@ fn roundtrip_from_sharprs_profile_preserves_station_and_level_count() {
 }
 
 #[test]
+fn native_sounding_populates_verified_ecape_table_params() {
+    let native = NativeSounding::from_column(&sample_column()).expect("bridge should succeed");
+
+    assert!(native.verified_ecape.surface_based.ecape.is_finite());
+    assert!(native.verified_ecape.surface_based.ncape.is_finite());
+    assert!(native.verified_ecape.surface_based.cape.is_finite());
+    assert!(native.verified_ecape.mixed_layer.ecape.is_finite());
+    assert!(native.verified_ecape.most_unstable.ecape.is_finite());
+}
+
+#[test]
 fn renders_full_sounding_png_bytes() {
     let png = render_full_sounding_png(&sample_column()).expect("render should succeed");
 
@@ -206,10 +220,10 @@ fn writes_full_sounding_png_to_disk() {
 }
 
 #[test]
-fn ecape_bridge_status_is_external_annotation_only() {
+fn ecape_bridge_status_reports_native_verified_table_path() {
     assert!(matches!(
         ecape_status(),
-        EcapeIntegrationStatus::ExternalAnnotationBridge
+        EcapeIntegrationStatus::NativeVerifiedTableAndExternalAnnotationBridge
     ));
 
     let error = require_future_ecape_bridge(
@@ -221,8 +235,8 @@ fn ecape_bridge_status_is_external_annotation_only() {
     .expect_err("internal sharprs ECAPE should remain unavailable");
 
     let message = error.to_string();
-    assert!(message.contains("supplied externally"));
-    assert!(message.contains("sharprs"));
+    assert!(message.contains("rustwx-sounding"));
+    assert!(message.contains("ecape-rs"));
 }
 
 #[test]

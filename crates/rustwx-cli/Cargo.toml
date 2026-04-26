@@ -27,3 +27,4 @@ rustwx-io = { path = "../rustwx-io" }
 rustwx-models = { path = "../rustwx-models" }
 rustwx-products = { path = "../rustwx-products" }
 rustwx-render = { path = "../rustwx-render" }
+rustwx-sounding = { path = "../rustwx-sounding" }

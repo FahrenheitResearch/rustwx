@@ -16,12 +16,14 @@ path = "src/main.rs"
 
 [features]
 default = []
+render-png = []
 python = ["pyo3", "numpy"]
 wasm = ["wasm-bindgen"]
 
 [dependencies]
 thiserror = "2"
 image = "0.25"
+rusttype = "0.9"
 
 # Optional: Python bindings via PyO3
 pyo3 = { version = "0.23", features = ["extension-module"], optional = true }

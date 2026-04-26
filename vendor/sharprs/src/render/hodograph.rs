@@ -15,7 +15,7 @@
 //!
 //! All wind components are in **knots**; directions in **meteorological degrees**.
 
-use crate::render::canvas::{char_bitmap, Canvas, FONT_H, FONT_W};
+use crate::render::canvas::{Canvas, FONT_H};
 
 // =========================================================================
 // Colour palette (SHARPpy dark-background style)
@@ -56,6 +56,7 @@ const SPEED_RINGS: &[f64] = &[20.0, 40.0, 60.0, 80.0];
 
 // Wind trace thickness in pixels
 const TRACE_THICKNESS: i32 = 3;
+const SMALL_TEXT_H: i32 = 14;
 
 // =========================================================================
 // Input data structures
@@ -180,52 +181,32 @@ fn format_dir_spd(u: f64, v: f64) -> String {
     format!("{:03.0}/{:.0}", dir, spd)
 }
 
-/// Draw a single character at 2x scale.
-fn draw_char_2x(c: &mut Canvas, ch: char, px: i32, py: i32, col: [u8; 4]) {
-    let bitmap = char_bitmap(ch);
-    for (row, &bits) in bitmap.iter().enumerate() {
-        for col_idx in 0..FONT_W {
-            if bits & (1 << (FONT_W - 1 - col_idx)) != 0 {
-                let bx = px + col_idx * 2;
-                let by = py + row as i32 * 2;
-                c.put_pixel_blend(bx, by, col);
-                c.put_pixel_blend(bx + 1, by, col);
-                c.put_pixel_blend(bx, by + 1, col);
-                c.put_pixel_blend(bx + 1, by + 1, col);
-            }
-        }
-    }
-}
-
 /// Draw text at 2x scale.
 fn draw_text_2x(c: &mut Canvas, text: &str, px: i32, py: i32, col: [u8; 4]) {
-    let mut x = px;
-    for ch in text.chars() {
-        draw_char_2x(c, ch, x, py, col);
-        x += (FONT_W + 1) * 2;
-    }
+    c.draw_text_scaled(text, px, py, col, 2);
 }
 
 /// Width of text at 2x scale in pixels.
 fn text_width_2x(text: &str) -> i32 {
-    let n = text.len() as i32;
-    if n == 0 {
-        0
-    } else {
-        n * (FONT_W + 1) * 2 - 2
-    }
+    Canvas::text_width_scaled(text, 2)
 }
 
 /// Height of text at 2x scale in pixels.
 const fn text_height_2x() -> i32 {
-    FONT_H * 2
+    22
 }
 
 /// Draw text with a dark semi-transparent background box for readability.
 fn draw_text_with_bg(c: &mut Canvas, text: &str, px: i32, py: i32, col: [u8; 4]) {
     let tw = Canvas::text_width(text);
     let pad = 2;
-    c.fill_rect(px - pad, py - 1, tw + pad * 2, FONT_H + 2, COL_LABEL_BG);
+    c.fill_rect(
+        px - pad,
+        py - 2,
+        tw + pad * 2,
+        SMALL_TEXT_H + 4,
+        COL_LABEL_BG,
+    );
     c.draw_text(text, px, py, col);
 }
 
@@ -236,6 +217,80 @@ fn draw_text_2x_with_bg(c: &mut Canvas, text: &str, px: i32, py: i32, col: [u8; 
     let pad = 3;
     c.fill_rect(px - pad, py - 2, tw + pad * 2, th + 4, COL_LABEL_BG);
     draw_text_2x(c, text, px, py, col);
+}
+
+fn clamp_label_xy(
+    px: i32,
+    py: i32,
+    tw: i32,
+    th: i32,
+    rx: i32,
+    ry: i32,
+    rw: i32,
+    rh: i32,
+) -> (i32, i32) {
+    let min_x = rx + 6;
+    let min_y = ry + 6;
+    let max_x = (rx + rw - tw - 6).max(min_x);
+    let max_y = (ry + rh - th - 6).max(min_y);
+    (px.clamp(min_x, max_x), py.clamp(min_y, max_y))
+}
+
+fn marker_label_xy(
+    sx: i32,
+    sy: i32,
+    marker_r: i32,
+    tw: i32,
+    th: i32,
+    bx: i32,
+    by: i32,
+    bw: i32,
+    bh: i32,
+) -> (i32, i32) {
+    let right_x = sx + marker_r + 5;
+    let left_x = sx - marker_r - 5 - tw;
+    let px = if right_x + tw <= bx + bw - 8 {
+        right_x
+    } else {
+        left_x
+    };
+    clamp_label_xy(px, sy - th / 2, tw, th, bx, by, bw, bh)
+}
+
+fn draw_text_with_bg_clamped(
+    c: &mut Canvas,
+    text: &str,
+    px: i32,
+    py: i32,
+    col: [u8; 4],
+    bounds: (i32, i32, i32, i32),
+) {
+    let tw = Canvas::text_width(text);
+    let (x, y) = clamp_label_xy(
+        px,
+        py,
+        tw,
+        SMALL_TEXT_H,
+        bounds.0,
+        bounds.1,
+        bounds.2,
+        bounds.3,
+    );
+    draw_text_with_bg(c, text, x, y, col);
+}
+
+fn draw_text_2x_with_bg_clamped(
+    c: &mut Canvas,
+    text: &str,
+    px: i32,
+    py: i32,
+    col: [u8; 4],
+    bounds: (i32, i32, i32, i32),
+) {
+    let tw = text_width_2x(text);
+    let th = text_height_2x();
+    let (x, y) = clamp_label_xy(px, py, tw, th, bounds.0, bounds.1, bounds.2, bounds.3);
+    draw_text_2x_with_bg(c, text, x, y, col);
 }
 
 // =========================================================================
@@ -258,19 +313,19 @@ pub fn draw_hodograph(c: &mut Canvas, data: &HodographData, rx: i32, ry: i32, rw
     // ── Layout ────────────────────────────────────────────────────
     // Reserve space for title at top and text annotations at bottom.
     let title_h = text_height_2x() + 8;
-    let bottom_text_h = (text_height_2x() + 4) * 2 + (FONT_H + 3) * 6 + 10;
-    let plot_top = ry + title_h;
-    let plot_h = rh - title_h - bottom_text_h;
-    let plot_w = rw;
+    let plot_top = ry + title_h + 2;
+    let plot_h = (rh - title_h - 8).max(90);
+    let plot_w = rw - 16;
 
     // Centre of the hodograph plot (in canvas coords)
-    let cx = rx + plot_w / 2;
+    let cx = rx + rw / 2;
     let cy = plot_top + plot_h / 2;
+    let label_bounds = (rx + 6, plot_top + 6, rw - 12, plot_h - 12);
 
     // Determine scale: fit the largest speed ring (80 kt) within the plot,
     // leaving a small margin for labels.
     let max_ring = SPEED_RINGS.last().copied().unwrap_or(80.0);
-    let max_radius = ((plot_w.min(plot_h)) / 2 - 28).max(30);
+    let max_radius = ((plot_w.min(plot_h)) / 2 - 8).max(30);
     let scale = max_radius as f64 / max_ring;
 
     // Closure: convert (u, v) in knots to screen (sx, sy).
@@ -295,7 +350,7 @@ pub fn draw_hodograph(c: &mut Canvas, data: &HodographData, rx: i32, ry: i32, rw
         let label = format!("{:.0}", kt);
         let lx = cx + r + 4;
         let ly = cy - FONT_H; // vertically centred on ring
-        draw_text_2x_with_bg(c, &label, lx, ly, COL_RING_LABEL);
+        draw_text_2x_with_bg_clamped(c, &label, lx, ly, COL_RING_LABEL, label_bounds);
     }
 
     // ── Axis lines (u = 0, v = 0) ────────────────────────────────
@@ -327,15 +382,17 @@ pub fn draw_hodograph(c: &mut Canvas, data: &HodographData, rx: i32, ry: i32, rw
             let target_m = km as f64 * 1000.0;
             if let Some(w) = find_wind_at_height(&data.winds, target_m) {
                 let (sx, sy) = uv_to_screen(w.u_kts, w.v_kts);
-                let dot_r = 7; // large enough to contain the number
-                               // White filled dot
+                let label_dot = matches!(km, 0 | 1 | 3 | 6 | 9 | 12);
+                let dot_r = if label_dot { 7 } else { 4 };
+                // White filled dot
                 c.fill_circle(sx, sy, dot_r, COL_DOT_BG);
                 // Dark border ring for contrast
                 c.draw_circle(sx, sy, dot_r, height_color(target_m));
-                // Number inside the dot — centered
-                let label = format!("{}", km);
-                let tw = Canvas::text_width(&label);
-                c.draw_text(&label, sx - tw / 2, sy - FONT_H / 2, COL_DOT_FG);
+                if label_dot {
+                    let label = format!("{}", km);
+                    let tw = Canvas::text_width(&label);
+                    c.draw_text(&label, sx - tw / 2, sy - SMALL_TEXT_H / 2, COL_DOT_FG);
+                }
             }
             km += 1;
         }
@@ -349,9 +406,18 @@ pub fn draw_hodograph(c: &mut Canvas, data: &HodographData, rx: i32, ry: i32, rw
         c.draw_circle(sx, sy, marker_r, [255, 255, 255, 200]);
         // Label with background
         let label = &data.bunkers_rm.label;
-        let lx = sx + marker_r + 4;
-        let ly = sy - FONT_H;
-        draw_text_2x_with_bg(c, label, lx, ly, COL_RM);
+        let (lx, ly) = marker_label_xy(
+            sx,
+            sy,
+            marker_r,
+            Canvas::text_width(label),
+            SMALL_TEXT_H,
+            label_bounds.0,
+            label_bounds.1,
+            label_bounds.2,
+            label_bounds.3,
+        );
+        draw_text_with_bg(c, label, lx, ly, COL_RM);
     }
 
     // ── Bunkers LM marker (blue filled triangle, larger) ─────────
@@ -370,9 +436,18 @@ pub fn draw_hodograph(c: &mut Canvas, data: &HodographData, rx: i32, ry: i32, rw
         c.draw_circle(sx, sy, sz, [255, 255, 255, 140]);
         // Label with background
         let label = &data.bunkers_lm.label;
-        let lx = sx + sz + 4;
-        let ly = sy - FONT_H;
-        draw_text_2x_with_bg(c, label, lx, ly, COL_LM);
+        let (lx, ly) = marker_label_xy(
+            sx,
+            sy,
+            sz,
+            Canvas::text_width(label),
+            SMALL_TEXT_H,
+            label_bounds.0,
+            label_bounds.1,
+            label_bounds.2,
+            label_bounds.3,
+        );
+        draw_text_with_bg(c, label, lx, ly, COL_LM);
     }
 
     // ── Mean wind marker (hollow circle + label with bg) ─────────
@@ -380,8 +455,17 @@ pub fn draw_hodograph(c: &mut Canvas, data: &HodographData, rx: i32, ry: i32, rw
         let (sx, sy) = uv_to_screen(data.mean_wind.u_kts, data.mean_wind.v_kts);
         c.draw_circle(sx, sy, 5, COL_MEAN);
         let label = &data.mean_wind.label;
-        let lx = sx + 8;
-        let ly = sy - FONT_H / 2;
+        let (lx, ly) = marker_label_xy(
+            sx,
+            sy,
+            5,
+            Canvas::text_width(label),
+            SMALL_TEXT_H,
+            label_bounds.0,
+            label_bounds.1,
+            label_bounds.2,
+            label_bounds.3,
+        );
         draw_text_with_bg(c, label, lx, ly, COL_MEAN);
     }
 
@@ -393,7 +477,14 @@ pub fn draw_hodograph(c: &mut Canvas, data: &HodographData, rx: i32, ry: i32, rw
         c.draw_line(sx - xsz, sy - xsz, sx + xsz, sy + xsz, COL_CORFIDI_UP);
         c.draw_line(sx - xsz, sy + xsz, sx + xsz, sy - xsz, COL_CORFIDI_UP);
         let label = &data.corfidi_up.label;
-        draw_text_with_bg(c, label, sx + xsz + 3, sy - FONT_H / 2, COL_CORFIDI_UP);
+        draw_text_with_bg_clamped(
+            c,
+            label,
+            sx + xsz + 3,
+            sy - SMALL_TEXT_H / 2,
+            COL_CORFIDI_UP,
+            label_bounds,
+        );
     }
 
     // ── Corfidi downshear vector ──────────────────────────────────
@@ -404,32 +495,42 @@ pub fn draw_hodograph(c: &mut Canvas, data: &HodographData, rx: i32, ry: i32, rw
         c.draw_line(sx - psz, sy, sx + psz, sy, COL_CORFIDI_DN);
         c.draw_line(sx, sy - psz, sx, sy + psz, COL_CORFIDI_DN);
         let label = &data.corfidi_dn.label;
-        draw_text_with_bg(c, label, sx + psz + 3, sy - FONT_H / 2, COL_CORFIDI_DN);
+        draw_text_with_bg_clamped(
+            c,
+            label,
+            sx + psz + 3,
+            sy - SMALL_TEXT_H / 2,
+            COL_CORFIDI_DN,
+            label_bounds,
+        );
     }
 
     // ── Storm-relative wind indicators ────────────────────────────
     if !data.sr_winds.is_empty() {
         let (rm_sx, rm_sy) = uv_to_screen(data.bunkers_rm.u_kts, data.bunkers_rm.v_kts);
         let sr_scale = 0.6;
-        for sr in &data.sr_winds {
+        for (i, sr) in data.sr_winds.iter().enumerate() {
             let end_x = rm_sx as f64 + sr.sr_u_kts * scale * sr_scale;
             let end_y = rm_sy as f64 - sr.sr_v_kts * scale * sr_scale;
             c.draw_thick_line_aa(rm_sx as f64, rm_sy as f64, end_x, end_y, COL_SR_WIND, 2);
             draw_arrowhead(c, rm_sx as f64, rm_sy as f64, end_x, end_y, COL_SR_WIND);
-            draw_text_with_bg(
+            let label_offset = (i as i32 - 1) * (SMALL_TEXT_H + 2);
+            let short_label = sr.label.replace(" KM SR", "");
+            draw_text_with_bg_clamped(
                 c,
-                &sr.label,
+                &short_label,
                 end_x as i32 + 4,
-                end_y as i32 - FONT_H / 2,
+                end_y as i32 - SMALL_TEXT_H / 2 + label_offset,
                 COL_SR_WIND,
+                label_bounds,
             );
         }
     }
 
     // ── Bottom text annotations ───────────────────────────────────
-    let text_y_start = plot_top + plot_h + 6;
+    let text_y_start = ry + rh - (text_height_2x() + 4) * 2 - 4;
     let line_h_2x = text_height_2x() + 4;
-    let line_h = FONT_H + 3;
+    let line_h = SMALL_TEXT_H + 4;
     let mut ty = text_y_start;
 
     // Critical angle (2x scale, prominent)
@@ -458,7 +559,6 @@ pub fn draw_hodograph(c: &mut Canvas, data: &HodographData, rx: i32, ry: i32, rw
         COL_TEXT_DIM
     };
     draw_text_2x(c, adv_str, rx + 6, ty, adv_col);
-    ty += line_h_2x;
 
     // ── Height legend ─────────────────────────────────────────────
     let legend_items: &[(&str, [u8; 4])] = &[
@@ -470,15 +570,17 @@ pub fn draw_hodograph(c: &mut Canvas, data: &HodographData, rx: i32, ry: i32, rw
         ("12+ KM", COL_12_PLUS),
     ];
 
-    // Layout legend in 2 columns × 3 rows
-    let col_w = rw / 2;
+    // Layout legend in 2 columns x 3 rows, right of the annotations.
+    let legend_x = rx + rw / 2 + 10;
+    let legend_y = ry + rh - line_h * 3 - 8;
+    let col_w = (rw / 2 - 20).max(80);
     for (i, &(label, col)) in legend_items.iter().enumerate() {
         let row = i % 3;
         let column = i / 3;
-        let lx = rx + 6 + column as i32 * col_w;
-        let ly = ty + row as i32 * line_h;
+        let lx = legend_x + column as i32 * col_w / 2;
+        let ly = legend_y + row as i32 * line_h;
         // Colour swatch
-        c.fill_rect(lx, ly + 1, 12, FONT_H - 2, col);
+        c.fill_rect(lx, ly + 3, 12, SMALL_TEXT_H - 4, col);
         c.draw_text(label, lx + 16, ly, COL_TEXT_DIM);
     }
 }

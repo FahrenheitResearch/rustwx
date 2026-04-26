@@ -272,6 +272,19 @@ fn fmt_2f(v: f64) -> String {
     }
 }
 
+/// Format a direction/speed pair as "ddd/ss", or "M" if missing.
+fn fmt_dir_spd(direction: f64, speed: f64) -> String {
+    if direction.is_finite()
+        && speed.is_finite()
+        && (direction - crate::constants::MISSING).abs() > 1.0
+        && (speed - crate::constants::MISSING).abs() > 1.0
+    {
+        format!("{:.0}/{:.0}", direction, speed)
+    } else {
+        "M".to_string()
+    }
+}
+
 /// Right-pad a string to a fixed width.
 fn rpad(s: &str, w: usize) -> String {
     if s.len() >= w {
@@ -411,8 +424,16 @@ fn shear_color(v: f64) -> Rgba {
 pub struct ParcelRow {
     /// Label: "SFC", "ML", "FCST", "MU"
     pub label: String,
+    /// Entraining CAPE (J/kg), when supplied by an ECAPE bridge.
+    pub ecape: f64,
+    /// Normalized CAPE (J/kg), when supplied by an ECAPE bridge.
+    pub ncape: f64,
     /// CAPE (J/kg).
     pub cape: f64,
+    /// CAPE in the lowest 3 km AGL (J/kg).
+    pub cape_3km: f64,
+    /// CAPE in the lowest 6 km AGL (J/kg).
+    pub cape_6km: f64,
     /// CIN (J/kg, negative).
     pub cinh: f64,
     /// LCL height (m AGL).
@@ -438,6 +459,10 @@ pub struct ShearRow {
     pub shear: f64,
     /// Mean wind speed (kt).
     pub mn_wind: f64,
+    /// Storm-relative wind direction (degrees).
+    pub srw_dir: f64,
+    /// Storm-relative wind speed (kt).
+    pub srw_spd: f64,
     /// Storm-relative wind speed (kt).
     pub srw: f64,
 }
@@ -472,19 +497,30 @@ pub struct ParamTableData {
     // Row 3 — Thermodynamic indices
     pub pw: f64,       // Precipitable water (in)
     pub mean_w: f64,   // Mean mixing ratio (g/kg)
+    pub sfc_rh: f64,   // Surface RH (%)
     pub low_rh: f64,   // Low-level mean RH (%)
     pub mid_rh: f64,   // Mid-level mean RH (%)
+    pub dgz_rh: f64,   // Mean RH in the dendritic growth zone (%)
+    pub freezing_level_m: f64, // Freezing level (m AGL)
+    pub wb_zero_m: f64, // Wet-bulb zero height (m AGL)
+    pub mu_mpl_m: f64, // MU maximum parcel level (m AGL)
+    pub thetae_diff_3km: f64, // 3 km theta-e difference (K)
+    pub lcl_temp_c: f64, // Surface parcel LCL temperature (C)
     pub dcape: f64,    // Downdraft CAPE (J/kg)
     pub dwn_t: f64,    // Downdraft temperature (F or C)
     pub k_index: f64,  // K-Index
     pub t_totals: f64, // Total Totals
     pub tei: f64,      // Theta-E Index (K)
+    pub tehi: f64,     // Theta-E / helicity index placeholder
+    pub tts: f64,      // Thunderstorm threat score placeholder
     pub conv_t: f64,   // Convective temperature (F or C)
     pub max_t: f64,    // Forecast max temperature (F or C)
     pub mmp: f64,      // MCS Maintenance Probability
     pub sig_svr: f64,  // Significant Severe (m^3/s^3)
     pub esp: f64,      // Enhanced Stretching Potential
     pub wndg: f64,     // Wind Damage Parameter
+    pub dcp: f64,      // Derecho Composite Parameter
+    pub lhp: f64,      // Large Hail Parameter
     pub cape_3km: f64, // 0-3 km CAPE (J/kg)
 
     // Row 4 — Lapse rates
@@ -556,29 +592,38 @@ pub fn render_sized(data: &ParamTableData, width: usize, height: usize) -> Pixel
 
         // Column headers with units
         let c0 = panel_left; // PCL label
-        let c1 = panel_left + SCALED_CW * 6; // CAPE
-        let c2 = panel_left + SCALED_CW * 13; // CINH
-        let c3 = panel_left + SCALED_CW * 20; // LCL
-        let c4 = panel_left + SCALED_CW * 27; // LI
-        let c5 = panel_left + SCALED_CW * 33; // LFC
-        let c6 = panel_left + SCALED_CW * 40; // EL
+        let c1 = panel_left + SCALED_CW * 8; // ECAPE
+        let c2 = panel_left + SCALED_CW * 14; // NCAPE
+        let c3 = panel_left + SCALED_CW * 20; // CAPE
+        let c4 = panel_left + SCALED_CW * 26; // 3CAPE
+        let c5 = panel_left + SCALED_CW * 32; // 6CAPE
+        let c6 = panel_left + SCALED_CW * 38; // CINH
+        let c7 = panel_left + SCALED_CW * 44; // LCL
+        let c8 = panel_left + SCALED_CW * 51; // LFC
+        let c9 = panel_left + SCALED_CW * 58; // EL
 
         buf.draw_str("PCL", c0, y, CYAN);
-        buf.draw_str_right("CAPE", c1 + SCALED_CW * 6, y, CYAN);
-        buf.draw_str_right("CINH", c2 + SCALED_CW * 6, y, CYAN);
-        buf.draw_str_right("LCL", c3 + SCALED_CW * 6, y, CYAN);
-        buf.draw_str_right("LI", c4 + SCALED_CW * 5, y, CYAN);
-        buf.draw_str_right("LFC", c5 + SCALED_CW * 6, y, CYAN);
-        buf.draw_str_right("EL", c6 + SCALED_CW * 6, y, CYAN);
+        buf.draw_str_right("ECAPE", c1 + SCALED_CW * 5, y, CYAN);
+        buf.draw_str_right("NCAPE", c2 + SCALED_CW * 5, y, CYAN);
+        buf.draw_str_right("CAPE", c3 + SCALED_CW * 5, y, CYAN);
+        buf.draw_str_right("3CAPE", c4 + SCALED_CW * 5, y, CYAN);
+        buf.draw_str_right("6CAPE", c5 + SCALED_CW * 5, y, CYAN);
+        buf.draw_str_right("CINH", c6 + SCALED_CW * 5, y, CYAN);
+        buf.draw_str_right("LCL", c7 + SCALED_CW * 5, y, CYAN);
+        buf.draw_str_right("LFC", c8 + SCALED_CW * 5, y, CYAN);
+        buf.draw_str_right("EL", c9 + SCALED_CW * 5, y, CYAN);
         y += LINE_H;
 
         // Units sub-header
-        buf.draw_str_right("J/kg", c1 + SCALED_CW * 6, y, DIM_GRAY);
-        buf.draw_str_right("J/kg", c2 + SCALED_CW * 6, y, DIM_GRAY);
-        buf.draw_str_right("m", c3 + SCALED_CW * 6, y, DIM_GRAY);
-        buf.draw_str_right("C", c4 + SCALED_CW * 5, y, DIM_GRAY);
-        buf.draw_str_right("m", c5 + SCALED_CW * 6, y, DIM_GRAY);
-        buf.draw_str_right("m", c6 + SCALED_CW * 6, y, DIM_GRAY);
+        buf.draw_str_right("J/kg", c1 + SCALED_CW * 5, y, DIM_GRAY);
+        buf.draw_str_right("J/kg", c2 + SCALED_CW * 5, y, DIM_GRAY);
+        buf.draw_str_right("J/kg", c3 + SCALED_CW * 5, y, DIM_GRAY);
+        buf.draw_str_right("J/kg", c4 + SCALED_CW * 5, y, DIM_GRAY);
+        buf.draw_str_right("J/kg", c5 + SCALED_CW * 5, y, DIM_GRAY);
+        buf.draw_str_right("J/kg", c6 + SCALED_CW * 5, y, DIM_GRAY);
+        buf.draw_str_right("m", c7 + SCALED_CW * 5, y, DIM_GRAY);
+        buf.draw_str_right("m", c8 + SCALED_CW * 5, y, DIM_GRAY);
+        buf.draw_str_right("m", c9 + SCALED_CW * 5, y, DIM_GRAY);
         y += LINE_H;
 
         // Thin separator
@@ -586,19 +631,22 @@ pub fn render_sized(data: &ParamTableData, width: usize, height: usize) -> Pixel
         y += 3;
 
         for pcl in &data.parcels {
-            buf.draw_str(&rpad(&pcl.label, 5), c0, y, WHITE);
+            buf.draw_str(&rpad(&pcl.label, 7), c0, y, WHITE);
+            buf.draw_str_right(&lpad(&fmt_int(pcl.ecape), 5), c1 + SCALED_CW * 5, y, WHITE);
+            buf.draw_str_right(&lpad(&fmt_1f(pcl.ncape), 5), c2 + SCALED_CW * 5, y, WHITE);
             let cape_s = fmt_int(pcl.cape);
             buf.draw_str_right(
-                &lpad(&cape_s, 6),
-                c1 + SCALED_CW * 6,
+                &lpad(&cape_s, 5),
+                c3 + SCALED_CW * 5,
                 y,
                 cape_color(pcl.cape),
             );
-            buf.draw_str_right(&lpad(&fmt_int(pcl.cinh), 6), c2 + SCALED_CW * 6, y, WHITE);
-            buf.draw_str_right(&lpad(&fmt_int(pcl.lcl_m), 6), c3 + SCALED_CW * 6, y, WHITE);
-            buf.draw_str_right(&lpad(&fmt_1f(pcl.li), 5), c4 + SCALED_CW * 5, y, WHITE);
-            buf.draw_str_right(&lpad(&fmt_int(pcl.lfc_m), 6), c5 + SCALED_CW * 6, y, WHITE);
-            buf.draw_str_right(&lpad(&fmt_int(pcl.el_m), 6), c6 + SCALED_CW * 6, y, WHITE);
+            buf.draw_str_right(&lpad(&fmt_int(pcl.cape_3km), 5), c4 + SCALED_CW * 5, y, WHITE);
+            buf.draw_str_right(&lpad(&fmt_int(pcl.cape_6km), 5), c5 + SCALED_CW * 5, y, WHITE);
+            buf.draw_str_right(&lpad(&fmt_int(pcl.cinh), 5), c6 + SCALED_CW * 5, y, WHITE);
+            buf.draw_str_right(&lpad(&fmt_int(pcl.lcl_m), 5), c7 + SCALED_CW * 5, y, WHITE);
+            buf.draw_str_right(&lpad(&fmt_int(pcl.lfc_m), 5), c8 + SCALED_CW * 5, y, WHITE);
+            buf.draw_str_right(&lpad(&fmt_int(pcl.el_m), 5), c9 + SCALED_CW * 5, y, WHITE);
             y += LINE_H;
         }
     }
@@ -620,14 +668,14 @@ pub fn render_sized(data: &ParamTableData, width: usize, height: usize) -> Pixel
         let s2 = panel_mid + SCALED_CW * 20; // SRH
         let s3 = panel_mid + SCALED_CW * 26; // Shear
         let s4 = panel_mid + SCALED_CW * 32; // MnWind
-        let s5 = panel_mid + SCALED_CW * 38; // SRW
+        let s5 = panel_mid + SCALED_CW * 38; // SRWind
 
         buf.draw_str("Layer", s0, sy, CYAN);
         buf.draw_str_right("EHI", s1 + SCALED_CW * 5, sy, CYAN);
         buf.draw_str_right("SRH", s2 + SCALED_CW * 5, sy, CYAN);
         buf.draw_str_right("Shear", s3 + SCALED_CW * 5, sy, CYAN);
         buf.draw_str_right("MnWnd", s4 + SCALED_CW * 5, sy, CYAN);
-        buf.draw_str_right("SRW", s5 + SCALED_CW * 5, sy, CYAN);
+        buf.draw_str_right("SRWind", s5 + SCALED_CW * 7, sy, CYAN);
         sy += LINE_H;
 
         // Units
@@ -635,7 +683,7 @@ pub fn render_sized(data: &ParamTableData, width: usize, height: usize) -> Pixel
         buf.draw_str_right("m2/s2", s2 + SCALED_CW * 5, sy, DIM_GRAY);
         buf.draw_str_right("kts", s3 + SCALED_CW * 5, sy, DIM_GRAY);
         buf.draw_str_right("kts", s4 + SCALED_CW * 5, sy, DIM_GRAY);
-        buf.draw_str_right("kts", s5 + SCALED_CW * 5, sy, DIM_GRAY);
+        buf.draw_str_right("deg/kt", s5 + SCALED_CW * 7, sy, DIM_GRAY);
         sy += LINE_H;
 
         buf.hline(panel_mid, panel_right - 20, sy, DIM_GRAY);
@@ -659,7 +707,12 @@ pub fn render_sized(data: &ParamTableData, width: usize, height: usize) -> Pixel
                 sy,
                 WHITE,
             );
-            buf.draw_str_right(&lpad(&fmt_int(row.srw), 5), s5 + SCALED_CW * 5, sy, WHITE);
+            buf.draw_str_right(
+                &lpad(&fmt_dir_spd(row.srw_dir, row.srw_spd), 7),
+                s5 + SCALED_CW * 7,
+                sy,
+                WHITE,
+            );
             sy += LINE_H;
         }
 
@@ -687,21 +740,30 @@ pub fn render_sized(data: &ParamTableData, width: usize, height: usize) -> Pixel
         let left_items: Vec<(&str, String, Rgba)> = vec![
             ("PW (in)", fmt_2f(data.pw), WHITE),
             ("MeanW g/kg", fmt_1f(data.mean_w), WHITE),
+            ("SfcRH %", fmt_int(data.sfc_rh), WHITE),
             ("LowRH %", fmt_int(data.low_rh), WHITE),
             ("MidRH %", fmt_int(data.mid_rh), WHITE),
-            ("DCAPE J/kg", fmt_int(data.dcape), WHITE),
-            ("DwnT", fmt_1f(data.dwn_t), WHITE),
+            ("DGZRH %", fmt_int(data.dgz_rh), WHITE),
+            ("FrzLvl m", fmt_int(data.freezing_level_m), WHITE),
+            ("WBZ m", fmt_int(data.wb_zero_m), WHITE),
+            ("MU MPL m", fmt_int(data.mu_mpl_m), WHITE),
+            ("3km Theta", fmt_int(data.thetae_diff_3km), WHITE),
+            ("LCL Tmp C", fmt_1f(data.lcl_temp_c), WHITE),
             ("0-3km CAPE", fmt_int(data.cape_3km), WHITE),
-            ("ESP", fmt_1f(data.esp), WHITE),
         ];
         let right_items: Vec<(&str, String, Rgba)> = vec![
             ("K-Index", fmt_1f(data.k_index), WHITE),
             ("TotTots", fmt_1f(data.t_totals), WHITE),
             ("TEI", fmt_1f(data.tei), WHITE),
+            ("TEHI", fmt_1f(data.tehi), WHITE),
+            ("TTS", fmt_1f(data.tts), WHITE),
             ("ConvT", fmt_1f(data.conv_t), WHITE),
             ("MaxT", fmt_1f(data.max_t), WHITE),
+            ("DCAPE", fmt_int(data.dcape), WHITE),
+            ("DwnT", fmt_1f(data.dwn_t), WHITE),
             ("MMP", fmt_2f(data.mmp), WHITE),
             ("SigSvr", fmt_int(data.sig_svr), YELLOW),
+            ("ESP", fmt_1f(data.esp), WHITE),
             ("WNDG", fmt_1f(data.wndg), WHITE),
         ];
 
@@ -829,7 +891,9 @@ pub fn render_sized(data: &ParamTableData, width: usize, height: usize) -> Pixel
             ("STP(cin)", fmt_1f(data.stp_cin), stp_color(data.stp_cin)),
             ("STP(fix)", fmt_1f(data.stp_fix), stp_color(data.stp_fix)),
             ("SHIP", fmt_1f(data.ship), ship_color(data.ship)),
-            ("SCP", fmt_1f(data.scp), scp_color(data.scp)),
+            ("Supercell", fmt_1f(data.scp), scp_color(data.scp)),
+            ("DCP", fmt_1f(data.dcp), WHITE),
+            ("LHP", fmt_1f(data.lhp), WHITE),
             ("BRN Shear", fmt_1f(data.brn_shear), WHITE),
         ];
 
@@ -894,7 +958,11 @@ mod tests {
             parcels: vec![
                 ParcelRow {
                     label: "SFC".into(),
+                    ecape: f64::NAN,
+                    ncape: f64::NAN,
                     cape: 2500.0,
+                    cape_3km: 120.0,
+                    cape_6km: 900.0,
                     cinh: -45.0,
                     lcl_m: 1100.0,
                     li: -6.2,
@@ -903,7 +971,11 @@ mod tests {
                 },
                 ParcelRow {
                     label: "ML".into(),
+                    ecape: f64::NAN,
+                    ncape: f64::NAN,
                     cape: 1800.0,
+                    cape_3km: 90.0,
+                    cape_6km: 650.0,
                     cinh: -30.0,
                     lcl_m: 1300.0,
                     li: -4.8,
@@ -912,7 +984,11 @@ mod tests {
                 },
                 ParcelRow {
                     label: "MU".into(),
+                    ecape: f64::NAN,
+                    ncape: f64::NAN,
                     cape: 3100.0,
+                    cape_3km: 150.0,
+                    cape_6km: 1000.0,
                     cinh: -15.0,
                     lcl_m: 800.0,
                     li: -7.0,
@@ -927,6 +1003,8 @@ mod tests {
                     srh: 180.0,
                     shear: 25.0,
                     mn_wind: 15.0,
+                    srw_dir: 93.0,
+                    srw_spd: 20.0,
                     srw: 12.0,
                 },
                 ShearRow {
@@ -935,6 +1013,8 @@ mod tests {
                     srh: 280.0,
                     shear: 40.0,
                     mn_wind: 22.0,
+                    srw_dir: 109.0,
+                    srw_spd: 10.0,
                     srw: 18.0,
                 },
                 ShearRow {
@@ -943,6 +1023,8 @@ mod tests {
                     srh: 350.0,
                     shear: 55.0,
                     mn_wind: 28.0,
+                    srw_dir: 131.0,
+                    srw_spd: 17.0,
                     srw: 24.0,
                 },
                 ShearRow {
@@ -951,24 +1033,37 @@ mod tests {
                     srh: 380.0,
                     shear: 60.0,
                     mn_wind: 32.0,
+                    srw_dir: 145.0,
+                    srw_spd: 20.0,
                     srw: 28.0,
                 },
             ],
             pw: 1.45,
             mean_w: 12.3,
+            sfc_rh: 60.0,
             low_rh: 72.0,
             mid_rh: 55.0,
+            dgz_rh: 50.0,
+            freezing_level_m: 3500.0,
+            wb_zero_m: 2900.0,
+            mu_mpl_m: 12_500.0,
+            thetae_diff_3km: 14.0,
+            lcl_temp_c: 13.0,
             dcape: 850.0,
             dwn_t: 62.5,
             k_index: 32.0,
             t_totals: 52.0,
             tei: 28.0,
+            tehi: f64::NAN,
+            tts: f64::NAN,
             conv_t: 84.0,
             max_t: 88.0,
             mmp: 0.72,
             sig_svr: 45000.0,
             esp: 2.5,
             wndg: 1.3,
+            dcp: 1.5,
+            lhp: f64::NAN,
             cape_3km: 80.0,
             lapse_rates: vec![
                 LapseRateRow {

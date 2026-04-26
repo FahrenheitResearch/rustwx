@@ -26,6 +26,9 @@ Current top-level commands:
   - Standalone real-data HRRR cross-section proof runner.
   - Supports `temperature`, `relative_humidity`, `theta_e`, and `wind_speed` through the shared `rustwx_cli::cross_section_proof` module.
   - Exposes optional `--palette` overrides on top of the public `rustwx-cross-section` palette catalog.
+- `sounding_plot`
+  - Standalone native Rust model sounding renderer.
+  - Extracts a model column at lat/lon and writes a SHARPpy-style PNG through `rustwx-sounding`.
 - `weather_native_bench`
   - Release-mode benchmark/profiling runner for the native contour map lane.
   - Compares Rust native contour render timings against forced legacy raster renders and Python `matplotlib/cartopy` equivalents on the same cached HRRR fields.
@@ -70,6 +73,13 @@ cargo run -p rustwx-cli --release --bin hrrr_temperature_xsection -- --date 2026
 ```powershell
 cargo run -p rustwx-cli --release --bin hrrr_temperature_xsection -- --product wind-speed --date 20260414 --cycle 23 --forecast-hour 0 --out-dir proof
 ```
+
+```powershell
+cargo run -p rustwx-cli --release --bin sounding_plot -- --model hrrr --date 20260424 --cycle 22 --forecast-hour 1 --source aws --lat 35.222 --lon -97.439 --station-id "Norman OK" --out-dir proof/soundings
+```
+
+Use `--sample-method box-mean --box-radius-km 25` for a box-averaged model
+sounding around the target point instead of a single nearest grid point.
 
 ```powershell
 cargo run -p rustwx-cli --release --bin weather_native_bench -- --date 20260414 --cycle 23 --forecast-hour 0 --region southern-plains --product stp_fixed,sbcape,srh_0_1km --rust-runs 5 --python-runs 3 --out-dir proof

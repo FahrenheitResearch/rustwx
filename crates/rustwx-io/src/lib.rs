@@ -659,7 +659,30 @@ fn idx_subset_ranges(idx_text: &str, patterns: &[&str]) -> Result<Option<Vec<(u6
     if selected.is_empty() {
         return Ok(None);
     }
-    Ok(Some(byte_ranges(&entries, &selected)))
+    Ok(Some(coalesce_contiguous_ranges(byte_ranges(
+        &entries, &selected,
+    ))))
+}
+
+fn coalesce_contiguous_ranges(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+    if ranges.len() <= 1 {
+        return ranges;
+    }
+    ranges.sort_unstable_by_key(|range| range.0);
+
+    let mut merged = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        let Some((_, last_end)) = merged.last_mut() else {
+            merged.push((start, end));
+            continue;
+        };
+        if *last_end != u64::MAX && start <= last_end.saturating_add(1) {
+            *last_end = (*last_end).max(end);
+        } else {
+            merged.push((start, end));
+        }
+    }
+    merged
 }
 
 fn candidate_hours(model: ModelId, cycle_hour: u8) -> Vec<u16> {
@@ -1562,6 +1585,17 @@ mod tests {
         .expect("idx subset ranges should exist");
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0].0, 0);
+    }
+
+    #[test]
+    fn idx_subset_ranges_coalesces_contiguous_messages_only() {
+        let ranges = idx_subset_ranges(
+            SAMPLE_IDX,
+            &["TMP:2 m above ground", "SPFH:2 m above ground"],
+        )
+        .unwrap()
+        .expect("idx subset ranges should exist");
+        assert_eq!(ranges, vec![(0, 96541)]);
     }
 
     #[test]

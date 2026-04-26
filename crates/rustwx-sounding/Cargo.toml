@@ -7,7 +7,9 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ecape-rs = { path = "../../vendor/ecape-rs" }
 image = { version = "0.25", default-features = false, features = ["png"] }
+rustwx-render = { path = "../rustwx-render" }
 serde.workspace = true
 thiserror.workspace = true
 sharprs = { path = "../../vendor/sharprs" }

@@ -403,30 +403,20 @@ pub fn load_model_timestep_from_latest(
             let elapsed = fetch_start.elapsed().as_millis();
             ((fetched.clone(), elapsed), (fetched, elapsed))
         } else {
-            let surface_start = Instant::now();
-            let surface = fetch_family_file(
-                model,
-                latest.cycle.clone(),
-                forecast_hour,
-                latest.source,
-                &surface_bundle,
-                cache_root,
-                use_cache,
-            )?;
-            let pressure_start = Instant::now();
-            let pressure = fetch_family_file(
-                model,
-                latest.cycle.clone(),
-                forecast_hour,
-                latest.source,
-                &pressure_bundle,
-                cache_root,
-                use_cache,
-            )?;
-            (
-                (surface, surface_start.elapsed().as_millis()),
-                (pressure, pressure_start.elapsed().as_millis()),
-            )
+            let ((surface_result, fetch_surface_ms), (pressure_result, fetch_pressure_ms)) =
+                fetch_surface_pressure_files_parallel(
+                    model,
+                    latest.cycle.clone(),
+                    forecast_hour,
+                    latest.source,
+                    &surface_bundle,
+                    &pressure_bundle,
+                    cache_root,
+                    use_cache,
+                );
+            let surface = surface_result?;
+            let pressure = pressure_result?;
+            ((surface, fetch_surface_ms), (pressure, fetch_pressure_ms))
         };
 
     let surface_cache_path = decode_cache_path(cache_root, &surface_file.request, "surface");
@@ -519,30 +509,20 @@ pub fn load_model_timestep_from_latest_cropped(
             let elapsed = fetch_start.elapsed().as_millis();
             ((fetched.clone(), elapsed), (fetched, elapsed))
         } else {
-            let surface_start = Instant::now();
-            let surface = fetch_family_file(
-                model,
-                latest.cycle.clone(),
-                forecast_hour,
-                latest.source,
-                &surface_bundle,
-                cache_root,
-                use_cache,
-            )?;
-            let pressure_start = Instant::now();
-            let pressure = fetch_family_file(
-                model,
-                latest.cycle.clone(),
-                forecast_hour,
-                latest.source,
-                &pressure_bundle,
-                cache_root,
-                use_cache,
-            )?;
-            (
-                (surface, surface_start.elapsed().as_millis()),
-                (pressure, pressure_start.elapsed().as_millis()),
-            )
+            let ((surface_result, fetch_surface_ms), (pressure_result, fetch_pressure_ms)) =
+                fetch_surface_pressure_files_parallel(
+                    model,
+                    latest.cycle.clone(),
+                    forecast_hour,
+                    latest.source,
+                    &surface_bundle,
+                    &pressure_bundle,
+                    cache_root,
+                    use_cache,
+                );
+            let surface = surface_result?;
+            let pressure = pressure_result?;
+            ((surface, fetch_surface_ms), (pressure, fetch_pressure_ms))
         };
 
     let surface_layout = decode_surface_grid(surface_file.bytes.as_slice())?;
@@ -1199,6 +1179,53 @@ pub(crate) fn fetch_family_file(
     )
 }
 
+fn fetch_surface_pressure_files_parallel(
+    model: ModelId,
+    cycle: CycleSpec,
+    forecast_hour: u16,
+    source: SourceId,
+    surface_bundle: &ResolvedCanonicalBundleProduct,
+    pressure_bundle: &ResolvedCanonicalBundleProduct,
+    cache_root: &Path,
+    use_cache: bool,
+) -> (
+    (Result<FetchedModelFile, std::io::Error>, u128),
+    (Result<FetchedModelFile, std::io::Error>, u128),
+) {
+    let surface_cycle = cycle.clone();
+    let pressure_cycle = cycle;
+    rayon::join(
+        || {
+            let start = Instant::now();
+            let result = fetch_family_file(
+                model,
+                surface_cycle,
+                forecast_hour,
+                source,
+                surface_bundle,
+                cache_root,
+                use_cache,
+            )
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()));
+            (result, start.elapsed().as_millis())
+        },
+        || {
+            let start = Instant::now();
+            let result = fetch_family_file(
+                model,
+                pressure_cycle,
+                forecast_hour,
+                source,
+                pressure_bundle,
+                cache_root,
+                use_cache,
+            )
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()));
+            (result, start.elapsed().as_millis())
+        },
+    )
+}
+
 pub(crate) fn fetch_family_file_with_patterns(
     model: ModelId,
     cycle: CycleSpec,
@@ -1227,28 +1254,20 @@ pub(crate) fn bundle_fetch_variable_patterns(
     bundle: CanonicalBundleDescriptor,
     native_product: &str,
 ) -> Vec<String> {
-    if model != ModelId::RrfsA {
-        return Vec::new();
-    }
-
     match (bundle, native_product) {
-        (CanonicalBundleDescriptor::SurfaceAnalysis, "nat-na") => vec![
-            "PRES:surface",
-            "HGT:surface",
-            "GP:surface",
-            "TMP:2 m above ground",
-            "SPFH:2 m above ground",
-            "UGRD:10 m above ground",
-            "VGRD:10 m above ground",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect(),
-        (CanonicalBundleDescriptor::PressureAnalysis, "prs-na") => {
-            vec!["HGT", "GP", "TMP", "SPFH", "DPT", "RH", "UGRD", "VGRD"]
-                .into_iter()
-                .map(str::to_string)
-                .collect()
+        (CanonicalBundleDescriptor::SurfaceAnalysis, "sfc")
+        | (CanonicalBundleDescriptor::SurfaceAnalysis, "pgrb2.0p25")
+        | (CanonicalBundleDescriptor::SurfaceAnalysis, "nat-na")
+            if matches!(model, ModelId::Hrrr | ModelId::Gfs | ModelId::RrfsA) =>
+        {
+            surface_analysis_fetch_patterns(model)
+        }
+        (CanonicalBundleDescriptor::PressureAnalysis, "prs")
+        | (CanonicalBundleDescriptor::PressureAnalysis, "pgrb2.0p25")
+        | (CanonicalBundleDescriptor::PressureAnalysis, "prs-na")
+            if matches!(model, ModelId::Hrrr | ModelId::Gfs | ModelId::RrfsA) =>
+        {
+            pressure_analysis_fetch_patterns(model)
         }
         (CanonicalBundleDescriptor::NativeAnalysis, "nat-na") => vec![
             "CAPE:surface",
@@ -1266,6 +1285,32 @@ pub(crate) fn bundle_fetch_variable_patterns(
         .collect(),
         _ => Vec::new(),
     }
+}
+
+fn surface_analysis_fetch_patterns(model: ModelId) -> Vec<String> {
+    let mut patterns = vec![
+        "PRES:surface",
+        "HGT:surface",
+        "GP:surface",
+        "TMP:2 m above ground",
+        "SPFH:2 m above ground",
+        "UGRD:10 m above ground",
+        "VGRD:10 m above ground",
+    ];
+    if matches!(model, ModelId::Gfs | ModelId::RrfsA) {
+        patterns.extend(["DPT:2 m above ground", "RH:2 m above ground"]);
+    }
+    patterns.into_iter().map(str::to_string).collect()
+}
+
+fn pressure_analysis_fetch_patterns(model: ModelId) -> Vec<String> {
+    let patterns = match model {
+        ModelId::Hrrr => vec!["HGT", "TMP", "SPFH", "UGRD", "VGRD"],
+        ModelId::Gfs => vec!["HGT", "TMP", "RH", "UGRD", "VGRD"],
+        ModelId::RrfsA => vec!["HGT", "GP", "TMP", "SPFH", "DPT", "RH", "UGRD", "VGRD"],
+        _ => Vec::new(),
+    };
+    patterns.into_iter().map(str::to_string).collect()
 }
 
 fn merge_variable_patterns(pattern_groups: impl IntoIterator<Item = Vec<String>>) -> Vec<String> {
@@ -2324,22 +2369,14 @@ mod tests {
     }
 
     #[test]
-    fn rrfs_thermo_bundle_fetch_patterns_use_idx_subsetting() {
+    fn thermo_bundle_fetch_patterns_use_idx_subsetting() {
         assert_eq!(
             bundle_fetch_variable_patterns(
                 ModelId::RrfsA,
                 CanonicalBundleDescriptor::SurfaceAnalysis,
                 "nat-na"
             ),
-            vec![
-                "PRES:surface".to_string(),
-                "HGT:surface".to_string(),
-                "GP:surface".to_string(),
-                "TMP:2 m above ground".to_string(),
-                "SPFH:2 m above ground".to_string(),
-                "UGRD:10 m above ground".to_string(),
-                "VGRD:10 m above ground".to_string(),
-            ]
+            surface_analysis_fetch_patterns(ModelId::RrfsA)
         );
         assert_eq!(
             bundle_fetch_variable_patterns(
@@ -2347,24 +2384,31 @@ mod tests {
                 CanonicalBundleDescriptor::PressureAnalysis,
                 "prs-na"
             ),
-            vec![
-                "HGT".to_string(),
-                "GP".to_string(),
-                "TMP".to_string(),
-                "SPFH".to_string(),
-                "DPT".to_string(),
-                "RH".to_string(),
-                "UGRD".to_string(),
-                "VGRD".to_string(),
-            ]
+            pressure_analysis_fetch_patterns(ModelId::RrfsA)
         );
-        assert!(
+        assert_eq!(
             bundle_fetch_variable_patterns(
                 ModelId::Hrrr,
                 CanonicalBundleDescriptor::SurfaceAnalysis,
                 "sfc"
-            )
-            .is_empty()
+            ),
+            surface_analysis_fetch_patterns(ModelId::Hrrr)
+        );
+        assert_eq!(
+            bundle_fetch_variable_patterns(
+                ModelId::Hrrr,
+                CanonicalBundleDescriptor::PressureAnalysis,
+                "prs"
+            ),
+            pressure_analysis_fetch_patterns(ModelId::Hrrr)
+        );
+        assert_eq!(
+            bundle_fetch_variable_patterns(
+                ModelId::Gfs,
+                CanonicalBundleDescriptor::PressureAnalysis,
+                "pgrb2.0p25"
+            ),
+            pressure_analysis_fetch_patterns(ModelId::Gfs)
         );
     }
 

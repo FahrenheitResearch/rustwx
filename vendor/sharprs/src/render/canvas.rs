@@ -4,6 +4,12 @@
 //! clipping) with wrf-rust-plots' wind barb renderer. No egui dependency.
 
 use std::io::Cursor;
+use std::sync::OnceLock;
+
+use rusttype::{point, Font, Scale};
+
+const SOURCE_SANS_3_REGULAR: &[u8] =
+    include_bytes!("../../../../crates/rustwx-render/assets/fonts/SourceSans3-Regular.ttf");
 
 // ── Color type ──────────────────────────────────────────────────────
 
@@ -24,6 +30,8 @@ pub enum Align {
 
 pub const FONT_W: i32 = 7;
 pub const FONT_H: i32 = 10;
+
+static TEXT_FONT: OnceLock<Option<Font<'static>>> = OnceLock::new();
 
 /// Return a 10-row bitmap for a character (7 bits wide per row).
 pub fn char_bitmap(ch: char) -> [u16; 10] {
@@ -860,11 +868,20 @@ impl Canvas {
 
     /// Width of a text string in pixels using the built-in 7×10 font.
     pub fn text_width(text: &str) -> i32 {
-        let n = text.len() as i32;
-        if n == 0 {
-            0
+        Self::text_width_scaled(text, 1)
+    }
+
+    pub fn text_width_scaled(text: &str, scale_tag: i32) -> i32 {
+        let scale_tag = scale_tag.max(1);
+        if let Some(font) = sounding_font() {
+            measure_ttf_text(text, font_px(scale_tag), font) as i32
         } else {
-            n * (FONT_W + 1) - 1
+            let n = text.len() as i32;
+            if n == 0 {
+                0
+            } else {
+                n * (FONT_W + 1) * scale_tag - scale_tag
+            }
         }
     }
 
@@ -887,10 +904,20 @@ impl Canvas {
 
     /// Draw a text string at pixel position `(px, py)`.
     pub fn draw_text(&mut self, text: &str, px: i32, py: i32, col: Color) {
+        self.draw_text_scaled(text, px, py, col, 1);
+    }
+
+    pub fn draw_text_scaled(&mut self, text: &str, px: i32, py: i32, col: Color, scale_tag: i32) {
+        let scale_tag = scale_tag.max(1);
+        if let Some(font) = sounding_font() {
+            draw_ttf_text(self, text, px, py, col, font_px(scale_tag), font);
+            return;
+        }
+
         let mut x = px;
         for ch in text.chars() {
             self.draw_char(ch, x, py, col);
-            x += FONT_W + 1;
+            x += (FONT_W + 1) * scale_tag;
         }
     }
 
@@ -953,6 +980,71 @@ impl Canvas {
 // ═══════════════════════════════════════════════════════════════════
 // ClippedCanvas
 // ═══════════════════════════════════════════════════════════════════
+
+fn sounding_font() -> Option<&'static Font<'static>> {
+    TEXT_FONT
+        .get_or_init(|| Font::try_from_bytes(SOURCE_SANS_3_REGULAR))
+        .as_ref()
+}
+
+fn font_px(scale_tag: i32) -> f32 {
+    match scale_tag.max(1) {
+        1 => 14.0,
+        2 => 22.0,
+        3 => 31.0,
+        value => 14.0 + (value as f32 - 1.0) * 8.0,
+    }
+}
+
+fn measure_ttf_text(text: &str, font_size_px: f32, font: &Font<'static>) -> u32 {
+    if text.is_empty() {
+        return 0;
+    }
+
+    let scale = Scale::uniform(font_size_px);
+    let v_metrics = font.v_metrics(scale);
+    let glyphs: Vec<_> = font
+        .layout(text, scale, point(0.0, v_metrics.ascent))
+        .collect();
+    glyphs
+        .iter()
+        .rev()
+        .find_map(|glyph| glyph.pixel_bounding_box().map(|bb| bb.max.x.max(0) as u32))
+        .or_else(|| {
+            glyphs.last().map(|glyph| {
+                let end = glyph.position().x + glyph.unpositioned().h_metrics().advance_width;
+                end.max(0.0).ceil() as u32
+            })
+        })
+        .unwrap_or(0)
+}
+
+fn draw_ttf_text(
+    canvas: &mut Canvas,
+    text: &str,
+    x: i32,
+    y: i32,
+    color: Color,
+    font_size_px: f32,
+    font: &Font<'static>,
+) {
+    let scale = Scale::uniform(font_size_px);
+    let v_metrics = font.v_metrics(scale);
+    let glyphs = font.layout(text, scale, point(x as f32, y as f32 + v_metrics.ascent));
+
+    for glyph in glyphs {
+        if let Some(bb) = glyph.pixel_bounding_box() {
+            glyph.draw(|gx, gy, coverage| {
+                let alpha = ((color[3] as f32) * coverage).round().clamp(0.0, 255.0) as u8;
+                canvas.put_pixel_blend(
+                    bb.min.x + gx as i32,
+                    bb.min.y + gy as i32,
+                    [color[0], color[1], color[2], alpha],
+                );
+            });
+        }
+    }
+}
 
 /// A canvas wrapper that clips all drawing operations to a sub-rectangle.
 ///
@@ -1148,18 +1240,7 @@ impl<'a> ClippedCanvas<'a> {
     }
 
     pub fn draw_text(&mut self, text: &str, px: i32, py: i32, col: Color) {
-        let mut x = px;
-        for ch in text.chars() {
-            let bitmap = char_bitmap(ch);
-            for (row, &bits) in bitmap.iter().enumerate() {
-                for col_idx in 0..FONT_W {
-                    if bits & (1 << (FONT_W - 1 - col_idx)) != 0 {
-                        self.put_pixel_blend(x + col_idx, py + row as i32, col);
-                    }
-                }
-            }
-            x += FONT_W + 1;
-        }
+        self.canvas.draw_text(text, px, py, col);
     }
 
     pub fn draw_text_right(&mut self, text: &str, right_x: i32, py: i32, col: Color) {
@@ -1216,8 +1297,8 @@ mod tests {
     #[test]
     fn text_width_calculation() {
         assert_eq!(Canvas::text_width(""), 0);
-        assert_eq!(Canvas::text_width("A"), 7);
-        assert_eq!(Canvas::text_width("AB"), 15);
+        assert!(Canvas::text_width("A") > 0);
+        assert!(Canvas::text_width("AB") > Canvas::text_width("A"));
     }
 
     #[test]

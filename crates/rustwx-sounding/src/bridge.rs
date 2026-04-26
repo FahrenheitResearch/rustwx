@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use ecape_rs::{CapeType, ParcelOptions, StormMotionType, calc_ecape_parcel};
 use image::ImageFormat;
 use serde::{Deserialize, Serialize};
 use sharprs::Profile as SharprsProfile;
@@ -41,6 +42,12 @@ pub struct SoundingMetadata {
     pub latitude_deg: Option<f64>,
     pub longitude_deg: Option<f64>,
     pub elevation_m: Option<f64>,
+    #[serde(default)]
+    pub sample_method: Option<String>,
+    #[serde(default)]
+    pub box_radius_lat_deg: Option<f64>,
+    #[serde(default)]
+    pub box_radius_lon_deg: Option<f64>,
 }
 
 impl SoundingMetadata {
@@ -61,6 +68,9 @@ impl SoundingMetadata {
             latitude_deg: finite_or_none(station.latitude),
             longitude_deg: finite_or_none(station.longitude),
             elevation_m: finite_or_none(station.elevation),
+            sample_method: None,
+            box_radius_lat_deg: None,
+            box_radius_lon_deg: None,
         }
     }
 }
@@ -177,17 +187,33 @@ impl SoundingColumn {
 pub struct NativeSounding {
     pub profile: SharprsProfile,
     pub params: ComputedParams,
+    pub verified_ecape: VerifiedEcapeParcels,
+    pub metadata: SoundingMetadata,
 }
 
 impl NativeSounding {
     pub fn from_column(column: &SoundingColumn) -> Result<Self, SoundingBridgeError> {
         let profile = column.to_sharprs_profile()?;
         let params = compute_all_params(&profile);
-        Ok(Self { profile, params })
+        let verified_ecape = verified_ecape_params(&profile);
+        Ok(Self {
+            profile,
+            params,
+            verified_ecape,
+            metadata: column.metadata.clone(),
+        })
     }
 
     pub fn render_full_png(&self) -> Vec<u8> {
-        render_full_sounding(&self.profile, &self.params)
+        let base = render_full_sounding(&self.profile, &self.params);
+        crate::native_table::replace_title_and_table(
+            &base,
+            &self.profile,
+            &self.params,
+            &self.verified_ecape,
+            &self.metadata,
+        )
+        .unwrap_or(base)
     }
 
     pub fn render_full_png_with_ecape(
@@ -211,6 +237,251 @@ impl NativeSounding {
     ) -> Result<(), SoundingBridgeError> {
         std::fs::write(path, self.render_full_png_with_ecape(ecape)?)?;
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct VerifiedEcapeParcelParams {
+    pub ecape: f64,
+    pub ncape: f64,
+    pub cape: f64,
+    pub cinh: f64,
+    pub cape_3km: f64,
+    pub cape_6km: f64,
+    pub lfc_m: f64,
+    pub el_m: f64,
+}
+
+impl VerifiedEcapeParcelParams {
+    pub const fn missing() -> Self {
+        Self {
+            ecape: f64::NAN,
+            ncape: f64::NAN,
+            cape: f64::NAN,
+            cinh: f64::NAN,
+            cape_3km: f64::NAN,
+            cape_6km: f64::NAN,
+            lfc_m: f64::NAN,
+            el_m: f64::NAN,
+        }
+    }
+
+    pub fn has_ecape(&self) -> bool {
+        self.ecape.is_finite() && self.ncape.is_finite()
+    }
+}
+
+impl Default for VerifiedEcapeParcelParams {
+    fn default() -> Self {
+        Self::missing()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct VerifiedEcapeParcels {
+    pub surface_based: VerifiedEcapeParcelParams,
+    pub mixed_layer: VerifiedEcapeParcelParams,
+    pub most_unstable: VerifiedEcapeParcelParams,
+}
+
+impl VerifiedEcapeParcels {
+    pub const fn missing() -> Self {
+        Self {
+            surface_based: VerifiedEcapeParcelParams::missing(),
+            mixed_layer: VerifiedEcapeParcelParams::missing(),
+            most_unstable: VerifiedEcapeParcelParams::missing(),
+        }
+    }
+}
+
+impl Default for VerifiedEcapeParcels {
+    fn default() -> Self {
+        Self::missing()
+    }
+}
+
+struct EcapeProfileInputs {
+    pressure_pa: Vec<f64>,
+    height_m: Vec<f64>,
+    temperature_k: Vec<f64>,
+    dewpoint_k: Vec<f64>,
+    u_ms: Vec<f64>,
+    v_ms: Vec<f64>,
+    surface_height_m: f64,
+}
+
+fn verified_ecape_params(profile: &SharprsProfile) -> VerifiedEcapeParcels {
+    let Some(inputs) = EcapeProfileInputs::from_sharprs(profile) else {
+        return VerifiedEcapeParcels::missing();
+    };
+
+    VerifiedEcapeParcels {
+        surface_based: verified_ecape_parcel(&inputs, CapeType::SurfaceBased),
+        mixed_layer: verified_ecape_parcel(&inputs, CapeType::MixedLayer),
+        most_unstable: verified_ecape_parcel(&inputs, CapeType::MostUnstable),
+    }
+}
+
+impl EcapeProfileInputs {
+    fn from_sharprs(profile: &SharprsProfile) -> Option<Self> {
+        let mut pressure_pa = Vec::with_capacity(profile.num_levels());
+        let mut height_m = Vec::with_capacity(profile.num_levels());
+        let mut temperature_k = Vec::with_capacity(profile.num_levels());
+        let mut dewpoint_k = Vec::with_capacity(profile.num_levels());
+        let mut u_ms = Vec::with_capacity(profile.num_levels());
+        let mut v_ms = Vec::with_capacity(profile.num_levels());
+
+        for i in 0..profile.num_levels() {
+            let p_pa = profile.pres[i] * 100.0;
+            let h_m = profile.hght[i];
+            let t_k = profile.tmpc[i] + 273.15;
+            let td_k = profile.dwpc[i] + 273.15;
+            let u = profile.u[i] * KTS_TO_MS;
+            let v = profile.v[i] * KTS_TO_MS;
+            if p_pa.is_finite()
+                && p_pa > 0.0
+                && h_m.is_finite()
+                && t_k.is_finite()
+                && t_k > 0.0
+                && td_k.is_finite()
+                && td_k > 0.0
+                && u.is_finite()
+                && v.is_finite()
+            {
+                pressure_pa.push(p_pa);
+                height_m.push(h_m);
+                temperature_k.push(t_k);
+                dewpoint_k.push(td_k);
+                u_ms.push(u);
+                v_ms.push(v);
+            }
+        }
+
+        if pressure_pa.len() < 3 {
+            return None;
+        }
+
+        Some(Self {
+            surface_height_m: *height_m.first()?,
+            pressure_pa,
+            height_m,
+            temperature_k,
+            dewpoint_k,
+            u_ms,
+            v_ms,
+        })
+    }
+}
+
+fn verified_ecape_parcel(
+    inputs: &EcapeProfileInputs,
+    cape_type: CapeType,
+) -> VerifiedEcapeParcelParams {
+    let base_options = ParcelOptions {
+        cape_type,
+        storm_motion_type: StormMotionType::RightMoving,
+        pseudoadiabatic: Some(true),
+        ..ParcelOptions::default()
+    };
+    let entraining = calc_ecape_parcel(
+        &inputs.height_m,
+        &inputs.pressure_pa,
+        &inputs.temperature_k,
+        &inputs.dewpoint_k,
+        &inputs.u_ms,
+        &inputs.v_ms,
+        &base_options,
+    );
+
+    let undiluted_options = ParcelOptions {
+        entrainment_rate: Some(0.0),
+        ..base_options
+    };
+    let undiluted = calc_ecape_parcel(
+        &inputs.height_m,
+        &inputs.pressure_pa,
+        &inputs.temperature_k,
+        &inputs.dewpoint_k,
+        &inputs.u_ms,
+        &inputs.v_ms,
+        &undiluted_options,
+    );
+
+    let Ok(entraining) = entraining else {
+        return VerifiedEcapeParcelParams::missing();
+    };
+    let Ok(undiluted) = undiluted else {
+        return VerifiedEcapeParcelParams::missing();
+    };
+
+    VerifiedEcapeParcelParams {
+        ecape: entraining.ecape_jkg,
+        ncape: entraining.ncape_jkg,
+        cape: undiluted.cape_jkg,
+        cinh: undiluted.cin_jkg,
+        cape_3km: positive_buoyancy_to_depth(&undiluted, 3000.0),
+        cape_6km: positive_buoyancy_to_depth(&undiluted, 6000.0),
+        lfc_m: undiluted
+            .lfc_m
+            .map(|height| height - inputs.surface_height_m)
+            .unwrap_or(f64::NAN),
+        el_m: undiluted
+            .el_m
+            .map(|height| height - inputs.surface_height_m)
+            .unwrap_or(f64::NAN),
+    }
+}
+
+fn positive_buoyancy_to_depth(result: &ecape_rs::EcapeParcelResult, depth_m: f64) -> f64 {
+    let profile = &result.parcel_profile;
+    if profile.height_m.len() < 2 || profile.buoyancy_ms2.len() != profile.height_m.len() {
+        return if result.cape_jkg == 0.0 {
+            0.0
+        } else {
+            f64::NAN
+        };
+    }
+
+    let bottom = profile.height_m[0];
+    let top = bottom + depth_m;
+    let mut energy = 0.0;
+    for i in 0..profile.height_m.len() - 1 {
+        let z0 = profile.height_m[i];
+        let z1 = profile.height_m[i + 1];
+        if !z0.is_finite() || !z1.is_finite() || z1 <= z0 || z0 >= top {
+            continue;
+        }
+        let b0 = profile.buoyancy_ms2[i];
+        let b1 = profile.buoyancy_ms2[i + 1];
+        if !b0.is_finite() || !b1.is_finite() {
+            continue;
+        }
+
+        let seg_top = z1.min(top);
+        let frac = ((seg_top - z0) / (z1 - z0)).clamp(0.0, 1.0);
+        let b_seg_top = b0 + frac * (b1 - b0);
+        energy += positive_linear_area(z0, b0, seg_top, b_seg_top);
+    }
+    energy
+}
+
+fn positive_linear_area(z0: f64, b0: f64, z1: f64, b1: f64) -> f64 {
+    let dz = z1 - z0;
+    if dz <= 0.0 {
+        return 0.0;
+    }
+    if b0 <= 0.0 && b1 <= 0.0 {
+        0.0
+    } else if b0 >= 0.0 && b1 >= 0.0 {
+        0.5 * (b0 + b1) * dz
+    } else if b0 < 0.0 {
+        let frac = (-b0 / (b1 - b0)).clamp(0.0, 1.0);
+        let positive_dz = dz * (1.0 - frac);
+        0.5 * b1.max(0.0) * positive_dz
+    } else {
+        let frac = (b0 / (b0 - b1)).clamp(0.0, 1.0);
+        let positive_dz = dz * frac;
+        0.5 * b0.max(0.0) * positive_dz
     }
 }
 
@@ -612,4 +883,17 @@ fn validate_dewpoint_not_above_temperature(
 
 fn finite_or_none(value: f64) -> Option<f64> {
     if value.is_finite() { Some(value) } else { None }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::positive_linear_area;
+
+    #[test]
+    fn positive_linear_area_handles_zero_crossings() {
+        assert_eq!(positive_linear_area(0.0, -1.0, 1.0, -2.0), 0.0);
+        assert!((positive_linear_area(0.0, 2.0, 1.0, 4.0) - 3.0).abs() < 1.0e-6);
+        assert!((positive_linear_area(0.0, -2.0, 1.0, 4.0) - 1.333_333_333).abs() < 1.0e-6);
+        assert!((positive_linear_area(0.0, 4.0, 1.0, -2.0) - 1.333_333_333).abs() < 1.0e-6);
+    }
 }

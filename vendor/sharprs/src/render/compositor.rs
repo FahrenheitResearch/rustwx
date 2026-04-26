@@ -88,6 +88,9 @@ pub struct ComputedParams {
     pub sfcpcl: ParcelResult,
     pub mlpcl: ParcelResult,
     pub mupcl: ParcelResult,
+    pub sfc_ecape: EcapeParcelParams,
+    pub ml_ecape: EcapeParcelParams,
+    pub mu_ecape: EcapeParcelParams,
 
     // -- DCAPE --
     pub dcape: DcapeResult,
@@ -168,6 +171,48 @@ pub struct ComputedParams {
     // -- Wind at key levels --
     pub wind_1km: (f64, f64), // dir, spd
     pub wind_6km: (f64, f64),
+}
+
+/// Verified ECAPE parcel diagnostics supplied by rustwx-sounding.
+#[derive(Debug, Clone, Copy)]
+pub struct EcapeParcelParams {
+    /// Entraining CAPE (J/kg).
+    pub ecape: f64,
+    /// Normalized CAPE from the ECAPE parcel path.
+    pub ncape: f64,
+    /// Undiluted parcel CAPE (J/kg), computed through ecape-rs with zero entrainment.
+    pub cape: f64,
+    /// Undiluted parcel CIN (J/kg).
+    pub cinh: f64,
+    /// Undiluted 0-3 km positive buoyancy (J/kg).
+    pub cape_3km: f64,
+    /// Undiluted 0-6 km positive buoyancy (J/kg).
+    pub cape_6km: f64,
+    /// LFC height (m AGL).
+    pub lfc_m: f64,
+    /// EL height (m AGL).
+    pub el_m: f64,
+}
+
+impl EcapeParcelParams {
+    pub const fn missing() -> Self {
+        Self {
+            ecape: f64::NAN,
+            ncape: f64::NAN,
+            cape: f64::NAN,
+            cinh: f64::NAN,
+            cape_3km: f64::NAN,
+            cape_6km: f64::NAN,
+            lfc_m: f64::NAN,
+            el_m: f64::NAN,
+        }
+    }
+}
+
+impl Default for EcapeParcelParams {
+    fn default() -> Self {
+        Self::missing()
+    }
 }
 
 /// Compute all derived sounding parameters from a profile.
@@ -354,6 +399,9 @@ pub fn compute_all_params(profile: &Profile) -> ComputedParams {
         sfcpcl,
         mlpcl,
         mupcl,
+        sfc_ecape: EcapeParcelParams::missing(),
+        ml_ecape: EcapeParcelParams::missing(),
+        mu_ecape: EcapeParcelParams::missing(),
         dcape: dcape_result,
         rstu,
         rstv,
@@ -414,97 +462,152 @@ fn build_hodo_data(profile: &Profile) -> Option<HodographData> {
 fn build_param_table(profile: &Profile, p: &ComputedParams) -> ParamTableData {
     let nan_or = |v: f64| if v.is_finite() { v } else { f64::NAN };
     let opt_or = |v: Option<f64>| v.unwrap_or(f64::NAN);
-
-    // Storm-relative wind helper
-    let sr_wind_mag = |pbot: f64, ptop: f64| -> f64 {
-        if let Ok((su, sv)) = winds::sr_wind(profile, pbot, ptop, p.rstu, p.rstv, -1.0) {
-            (su * su + v_sq(sv)).sqrt()
-        } else {
-            f64::NAN
-        }
-    };
+    let mag = |u: f64, v: f64| (u * u + v * v).sqrt();
 
     let p_sfc = profile.sfc_pressure();
+    let p500m = profile.pres_at_height(profile.to_msl(500.0));
     let p1km = profile.pres_at_height(profile.to_msl(1000.0));
+    let p2km = profile.pres_at_height(profile.to_msl(2000.0));
     let p3km = profile.pres_at_height(profile.to_msl(3000.0));
+    let p3500m = profile.pres_at_height(profile.to_msl(3500.0));
     let p6km = profile.pres_at_height(profile.to_msl(6000.0));
-    let _p9km = profile.pres_at_height(profile.to_msl(9000.0));
+    let p12km = profile.pres_at_height(profile.to_msl(12000.0));
+
+    let shear_mag = |pbot: f64, ptop: f64| -> f64 {
+        winds::wind_shear(profile, pbot, ptop)
+            .map(|(u, v)| mag(u, v))
+            .unwrap_or(f64::NAN)
+    };
+    let mean_wind_mag = |pbot: f64, ptop: f64| -> f64 {
+        winds::mean_wind(profile, pbot, ptop, -1.0, 0.0, 0.0)
+            .map(|(u, v)| mag(u, v))
+            .unwrap_or(f64::NAN)
+    };
+    let sr_wind = |pbot: f64, ptop: f64| -> (f64, f64, f64) {
+        if let Ok((su, sv)) = winds::sr_wind(profile, pbot, ptop, p.rstu, p.rstv, -1.0) {
+            let (dir, spd) = crate::profile::comp2vec(su, sv);
+            (dir, spd, spd)
+        } else {
+            (f64::NAN, f64::NAN, f64::NAN)
+        }
+    };
+    let srh_layer = |bottom_agl: f64, top_agl: f64| -> f64 {
+        winds::helicity(
+            profile, bottom_agl, top_agl, p.rstu, p.rstv, -1.0, false,
+        )
+        .map(|value| value.0)
+        .unwrap_or(f64::NAN)
+    };
+    let ehi_for_srh = |srh: f64| composites::ehi(p.sfcpcl.bplus, srh).unwrap_or(f64::NAN);
+    let shear_row =
+        |label: &str, pbot: f64, ptop: f64, bottom_agl: f64, top_agl: f64| -> ShearRow {
+            let srh = srh_layer(bottom_agl, top_agl);
+            let (srw_dir, srw_spd, srw) = sr_wind(pbot, ptop);
+            ShearRow {
+                label: label.into(),
+                ehi: ehi_for_srh(srh),
+                srh: nan_or(srh),
+                shear: shear_mag(pbot, ptop),
+                mn_wind: mean_wind_mag(pbot, ptop),
+                srw_dir,
+                srw_spd,
+                srw,
+            }
+        };
+    let finite_or = |value: f64, fallback: f64| {
+        if value.is_finite() {
+            value
+        } else {
+            fallback
+        }
+    };
 
     let parcels = vec![
         ParcelRow {
             label: "SFC".into(),
-            cape: nan_or(p.sfcpcl.bplus),
-            cinh: nan_or(p.sfcpcl.bminus),
+            ecape: nan_or(p.sfc_ecape.ecape),
+            ncape: nan_or(p.sfc_ecape.ncape),
+            cape: finite_or(p.sfc_ecape.cape, nan_or(p.sfcpcl.bplus)),
+            cape_3km: finite_or(p.sfc_ecape.cape_3km, nan_or(p.sfcpcl.b3km)),
+            cape_6km: finite_or(p.sfc_ecape.cape_6km, nan_or(p.sfcpcl.b6km)),
+            cinh: finite_or(p.sfc_ecape.cinh, nan_or(p.sfcpcl.bminus)),
             lcl_m: nan_or(p.sfcpcl.lclhght),
             li: nan_or(p.sfcpcl.li5),
-            lfc_m: nan_or(p.sfcpcl.lfchght),
-            el_m: nan_or(p.sfcpcl.elhght),
+            lfc_m: finite_or(p.sfc_ecape.lfc_m, nan_or(p.sfcpcl.lfchght)),
+            el_m: finite_or(p.sfc_ecape.el_m, nan_or(p.sfcpcl.elhght)),
         },
         ParcelRow {
             label: "ML".into(),
-            cape: nan_or(p.mlpcl.bplus),
-            cinh: nan_or(p.mlpcl.bminus),
+            ecape: nan_or(p.ml_ecape.ecape),
+            ncape: nan_or(p.ml_ecape.ncape),
+            cape: finite_or(p.ml_ecape.cape, nan_or(p.mlpcl.bplus)),
+            cape_3km: finite_or(p.ml_ecape.cape_3km, nan_or(p.mlpcl.b3km)),
+            cape_6km: finite_or(p.ml_ecape.cape_6km, nan_or(p.mlpcl.b6km)),
+            cinh: finite_or(p.ml_ecape.cinh, nan_or(p.mlpcl.bminus)),
             lcl_m: nan_or(p.mlpcl.lclhght),
             li: nan_or(p.mlpcl.li5),
-            lfc_m: nan_or(p.mlpcl.lfchght),
-            el_m: nan_or(p.mlpcl.elhght),
+            lfc_m: finite_or(p.ml_ecape.lfc_m, nan_or(p.mlpcl.lfchght)),
+            el_m: finite_or(p.ml_ecape.el_m, nan_or(p.mlpcl.elhght)),
         },
         ParcelRow {
             label: "MU".into(),
-            cape: nan_or(p.mupcl.bplus),
-            cinh: nan_or(p.mupcl.bminus),
+            ecape: nan_or(p.mu_ecape.ecape),
+            ncape: nan_or(p.mu_ecape.ncape),
+            cape: finite_or(p.mu_ecape.cape, nan_or(p.mupcl.bplus)),
+            cape_3km: finite_or(p.mu_ecape.cape_3km, nan_or(p.mupcl.b3km)),
+            cape_6km: finite_or(p.mu_ecape.cape_6km, nan_or(p.mupcl.b6km)),
+            cinh: finite_or(p.mu_ecape.cinh, nan_or(p.mupcl.bminus)),
             lcl_m: nan_or(p.mupcl.lclhght),
             li: nan_or(p.mupcl.li5),
-            lfc_m: nan_or(p.mupcl.lfchght),
-            el_m: nan_or(p.mupcl.elhght),
+            lfc_m: finite_or(p.mu_ecape.lfc_m, nan_or(p.mupcl.lfchght)),
+            el_m: finite_or(p.mu_ecape.el_m, nan_or(p.mupcl.elhght)),
         },
     ];
 
-    let mag = |u: f64, v: f64| (u * u + v * v).sqrt();
-
+    let eff_bot_h = profile.to_agl(profile.interp_hght(p.eff_inflow.0));
+    let eff_top_h = profile.to_agl(profile.interp_hght(p.eff_inflow.1));
     let shear_layers = vec![
-        ShearRow {
-            label: "SFC-1km".into(),
-            ehi: opt_or(p.ehi01),
-            srh: nan_or(p.srh01.0),
-            shear: mag(p.shr01.0, p.shr01.1),
-            mn_wind: f64::NAN,
-            srw: sr_wind_mag(p_sfc, p1km),
-        },
-        ShearRow {
-            label: "SFC-3km".into(),
-            ehi: opt_or(p.ehi03),
-            srh: nan_or(p.srh03.0),
-            shear: mag(p.shr03.0, p.shr03.1),
-            mn_wind: f64::NAN,
-            srw: sr_wind_mag(p_sfc, p3km),
-        },
-        ShearRow {
-            label: "SFC-6km".into(),
-            ehi: f64::NAN,
-            srh: f64::NAN,
-            shear: mag(p.shr06.0, p.shr06.1),
-            mn_wind: mag(p.mean_wind_06.0, p.mean_wind_06.1),
-            srw: sr_wind_mag(p_sfc, p6km),
-        },
-        ShearRow {
-            label: "SFC-8km".into(),
-            ehi: f64::NAN,
-            srh: f64::NAN,
-            shear: mag(p.shr08.0, p.shr08.1),
-            mn_wind: f64::NAN,
-            srw: f64::NAN,
-        },
+        shear_row("SFC-500m", p_sfc, p500m, 0.0, 500.0),
+        shear_row("SFC-1km", p_sfc, p1km, 0.0, 1000.0),
+        shear_row("Eff Inflow", p.eff_inflow.0, p.eff_inflow.1, eff_bot_h, eff_top_h),
+        shear_row("SFC-3km", p_sfc, p3km, 0.0, 3000.0),
+        shear_row("1km-3km", p1km, p3km, 1000.0, 3000.0),
+        shear_row("3km-6km", p3km, p6km, 3000.0, 6000.0),
+        shear_row("SFC-6km", p_sfc, p6km, 0.0, 6000.0),
+        shear_row("C 0-2km", p_sfc, p2km, 0.0, 2000.0),
     ];
+    let lr03_table = p.lr03.unwrap_or_else(|| lapse_rate_agl(profile, 0.0, 3000.0));
+    let lr36_table = p
+        .lr36
+        .unwrap_or_else(|| lapse_rate_agl(profile, 3000.0, 6000.0));
+    let sfc_lcl_lr = if p.sfcpcl.lclhght.is_finite() && p.sfcpcl.lclhght > 1.0 {
+        let value = lapse_rate_agl(profile, 0.0, p.sfcpcl.lclhght);
+        if value.is_finite() {
+            value
+        } else {
+            let lcl_env_tmpc = profile.interp_tmpc(p.sfcpcl.lclpres);
+            (profile.tmpc[profile.sfc] - lcl_env_tmpc) / p.sfcpcl.lclhght * 1000.0
+        }
+    } else {
+        f64::NAN
+    };
 
     let lapse_rates = vec![
         LapseRateRow {
+            label: "SFC-LCL".into(),
+            value: sfc_lcl_lr,
+        },
+        LapseRateRow {
+            label: "950-850".into(),
+            value: indices::lapse_rate(profile, 950.0, 850.0, true).unwrap_or(f64::NAN),
+        },
+        LapseRateRow {
             label: "SFC-3km".into(),
-            value: opt_or(p.lr03),
+            value: nan_or(lr03_table),
         },
         LapseRateRow {
             label: "3-6km".into(),
-            value: opt_or(p.lr36),
+            value: nan_or(lr36_table),
         },
         LapseRateRow {
             label: "700-500".into(),
@@ -520,25 +623,67 @@ fn build_param_table(profile: &Profile, p: &ComputedParams) -> ParamTableData {
     let (lm_dir, lm_spd) = crate::profile::comp2vec(p.lstu, p.lstv);
     let (cu_dir, cu_spd) = crate::profile::comp2vec(p.corfidi_up_u, p.corfidi_up_v);
     let (cd_dir, cd_spd) = crate::profile::comp2vec(p.corfidi_dn_u, p.corfidi_dn_v);
+    let (_, lcl_temp_c) = cape::lcl(
+        p_sfc,
+        profile.tmpc[profile.sfc],
+        profile.dwpc[profile.sfc],
+    );
+    let (dgz_bot, dgz_top) = indices::dgz(profile);
+    let dgz_rh = indices::mean_relh(profile, Some(dgz_bot), Some(dgz_top)).unwrap_or(f64::NAN);
+    let mean_wind_1_35_ms = mean_wind_mag(p1km, p3500m) * 0.514_444;
+    let wndg = composites::wndg(p.mlpcl.bplus, lr03_table, mean_wind_1_35_ms, p.mlpcl.bminus)
+        .unwrap_or(f64::NAN);
+    let shr06_mag = mag(p.shr06.0, p.shr06.1);
+    let mean06_mag = mag(p.mean_wind_06.0, p.mean_wind_06.1);
+    let dcp = composites::dcp(p.dcape.dcape, p.mupcl.bplus, shr06_mag, mean06_mag)
+        .unwrap_or(f64::NAN);
+    let esp = composites::esp(p.mlpcl.b3km, lr03_table, p.mlpcl.bplus).unwrap_or(f64::NAN);
+    let lr38 = indices::lapse_rate(profile, 3000.0, 8000.0, false).unwrap_or(f64::NAN);
+    let mean_wind_3_12_ms = mean_wind_mag(p3km, p12km) * 0.514_444;
+    let mmp = {
+        let max_bulk_shear = max_bulk_shear_0_1_to_6_10_mps(profile);
+        if max_bulk_shear.is_finite() && lr38.is_finite() && mean_wind_3_12_ms.is_finite() {
+            indices::coniglio(p.mupcl.bplus, max_bulk_shear, lr38, mean_wind_3_12_ms)
+        } else {
+            f64::NAN
+        }
+    };
+    let down_t = p.dcape.ttrace.last().copied().unwrap_or(f64::NAN);
+    let sfc_rh = profile
+        .relh
+        .get(profile.sfc)
+        .copied()
+        .unwrap_or(f64::NAN);
 
     ParamTableData {
         parcels,
         shear_layers,
         pw: opt_or(p.precip_water),
         mean_w: opt_or(p.mean_mixr),
+        sfc_rh: nan_or(sfc_rh),
         low_rh: opt_or(p.mean_rh_low),
         mid_rh: opt_or(p.mean_rh_mid),
+        dgz_rh: nan_or(dgz_rh),
+        freezing_level_m: opt_or(p.frz_lvl),
+        wb_zero_m: opt_or(p.wb_zero),
+        mu_mpl_m: nan_or(p.mupcl.mplhght),
+        thetae_diff_3km: opt_or(p.tei),
+        lcl_temp_c: nan_or(lcl_temp_c),
         dcape: nan_or(p.dcape.dcape),
-        dwn_t: f64::NAN,
+        dwn_t: nan_or(down_t),
         k_index: opt_or(p.k_index),
         t_totals: opt_or(p.t_totals),
         tei: opt_or(p.tei),
+        tehi: f64::NAN,
+        tts: f64::NAN,
         conv_t: opt_or(p.conv_t),
         max_t: opt_or(p.max_temp),
-        mmp: f64::NAN,
+        mmp: nan_or(mmp),
         sig_svr: f64::NAN,
-        esp: f64::NAN,
-        wndg: f64::NAN,
+        esp: nan_or(esp),
+        wndg: nan_or(wndg),
+        dcp: nan_or(dcp),
+        lhp: f64::NAN,
         cape_3km: nan_or(p.sfcpcl.b3km),
         lapse_rates,
         bunkers_right: param_table::StormMotion {
@@ -573,10 +718,80 @@ fn build_param_table(profile: &Profile, p: &ComputedParams) -> ParamTableData {
     }
 }
 
-/// v^2 helper (avoids name collision with `v` variable).
-#[inline]
-fn v_sq(v: f64) -> f64 {
-    v * v
+fn max_bulk_shear_0_1_to_6_10_mps(profile: &Profile) -> f64 {
+    let low = wind_indices_in_layer(profile, 0.0, 1000.0);
+    let high = wind_indices_in_layer(profile, 6000.0, 10_000.0);
+    let mut max_shear = f64::NAN;
+    for &i in &low {
+        for &j in &high {
+            let du = profile.u[j] - profile.u[i];
+            let dv = profile.v[j] - profile.v[i];
+            if du.is_finite() && dv.is_finite() {
+                let shear = (du * du + dv * dv).sqrt() * 0.514_444;
+                if !max_shear.is_finite() || shear > max_shear {
+                    max_shear = shear;
+                }
+            }
+        }
+    }
+    max_shear
+}
+
+fn lapse_rate_agl(profile: &Profile, lower_agl: f64, upper_agl: f64) -> f64 {
+    let lower_msl = profile.to_msl(lower_agl);
+    let upper_msl = profile.to_msl(upper_agl);
+    let t_lower = interp_profile_field_by_height(profile, lower_msl, &profile.tmpc);
+    let t_upper = interp_profile_field_by_height(profile, upper_msl, &profile.tmpc);
+    let dz = upper_msl - lower_msl;
+    if t_lower.is_finite() && t_upper.is_finite() && dz.abs() > 1.0 {
+        (t_upper - t_lower) / dz * -1000.0
+    } else {
+        f64::NAN
+    }
+}
+
+fn interp_profile_field_by_height(profile: &Profile, target_msl: f64, field: &[f64]) -> f64 {
+    if !target_msl.is_finite() || field.len() != profile.hght.len() {
+        return f64::NAN;
+    }
+    for i in 0..profile.hght.len().saturating_sub(1) {
+        let h0 = profile.hght[i];
+        let h1 = profile.hght[i + 1];
+        let v0 = field[i];
+        let v1 = field[i + 1];
+        if !h0.is_finite() || !h1.is_finite() || !v0.is_finite() || !v1.is_finite() {
+            continue;
+        }
+        if (target_msl >= h0 && target_msl <= h1) || (target_msl <= h0 && target_msl >= h1) {
+            let dh = h1 - h0;
+            if dh.abs() < 1.0e-6 {
+                return v0;
+            }
+            let frac = (target_msl - h0) / dh;
+            return v0 + frac * (v1 - v0);
+        }
+    }
+    f64::NAN
+}
+
+fn wind_indices_in_layer(profile: &Profile, bottom_agl: f64, top_agl: f64) -> Vec<usize> {
+    profile
+        .hght
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &height_msl)| {
+            let agl = profile.to_agl(height_msl);
+            if agl >= bottom_agl
+                && agl <= top_agl
+                && profile.u[index].is_finite()
+                && profile.v[index].is_finite()
+            {
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Build SARS data (placeholder — no analog database yet).
@@ -757,9 +972,9 @@ pub fn render_full_sounding(profile: &Profile, params: &ComputedParams) -> Vec<u
     let station = &profile.station.station_id;
     let datetime = &profile.station.datetime;
     let title = if station.is_empty() && datetime.is_empty() {
-        "SHARPpy Sounding Analysis".to_string()
+        "rustwx Sounding Analysis".to_string()
     } else {
-        format!("SHARPpy Sounding Analysis - {} {}", station, datetime)
+        format!("rustwx Sounding Analysis - {} {}", station, datetime)
     };
     img.draw_text_centered(&title, IMG_W as i32 / 2, 12, COL_WHITE);
 

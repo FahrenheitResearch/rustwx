@@ -30,7 +30,7 @@
 use crate::constants::*;
 use crate::params::cape::{self, DcapeResult, ParcelResult, ParcelType};
 use crate::profile::Profile;
-use crate::render::canvas::{Canvas, FONT_H, FONT_W};
+use crate::render::canvas::{Canvas, FONT_H};
 
 // =========================================================================
 // Layout constants
@@ -468,33 +468,12 @@ fn draw_text_with_bg(
 
 /// Draw text at 2x scale (each pixel of the 7x10 font becomes a 2x2 block).
 fn draw_text_2x(c: &mut Canvas, text: &str, px: i32, py: i32, col: [u8; 4]) {
-    let mut x = px;
-    for ch in text.chars() {
-        let bitmap = crate::render::canvas::char_bitmap(ch);
-        for (row, &bits) in bitmap.iter().enumerate() {
-            for col_idx in 0..FONT_W {
-                if bits & (1 << (FONT_W - 1 - col_idx)) != 0 {
-                    let bx = x + col_idx * 2;
-                    let by = py + row as i32 * 2;
-                    c.put_pixel_blend(bx, by, col);
-                    c.put_pixel_blend(bx + 1, by, col);
-                    c.put_pixel_blend(bx, by + 1, col);
-                    c.put_pixel_blend(bx + 1, by + 1, col);
-                }
-            }
-        }
-        x += (FONT_W + 1) * 2;
-    }
+    c.draw_text_scaled(text, px, py, col, 2);
 }
 
 /// Width of 2x-scale text.
 fn text_width_2x(text: &str) -> i32 {
-    let n = text.len() as i32;
-    if n == 0 {
-        0
-    } else {
-        n * (FONT_W + 1) * 2 - 2
-    }
+    Canvas::text_width_scaled(text, 2)
 }
 
 /// Draw text with a dark background box at 2x scale.
@@ -588,9 +567,6 @@ pub fn render_skewt(prof: &Profile, width: u32, height: u32) -> Vec<u8> {
     draw_level_labels(&mut c, &params, &cape_prof, plot_w, plot_h);
 
     // ── Title ───────────────────────────────────────────────────────
-    let title = format!("{}  {}", prof.station.station_id, prof.station.datetime);
-    c.draw_text(&title.to_uppercase(), MARGIN_LEFT as i32, 4, COL_TEXT);
-
     // ── Right panel: hodograph ──────────────────────────────────────
     let hodo_h = (height as i32) / 2;
     draw_hodograph(&mut c, prof, &params, right_x, 0, right_w as i32, hodo_h);

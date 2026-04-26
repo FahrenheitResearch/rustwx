@@ -34,6 +34,9 @@ fn main() {
             latitude_deg: Some(35.4),
             longitude_deg: Some(-97.6),
             elevation_m: Some(360.0),
+            sample_method: Some("nearest".to_string()),
+            box_radius_lat_deg: None,
+            box_radius_lon_deg: None,
         },
     };
 
