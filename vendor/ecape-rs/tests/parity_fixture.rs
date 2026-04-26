@@ -1,5 +1,6 @@
 use ecape_rs::{
-    CapeType, ParcelOptions, StormMotionType, calc_ecape_parcel, custom_cape_cin_lfc_el,
+    CapeType, ParcelOptions, StormMotionType, calc_ecape_parcel,
+    continuous_cape_cin_lfc_el_from_dewpoint,
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -179,50 +180,51 @@ fn parity_fixture_outputs_remain_stable() {
 }
 
 #[test]
-fn surface_nonentraining_pseudoadiabatic_path_matches_continuous_cape_limit() {
+fn nonentraining_paths_match_continuous_cape_limit() {
     let fixture = fixture();
-    let qv_kgkg: Vec<f64> = fixture
-        .pressure_pa
-        .iter()
-        .zip(fixture.dewpoint_k.iter())
-        .map(|(p, td)| wx_math::thermo::specific_humidity_from_dewpoint(p / 100.0, td - 273.15))
-        .collect();
 
-    let options = ParcelOptions {
-        cape_type: CapeType::SurfaceBased,
-        storm_motion_type: StormMotionType::UserDefined,
-        storm_motion_u_ms: Some(fixture.storm_motion_u_ms),
-        storm_motion_v_ms: Some(fixture.storm_motion_v_ms),
-        origin_height_m: Some(fixture.height_m[0]),
-        entrainment_rate: Some(0.0),
-        pseudoadiabatic: Some(true),
-        ..ParcelOptions::default()
-    };
+    for cape_type in [
+        CapeType::SurfaceBased,
+        CapeType::MixedLayer,
+        CapeType::MostUnstable,
+    ] {
+        for pseudoadiabatic in [true, false] {
+            let options = ParcelOptions {
+                cape_type,
+                storm_motion_type: StormMotionType::UserDefined,
+                storm_motion_u_ms: Some(fixture.storm_motion_u_ms),
+                storm_motion_v_ms: Some(fixture.storm_motion_v_ms),
+                entrainment_rate: Some(0.0),
+                pseudoadiabatic: Some(pseudoadiabatic),
+                ..ParcelOptions::default()
+            };
 
-    let undiluted = custom_cape_cin_lfc_el(
-        &fixture.height_m,
-        &fixture.pressure_pa,
-        &fixture.temperature_k,
-        &qv_kgkg,
-        &options,
-    )
-    .unwrap();
-    let parcel_path = calc_ecape_parcel(
-        &fixture.height_m,
-        &fixture.pressure_pa,
-        &fixture.temperature_k,
-        &fixture.dewpoint_k,
-        &fixture.u_wind_ms,
-        &fixture.v_wind_ms,
-        &options,
-    )
-    .unwrap();
+            let continuous = continuous_cape_cin_lfc_el_from_dewpoint(
+                &fixture.height_m,
+                &fixture.pressure_pa,
+                &fixture.temperature_k,
+                &fixture.dewpoint_k,
+                &options,
+            )
+            .unwrap();
+            let parcel_path = calc_ecape_parcel(
+                &fixture.height_m,
+                &fixture.pressure_pa,
+                &fixture.temperature_k,
+                &fixture.dewpoint_k,
+                &fixture.u_wind_ms,
+                &fixture.v_wind_ms,
+                &options,
+            )
+            .unwrap();
 
-    let delta = (parcel_path.cape_jkg - undiluted.cape_jkg).abs();
-    assert!(
-        delta < 1.0e-9,
-        "nonentraining parcel-path CAPE={} differs from continuous undiluted CAPE={} by {delta}",
-        parcel_path.cape_jkg,
-        undiluted.cape_jkg
-    );
+            let delta = (parcel_path.cape_jkg - continuous.cape_jkg).abs();
+            assert!(
+                delta < 1.0e-9,
+                "{cape_type:?} pseudoadiabatic={pseudoadiabatic}: nonentraining parcel-path CAPE={} differs from continuous path CAPE={} by {delta}",
+                parcel_path.cape_jkg,
+                continuous.cape_jkg
+            );
+        }
+    }
 }

@@ -1846,10 +1846,43 @@ fn parcel_profile_from(
     }
 }
 
-fn continuous_cape_cin_lfc_el(
+pub fn continuous_cape_cin_lfc_el(
     height_m: &[f64],
     pressure_pa: &[f64],
     temperature_k: &[f64],
+    qv_kgkg: &[f64],
+    options: &ParcelOptions,
+) -> Result<CapeCinLfcEl, EcapeError> {
+    continuous_cape_cin_lfc_el_impl(height_m, pressure_pa, temperature_k, None, qv_kgkg, options)
+}
+
+pub fn continuous_cape_cin_lfc_el_from_dewpoint(
+    height_m: &[f64],
+    pressure_pa: &[f64],
+    temperature_k: &[f64],
+    dewpoint_k: &[f64],
+    options: &ParcelOptions,
+) -> Result<CapeCinLfcEl, EcapeError> {
+    let qv_kgkg: Vec<f64> = pressure_pa
+        .iter()
+        .zip(dewpoint_k.iter())
+        .map(|(p, td)| specific_humidity_from_dewpoint(*p, *td))
+        .collect();
+    continuous_cape_cin_lfc_el_impl(
+        height_m,
+        pressure_pa,
+        temperature_k,
+        Some(dewpoint_k),
+        &qv_kgkg,
+        options,
+    )
+}
+
+fn continuous_cape_cin_lfc_el_impl(
+    height_m: &[f64],
+    pressure_pa: &[f64],
+    temperature_k: &[f64],
+    dewpoint_k: Option<&[f64]>,
     qv_kgkg: &[f64],
     options: &ParcelOptions,
 ) -> Result<CapeCinLfcEl, EcapeError> {
@@ -1862,9 +1895,16 @@ fn continuous_cape_cin_lfc_el(
         &zero_wind,
         &zero_wind,
     )?;
-    let origin =
-        resolve_parcel_origin(height_m, pressure_pa, temperature_k, None, qv_kgkg, options)?;
+    let origin = resolve_parcel_origin(
+        height_m,
+        pressure_pa,
+        temperature_k,
+        dewpoint_k,
+        qv_kgkg,
+        options,
+    )?;
     let origin_idx = origin.index;
+    let pseudoadiabatic = options.pseudoadiabatic.unwrap_or(true);
 
     let profile = parcel_profile_from(
         height_m,
@@ -1873,7 +1913,7 @@ fn continuous_cape_cin_lfc_el(
         qv_kgkg,
         origin_idx,
         0.0,
-        true,
+        pseudoadiabatic,
         origin.theta_override_k,
         origin.qv_override_kgkg,
         origin.height_override_m,
