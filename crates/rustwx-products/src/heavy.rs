@@ -1,23 +1,23 @@
 use crate::direct::build_projected_map_with_projection;
-use crate::ecape::compute_ecape8_panel_fields_with_prepared_volume;
+use crate::ecape::compute_ecape_map_fields_with_prepared_volume;
 use crate::gridded::{
-    CroppedHeavyDomain, PressureFields, ProjectedGridIntersection, SharedTiming, SurfaceFields,
     classify_projected_grid_intersection, crop_heavy_domain_for_projected_extent,
-    prepare_heavy_volume_timed, resolve_thermo_pair_run,
+    prepare_heavy_volume_timed, resolve_thermo_pair_run, CroppedHeavyDomain, PressureFields,
+    ProjectedGridIntersection, SharedTiming, SurfaceFields,
 };
 use crate::publication::{
-    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
+    artifact_identity_from_path, ArtifactContentIdentity, PublishedFetchIdentity,
 };
-use crate::runtime::{BundleLoaderConfig, load_execution_plan};
+use crate::runtime::{load_execution_plan, BundleLoaderConfig};
 use crate::severe::{
     build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
     compute_severe_panel_fields_with_prepared_volume,
 };
 use crate::shared_context::{
-    DomainSpec, ProjectedMap, WeatherPanelField, build_weather_map_request,
+    build_weather_map_request, DomainSpec, ProjectedMap, WeatherPanelField,
 };
 use rustwx_core::{LatLonGrid, ModelId, SourceId};
-use rustwx_render::{ProductVisualMode, map_frame_aspect_ratio_for_mode, save_png_profile};
+use rustwx_render::{map_frame_aspect_ratio_for_mode, save_png_profile, ProductVisualMode};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -362,7 +362,7 @@ pub fn run_heavy_panel_hour(
     let (prepared, prep_timing) = prepare_heavy_volume_timed(surface, pressure, false)?;
     let ecape_triplet_start = Instant::now();
     let (ecape_fields, failure_count) =
-        compute_ecape8_panel_fields_with_prepared_volume(surface, pressure, &prepared)?;
+        compute_ecape_map_fields_with_prepared_volume(surface, pressure, &prepared)?;
     let ecape_triplet_ms = ecape_triplet_start.elapsed().as_millis();
     let severe_fields_start = Instant::now();
     let severe_fields =
@@ -389,7 +389,15 @@ pub fn run_heavy_panel_hour(
         &ecape_fields,
         &subtitle_left,
         |field| match field.artifact_slug() {
-            "ecape_scp" | "ecape_ehi" => Some(format!("{source_label} | experimental")),
+            "sb_ecape_derived_cape_ratio"
+            | "ml_ecape_derived_cape_ratio"
+            | "mu_ecape_derived_cape_ratio" => Some(format!("{source_label} | EXP | derived")),
+            "sb_ecape_native_cape_ratio"
+            | "ml_ecape_native_cape_ratio"
+            | "mu_ecape_native_cape_ratio" => Some(format!("{source_label} | EXP | native")),
+            "ecape_scp" | "ecape_ehi_0_1km" | "ecape_ehi_0_3km" | "ecape_stp" => {
+                Some(format!("{source_label} | experimental"))
+            }
             _ => Some(source_label.clone()),
         },
     )?;

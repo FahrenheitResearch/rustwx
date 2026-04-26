@@ -1,24 +1,23 @@
-use crate::custom_poi::{CustomPoiOverlay, apply_custom_poi_overlay};
+use crate::custom_poi::{apply_custom_poi_overlay, CustomPoiOverlay};
 use crate::direct::{build_projected_map, build_projected_map_with_projection};
 use rayon::prelude::*;
 use rustwx_calc::{
-    CalcError, EcapeVolumeInputs, FixedStpInputs, GridShape as CalcGridShape, SurfaceInputs,
-    TemperatureAdvectionInputs, VolumeShape, WindGridInputs, compute_2m_apparent_temperature,
-    compute_ehi_01km, compute_ehi_03km, compute_lapse_rate_0_3km, compute_lapse_rate_700_500,
-    compute_lifted_index, compute_mlcape_cin, compute_mucape_cin, compute_sbcape_cin,
-    compute_shear_01km, compute_shear_06km, compute_srh_01km, compute_srh_03km, compute_stp_fixed,
-    compute_surface_thermo,
+    compute_2m_apparent_temperature, compute_ehi_01km, compute_ehi_03km, compute_lapse_rate_0_3km,
+    compute_lapse_rate_700_500, compute_lifted_index, compute_mlcape_cin, compute_mucape_cin,
+    compute_sbcape_cin, compute_shear_01km, compute_shear_06km, compute_srh_01km, compute_srh_03km,
+    compute_stp_fixed, compute_surface_thermo, CalcError, EcapeVolumeInputs, FixedStpInputs,
+    GridShape as CalcGridShape, SurfaceInputs, TemperatureAdvectionInputs, VolumeShape,
+    WindGridInputs,
 };
 use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId,
 };
 use rustwx_render::{
-    ChromeScale, Color, DerivedProductStyle, DomainFrame, ExtendMode, LevelDensity,
-    MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode,
-    ProjectedContourLineStyle, ProjectedDomain, ProjectedExtent, ProjectedMap, RenderImageTiming,
-    RenderStateTiming, WeatherPalette, WeatherProduct, WindBarbLayer,
     build_projected_contour_geometry_profile, densify_discrete_scale, map_frame_aspect_ratio,
-    save_png_profile_with_options,
+    save_png_profile_with_options, ChromeScale, Color, DerivedProductStyle, DomainFrame,
+    ExtendMode, LevelDensity, MapRenderRequest, PngCompressionMode, PngWriteOptions,
+    ProductVisualMode, ProjectedContourLineStyle, ProjectedDomain, ProjectedExtent, ProjectedMap,
+    RenderImageTiming, RenderStateTiming, WeatherPalette, WeatherProduct, WindBarbLayer,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -28,38 +27,39 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Instant;
 
-use crate::ecape::compute_ecape8_panel_fields_with_prepared_volume;
+use crate::ecape::compute_ecape_map_fields_with_prepared_volume;
 use crate::gridded::{
-    GridCrop, PressureFields as GenericPressureFields, ProjectedGridIntersection,
-    SharedTiming as GenericSharedTiming, SurfaceFields as GenericSurfaceFields,
     broadcast_levels_pa, classify_projected_grid_intersection, crop_latlon_grid, crop_values_f64,
     decode_cache_path, decode_surface_grid, fetch_family_file,
     load_or_decode_pressure_cropped_with_shape, load_or_decode_surface_cropped,
-    prepare_heavy_volume_timed, resolve_thermo_pair_run,
+    prepare_heavy_volume_timed, resolve_thermo_pair_run, GridCrop,
+    PressureFields as GenericPressureFields, ProjectedGridIntersection,
+    SharedTiming as GenericSharedTiming, SurfaceFields as GenericSurfaceFields,
 };
-use crate::heavy::{HeavyComputeTiming, crop_and_guard_heavy_domain};
+use crate::heavy::{crop_and_guard_heavy_domain, HeavyComputeTiming};
 use crate::places::PlaceLabelOverlay;
 use crate::planner::{ExecutionPlanBuilder, PlannedBundle};
 use crate::publication::{
-    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
+    artifact_identity_from_path, ArtifactContentIdentity, PublishedFetchIdentity,
 };
 use crate::runtime::{
-    BundleLoaderConfig, CroppedDecodeProfile, FetchedBundleBytes, LoadedBundleSet,
-    LoadedBundleTiming, load_execution_plan,
+    load_execution_plan, BundleLoaderConfig, CroppedDecodeProfile, FetchedBundleBytes,
+    LoadedBundleSet, LoadedBundleTiming,
 };
 use crate::severe::{
     build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
 };
-use crate::shared_context::{DomainSpec, WeatherPanelField, build_weather_map_request};
+use crate::shared_context::{build_weather_map_request, DomainSpec, WeatherPanelField};
 use crate::source::{ProductSourceMode, ProductSourceRoute};
 use crate::thermo_native::{
-    NativeSemantics, NativeThermoRecipe, extract_native_thermo_field, native_candidate,
+    extract_native_thermo_field, native_candidate, NativeSemantics, NativeThermoRecipe,
 };
 use rustwx_models::{
-    LatestRun, latest_available_run_at_forecast_hour,
-    latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
+    latest_available_run_at_forecast_hour, latest_available_run_for_products_at_forecast_hour,
+    resolve_canonical_bundle_product, LatestRun,
 };
-use rustwx_wrf::{WrfFile, looks_like_wrf};
+#[cfg(feature = "wrf")]
+use rustwx_wrf::{looks_like_wrf, WrfFile};
 
 const OUTPUT_WIDTH: u32 = 1200;
 const OUTPUT_HEIGHT: u32 = 900;
@@ -252,6 +252,42 @@ const SUPPORTED_DERIVED_RECIPE_INVENTORY: &[DerivedRecipeInventoryEntry] = &[
         heavy: true,
     },
     DerivedRecipeInventoryEntry {
+        slug: "sb_ecape_derived_cape_ratio",
+        title: "SB ECAPE / Derived CAPE Ratio (EXP)",
+        experimental: true,
+        heavy: true,
+    },
+    DerivedRecipeInventoryEntry {
+        slug: "ml_ecape_derived_cape_ratio",
+        title: "ML ECAPE / Derived CAPE Ratio (EXP)",
+        experimental: true,
+        heavy: true,
+    },
+    DerivedRecipeInventoryEntry {
+        slug: "mu_ecape_derived_cape_ratio",
+        title: "MU ECAPE / Derived CAPE Ratio (EXP)",
+        experimental: true,
+        heavy: true,
+    },
+    DerivedRecipeInventoryEntry {
+        slug: "sb_ecape_native_cape_ratio",
+        title: "SB ECAPE / Native CAPE Ratio (EXP)",
+        experimental: true,
+        heavy: true,
+    },
+    DerivedRecipeInventoryEntry {
+        slug: "ml_ecape_native_cape_ratio",
+        title: "ML ECAPE / Native CAPE Ratio (EXP)",
+        experimental: true,
+        heavy: true,
+    },
+    DerivedRecipeInventoryEntry {
+        slug: "mu_ecape_native_cape_ratio",
+        title: "MU ECAPE / Native CAPE Ratio (EXP)",
+        experimental: true,
+        heavy: true,
+    },
+    DerivedRecipeInventoryEntry {
         slug: "sbncape",
         title: "SBNCAPE",
         experimental: false,
@@ -276,8 +312,20 @@ const SUPPORTED_DERIVED_RECIPE_INVENTORY: &[DerivedRecipeInventoryEntry] = &[
         heavy: true,
     },
     DerivedRecipeInventoryEntry {
-        slug: "ecape_ehi",
-        title: "ECAPE EHI (EXP)",
+        slug: "ecape_ehi_0_1km",
+        title: "ECAPE EHI 0-1 km (EXP)",
+        experimental: true,
+        heavy: true,
+    },
+    DerivedRecipeInventoryEntry {
+        slug: "ecape_ehi_0_3km",
+        title: "ECAPE EHI 0-3 km (EXP)",
+        experimental: true,
+        heavy: true,
+    },
+    DerivedRecipeInventoryEntry {
+        slug: "ecape_stp",
+        title: "ECAPE STP (EXP)",
         experimental: true,
         heavy: true,
     },
@@ -758,11 +806,19 @@ pub(crate) enum DerivedRecipe {
     Sbecape,
     Mlecape,
     Muecape,
+    SbEcapeDerivedCapeRatio,
+    MlEcapeDerivedCapeRatio,
+    MuEcapeDerivedCapeRatio,
+    SbEcapeNativeCapeRatio,
+    MlEcapeNativeCapeRatio,
+    MuEcapeNativeCapeRatio,
     Sbncape,
     Sbecin,
     Mlecin,
     EcapeScp,
-    EcapeEhi,
+    EcapeEhi01km,
+    EcapeEhi03km,
+    EcapeStp,
     ThetaE2m10mWinds,
     Vpd2m,
     DewpointDepression2m,
@@ -800,11 +856,31 @@ impl DerivedRecipe {
             "sbecape" => Ok(Self::Sbecape),
             "mlecape" => Ok(Self::Mlecape),
             "muecape" => Ok(Self::Muecape),
+            "sb_ecape_derived_cape_ratio" | "sbecape_derived_cape_ratio" => {
+                Ok(Self::SbEcapeDerivedCapeRatio)
+            }
+            "ml_ecape_derived_cape_ratio" | "mlecape_derived_cape_ratio" => {
+                Ok(Self::MlEcapeDerivedCapeRatio)
+            }
+            "mu_ecape_derived_cape_ratio" | "muecape_derived_cape_ratio" => {
+                Ok(Self::MuEcapeDerivedCapeRatio)
+            }
+            "sb_ecape_native_cape_ratio" | "sbecape_native_cape_ratio" => {
+                Ok(Self::SbEcapeNativeCapeRatio)
+            }
+            "ml_ecape_native_cape_ratio" | "mlecape_native_cape_ratio" => {
+                Ok(Self::MlEcapeNativeCapeRatio)
+            }
+            "mu_ecape_native_cape_ratio" | "muecape_native_cape_ratio" => {
+                Ok(Self::MuEcapeNativeCapeRatio)
+            }
             "sbncape" => Ok(Self::Sbncape),
             "sbecin" => Ok(Self::Sbecin),
             "mlecin" => Ok(Self::Mlecin),
             "ecape_scp" => Ok(Self::EcapeScp),
-            "ecape_ehi" => Ok(Self::EcapeEhi),
+            "ecape_ehi" | "ecape_ehi_0_1km" | "ecape_ehi_01km" => Ok(Self::EcapeEhi01km),
+            "ecape_ehi_0_3km" | "ecape_ehi_03km" => Ok(Self::EcapeEhi03km),
+            "ecape_stp" => Ok(Self::EcapeStp),
             "theta_e_2m_10m_winds" | "2m_theta_e_10m_winds" => Ok(Self::ThetaE2m10mWinds),
             "vpd_2m" | "2m_vpd" | "vapor_pressure_deficit_2m" | "2m_vapor_pressure_deficit" => {
                 Ok(Self::Vpd2m)
@@ -858,11 +934,19 @@ impl DerivedRecipe {
             Self::Sbecape => "sbecape",
             Self::Mlecape => "mlecape",
             Self::Muecape => "muecape",
+            Self::SbEcapeDerivedCapeRatio => "sb_ecape_derived_cape_ratio",
+            Self::MlEcapeDerivedCapeRatio => "ml_ecape_derived_cape_ratio",
+            Self::MuEcapeDerivedCapeRatio => "mu_ecape_derived_cape_ratio",
+            Self::SbEcapeNativeCapeRatio => "sb_ecape_native_cape_ratio",
+            Self::MlEcapeNativeCapeRatio => "ml_ecape_native_cape_ratio",
+            Self::MuEcapeNativeCapeRatio => "mu_ecape_native_cape_ratio",
             Self::Sbncape => "sbncape",
             Self::Sbecin => "sbecin",
             Self::Mlecin => "mlecin",
             Self::EcapeScp => "ecape_scp",
-            Self::EcapeEhi => "ecape_ehi",
+            Self::EcapeEhi01km => "ecape_ehi_0_1km",
+            Self::EcapeEhi03km => "ecape_ehi_0_3km",
+            Self::EcapeStp => "ecape_stp",
             Self::ThetaE2m10mWinds => "theta_e_2m_10m_winds",
             Self::Vpd2m => "vpd_2m",
             Self::DewpointDepression2m => "dewpoint_depression_2m",
@@ -899,11 +983,19 @@ impl DerivedRecipe {
             Self::Sbecape => "SBECAPE",
             Self::Mlecape => "MLECAPE",
             Self::Muecape => "MUECAPE",
+            Self::SbEcapeDerivedCapeRatio => "SB ECAPE / Derived CAPE Ratio (EXP)",
+            Self::MlEcapeDerivedCapeRatio => "ML ECAPE / Derived CAPE Ratio (EXP)",
+            Self::MuEcapeDerivedCapeRatio => "MU ECAPE / Derived CAPE Ratio (EXP)",
+            Self::SbEcapeNativeCapeRatio => "SB ECAPE / Native CAPE Ratio (EXP)",
+            Self::MlEcapeNativeCapeRatio => "ML ECAPE / Native CAPE Ratio (EXP)",
+            Self::MuEcapeNativeCapeRatio => "MU ECAPE / Native CAPE Ratio (EXP)",
             Self::Sbncape => "SBNCAPE",
             Self::Sbecin => "SBECIN",
             Self::Mlecin => "MLECIN",
             Self::EcapeScp => "ECAPE SCP (EXP)",
-            Self::EcapeEhi => "ECAPE EHI (EXP)",
+            Self::EcapeEhi01km => "ECAPE EHI 0-1 km (EXP)",
+            Self::EcapeEhi03km => "ECAPE EHI 0-3 km (EXP)",
+            Self::EcapeStp => "ECAPE STP (EXP)",
             Self::ThetaE2m10mWinds => "2 m Theta-e, 10 m Wind",
             Self::Vpd2m => "2 m Vapor Pressure Deficit",
             Self::DewpointDepression2m => "2 m Dewpoint Depression",
@@ -949,11 +1041,19 @@ impl DerivedRecipe {
             Self::Sbecape
                 | Self::Mlecape
                 | Self::Muecape
+                | Self::SbEcapeDerivedCapeRatio
+                | Self::MlEcapeDerivedCapeRatio
+                | Self::MuEcapeDerivedCapeRatio
+                | Self::SbEcapeNativeCapeRatio
+                | Self::MlEcapeNativeCapeRatio
+                | Self::MuEcapeNativeCapeRatio
                 | Self::Sbncape
                 | Self::Sbecin
                 | Self::Mlecin
                 | Self::EcapeScp
-                | Self::EcapeEhi
+                | Self::EcapeEhi01km
+                | Self::EcapeEhi03km
+                | Self::EcapeStp
         )
     }
 }
@@ -1093,11 +1193,19 @@ impl DerivedRequirements {
                 DerivedRecipe::Sbecape
                 | DerivedRecipe::Mlecape
                 | DerivedRecipe::Muecape
+                | DerivedRecipe::SbEcapeDerivedCapeRatio
+                | DerivedRecipe::MlEcapeDerivedCapeRatio
+                | DerivedRecipe::MuEcapeDerivedCapeRatio
+                | DerivedRecipe::SbEcapeNativeCapeRatio
+                | DerivedRecipe::MlEcapeNativeCapeRatio
+                | DerivedRecipe::MuEcapeNativeCapeRatio
                 | DerivedRecipe::Sbncape
                 | DerivedRecipe::Sbecin
                 | DerivedRecipe::Mlecin
                 | DerivedRecipe::EcapeScp
-                | DerivedRecipe::EcapeEhi => {}
+                | DerivedRecipe::EcapeEhi01km
+                | DerivedRecipe::EcapeEhi03km
+                | DerivedRecipe::EcapeStp => {}
             }
         }
         requirements
@@ -2203,6 +2311,7 @@ fn extract_native_derived_field(
                 values: field.values,
             }))
         }
+        #[cfg(feature = "wrf")]
         NativeDerivedRecipe::WrfGdexScalar { variable } => {
             if model != ModelId::WrfGdex {
                 return Ok(None);
@@ -2213,6 +2322,16 @@ fn extract_native_derived_field(
             validate_native_wrf_values(variable, file.nxy(), &values)?;
             Ok(Some(NativeDerivedField { grid, values }))
         }
+        #[cfg(not(feature = "wrf"))]
+        NativeDerivedRecipe::WrfGdexScalar { .. } => {
+            if model == ModelId::WrfGdex {
+                return Err(
+                    "WRF/GDEX NetCDF support is not compiled; rebuild with --features wrf".into(),
+                );
+            }
+            Ok(None)
+        }
+        #[cfg(feature = "wrf")]
         NativeDerivedRecipe::WrfGdexVectorMagnitude {
             u_variable,
             v_variable,
@@ -2234,9 +2353,19 @@ fn extract_native_derived_field(
                 .collect();
             Ok(Some(NativeDerivedField { grid, values }))
         }
+        #[cfg(not(feature = "wrf"))]
+        NativeDerivedRecipe::WrfGdexVectorMagnitude { .. } => {
+            if model == ModelId::WrfGdex {
+                return Err(
+                    "WRF/GDEX NetCDF support is not compiled; rebuild with --features wrf".into(),
+                );
+            }
+            Ok(None)
+        }
     }
 }
 
+#[cfg(feature = "wrf")]
 fn open_wrf_gdex_native_file(
     fetched: &FetchedBundleBytes,
 ) -> Result<WrfFile, Box<dyn std::error::Error>> {
@@ -2251,6 +2380,7 @@ fn open_wrf_gdex_native_file(
     Ok(WrfFile::open(&materialized)?)
 }
 
+#[cfg(feature = "wrf")]
 fn materialize_wrf_native_bytes(bytes: &[u8]) -> Result<PathBuf, Box<dyn std::error::Error>> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -2265,6 +2395,7 @@ fn materialize_wrf_native_bytes(bytes: &[u8]) -> Result<PathBuf, Box<dyn std::er
     Ok(path)
 }
 
+#[cfg(feature = "wrf")]
 fn wrf_latlon_grid(file: &WrfFile) -> Result<rustwx_core::LatLonGrid, Box<dyn std::error::Error>> {
     Ok(rustwx_core::LatLonGrid::new(
         rustwx_core::GridShape::new(file.nx, file.ny)?,
@@ -2273,6 +2404,7 @@ fn wrf_latlon_grid(file: &WrfFile) -> Result<rustwx_core::LatLonGrid, Box<dyn st
     )?)
 }
 
+#[cfg(feature = "wrf")]
 fn validate_native_wrf_values(
     variable: &str,
     expected_len: usize,
@@ -3574,11 +3706,19 @@ pub(crate) fn compute_derived_query_field(
         DerivedRecipe::Sbecape
         | DerivedRecipe::Mlecape
         | DerivedRecipe::Muecape
+        | DerivedRecipe::SbEcapeDerivedCapeRatio
+        | DerivedRecipe::MlEcapeDerivedCapeRatio
+        | DerivedRecipe::MuEcapeDerivedCapeRatio
+        | DerivedRecipe::SbEcapeNativeCapeRatio
+        | DerivedRecipe::MlEcapeNativeCapeRatio
+        | DerivedRecipe::MuEcapeNativeCapeRatio
         | DerivedRecipe::Sbncape
         | DerivedRecipe::Sbecin
         | DerivedRecipe::Mlecin
         | DerivedRecipe::EcapeScp
-        | DerivedRecipe::EcapeEhi => unreachable!("heavy recipes are blocked above"),
+        | DerivedRecipe::EcapeEhi01km
+        | DerivedRecipe::EcapeEhi03km
+        | DerivedRecipe::EcapeStp => unreachable!("heavy recipes are blocked above"),
     };
 
     Ok(DerivedQueryField {
@@ -3910,11 +4050,19 @@ fn build_render_artifact_with_contour_mode(
         DerivedRecipe::Sbecape
         | DerivedRecipe::Mlecape
         | DerivedRecipe::Muecape
+        | DerivedRecipe::SbEcapeDerivedCapeRatio
+        | DerivedRecipe::MlEcapeDerivedCapeRatio
+        | DerivedRecipe::MuEcapeDerivedCapeRatio
+        | DerivedRecipe::SbEcapeNativeCapeRatio
+        | DerivedRecipe::MlEcapeNativeCapeRatio
+        | DerivedRecipe::MuEcapeNativeCapeRatio
         | DerivedRecipe::Sbncape
         | DerivedRecipe::Sbecin
         | DerivedRecipe::Mlecin
         | DerivedRecipe::EcapeScp
-        | DerivedRecipe::EcapeEhi => {
+        | DerivedRecipe::EcapeEhi01km
+        | DerivedRecipe::EcapeEhi03km
+        | DerivedRecipe::EcapeStp => {
             return Err(format!(
                 "heavy derived recipe '{}' must render through the cropped ECAPE path",
                 recipe.slug()
@@ -4256,11 +4404,19 @@ fn build_render_artifact_with_contour_mode_profiled(
         DerivedRecipe::Sbecape
         | DerivedRecipe::Mlecape
         | DerivedRecipe::Muecape
+        | DerivedRecipe::SbEcapeDerivedCapeRatio
+        | DerivedRecipe::MlEcapeDerivedCapeRatio
+        | DerivedRecipe::MuEcapeDerivedCapeRatio
+        | DerivedRecipe::SbEcapeNativeCapeRatio
+        | DerivedRecipe::MlEcapeNativeCapeRatio
+        | DerivedRecipe::MuEcapeNativeCapeRatio
         | DerivedRecipe::Sbncape
         | DerivedRecipe::Sbecin
         | DerivedRecipe::Mlecin
         | DerivedRecipe::EcapeScp
-        | DerivedRecipe::EcapeEhi => {
+        | DerivedRecipe::EcapeEhi01km
+        | DerivedRecipe::EcapeEhi03km
+        | DerivedRecipe::EcapeStp => {
             return Err(format!(
                 "heavy derived recipe '{}' must render through the cropped ECAPE path",
                 recipe.slug()
@@ -4540,7 +4696,20 @@ fn densify_native_contour_scale(
 fn heavy_ecape_subtitle_right(recipe: DerivedRecipe, source: SourceId) -> String {
     let source_label = format!("source: {}", source);
     match recipe {
-        DerivedRecipe::EcapeScp | DerivedRecipe::EcapeEhi => {
+        DerivedRecipe::SbEcapeDerivedCapeRatio
+        | DerivedRecipe::MlEcapeDerivedCapeRatio
+        | DerivedRecipe::MuEcapeDerivedCapeRatio => {
+            format!("{source_label} | EXP | derived")
+        }
+        DerivedRecipe::SbEcapeNativeCapeRatio
+        | DerivedRecipe::MlEcapeNativeCapeRatio
+        | DerivedRecipe::MuEcapeNativeCapeRatio => {
+            format!("{source_label} | EXP | native")
+        }
+        DerivedRecipe::EcapeScp
+        | DerivedRecipe::EcapeEhi01km
+        | DerivedRecipe::EcapeEhi03km
+        | DerivedRecipe::EcapeStp => {
             format!("{source_label} | experimental")
         }
         _ => source_label,
@@ -4677,7 +4846,7 @@ fn render_derived_heavy_recipes(
     let (prepared, prep_timing) = prepare_heavy_volume_timed(surface, pressure, false)?;
     let ecape_start = Instant::now();
     let (ecape_fields, _failure_count) =
-        compute_ecape8_panel_fields_with_prepared_volume(surface, pressure, &prepared)?;
+        compute_ecape_map_fields_with_prepared_volume(surface, pressure, &prepared)?;
     let ecape_triplet_ms = ecape_start.elapsed().as_millis();
 
     let mut rendered = Vec::with_capacity(heavy_recipes.len());
@@ -5683,14 +5852,12 @@ mod tests {
         )
         .unwrap();
         assert!(!native.request.projected_data_polygons.is_empty());
-        assert!(
-            native
-                .request
-                .field
-                .values
-                .iter()
-                .all(|value| value.is_nan())
-        );
+        assert!(native
+            .request
+            .field
+            .values
+            .iter()
+            .all(|value| value.is_nan()));
 
         let legacy = build_native_render_artifact(
             DerivedRecipe::Sbcape,
@@ -5709,14 +5876,12 @@ mod tests {
         )
         .unwrap();
         assert!(legacy.request.projected_data_polygons.is_empty());
-        assert!(
-            legacy
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(legacy
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
     }
 
     #[test]
@@ -5760,14 +5925,12 @@ mod tests {
         )
         .unwrap();
         assert!(!experimental.request.projected_data_polygons.is_empty());
-        assert!(
-            experimental
-                .request
-                .field
-                .values
-                .iter()
-                .all(|value| value.is_nan())
-        );
+        assert!(experimental
+            .request
+            .field
+            .values
+            .iter()
+            .all(|value| value.is_nan()));
     }
 
     #[test]
@@ -5793,14 +5956,12 @@ mod tests {
         )
         .unwrap();
         assert!(!signature.request.projected_data_polygons.is_empty());
-        assert!(
-            signature
-                .request
-                .field
-                .values
-                .iter()
-                .all(|value| value.is_nan())
-        );
+        assert!(signature
+            .request
+            .field
+            .values
+            .iter()
+            .all(|value| value.is_nan()));
     }
 
     #[test]
@@ -5826,14 +5987,12 @@ mod tests {
         )
         .unwrap();
         assert!(signature.request.projected_data_polygons.is_empty());
-        assert!(
-            signature
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(signature
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
     }
 
     #[test]
@@ -5886,14 +6045,12 @@ mod tests {
         )
         .unwrap();
         assert!(!signature.request.projected_data_polygons.is_empty());
-        assert!(
-            signature
-                .request
-                .field
-                .values
-                .iter()
-                .all(|value| value.is_nan())
-        );
+        assert!(signature
+            .request
+            .field
+            .values
+            .iter()
+            .all(|value| value.is_nan()));
     }
 
     #[test]
@@ -5914,6 +6071,17 @@ mod tests {
         assert_eq!(
             DerivedRecipe::parse("ecape_scp").unwrap(),
             DerivedRecipe::EcapeScp
+        );
+
+        let native_ratio = supported_derived_recipe_inventory()
+            .iter()
+            .find(|recipe| recipe.slug == "sb_ecape_native_cape_ratio")
+            .expect("native ECAPE/CAPE ratio inventory entry should exist");
+        assert!(native_ratio.heavy);
+        assert!(native_ratio.experimental);
+        assert_eq!(
+            DerivedRecipe::parse("sb_ecape_native_cape_ratio").unwrap(),
+            DerivedRecipe::SbEcapeNativeCapeRatio
         );
     }
 
@@ -6015,11 +6183,9 @@ mod tests {
         assert!(planned.output_recipes.is_empty());
         assert!(planned.native_routes.is_empty());
         assert_eq!(planned.blockers.len(), 1);
-        assert!(
-            planned.blockers[0]
-                .reason
-                .contains("will not fall back to canonical-derived compute")
-        );
+        assert!(planned.blockers[0]
+            .reason
+            .contains("will not fall back to canonical-derived compute"));
     }
 
     #[test]
@@ -6035,11 +6201,9 @@ mod tests {
         assert!(planned.compute_recipes.is_empty());
         assert!(planned.heavy_recipes.is_empty());
         assert_eq!(planned.blockers.len(), 1);
-        assert!(
-            planned.blockers[0]
-                .reason
-                .contains("cropped heavy ECAPE path")
-        );
+        assert!(planned.blockers[0]
+            .reason
+            .contains("cropped heavy ECAPE path"));
     }
 
     #[test]

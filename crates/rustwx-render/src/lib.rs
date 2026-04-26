@@ -18,29 +18,28 @@ mod text;
 pub mod weather;
 
 pub use contour_fill::{
-    ProjectedContourGeometry, ProjectedContourGeometryTiming, ProjectedContourLineStyle,
     build_projected_contour_geometry, build_projected_contour_geometry_profile,
+    ProjectedContourGeometry, ProjectedContourGeometryTiming, ProjectedContourLineStyle,
 };
 pub use error::RustwxRenderError;
 pub use features::{
-    BasemapStyle, StyledLonLatLayer, StyledLonLatPolygonLayer, load_styled_basemap_features,
-    load_styled_basemap_features_for, load_styled_basemap_polygons,
+    load_styled_basemap_features, load_styled_basemap_features_for, load_styled_basemap_polygons,
     load_styled_basemap_polygons_for, load_styled_conus_features_for,
-    load_styled_conus_polygons_for,
+    load_styled_conus_polygons_for, BasemapStyle, StyledLonLatLayer, StyledLonLatPolygonLayer,
 };
 pub use image::RgbaImage;
-pub use panel::{PanelGridLayout, PanelPadding, compose_panel_images, render_panel_grid};
+pub use panel::{compose_panel_images, render_panel_grid, PanelGridLayout, PanelPadding};
 pub use presentation::{LineworkRole, PolygonRole, ProductVisualMode, RenderPresentation};
 pub use projected_map::{
+    build_projected_domain, build_projected_map, build_projected_map_with_options,
     GeographicBounds, ProjectedBasemap, ProjectedBasemapBuildOptions, ProjectedDomainBuildOptions,
-    ProjectedFrameSource, ProjectedMap, ProjectedMapBuildOptions, build_projected_domain,
-    build_projected_map, build_projected_map_with_options,
+    ProjectedFrameSource, ProjectedMap, ProjectedMapBuildOptions,
 };
 pub use projection::{LambertConformal, ProjectionSpec};
 pub use render::{
-    PngCompressionMode, PngWriteOptions, RenderImageTiming, RenderPngTiming,
     map_frame_aspect_ratio, map_frame_aspect_ratio_for_mode, render_to_image_profile,
-    render_to_png_profile as profile_render_to_png,
+    render_to_png_profile as profile_render_to_png, PngCompressionMode, PngWriteOptions,
+    RenderImageTiming, RenderPngTiming,
 };
 pub use request::{
     ChromeScale, Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, DomainFrame,
@@ -55,14 +54,14 @@ pub use rustwx_core::{
     LatLonGrid as CoreLatLonGrid, ProductKey as CoreProductKey,
 };
 pub use weather::{
-    DerivedProductStyle, DerivedScalePreset, ECAPE_SEVERE_PANEL_PRODUCTS,
-    SEVERE_CLASSIC_PANEL_PRODUCTS, WeatherPalette, WeatherPreset, WeatherProduct, palette_scale,
+    palette_scale, DerivedProductStyle, DerivedScalePreset, WeatherPalette, WeatherPreset,
+    WeatherProduct, ECAPE_SEVERE_PANEL_PRODUCTS, SEVERE_CLASSIC_PANEL_PRODUCTS,
 };
 
 use crate::color::Rgba;
 pub use crate::colormap::{
-    ColormapBuildOptions, LegendControls, LegendMode, LevelDensity, RenderDensity,
-    densify_discrete_scale,
+    densify_discrete_scale, ColormapBuildOptions, LegendControls, LegendMode, LevelDensity,
+    RenderDensity,
 };
 use crate::colormap::{Extend, LeveledColormap};
 use crate::overlay::{
@@ -70,8 +69,8 @@ use crate::overlay::{
     ProjectedPolygon, ProjectedPolyline,
 };
 use crate::render::{
-    RenderOpts, encode_rgba_png_profile_with_options, render_to_image as native_render_to_image,
-    render_to_png, trim_vertical_canvas_whitespace,
+    encode_rgba_png_profile_with_options, render_to_image as native_render_to_image, render_to_png,
+    trim_vertical_canvas_whitespace, RenderOpts,
 };
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -714,8 +713,20 @@ mod tests {
             Some(WeatherProduct::EcapeScpExperimental)
         );
         assert_eq!(
+            WeatherProduct::from_product_name("sb_ecape_derived_cape_ratio"),
+            Some(WeatherProduct::SbEcapeDerivedCapeRatio)
+        );
+        assert_eq!(
+            WeatherProduct::from_product_name("mu_ecape_native_cape_ratio"),
+            Some(WeatherProduct::MuEcapeNativeCapeRatio)
+        );
+        assert_eq!(
             WeatherProduct::from_product_name("ecape_ehi"),
-            Some(WeatherProduct::EcapeEhiExperimental)
+            Some(WeatherProduct::EcapeEhi01kmExperimental)
+        );
+        assert_eq!(
+            WeatherProduct::from_product_name("ecape_ehi_0_3km"),
+            Some(WeatherProduct::EcapeEhi03kmExperimental)
         );
     }
 

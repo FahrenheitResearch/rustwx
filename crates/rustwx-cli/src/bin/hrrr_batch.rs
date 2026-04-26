@@ -7,17 +7,17 @@ mod region;
 use clap::{Parser, ValueEnum};
 use region::RegionPreset;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
-use rustwx_products::heavy::{HeavyPanelHourRequest, run_heavy_panel_hour};
+use rustwx_products::heavy::{run_heavy_panel_hour, HeavyPanelHourRequest};
 use rustwx_products::publication::{
-    ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
-    canonical_run_slug, finalize_and_publish_run_manifest, publish_failure_manifest,
+    atomic_write_json, canonical_run_slug, finalize_and_publish_run_manifest,
+    publish_failure_manifest, ArtifactPublicationState, PublishedArtifactRecord,
+    RunPublicationManifest,
 };
 use rustwx_products::shared_context::DomainSpec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ProductArg {
     SevereProof,
-    Ecape8,
 }
 
 #[derive(Debug, Parser)]
@@ -44,7 +44,7 @@ struct Args {
         required = true
     )]
     products: Vec<ProductArg>,
-    #[arg(long, default_value = "C:\\Users\\drew\\rustwx\\proof")]
+    #[arg(long, default_value = "proof")]
     out_dir: PathBuf,
     #[arg(long)]
     cache_dir: Option<PathBuf>,
@@ -121,10 +121,6 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         .products
         .iter()
         .any(|product| matches!(product, ProductArg::SevereProof));
-    let selected_ecape = args
-        .products
-        .iter()
-        .any(|product| matches!(product, ProductArg::Ecape8));
     let input_fetch_keys = report
         .input_fetches
         .iter()
@@ -138,21 +134,6 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 relative_output_path(&args.out_dir, &output.output_path),
             )
             .with_state(ArtifactPublicationState::Complete)
-            .with_content_identity(output.output_identity.clone())
-            .with_input_fetch_keys(input_fetch_keys.clone())
-        }));
-    }
-    if selected_ecape {
-        artifacts.extend(report.ecape.outputs.iter().map(|output| {
-            PublishedArtifactRecord::planned(
-                &output.product,
-                relative_output_path(&args.out_dir, &output.output_path),
-            )
-            .with_state(ArtifactPublicationState::Complete)
-            .with_detail(format!(
-                "failure_count={}",
-                report.ecape.failure_count.unwrap_or(0)
-            ))
             .with_content_identity(output.output_identity.clone())
             .with_input_fetch_keys(input_fetch_keys.clone())
         }));
@@ -174,11 +155,6 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     if selected_severe {
         for product in &report.severe.outputs {
-            println!("{}", product.output_path.display());
-        }
-    }
-    if selected_ecape {
-        for product in &report.ecape.outputs {
             println!("{}", product.output_path.display());
         }
     }

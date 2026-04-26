@@ -16,6 +16,7 @@ use rustwx_core::{
     VerticalSelector,
 };
 use rustwx_models::{latest_available_run, model_summary, resolve_urls};
+#[cfg(feature = "wrf")]
 use rustwx_wrf as wrf;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -392,21 +393,38 @@ pub fn extract_fields_partial_from_model_bytes(
     selectors: &[FieldSelector],
 ) -> Result<PartialExtraction, IoError> {
     match model {
-        ModelId::WrfGdex => {
-            let partial =
-                wrf::extract_selectors_partial_from_bytes(bytes, preferred_path, selectors)
-                    .map_err(|err| IoError::Wrf(err.to_string()))?;
-            Ok(PartialExtraction {
-                extracted: partial.extracted,
-                missing: partial.missing,
-            })
-        }
+        ModelId::WrfGdex => extract_wrf_gdex_fields_partial(bytes, preferred_path, selectors),
         _ => {
             let grib =
                 Grib2File::from_bytes(bytes).map_err(|err| IoError::Grib(err.to_string()))?;
             extract_fields_from_grib2_partial(&grib, selectors)
         }
     }
+}
+
+#[cfg(feature = "wrf")]
+fn extract_wrf_gdex_fields_partial(
+    bytes: &[u8],
+    preferred_path: Option<&Path>,
+    selectors: &[FieldSelector],
+) -> Result<PartialExtraction, IoError> {
+    let partial = wrf::extract_selectors_partial_from_bytes(bytes, preferred_path, selectors)
+        .map_err(|err| IoError::Wrf(err.to_string()))?;
+    Ok(PartialExtraction {
+        extracted: partial.extracted,
+        missing: partial.missing,
+    })
+}
+
+#[cfg(not(feature = "wrf"))]
+fn extract_wrf_gdex_fields_partial(
+    _bytes: &[u8],
+    _preferred_path: Option<&Path>,
+    _selectors: &[FieldSelector],
+) -> Result<PartialExtraction, IoError> {
+    Err(IoError::Wrf(
+        "WRF/GDEX NetCDF support is not compiled; rebuild with --features wrf".to_string(),
+    ))
 }
 
 pub fn extract_pressure_field_from_bytes(

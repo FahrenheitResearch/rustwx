@@ -1,25 +1,25 @@
 use crate::gridded::{
+    prepare_heavy_volume_timed as prepare_generic_heavy_volume_timed,
     PreparedHeavyVolume as GenericPreparedHeavyVolume, PressureFields as GenericPressureFields,
     SurfaceFields as GenericSurfaceFields,
-    prepare_heavy_volume_timed as prepare_generic_heavy_volume_timed,
 };
 use crate::heavy::crop_and_guard_heavy_domain;
 use crate::publication::{
-    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
+    artifact_identity_from_path, ArtifactContentIdentity, PublishedFetchIdentity,
 };
-use crate::runtime::{BundleLoaderConfig, LoadedBundleSet, load_execution_plan};
+use crate::runtime::{load_execution_plan, BundleLoaderConfig, LoadedBundleSet};
 use crate::severe::{
     build_planned_input_fetches, build_severe_execution_plan,
     compute_severe_panel_fields_with_prepared_volume as compute_generic_severe_panel_fields_with_prepared_volume,
     severe_panel_fields_from_supported as generic_severe_panel_fields_from_supported,
 };
 pub use crate::shared_context::{
-    DomainSpec, PreparedProjectedContext, ProjectedMap, WeatherPanelField, WeatherPanelHeader,
-    WeatherPanelLayout, layout_key, render_two_by_four_weather_panel,
+    layout_key, render_two_by_four_weather_panel, DomainSpec, PreparedProjectedContext,
+    ProjectedMap, WeatherPanelField, WeatherPanelHeader, WeatherPanelLayout,
 };
 use rustwx_calc::SupportedSevereFields;
 use rustwx_core::{CycleSpec, ModelId, SourceId};
-use rustwx_models::{LatestRun, latest_available_run_at_forecast_hour};
+use rustwx_models::{latest_available_run_at_forecast_hour, LatestRun};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
@@ -31,14 +31,12 @@ use std::time::Instant;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum HrrrBatchProduct {
     SevereProofPanel,
-    Ecape8Panel,
 }
 
 impl HrrrBatchProduct {
     pub fn slug(self) -> &'static str {
         match self {
             Self::SevereProofPanel => "severe_proof_panel",
-            Self::Ecape8Panel => "ecape8_panel",
         }
     }
 
@@ -48,7 +46,6 @@ impl HrrrBatchProduct {
                 top_padding: 86,
                 ..Default::default()
             },
-            Self::Ecape8Panel => WeatherPanelLayout::default(),
         }
     }
 }
@@ -252,12 +249,9 @@ pub(crate) fn run_hrrr_batch_from_loaded(
         .iter()
         .map(|fetch| fetch.fetch_key.clone())
         .collect::<Vec<_>>();
-    let needs_heavy = unique_products.iter().any(|product| {
-        matches!(
-            product,
-            HrrrBatchProduct::SevereProofPanel | HrrrBatchProduct::Ecape8Panel
-        )
-    });
+    let needs_heavy = unique_products
+        .iter()
+        .any(|product| matches!(product, HrrrBatchProduct::SevereProofPanel));
     let prepared_heavy_volume = if needs_heavy {
         let (prepared, _prep_timing) =
             prepare_generic_heavy_volume_timed(surface, pressure, false)?;
@@ -472,28 +466,6 @@ fn compute_hrrr_batch_product(
                 metadata: HrrrProductMetadata::default(),
             })
         }
-        HrrrBatchProduct::Ecape8Panel => {
-            let (fields, failure_count) = match prepared_heavy_volume {
-                Some(prepared) => crate::ecape::compute_ecape8_panel_fields_with_prepared_volume(
-                    surface, pressure, prepared,
-                )?,
-                None => crate::ecape::compute_ecape8_panel_fields(surface, pressure)?,
-            };
-            let header = WeatherPanelHeader::new(format!(
-                "HRRR ECAPE Product Panel  Run: {} {:02}:00 UTC  Forecast Hour: F{:02}  zero-fill columns: {}",
-                date_yyyymmdd, cycle_utc, forecast_hour, failure_count
-            ))
-            .with_subtitle_line(
-                "Parcel-specific ECAPE shown for SB, ML, and MU. Single NCAPE context plus SBECIN and MLECIN. Experimental SCP/EHI shown.",
-            );
-            Ok(ComputedHrrrProduct {
-                fields,
-                header,
-                metadata: HrrrProductMetadata {
-                    failure_count: Some(failure_count),
-                },
-            })
-        }
     }
 }
 
@@ -608,17 +580,10 @@ mod tests {
     #[test]
     fn batch_product_dedupe_preserves_first_seen_order() {
         let products = dedupe_products(&[
-            HrrrBatchProduct::Ecape8Panel,
             HrrrBatchProduct::SevereProofPanel,
-            HrrrBatchProduct::Ecape8Panel,
+            HrrrBatchProduct::SevereProofPanel,
         ]);
-        assert_eq!(
-            products,
-            vec![
-                HrrrBatchProduct::Ecape8Panel,
-                HrrrBatchProduct::SevereProofPanel
-            ]
-        );
+        assert_eq!(products, vec![HrrrBatchProduct::SevereProofPanel]);
     }
 
     #[test]

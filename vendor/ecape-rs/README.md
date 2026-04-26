@@ -1,44 +1,82 @@
 # ecape-rs
 
-`ecape-rs` is a standalone Rust crate for ECAPE parcel calculations. It was split out of the JavaScript rewrite work and is now tuned for direct parity against the original Python `ecape-parcel` package.
+`ecape-rs` is a Rust implementation of the `ecape-parcel`-style full
+entraining parcel-path ECAPE calculation. Its job is compatibility and speed:
+reproduce the public Python `ecape-parcel` parcel-path behavior closely enough
+for science work, then make the calculation cheap enough for HRRR grids,
+large profile catalogs, and archive-scale verification.
 
-## Status
+This crate is not a new ECAPE theory and does not replace the Peters analytic
+ECAPE formulation. The intended lineage is:
 
-- Standalone Rust crate
-- Depends on `metrust` for the sensitive meteorological primitives
-- ECAPE-specific parcel logic implemented in this crate
-- Parity-checked directly against `ecape-parcel` on real-world soundings
+- Peters et al. provide the ECAPE theory and analytic approximation.
+- `ecape-parcel` provides a public Python parcel-path implementation checked
+  against that framework.
+- `ecape-rs` provides a high-throughput Rust implementation of the same class
+  of parcel-path calculation.
 
-## Verification
+## What It Computes
 
-Focused real-world checks currently show near-parity against the reference implementations:
+- Surface-based, mixed-layer, and most-unstable parcel sources.
+- Entraining and non-entraining parcel ascents.
+- Pseudoadiabatic and irreversible ascent modes.
+- Density-temperature parcel paths, buoyancy, CAPE/CIN/LFC/EL-style path
+  diagnostics, and ECAPE-family grid wrappers used by `rustwx`.
+- Storm-motion options: `right_moving`, `left_moving`, `mean_wind`, and
+  `user_defined`.
 
-- `OUN 2024-05-06 00Z`: max parcel-temperature diff `0.000129 K` pseudoadiabatic, `0.0000023 K` irreversible
-- `LBF 2024-06-20 00Z`: max parcel-temperature diff `0.0000145 K` pseudoadiabatic, `0.0000066 K` irreversible
-- `BMX 2024-03-14 00Z`: max parcel-temperature diff `0.000394 K` pseudoadiabatic, `0.0000230 K` irreversible
+Internally, winds use Cartesian components: `u > 0` eastward and `v > 0`
+northward.
 
-Typical speed from the same checks:
+## Validation Status
 
-- `ecape-js`: roughly `58 ms` to `159 ms`
-- `ecape-rs`: roughly `0.41 ms` to `1.73 ms`
+Current validation is centered on direct parity with Python `ecape-parcel`, not
+comparison to a separate JavaScript implementation.
 
-Detailed numbers are in [verification_summary.json](./verification_summary.json).
+The parity harness compares raw 20 m parcel paths and scalar outputs between
+Python and Rust, including:
+
+- parcel pressure, height, temperature, water vapor, total water, and density
+  temperature;
+- environmental density temperature and buoyancy along the path;
+- integrated parcel-path energy;
+- CIN, LFC, EL, zero/nonzero path behavior, and first divergent step;
+- runtime distributions.
+
+The latest `rustwx` validation sweep using this crate reports:
+
+- complete no-entrainment-limit checks for SB/ML/MU parcels under
+  pseudoadiabatic and irreversible ascent;
+- a 252-profile / 3,024-configuration first event-sample parity sweep with no
+  first-stage failures;
+- a bounded random/stress/storm-motion v2 sweep with 5,368 comparable
+  configurations, zero first-stage parity failures, and eight Python reference
+  exceptions where `ecape-parcel` did not return a parcel path.
+
+First-stage parity criteria are:
+
+- `|delta E_parcel| < 2 J kg^-1`;
+- `max |delta T_rho| < 0.01 K`;
+- no zero/nonzero LFC, EL, empty-path, or path-energy mismatch.
+
+These tolerances are intended to validate implementation compatibility. They
+are not operational severe-weather thresholds.
+
+## Performance Role
+
+`ecape-rs` is designed for package-level throughput in workflows where Python
+parcel-path calls are too slow for grid-scale diagnostics. In `rustwx`, the
+solver is used to generate HRRR ECAPE, ECAPE/CAPE ratio, ECAPE-EHI, ECAPE-STP,
+and related research fields over cropped HRRR swaths and profile catalogs.
+
+The practical goal is to move full parcel-path ECAPE from individual sounding
+workflows to map-scale and archive-scale research.
 
 ## Build
 
 ```bash
 cargo build --release
 ```
-
-## Notes
-
-- This crate currently targets direct parity with `ecape-parcel`, with `ecape-js` retained as an additional cross-check.
-- It uses Cartesian wind components internally: `u > 0` eastward, `v > 0` northward.
-- Supported storm-motion modes are `right_moving` (Bunkers RM), `left_moving` (Bunkers LM), `mean_wind`, and `user_defined`.
-
-## Acknowledgements
-
-This work is derived from the original Python `ecape-parcel` package and the later parity work in `ecape-js`.
 
 ## License
 

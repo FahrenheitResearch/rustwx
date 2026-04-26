@@ -2,7 +2,7 @@ use crate::cache::{load_bincode, store_bincode};
 use crate::direct::build_projected_map_with_projection;
 use crate::shared_context::PreparedProjectedContext;
 use grib_core::grib2::{
-    Grib2File, Grib2Message, flip_rows, grid_latlon, unpack_message_normalized,
+    flip_rows, grid_latlon, unpack_message_normalized, Grib2File, Grib2Message,
 };
 use rustwx_calc::{GridShape as CalcGridShape, VolumeShape};
 use rustwx_core::{
@@ -10,14 +10,15 @@ use rustwx_core::{
     LatLonGrid, ModelId, ModelRunRequest, RustwxError, SourceId,
 };
 use rustwx_io::{
-    CachedFetchResult, FetchRequest, artifact_cache_dir, fetch_bytes_with_cache,
-    grid_projection_from_grib2_grid,
+    artifact_cache_dir, fetch_bytes_with_cache, grid_projection_from_grib2_grid, CachedFetchResult,
+    FetchRequest,
 };
 use rustwx_models::{
-    LatestRun, ResolvedCanonicalBundleProduct, latest_available_run_at_forecast_hour,
-    latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
+    latest_available_run_at_forecast_hour, latest_available_run_for_products_at_forecast_hour,
+    resolve_canonical_bundle_product, LatestRun, ResolvedCanonicalBundleProduct,
 };
-use rustwx_render::{ProjectedExtent, map_frame_aspect_ratio};
+use rustwx_render::{map_frame_aspect_ratio, ProjectedExtent};
+#[cfg(feature = "wrf")]
 use rustwx_wrf as wrf;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -40,6 +41,9 @@ pub struct SurfaceFields {
     pub q2_kgkg: Vec<f64>,
     pub u10_ms: Vec<f64>,
     pub v10_ms: Vec<f64>,
+    pub native_sbcape_jkg: Option<Vec<f64>>,
+    pub native_mlcape_jkg: Option<Vec<f64>>,
+    pub native_mucape_jkg: Option<Vec<f64>>,
 }
 
 impl SurfaceFields {
@@ -53,8 +57,17 @@ impl SurfaceFields {
 
     pub fn decoded_bytes_estimate(&self) -> usize {
         let len = self.lat.len();
-        let f64_fields = 8usize;
-        len * f64_fields * std::mem::size_of::<f64>() + std::mem::size_of::<bool>()
+        let required_f64_fields = 8usize;
+        let optional_f64_fields = [
+            self.native_sbcape_jkg.as_ref(),
+            self.native_mlcape_jkg.as_ref(),
+            self.native_mucape_jkg.as_ref(),
+        ]
+        .into_iter()
+        .filter(|field| field.is_some())
+        .count();
+        len * (required_f64_fields + optional_f64_fields) * std::mem::size_of::<f64>()
+            + std::mem::size_of::<bool>()
     }
 }
 
@@ -1014,6 +1027,9 @@ fn crop_surface_fields(surface: &SurfaceFields, crop: GridCrop) -> SurfaceFields
         q2_kgkg: crop_2d_values(&surface.q2_kgkg, surface.nx, crop),
         u10_ms: crop_2d_values(&surface.u10_ms, surface.nx, crop),
         v10_ms: crop_2d_values(&surface.v10_ms, surface.nx, crop),
+        native_sbcape_jkg: crop_optional_2d_values(&surface.native_sbcape_jkg, surface.nx, crop),
+        native_mlcape_jkg: crop_optional_2d_values(&surface.native_mlcape_jkg, surface.nx, crop),
+        native_mucape_jkg: crop_optional_2d_values(&surface.native_mucape_jkg, surface.nx, crop),
     }
 }
 
@@ -1087,6 +1103,16 @@ fn crop_2d_values(values: &[f64], source_nx: usize, crop: GridCrop) -> Vec<f64> 
         out.extend_from_slice(&values[row_start..row_end]);
     }
     out
+}
+
+fn crop_optional_2d_values(
+    values: &Option<Vec<f64>>,
+    source_nx: usize,
+    crop: GridCrop,
+) -> Option<Vec<f64>> {
+    values
+        .as_ref()
+        .map(|values| crop_2d_values(values, source_nx, crop))
 }
 
 fn cropped_decode_cache_path(
@@ -1218,7 +1244,7 @@ pub(crate) fn bundle_fetch_variable_patterns(
         .map(str::to_string)
         .collect(),
         (CanonicalBundleDescriptor::PressureAnalysis, "prs-na") => {
-            vec!["HGT", "GP", "TMP", "SPFH", "UGRD", "VGRD"]
+            vec!["HGT", "GP", "TMP", "SPFH", "DPT", "RH", "UGRD", "VGRD"]
                 .into_iter()
                 .map(str::to_string)
                 .collect()
@@ -1385,6 +1411,7 @@ pub(crate) fn load_or_decode_pressure_cropped_with_shape(
 }
 
 fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Error>> {
+    #[cfg(feature = "wrf")]
     if wrf::looks_like_wrf(bytes) {
         let decoded = wrf::decode_surface_from_bytes(bytes, None)?;
         return Ok(SurfaceFields {
@@ -1400,6 +1427,9 @@ fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Err
             q2_kgkg: decoded.q2_kgkg,
             u10_ms: decoded.u10_ms,
             v10_ms: decoded.v10_ms,
+            native_sbcape_jkg: None,
+            native_mlcape_jkg: None,
+            native_mucape_jkg: None,
         });
     }
     let file = Grib2File::from_bytes(bytes)?;
@@ -1430,6 +1460,11 @@ fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Err
         unpack_message_normalized(find_message(&file.messages, &[(0, 2, 2, 103, Some(10.0))])?)?;
     let v10_ms =
         unpack_message_normalized(find_message(&file.messages, &[(0, 2, 3, 103, Some(10.0))])?)?;
+    let native_sbcape_jkg = decode_optional_native_cape(&file.messages, NativeCapeLayer::Surface)?;
+    let native_mlcape_jkg =
+        decode_optional_native_cape(&file.messages, NativeCapeLayer::MixedLayer)?;
+    let native_mucape_jkg =
+        decode_optional_native_cape(&file.messages, NativeCapeLayer::MostUnstable)?;
 
     Ok(SurfaceFields {
         lat,
@@ -1444,6 +1479,9 @@ fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Err
         q2_kgkg,
         u10_ms,
         v10_ms,
+        native_sbcape_jkg,
+        native_mlcape_jkg,
+        native_mucape_jkg,
     })
 }
 
@@ -1451,6 +1489,7 @@ fn decode_surface_cropped(
     bytes: &[u8],
     crop: GridCrop,
 ) -> Result<SurfaceFields, Box<dyn std::error::Error>> {
+    #[cfg(feature = "wrf")]
     if wrf::looks_like_wrf(bytes) {
         return Ok(crop_surface_fields(&decode_surface(bytes)?, crop));
     }
@@ -1495,6 +1534,21 @@ fn decode_surface_cropped(
         nx,
         crop,
     );
+    let native_sbcape_jkg = crop_optional_2d_values(
+        &decode_optional_native_cape(&file.messages, NativeCapeLayer::Surface)?,
+        nx,
+        crop,
+    );
+    let native_mlcape_jkg = crop_optional_2d_values(
+        &decode_optional_native_cape(&file.messages, NativeCapeLayer::MixedLayer)?,
+        nx,
+        crop,
+    );
+    let native_mucape_jkg = crop_optional_2d_values(
+        &decode_optional_native_cape(&file.messages, NativeCapeLayer::MostUnstable)?,
+        nx,
+        crop,
+    );
 
     Ok(SurfaceFields {
         lat: crop_2d_values(&lat, nx, crop),
@@ -1509,12 +1563,16 @@ fn decode_surface_cropped(
         q2_kgkg,
         u10_ms,
         v10_ms,
+        native_sbcape_jkg,
+        native_mlcape_jkg,
+        native_mucape_jkg,
     })
 }
 
 fn decode_pressure_with_shape(
     bytes: &[u8],
 ) -> Result<(PressureFields, usize, usize), Box<dyn std::error::Error>> {
+    #[cfg(feature = "wrf")]
     if wrf::looks_like_wrf(bytes) {
         let decoded = wrf::decode_pressure_from_bytes(bytes, None)?;
         return Ok((
@@ -1584,6 +1642,7 @@ fn decode_pressure_cropped_with_shape(
     bytes: &[u8],
     crop: GridCrop,
 ) -> Result<(PressureFields, usize, usize), Box<dyn std::error::Error>> {
+    #[cfg(feature = "wrf")]
     if wrf::looks_like_wrf(bytes) {
         let (decoded, nx, ny) = decode_pressure_with_shape(bytes)?;
         return Ok((
@@ -1999,6 +2058,53 @@ fn pressure_grid_shape_from_messages(
     Ok((nx, ny))
 }
 
+#[derive(Debug, Clone, Copy)]
+enum NativeCapeLayer {
+    Surface,
+    MixedLayer,
+    MostUnstable,
+}
+
+impl NativeCapeLayer {
+    fn candidates(self) -> &'static [(u8, u8, u8, u8, Option<f64>)] {
+        match self {
+            Self::Surface => &[(0, 7, 6, 1, Some(0.0))],
+            Self::MixedLayer => &[(0, 7, 6, 108, Some(9000.0))],
+            Self::MostUnstable => &[(0, 7, 6, 108, Some(25500.0))],
+        }
+    }
+}
+
+fn decode_optional_native_cape(
+    messages: &[Grib2Message],
+    layer: NativeCapeLayer,
+) -> Result<Option<Vec<f64>>, Box<dyn std::error::Error>> {
+    let Some(message) = find_optional_message(messages, layer.candidates()) else {
+        return Ok(None);
+    };
+    Ok(Some(unpack_message_normalized(message)?))
+}
+
+fn find_optional_message<'a>(
+    messages: &'a [Grib2Message],
+    candidates: &[(u8, u8, u8, u8, Option<f64>)],
+) -> Option<&'a Grib2Message> {
+    for &(discipline, category, number, level_type, level_value) in candidates {
+        if let Some(message) = messages.iter().find(|msg| {
+            msg.discipline == discipline
+                && msg.product.parameter_category == category
+                && msg.product.parameter_number == number
+                && msg.product.level_type == level_type
+                && level_value
+                    .map(|level| (msg.product.level_value - level).abs() < 0.25)
+                    .unwrap_or(true)
+        }) {
+            return Some(message);
+        }
+    }
+    None
+}
+
 fn find_message<'a>(
     messages: &'a [Grib2Message],
     candidates: &[(u8, u8, u8, u8, Option<f64>)],
@@ -2082,7 +2188,11 @@ pub(crate) fn validate_pressure_decode_against_surface(
 }
 
 fn normalize_longitude(lon: f64) -> f64 {
-    if lon > 180.0 { lon - 360.0 } else { lon }
+    if lon > 180.0 {
+        lon - 360.0
+    } else {
+        lon
+    }
 }
 
 fn normalize_longitude_rows(lat: &mut [f64], lon: &mut [f64], nx: usize, ny: usize) {
@@ -2189,18 +2299,18 @@ mod tests {
                 "GP".to_string(),
                 "TMP".to_string(),
                 "SPFH".to_string(),
+                "DPT".to_string(),
+                "RH".to_string(),
                 "UGRD".to_string(),
                 "VGRD".to_string(),
             ]
         );
-        assert!(
-            bundle_fetch_variable_patterns(
-                ModelId::Hrrr,
-                CanonicalBundleDescriptor::SurfaceAnalysis,
-                "sfc"
-            )
-            .is_empty()
-        );
+        assert!(bundle_fetch_variable_patterns(
+            ModelId::Hrrr,
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+            "sfc"
+        )
+        .is_empty());
     }
 
     #[test]
@@ -2240,6 +2350,9 @@ mod tests {
             q2_kgkg: vec![0.012; len],
             u10_ms: vec![10.0; len],
             v10_ms: vec![5.0; len],
+            native_sbcape_jkg: None,
+            native_mlcape_jkg: None,
+            native_mucape_jkg: None,
         };
         let pressure = PressureFields {
             pressure_levels_hpa: vec![1000.0],

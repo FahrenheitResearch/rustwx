@@ -7,10 +7,17 @@ publish.workspace = true
 rust-version.workspace = true
 default-run = "rustwx-cli"
 
+[features]
+default = []
+wrf = ["rustwx-io/wrf", "rustwx-products/wrf"]
+
 [dependencies]
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+ecape-rs = { path = "../../vendor/ecape-rs" }
+flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 grib-core = { path = "../../vendor/grib-core" }
 rustwx-calc = { path = "../rustwx-calc" }

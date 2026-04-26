@@ -1298,6 +1298,9 @@ mod tests {
             q2_kgkg: vec![0.012; 4],
             u10_ms: vec![8.0; 4],
             v10_ms: vec![4.0; 4],
+            native_sbcape_jkg: None,
+            native_mlcape_jkg: None,
+            native_mucape_jkg: None,
         }
     }
 
@@ -1766,6 +1769,9 @@ mod tests {
             q2_kgkg: vec![0.010; 6],
             u10_ms: vec![5.0; 6],
             v10_ms: vec![2.0; 6],
+            native_sbcape_jkg: None,
+            native_mlcape_jkg: None,
+            native_mucape_jkg: None,
         };
         let point = GeoPoint::new(35.2, -100.1).unwrap();
         let stencil = sample_stencil_for_point(

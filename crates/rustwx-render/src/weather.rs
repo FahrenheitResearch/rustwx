@@ -10,6 +10,7 @@ pub enum WeatherPalette {
     Stp,
     LapseRate,
     Uh,
+    EcapeRatio,
     MlMetric,
     Reflectivity,
     Winds,
@@ -36,6 +37,7 @@ pub enum WeatherPreset {
     Stp,
     Scp,
     Ehi,
+    EcapeCapeRatio,
     Uh,
     LapseRate,
 }
@@ -68,6 +70,12 @@ pub enum WeatherProduct {
     Sbecape,
     Mlecape,
     Muecape,
+    SbEcapeDerivedCapeRatio,
+    MlEcapeDerivedCapeRatio,
+    MuEcapeDerivedCapeRatio,
+    SbEcapeNativeCapeRatio,
+    MlEcapeNativeCapeRatio,
+    MuEcapeNativeCapeRatio,
     Sbncape,
     Mlncape,
     Muncape,
@@ -93,7 +101,9 @@ pub enum WeatherProduct {
     Ehi,
     Uh,
     EcapeScpExperimental,
-    EcapeEhiExperimental,
+    EcapeEhi01kmExperimental,
+    EcapeEhi03kmExperimental,
+    EcapeStpExperimental,
 }
 
 pub const SEVERE_CLASSIC_PANEL_PRODUCTS: [WeatherProduct; 8] = [
@@ -107,15 +117,23 @@ pub const SEVERE_CLASSIC_PANEL_PRODUCTS: [WeatherProduct; 8] = [
     WeatherProduct::Scp,
 ];
 
-pub const ECAPE_SEVERE_PANEL_PRODUCTS: [WeatherProduct; 8] = [
+pub const ECAPE_SEVERE_PANEL_PRODUCTS: [WeatherProduct; 16] = [
     WeatherProduct::Sbecape,
     WeatherProduct::Mlecape,
     WeatherProduct::Muecape,
+    WeatherProduct::SbEcapeDerivedCapeRatio,
+    WeatherProduct::MlEcapeDerivedCapeRatio,
+    WeatherProduct::MuEcapeDerivedCapeRatio,
+    WeatherProduct::SbEcapeNativeCapeRatio,
+    WeatherProduct::MlEcapeNativeCapeRatio,
+    WeatherProduct::MuEcapeNativeCapeRatio,
     WeatherProduct::Sbncape,
     WeatherProduct::Sbecin,
     WeatherProduct::Mlecin,
     WeatherProduct::EcapeScpExperimental,
-    WeatherProduct::EcapeEhiExperimental,
+    WeatherProduct::EcapeEhi01kmExperimental,
+    WeatherProduct::EcapeEhi03kmExperimental,
+    WeatherProduct::EcapeStpExperimental,
 ];
 
 impl WeatherProduct {
@@ -127,6 +145,24 @@ impl WeatherProduct {
             "sbecape" => Some(Self::Sbecape),
             "mlecape" => Some(Self::Mlecape),
             "muecape" => Some(Self::Muecape),
+            "sb_ecape_derived_cape_ratio" | "sbecape_derived_cape_ratio" => {
+                Some(Self::SbEcapeDerivedCapeRatio)
+            }
+            "ml_ecape_derived_cape_ratio" | "mlecape_derived_cape_ratio" => {
+                Some(Self::MlEcapeDerivedCapeRatio)
+            }
+            "mu_ecape_derived_cape_ratio" | "muecape_derived_cape_ratio" => {
+                Some(Self::MuEcapeDerivedCapeRatio)
+            }
+            "sb_ecape_native_cape_ratio" | "sbecape_native_cape_ratio" => {
+                Some(Self::SbEcapeNativeCapeRatio)
+            }
+            "ml_ecape_native_cape_ratio" | "mlecape_native_cape_ratio" => {
+                Some(Self::MlEcapeNativeCapeRatio)
+            }
+            "mu_ecape_native_cape_ratio" | "muecape_native_cape_ratio" => {
+                Some(Self::MuEcapeNativeCapeRatio)
+            }
             "sbncape" => Some(Self::Sbncape),
             "mlncape" => Some(Self::Mlncape),
             "muncape" => Some(Self::Muncape),
@@ -152,7 +188,11 @@ impl WeatherProduct {
             "ehi" => Some(Self::Ehi),
             "uhel" | "uh" => Some(Self::Uh),
             "ecape_scp" => Some(Self::EcapeScpExperimental),
-            "ecape_ehi" => Some(Self::EcapeEhiExperimental),
+            "ecape_ehi" | "ecape_ehi_0_1km" | "ecape_ehi_01km" => {
+                Some(Self::EcapeEhi01kmExperimental)
+            }
+            "ecape_ehi_0_3km" | "ecape_ehi_03km" => Some(Self::EcapeEhi03kmExperimental),
+            "ecape_stp" => Some(Self::EcapeStpExperimental),
             _ => None,
         }
     }
@@ -165,6 +205,12 @@ impl WeatherProduct {
             Self::Sbecape => "sbecape",
             Self::Mlecape => "mlecape",
             Self::Muecape => "muecape",
+            Self::SbEcapeDerivedCapeRatio => "sb_ecape_derived_cape_ratio",
+            Self::MlEcapeDerivedCapeRatio => "ml_ecape_derived_cape_ratio",
+            Self::MuEcapeDerivedCapeRatio => "mu_ecape_derived_cape_ratio",
+            Self::SbEcapeNativeCapeRatio => "sb_ecape_native_cape_ratio",
+            Self::MlEcapeNativeCapeRatio => "ml_ecape_native_cape_ratio",
+            Self::MuEcapeNativeCapeRatio => "mu_ecape_native_cape_ratio",
             Self::Sbncape => "sbncape",
             Self::Mlncape => "mlncape",
             Self::Muncape => "muncape",
@@ -190,7 +236,9 @@ impl WeatherProduct {
             Self::Ehi => "ehi",
             Self::Uh => "uhel",
             Self::EcapeScpExperimental => "ecape_scp",
-            Self::EcapeEhiExperimental => "ecape_ehi",
+            Self::EcapeEhi01kmExperimental => "ecape_ehi_0_1km",
+            Self::EcapeEhi03kmExperimental => "ecape_ehi_0_3km",
+            Self::EcapeStpExperimental => "ecape_stp",
         }
     }
 
@@ -202,6 +250,12 @@ impl WeatherProduct {
             Self::Sbecape => "SBECAPE",
             Self::Mlecape => "MLECAPE",
             Self::Muecape => "MUECAPE",
+            Self::SbEcapeDerivedCapeRatio => "SB ECAPE/DERIVED CAPE RATIO",
+            Self::MlEcapeDerivedCapeRatio => "ML ECAPE/DERIVED CAPE RATIO",
+            Self::MuEcapeDerivedCapeRatio => "MU ECAPE/DERIVED CAPE RATIO",
+            Self::SbEcapeNativeCapeRatio => "SB ECAPE/NATIVE CAPE RATIO",
+            Self::MlEcapeNativeCapeRatio => "ML ECAPE/NATIVE CAPE RATIO",
+            Self::MuEcapeNativeCapeRatio => "MU ECAPE/NATIVE CAPE RATIO",
             Self::Sbncape => "SBNCAPE",
             Self::Mlncape => "MLNCAPE",
             Self::Muncape => "MUNCAPE",
@@ -227,7 +281,9 @@ impl WeatherProduct {
             Self::Ehi => "EHI",
             Self::Uh => "UH",
             Self::EcapeScpExperimental => "ECAPE SCP (EXP)",
-            Self::EcapeEhiExperimental => "ECAPE EHI (EXP)",
+            Self::EcapeEhi01kmExperimental => "ECAPE EHI 0-1 KM (EXP)",
+            Self::EcapeEhi03kmExperimental => "ECAPE EHI 0-3 KM (EXP)",
+            Self::EcapeStpExperimental => "ECAPE STP (EXP)",
         }
     }
 
@@ -243,6 +299,12 @@ impl WeatherProduct {
             | Self::Mlncape
             | Self::Muncape
             | Self::EcapeCape => WeatherPreset::Cape,
+            Self::SbEcapeDerivedCapeRatio
+            | Self::MlEcapeDerivedCapeRatio
+            | Self::MuEcapeDerivedCapeRatio
+            | Self::SbEcapeNativeCapeRatio
+            | Self::MlEcapeNativeCapeRatio
+            | Self::MuEcapeNativeCapeRatio => WeatherPreset::EcapeCapeRatio,
             Self::Sbcin
             | Self::Mlcin
             | Self::Mucin
@@ -254,9 +316,13 @@ impl WeatherProduct {
             Self::Lfc | Self::EcapeLfc => WeatherPreset::Lfc,
             Self::El | Self::EcapeEl => WeatherPreset::El,
             Self::Srh01km | Self::Srh03km => WeatherPreset::Srh,
-            Self::Stp | Self::StpFixed | Self::StpEffective => WeatherPreset::Stp,
+            Self::Stp | Self::StpFixed | Self::StpEffective | Self::EcapeStpExperimental => {
+                WeatherPreset::Stp
+            }
             Self::Scp | Self::EcapeScpExperimental => WeatherPreset::Scp,
-            Self::Ehi | Self::EcapeEhiExperimental => WeatherPreset::Ehi,
+            Self::Ehi | Self::EcapeEhi01kmExperimental | Self::EcapeEhi03kmExperimental => {
+                WeatherPreset::Ehi
+            }
             Self::Uh => WeatherPreset::Uh,
         }
     }
@@ -273,6 +339,7 @@ impl WeatherProduct {
             WeatherPreset::Stp => Some(1.0),
             WeatherPreset::Scp => Some(1.0),
             WeatherPreset::Ehi => Some(1.0),
+            WeatherPreset::EcapeCapeRatio => Some(0.25),
             WeatherPreset::Uh => Some(20.0),
             WeatherPreset::LapseRate => Some(1.0),
         }
@@ -293,7 +360,16 @@ impl WeatherProduct {
     pub fn is_experimental(self) -> bool {
         matches!(
             self,
-            Self::EcapeScpExperimental | Self::EcapeEhiExperimental
+            Self::EcapeScpExperimental
+                | Self::SbEcapeDerivedCapeRatio
+                | Self::MlEcapeDerivedCapeRatio
+                | Self::MuEcapeDerivedCapeRatio
+                | Self::SbEcapeNativeCapeRatio
+                | Self::MlEcapeNativeCapeRatio
+                | Self::MuEcapeNativeCapeRatio
+                | Self::EcapeEhi01kmExperimental
+                | Self::EcapeEhi03kmExperimental
+                | Self::EcapeStpExperimental
         )
     }
 }
@@ -408,6 +484,18 @@ impl WeatherPreset {
             | "mlecape" | "muecape" | "ecape_cape" | "sbncape" | "mlncape" | "muncape" => {
                 Some(Self::Cape)
             }
+            "sb_ecape_derived_cape_ratio"
+            | "ml_ecape_derived_cape_ratio"
+            | "mu_ecape_derived_cape_ratio"
+            | "sb_ecape_native_cape_ratio"
+            | "ml_ecape_native_cape_ratio"
+            | "mu_ecape_native_cape_ratio"
+            | "sbecape_derived_cape_ratio"
+            | "mlecape_derived_cape_ratio"
+            | "muecape_derived_cape_ratio"
+            | "sbecape_native_cape_ratio"
+            | "mlecape_native_cape_ratio"
+            | "muecape_native_cape_ratio" => Some(Self::EcapeCapeRatio),
             "cape3d" | "three_cape" => Some(Self::ThreeCape),
             "sbcin" | "mlcin" | "mucin" | "cin" | "ecape_cin" | "sbecin" | "mlecin" | "muecin" => {
                 Some(Self::Cin)
@@ -416,9 +504,9 @@ impl WeatherPreset {
             "lfc" | "ecape_lfc" => Some(Self::Lfc),
             "el" | "ecape_el" => Some(Self::El),
             "srh" | "srh1" | "srh3" | "effective_srh" => Some(Self::Srh),
-            "stp" | "stp_fixed" | "stp_effective" => Some(Self::Stp),
+            "stp" | "stp_fixed" | "stp_effective" | "ecape_stp" => Some(Self::Stp),
             "scp" | "ecape_scp" => Some(Self::Scp),
-            "ehi" | "ecape_ehi" => Some(Self::Ehi),
+            "ehi" | "ecape_ehi" | "ecape_ehi_0_1km" | "ecape_ehi_0_3km" => Some(Self::Ehi),
             "uhel" | "uh" => Some(Self::Uh),
             "lapse_rate" | "lapse_rate_700_500" | "lapse_rate_0_3km" => Some(Self::LapseRate),
             _ => None,
@@ -484,6 +572,12 @@ impl WeatherPreset {
             Self::Ehi => DiscreteColorScale {
                 levels: concat_ranges(&[(0.0, 2.0, 0.1), (2.0, 16.2, 0.2)]),
                 colors: weather_palette(WeatherPalette::Ehi),
+                extend: ExtendMode::Max,
+                mask_below: None,
+            },
+            Self::EcapeCapeRatio => DiscreteColorScale {
+                levels: range_step(0.0, 1.15, 0.05),
+                colors: weather_palette(WeatherPalette::EcapeRatio),
                 extend: ExtendMode::Max,
                 mask_below: None,
             },
@@ -558,6 +652,7 @@ pub fn weather_palette(palette: WeatherPalette) -> Vec<Color> {
         WeatherPalette::Stp => colormaps::stp(),
         WeatherPalette::LapseRate => colormaps::lapse_rate(),
         WeatherPalette::Uh => colormaps::uh(),
+        WeatherPalette::EcapeRatio => ecape_ratio_palette(),
         WeatherPalette::MlMetric => colormaps::ml_metric(),
         WeatherPalette::Reflectivity => colormaps::reflectivity(),
         WeatherPalette::Winds => colormaps::winds(60),
@@ -622,6 +717,18 @@ fn advection_palette() -> Vec<crate::color::Rgba> {
         .collect::<Vec<_>>()
 }
 
+fn ecape_ratio_palette() -> Vec<crate::color::Rgba> {
+    const ECAPE_RATIO_HEX: [&str; 11] = [
+        "#7f1d1d", "#b91c1c", "#dc2626", "#f97316", "#f59e0b", "#facc15", "#fde047", "#bef264",
+        "#84cc16", "#22c55e", "#15803d",
+    ];
+
+    ECAPE_RATIO_HEX
+        .into_iter()
+        .map(rgba_from_hex)
+        .collect::<Vec<_>>()
+}
+
 fn rgba_from_hex(value: &str) -> crate::color::Rgba {
     let trimmed = value.trim_start_matches('#');
     let red = u8::from_str_radix(&trimmed[0..2], 16).expect("valid red component");
@@ -674,7 +781,11 @@ mod tests {
         assert_eq!(WeatherProduct::Sbecape.display_title(), "SBECAPE");
         assert_eq!(WeatherProduct::Mlecin.display_title(), "MLECIN");
         assert!(WeatherProduct::EcapeScpExperimental.is_experimental());
-        assert!(WeatherProduct::EcapeEhiExperimental.is_experimental());
+        assert!(WeatherProduct::EcapeEhi01kmExperimental.is_experimental());
+        assert!(WeatherProduct::EcapeEhi03kmExperimental.is_experimental());
+        assert!(WeatherProduct::EcapeStpExperimental.is_experimental());
+        assert!(WeatherProduct::SbEcapeDerivedCapeRatio.is_experimental());
+        assert!(WeatherProduct::SbEcapeNativeCapeRatio.is_experimental());
         assert!(!WeatherProduct::Muecape.is_experimental());
         assert_eq!(
             WeatherProduct::EcapeScpExperimental.semantics().maturity,
@@ -694,11 +805,19 @@ mod tests {
                 WeatherProduct::Sbecape,
                 WeatherProduct::Mlecape,
                 WeatherProduct::Muecape,
+                WeatherProduct::SbEcapeDerivedCapeRatio,
+                WeatherProduct::MlEcapeDerivedCapeRatio,
+                WeatherProduct::MuEcapeDerivedCapeRatio,
+                WeatherProduct::SbEcapeNativeCapeRatio,
+                WeatherProduct::MlEcapeNativeCapeRatio,
+                WeatherProduct::MuEcapeNativeCapeRatio,
                 WeatherProduct::Sbncape,
                 WeatherProduct::Sbecin,
                 WeatherProduct::Mlecin,
                 WeatherProduct::EcapeScpExperimental,
-                WeatherProduct::EcapeEhiExperimental,
+                WeatherProduct::EcapeEhi01kmExperimental,
+                WeatherProduct::EcapeEhi03kmExperimental,
+                WeatherProduct::EcapeStpExperimental,
             ]
         );
     }
@@ -731,7 +850,31 @@ mod tests {
             Some(WeatherProduct::EcapeScpExperimental)
         );
         assert_eq!(
-            WeatherPreset::from_product_name("ecape_ehi"),
+            WeatherProduct::from_product_name("sb_ecape_derived_cape_ratio"),
+            Some(WeatherProduct::SbEcapeDerivedCapeRatio)
+        );
+        assert_eq!(
+            WeatherProduct::from_product_name("ml_ecape_native_cape_ratio"),
+            Some(WeatherProduct::MlEcapeNativeCapeRatio)
+        );
+        assert_eq!(
+            WeatherPreset::from_product_name("mu_ecape_native_cape_ratio"),
+            Some(WeatherPreset::EcapeCapeRatio)
+        );
+        assert_eq!(
+            WeatherProduct::from_product_name("ecape_ehi"),
+            Some(WeatherProduct::EcapeEhi01kmExperimental)
+        );
+        assert_eq!(
+            WeatherProduct::from_product_name("ecape_ehi_0_1km"),
+            Some(WeatherProduct::EcapeEhi01kmExperimental)
+        );
+        assert_eq!(
+            WeatherProduct::from_product_name("ecape_ehi_0_3km"),
+            Some(WeatherProduct::EcapeEhi03kmExperimental)
+        );
+        assert_eq!(
+            WeatherPreset::from_product_name("ecape_ehi_0_3km"),
             Some(WeatherPreset::Ehi)
         );
     }
@@ -807,6 +950,10 @@ mod tests {
             concat_ranges(&[(0.0, 2.0, 0.1), (2.0, 16.2, 0.2)])
         );
         assert_eq!(
+            WeatherPreset::EcapeCapeRatio.scale().levels,
+            range_step(0.0, 1.15, 0.05)
+        );
+        assert_eq!(
             WeatherPreset::Uh.scale().levels,
             concat_ranges(&[(0.0, 200.0, 5.0), (200.0, 401.0, 10.0)])
         );
@@ -835,8 +982,12 @@ mod tests {
         assert_eq!(severe.maturity, ProductMaturity::Operational);
         assert!(!severe.has_flag(ProductSemanticFlag::Proxy));
 
-        let ecape = WeatherProduct::EcapeEhiExperimental.semantics();
-        assert_eq!(ecape.maturity, ProductMaturity::Experimental);
-        assert!(!ecape.has_flag(ProductSemanticFlag::ProofOriented));
+        let ecape_01km = WeatherProduct::EcapeEhi01kmExperimental.semantics();
+        assert_eq!(ecape_01km.maturity, ProductMaturity::Experimental);
+        assert!(!ecape_01km.has_flag(ProductSemanticFlag::ProofOriented));
+
+        let ecape_03km = WeatherProduct::EcapeEhi03kmExperimental.semantics();
+        assert_eq!(ecape_03km.maturity, ProductMaturity::Experimental);
+        assert!(!ecape_03km.has_flag(ProductSemanticFlag::ProofOriented));
     }
 }

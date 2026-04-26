@@ -644,7 +644,6 @@ fn build_run(
                         HrrrBatchProduct::SevereProofPanel => {
                             ("severe_proof_panel", "HRRR Severe Proof Panel")
                         }
-                        HrrrBatchProduct::Ecape8Panel => ("ecape8_panel", "HRRR ECAPE 8-Panel"),
                     };
                     gallery_image(
                         slug,
@@ -811,10 +810,10 @@ fn classify_manifest_kind(manifest: &RunPublicationManifest) -> ProofRunKind {
         ProofRunKind::Derived
     } else if kind.contains("ecape")
         || kind.contains("batch")
-            && manifest.artifacts.iter().any(|artifact| {
-                artifact.artifact_key == "ecape8_panel"
-                    || artifact.artifact_key == "severe_proof_panel"
-            })
+            && manifest
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.artifact_key == "severe_proof_panel")
     {
         ProofRunKind::Heavy
     } else {

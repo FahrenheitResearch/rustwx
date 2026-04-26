@@ -2,12 +2,12 @@ use rustwx_core::{
     CanonicalProductIdentity, ProductId, ProductKeyMetadata, ProductKind, ProductLineage,
     ProductProvenance, ProductWindowSpec, StatisticalProcess,
 };
-use rustwx_models::{PlotRecipe, RenderStyle, built_in_plot_recipes};
+use rustwx_models::{built_in_plot_recipes, PlotRecipe, RenderStyle};
 use rustwx_render::{ProductMaturity, ProductSemanticFlag};
 
 use crate::derived::{
-    BlockedDerivedRecipeInventoryEntry, DerivedRecipeInventoryEntry,
     blocked_derived_recipe_inventory, supported_derived_recipe_inventory,
+    BlockedDerivedRecipeInventoryEntry, DerivedRecipeInventoryEntry,
 };
 use crate::hrrr::HrrrBatchProduct;
 use crate::windowed::HrrrWindowedProduct;
@@ -104,13 +104,10 @@ pub fn blocked_derived_product_specs() -> Vec<ProductSpec> {
 }
 
 pub fn heavy_product_specs() -> Vec<ProductSpec> {
-    [
-        HrrrBatchProduct::SevereProofPanel,
-        HrrrBatchProduct::Ecape8Panel,
-    ]
-    .into_iter()
-    .map(heavy_product_spec)
-    .collect()
+    [HrrrBatchProduct::SevereProofPanel]
+        .into_iter()
+        .map(heavy_product_spec)
+        .collect()
 }
 
 pub fn windowed_product_specs() -> Vec<ProductSpec> {
@@ -251,16 +248,6 @@ fn heavy_product_spec(product: HrrrBatchProduct) -> ProductSpec {
                     .to_string(),
                 "Keeps fixed-depth SCP proxy diagnostics until effective-layer SRH and EBWD are wired"
                     .to_string(),
-            ],
-        ),
-        HrrrBatchProduct::Ecape8Panel => (
-            "ECAPE Map Set",
-            ProductMaturity::Proof,
-            vec![ProductSemanticFlag::ProofOriented],
-            vec![
-                "Bundled ECAPE map family".to_string(),
-                "Generic gridded ECAPE map path for supported built-in models".to_string(),
-                "Contains experimental ECAPE SCP/EHI fields inside the map set".to_string(),
             ],
         ),
     };
@@ -607,30 +594,23 @@ mod tests {
             theta_e.id,
             ProductId::new(ProductKind::Derived, "theta_e_2m_10m_winds")
         );
-        assert!(
-            theta_e
-                .aliases
-                .iter()
-                .any(|alias| alias.slug == "2m_theta_e_10m_winds")
-        );
-        assert!(
-            theta_e
-                .aliases
-                .iter()
-                .any(|alias| alias.id
-                    == ProductId::new(ProductKind::Derived, "2m_theta_e_10m_winds"))
-        );
+        assert!(theta_e
+            .aliases
+            .iter()
+            .any(|alias| alias.slug == "2m_theta_e_10m_winds"));
+        assert!(theta_e
+            .aliases
+            .iter()
+            .any(|alias| alias.id == ProductId::new(ProductKind::Derived, "2m_theta_e_10m_winds")));
         let identity = theta_e
             .product_metadata
             .as_ref()
             .and_then(|metadata| metadata.identity.as_ref())
             .expect("derived spec should expose canonical identity");
         assert_eq!(identity.canonical, theta_e.id);
-        assert!(
-            identity
-                .alias_slugs
-                .contains(&"2m_theta_e_10m_winds".to_string())
-        );
+        assert!(identity
+            .alias_slugs
+            .contains(&"2m_theta_e_10m_winds".to_string()));
         assert_eq!(
             theta_e
                 .product_metadata
