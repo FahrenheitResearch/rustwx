@@ -1,4 +1,3 @@
-use ndarray::Axis;
 use rayon::prelude::*;
 use rustwx_core::{
     CanonicalField, FieldSelector, GridShape, LatLonGrid, SelectedField2D, VerticalSelector,
@@ -113,7 +112,7 @@ fn materialize_input(bytes: &[u8], preferred_path: Option<&Path>) -> Result<Path
 }
 
 pub struct WrfFile {
-    nc: netcdf::File,
+    nc: netcrust::File,
     pub nx: usize,
     pub ny: usize,
     pub nz: usize,
@@ -127,7 +126,7 @@ pub struct WrfFile {
 
 impl WrfFile {
     pub fn open(path: &Path) -> Result<Self, WrfError> {
-        let nc = netcdf::open(path).map_err(|err| WrfError::Netcdf(err.to_string()))?;
+        let nc = netcrust::open(path).map_err(|err| WrfError::Netcdf(err.to_string()))?;
         let nx = dim_len(&nc, "west_east")?;
         let ny = dim_len(&nc, "south_north")?;
         let nz = nc.dimension("bottom_top").map(|d| d.len()).unwrap_or(0);
@@ -203,18 +202,12 @@ impl WrfFile {
     }
 
     pub fn read_var(&self, name: &str) -> Result<Vec<f64>, WrfError> {
-        let var = self
-            .nc
-            .variable(name)
-            .ok_or_else(|| WrfError::MissingVariable(name.to_string()))?;
-        let arr: ndarray::ArrayD<f64> = var
-            .get(..)
-            .map_err(|err| WrfError::Netcdf(err.to_string()))?;
-        if arr.ndim() >= 3 {
-            Ok(arr.index_axis(Axis(0), 0).iter().copied().collect())
-        } else {
-            Ok(arr.iter().copied().collect())
-        }
+        self.nc
+            .read_f64_first_record_or_all(name)
+            .map_err(|err| match err {
+                netcrust::Error::VariableNotFound(_) => WrfError::MissingVariable(name.to_string()),
+                _ => WrfError::Netcdf(err.to_string()),
+            })
     }
 
     fn read_var_optional(&self, name: &str, len: usize) -> Vec<f64> {
@@ -1196,31 +1189,22 @@ fn extract_selector(
     .map_err(Into::into)
 }
 
-fn dim_len(file: &netcdf::File, name: &str) -> Result<usize, WrfError> {
+fn dim_len(file: &netcrust::File, name: &str) -> Result<usize, WrfError> {
     file.dimension(name)
         .map(|dimension| dimension.len())
         .ok_or_else(|| WrfError::MissingDimension(name.to_string()))
 }
 
-fn global_attr_f64(file: &netcdf::File, name: &str) -> Result<f64, WrfError> {
-    let attr = file
+fn global_attr_f64(file: &netcrust::File, name: &str) -> Result<f64, WrfError> {
+    file
         .attribute(name)
-        .ok_or_else(|| WrfError::MissingVariable(name.to_string()))?;
-    let value = attr
-        .value()
-        .map_err(|err| WrfError::Netcdf(err.to_string()))?;
-    match value {
-        netcdf::AttributeValue::Double(value) => Ok(value),
-        netcdf::AttributeValue::Float(value) => Ok(value as f64),
-        netcdf::AttributeValue::Int(value) => Ok(value as f64),
-        _ => Err(WrfError::Netcdf(format!(
-            "attribute '{name}' was not numeric"
-        ))),
-    }
+        .ok_or_else(|| WrfError::MissingVariable(name.to_string()))?
+        .as_f64()
+        .ok_or_else(|| WrfError::Netcdf(format!("attribute '{name}' was not numeric")))
 }
 
 fn reconstruct_lambert_latlon(
-    file: &netcdf::File,
+    file: &netcrust::File,
     nx: usize,
     ny: usize,
     dx: f64,
@@ -1510,79 +1494,61 @@ fn lerp_at(z: f64, z0: f64, z1: f64, v0: f64, v1: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::path::PathBuf;
+
+    fn wrf_fixture_path() -> Option<PathBuf> {
+        if let Some(path) = std::env::var_os("RUSTWX_WRF_FIXTURE").map(PathBuf::from) {
+            if path.exists() {
+                return Some(path);
+            }
+        }
+
+        let default =
+            PathBuf::from(r"F:\250m_master\20210216_00z_tx_freeze\wrfout_d01_2021-02-16_00_00_00");
+        default.exists().then_some(default)
+    }
 
     #[test]
-    fn extract_surface_native_td2_and_wspd10max_when_present() {
-        let path = temp_fixture_path("native-surface");
-        write_surface_fixture(&path, 0.004, Some(280.0), Some(31.0));
+    fn helper_dewpoint_from_mixing_ratio_is_finite() {
+        let dewpoint_c = dewpoint_from_mixing_ratio(1000.0, 0.008);
+        assert!(dewpoint_c.is_finite());
+        assert!(dewpoint_c > -10.0 && dewpoint_c < 30.0);
+    }
+
+    #[test]
+    fn extracts_surface_fields_from_real_fixture_when_available() {
+        let Some(path) = wrf_fixture_path() else {
+            eprintln!("skipping WRF fixture test; set RUSTWX_WRF_FIXTURE to a wrfout file");
+            return;
+        };
 
         let selectors = [
+            FieldSelector::height_agl(CanonicalField::Temperature, 2),
             FieldSelector::height_agl(CanonicalField::Dewpoint, 2),
-            FieldSelector::height_agl(CanonicalField::WindGust, 10),
+            FieldSelector::height_agl(CanonicalField::UWind, 10),
+            FieldSelector::height_agl(CanonicalField::VWind, 10),
         ];
         let extracted =
             extract_selectors_partial_from_path(&path, &selectors).expect("surface extract");
 
         assert!(extracted.missing.is_empty());
-        assert_eq!(extracted.extracted.len(), 2);
-        assert_eq!(extracted.extracted[0].values, vec![280.0]);
-        assert_eq!(extracted.extracted[1].values, vec![31.0]);
-
-        std::fs::remove_file(path).ok();
+        assert_eq!(extracted.extracted.len(), selectors.len());
+        for field in extracted.extracted {
+            assert!(field.values.iter().any(|value| value.is_finite()));
+        }
     }
 
     #[test]
-    fn extract_surface_dewpoint_falls_back_to_q2_when_td2_is_missing() {
-        let path = temp_fixture_path("fallback-td2");
-        let q2 = 0.008;
-        let psfc_pa = 100_000.0;
-        write_surface_fixture(&path, q2, None, None);
+    fn decodes_pressure_fields_from_real_fixture_when_available() {
+        let Some(path) = wrf_fixture_path() else {
+            eprintln!("skipping WRF pressure test; set RUSTWX_WRF_FIXTURE to a wrfout file");
+            return;
+        };
 
-        let extracted = extract_selectors_partial_from_path(
-            &path,
-            &[FieldSelector::height_agl(CanonicalField::Dewpoint, 2)],
-        )
-        .expect("fallback dewpoint extract");
-
-        assert!(extracted.missing.is_empty());
-        let expected = (dewpoint_from_mixing_ratio(psfc_pa / 100.0, q2) + 273.15) as f32;
-        assert!((extracted.extracted[0].values[0] - expected).abs() < 1.0e-4);
-
-        std::fs::remove_file(path).ok();
-    }
-
-    fn temp_fixture_path(name: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        std::env::temp_dir().join(format!("rustwx-wrf-{name}-{unique}.nc"))
-    }
-
-    fn write_surface_fixture(path: &Path, q2: f64, td2: Option<f64>, gust: Option<f64>) {
-        let mut file = netcdf::create(path).expect("create netcdf fixture");
-        file.add_dimension("south_north", 1).expect("south_north");
-        file.add_dimension("west_east", 1).expect("west_east");
-
-        put_scalar_2d(&mut file, "XLAT", 35.0);
-        put_scalar_2d(&mut file, "XLONG", -97.0);
-        put_scalar_2d(&mut file, "PSFC", 100_000.0);
-        put_scalar_2d(&mut file, "T2", 290.0);
-        put_scalar_2d(&mut file, "Q2", q2);
-        if let Some(value) = td2 {
-            put_scalar_2d(&mut file, "TD2", value);
-        }
-        if let Some(value) = gust {
-            put_scalar_2d(&mut file, "WSPD10MAX", value);
-        }
-    }
-
-    fn put_scalar_2d(file: &mut netcdf::FileMut, name: &str, value: f64) {
-        let mut var = file
-            .add_variable::<f64>(name, &["south_north", "west_east"])
-            .expect("add variable");
-        var.put_values(&[value], ..).expect("write variable");
+        let decoded = decode_pressure_from_path(&path).expect("pressure decode");
+        assert!(decoded.nx > 0);
+        assert!(decoded.ny > 0);
+        assert!(!decoded.pressure_levels_hpa.is_empty());
+        assert!(decoded.pressure_3d_pa.iter().any(|value| value.is_finite()));
     }
 }

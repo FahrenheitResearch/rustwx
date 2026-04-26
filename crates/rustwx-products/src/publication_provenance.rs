@@ -74,6 +74,7 @@ const VENDORED_DEPENDENCY_DIRS: &[(&str, &str)] = &[
     ("wx-radar", "vendor/wx-radar"),
     ("grib-core", "vendor/grib-core"),
     ("sharprs", "vendor/sharprs"),
+    ("netcrust", "vendor/netcrust"),
 ];
 
 /// Capture build provenance rooted at `workspace_root`. The workspace

@@ -23,6 +23,8 @@ exclude = [
     "vendor/wx-field",
     "vendor/wx-math",
     "vendor/wx-radar",
+    "vendor/netcrust",
+    "vendor/netcrust/vendor/hdf5-reader",
 ]
 resolver = "2"
 
@@ -41,6 +43,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots"] }
+
+[patch.crates-io]
+hdf5-reader = { path = "vendor/netcrust/vendor/hdf5-reader" }
 
 [profile.release]
 lto = "thin"

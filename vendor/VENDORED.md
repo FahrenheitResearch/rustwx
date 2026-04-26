@@ -23,6 +23,12 @@ Imported upstreams in this migration pass:
   Upstream commit: `16cf0757304eb690d0208c304e32a4676178f00a`
   License: `BSD-3-Clause`
   Preserved file: [vendor/sharprs/LICENSE](/abs/path/C:/Users/drew/rustwx/vendor/sharprs/LICENSE)
+- `netcrust`
+  Source repo: `https://github.com/FahrenheitResearch/netcrust`
+  Upstream commit: `adc43606be0593696d812430921a5a55e34fed6b`
+  License: `MIT OR Apache-2.0`
+  Notes: includes the patched pure-Rust `hdf5-reader` used by the WRF
+  NetCDF4 read path.
 
 Basemap assets were copied from `wrf-rust-plots/rustbox-fresh/assets/basemap`
 into `rustwx/assets/basemap`. The upstream asset lockfile was preserved as
