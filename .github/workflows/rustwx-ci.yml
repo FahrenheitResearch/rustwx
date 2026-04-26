@@ -71,8 +71,8 @@ jobs:
       - name: Build generic derived batch runner
         run: cargo build --release -p rustwx-cli --bin derived_batch
 
-      - name: Build generic ECAPE batch runner
-        run: cargo build --release -p rustwx-cli --bin ecape8_batch
+      - name: Build ECAPE grid research runner
+        run: cargo build --release -p rustwx-cli --bin hrrr_ecape_grid_research
 
       - name: Build shared heavy batch runner
         run: cargo build --release -p rustwx-cli --bin hrrr_batch
