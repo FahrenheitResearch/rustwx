@@ -7,6 +7,7 @@ import math
 import subprocess
 import sys
 import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -601,6 +602,7 @@ def main() -> None:
                     "profile_id": profile["profile_id"],
                     "config": config.__dict__,
                     "error": repr(exc),
+                    "traceback": traceback.format_exc(limit=8),
                 }
             )
             print(f"FAILED {config.name}: {exc}", file=sys.stderr)
