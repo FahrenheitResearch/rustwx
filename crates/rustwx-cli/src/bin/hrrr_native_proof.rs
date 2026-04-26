@@ -903,6 +903,7 @@ mod tests {
             cache_dir: None,
             no_cache: false,
             source_mode: SourceModeArg::Canonical,
+            place_label_density: 0,
         }
     }
 
