@@ -2255,11 +2255,13 @@ mod tests {
     #[test]
     fn extract_field_from_real_pressure_bytes_uses_structured_matching() {
         let path = sample_pressure_subset_path();
-        assert!(
-            path.exists(),
-            "expected sample pressure subset at {}",
-            path.display()
-        );
+        if !path.exists() {
+            eprintln!(
+                "skipping real pressure subset test; fixture is not present at {}",
+                path.display()
+            );
+            return;
+        }
         let bytes = std::fs::read(&path).unwrap();
 
         let temp_500 =
@@ -2310,11 +2312,13 @@ mod tests {
     #[test]
     fn extract_fields_from_real_pressure_bytes_batches_parse_and_matching() {
         let path = sample_pressure_subset_path();
-        assert!(
-            path.exists(),
-            "expected sample pressure subset at {}",
-            path.display()
-        );
+        if !path.exists() {
+            eprintln!(
+                "skipping real pressure subset batch test; fixture is not present at {}",
+                path.display()
+            );
+            return;
+        }
         let bytes = std::fs::read(&path).unwrap();
         let selectors = [
             FieldSelector::isobaric(CanonicalField::Temperature, 500),
