@@ -164,6 +164,49 @@ def qmag(value: Any, unit: str) -> float | None:
         return float(value)
 
 
+def is_empty_ecape_parcel_result(result: Any) -> bool:
+    if not isinstance(result, (list, tuple)):
+        return False
+    if len(result) == 0:
+        return True
+    for part in result:
+        if part is None:
+            return True
+        if isinstance(part, list) and (len(part) == 0 or part[0] is None):
+            return True
+    return False
+
+
+def empty_python_run(config: Config, elapsed_ms: float, reps: int) -> dict[str, Any]:
+    return {
+        "implementation": "ecape_parcel_python",
+        "config": config.__dict__,
+        "timing": {
+            "reps": max(1, reps),
+            "elapsed_ms": elapsed_ms,
+            "per_call_ms": elapsed_ms / max(1, reps),
+        },
+        "scalars": {
+            "epath_jkg": 0.0,
+            "cin_jkg": None,
+            "lfc_m": None,
+            "el_m": None,
+            "computed_epath_jkg": 0.0,
+        },
+        "parcel": {
+            "pressure_pa": [],
+            "height_m": [],
+            "temperature_k": [],
+            "qv_kgkg": [],
+            "qt_kgkg": [],
+            "density_temperature_k": [],
+            "env_density_temperature_k": [],
+            "buoyancy_ms2": [],
+        },
+        "empty_path": True,
+    }
+
+
 def call_python(profile: dict[str, Any], config: Config, reps: int) -> dict[str, Any]:
     q = to_quantity(profile)
     kwargs: dict[str, Any] = {
@@ -191,6 +234,9 @@ def call_python(profile: dict[str, Any], config: Config, reps: int) -> dict[str,
         )
     elapsed_ms = (time.perf_counter() - start) * 1000.0
     assert result is not None
+    if is_empty_ecape_parcel_result(result):
+        return empty_python_run(config, elapsed_ms, reps)
+
     parcel_pressure, parcel_height, parcel_temperature, parcel_qv, parcel_qt = result
 
     pressure_pa = np.asarray(parcel_pressure.to("pascal").magnitude, dtype=float)
@@ -246,6 +292,7 @@ def call_python(profile: dict[str, Any], config: Config, reps: int) -> dict[str,
             "env_density_temperature_k": env_trho_on_path.tolist(),
             "buoyancy_ms2": buoyancy.tolist(),
         },
+        "empty_path": False,
     }
 
 
@@ -345,6 +392,8 @@ def call_rust(
 
 
 def common_height_grid(a: np.ndarray, b: np.ndarray, step_m: float = 20.0) -> np.ndarray:
+    if len(a) == 0 or len(b) == 0:
+        return np.asarray([], dtype=float)
     low = math.ceil(max(np.nanmin(a), np.nanmin(b)) / step_m) * step_m
     high = math.floor(min(np.nanmax(a), np.nanmax(b)) / step_m) * step_m
     if high < low:
@@ -366,12 +415,19 @@ def compare_runs(
     py_run: dict[str, Any],
     rs_run: dict[str, Any],
 ) -> dict[str, Any]:
+    py_height = np.asarray(py_run["parcel"]["height_m"], dtype=float)
+    rs_height = np.asarray(rs_run["parcel"]["height_m"], dtype=float)
+    py_empty = bool(py_run.get("empty_path", False) or len(py_height) == 0)
+    rs_empty = bool(rs_run.get("empty_path", False) or len(rs_height) == 0)
     grid = common_height_grid(
-        np.asarray(py_run["parcel"]["height_m"], dtype=float),
-        np.asarray(rs_run["parcel"]["height_m"], dtype=float),
+        py_height,
+        rs_height,
     )
     comparisons: dict[str, tuple[float, float]] = {}
     for field in ["temperature_k", "qv_kgkg", "qt_kgkg", "density_temperature_k", "buoyancy_ms2"]:
+        if py_empty and rs_empty:
+            comparisons[field] = (0.0, 0.0)
+            continue
         if len(grid) == 0:
             comparisons[field] = (math.nan, math.nan)
             continue
@@ -382,6 +438,13 @@ def compare_runs(
     rs_epath = rs_run["scalars"].get("epath_jkg")
     py_nonzero = py_epath is not None and abs(float(py_epath)) > 1e-6
     rs_nonzero = rs_epath is not None and abs(float(rs_epath)) > 1e-6
+    py_lfc = py_run["scalars"].get("lfc_m")
+    rs_lfc = rs_run["scalars"].get("lfc_m")
+    py_el = py_run["scalars"].get("el_m")
+    rs_el = rs_run["scalars"].get("el_m")
+    empty_path_mismatch = py_empty != rs_empty
+    lfc_zero_nonzero_mismatch = (py_lfc is None) != (rs_lfc is None)
+    el_zero_nonzero_mismatch = (py_el is None) != (rs_el is None)
     return {
         "profile_id": profile_id,
         "config": config.name,
@@ -402,11 +465,21 @@ def compare_runs(
         "epath_diff_jkg": None if py_epath is None or rs_epath is None else rs_epath - py_epath,
         "python_cin_jkg": py_run["scalars"].get("cin_jkg"),
         "rust_cin_jkg": rs_run["scalars"].get("cin_jkg"),
-        "python_lfc_m": py_run["scalars"].get("lfc_m"),
-        "rust_lfc_m": rs_run["scalars"].get("lfc_m"),
-        "python_el_m": py_run["scalars"].get("el_m"),
-        "rust_el_m": rs_run["scalars"].get("el_m"),
-        "zero_nonzero_mismatch": bool(py_nonzero != rs_nonzero),
+        "python_lfc_m": py_lfc,
+        "rust_lfc_m": rs_lfc,
+        "python_el_m": py_el,
+        "rust_el_m": rs_el,
+        "python_empty_path": py_empty,
+        "rust_empty_path": rs_empty,
+        "empty_path_mismatch": empty_path_mismatch,
+        "lfc_zero_nonzero_mismatch": lfc_zero_nonzero_mismatch,
+        "el_zero_nonzero_mismatch": el_zero_nonzero_mismatch,
+        "zero_nonzero_mismatch": bool(
+            py_nonzero != rs_nonzero
+            or empty_path_mismatch
+            or lfc_zero_nonzero_mismatch
+            or el_zero_nonzero_mismatch
+        ),
         "max_abs_parcel_temperature_k": comparisons["temperature_k"][0],
         "mean_abs_parcel_temperature_k": comparisons["temperature_k"][1],
         "max_abs_density_temperature_k": comparisons["density_temperature_k"][0],

@@ -495,30 +495,66 @@ fn density_temperature(temp_k: f64, qv_kgkg: f64, qt_kgkg: f64) -> f64 {
     temp_k * (1.0 - qt_kgkg + qv_kgkg / PHI)
 }
 
-fn equivalent_potential_temperature(temp_k: f64, dewpoint_k: f64, pressure_pa: f64) -> f64 {
-    let q = specific_humidity_from_dewpoint(pressure_pa, dewpoint_k);
-    let e = 611.2
-        * ((17.67 * (dewpoint_k - KELVIN_OFFSET)) / ((dewpoint_k - KELVIN_OFFSET) + 243.5)).exp();
-    let w = PHI * e / (pressure_pa - e).max(1e-9);
-    let tlcl = 1.0
-        / (1.0 / (dewpoint_k - 56.0).max(1e-6) + ((temp_k / dewpoint_k).max(1e-9)).ln() / 800.0)
-        + 56.0;
-    let theta_l = temp_k * (P0 / pressure_pa).powf(0.2854 * (1.0 - 0.28 * q));
-    theta_l * (((3376.0 / tlcl) - 2.54) * w * (1.0 + 0.81 * w)).exp()
+fn metpy_equivalent_potential_temperature(
+    pressure_hpa: f64,
+    temperature_c: f64,
+    dewpoint_c: f64,
+) -> f64 {
+    let temp_k = temperature_c + KELVIN_OFFSET;
+    let dewpoint_k = dewpoint_c + KELVIN_OFFSET;
+    let vapor_pressure_hpa = wx_math::thermo::saturation_vapor_pressure(dewpoint_c);
+    let mixing_ratio_kgkg =
+        wx_math::thermo::saturation_mixing_ratio(pressure_hpa, dewpoint_c) / 1000.0;
+    let lcl_temp_k = 56.0 + 1.0 / (1.0 / (dewpoint_k - 56.0) + (temp_k / dewpoint_k).ln() / 800.0);
+    let dry_lift_theta_k = wx_math::thermo::potential_temperature(
+        (pressure_hpa - vapor_pressure_hpa).max(1e-6),
+        temperature_c,
+    ) * (temp_k / lcl_temp_k).powf(0.28 * mixing_ratio_kgkg);
+    dry_lift_theta_k
+        * ((3036.0 / lcl_temp_k - 1.78) * mixing_ratio_kgkg * (1.0 + 0.448 * mixing_ratio_kgkg))
+            .exp()
 }
 
-fn closest_index(values: &[f64], target: f64) -> usize {
-    values
+fn metpy_style_most_unstable_parcel_start(
+    pressure_hpa: &[f64],
+    temperature_c: &[f64],
+    dewpoint_c: &[f64],
+    depth_hpa: f64,
+) -> (usize, f64, f64, f64) {
+    let surface_pressure = pressure_hpa[0];
+    let min_pressure = surface_pressure - depth_hpa;
+    let top_index = pressure_hpa
         .iter()
         .enumerate()
         .min_by(|a, b| {
-            (a.1 - target)
+            (a.1 - min_pressure)
                 .abs()
-                .partial_cmp(&(b.1 - target).abs())
+                .partial_cmp(&(b.1 - min_pressure).abs())
                 .unwrap()
         })
         .map(|(idx, _)| idx)
-        .unwrap_or(0)
+        .unwrap_or(pressure_hpa.len().saturating_sub(1));
+    let mut best_index = 0;
+    let mut best_theta_e = f64::NEG_INFINITY;
+
+    for i in 0..=top_index {
+        let theta_e = metpy_equivalent_potential_temperature(
+            pressure_hpa[i],
+            temperature_c[i],
+            dewpoint_c[i],
+        );
+        if theta_e > best_theta_e {
+            best_theta_e = theta_e;
+            best_index = i;
+        }
+    }
+
+    (
+        best_index,
+        pressure_hpa[best_index],
+        temperature_c[best_index],
+        dewpoint_c[best_index],
+    )
 }
 
 fn interp_log_pressure(target_hpa: f64, pressure_hpa: &[f64], values: &[f64]) -> f64 {
@@ -986,7 +1022,7 @@ fn metpy_style_mixed_parcel_start(
     let mean_theta_k = theta_sum / count;
     let mean_q_kgkg = q_sum / count;
     let parcel_temperature_k =
-        temperature_from_potential_temperature(mean_theta_k, parcel_pressure_hpa * 100.0);
+        mean_theta_k * (parcel_pressure_hpa / 1000.0).powf(wx_math::thermo::ROCP);
     let parcel_dewpoint_k =
         dewpoint_from_specific_humidity(parcel_pressure_hpa * 100.0, mean_q_kgkg);
 
@@ -1121,18 +1157,13 @@ fn reference_parcel_start(
             (0, p_start, t_start, td_start)
         }
         CapeType::MostUnstable => {
-            let (p_start, t_start, td_start) = wx_math::thermo::get_most_unstable_parcel(
+            let (best_idx, p_start, t_start, td_start) = metpy_style_most_unstable_parcel_start(
                 &pressure_hpa,
                 &temperature_c,
                 &dewpoint_c,
                 300.0,
             );
-            (
-                closest_index(&pressure_hpa, p_start),
-                p_start,
-                t_start,
-                td_start,
-            )
+            (best_idx, p_start, t_start, td_start)
         }
         _ => (0, pressure_hpa[0], temperature_c[0], dewpoint_c[0]),
     }
@@ -1531,6 +1562,77 @@ fn lifting_condensation_level(temp_k: f64, dewpoint_k: f64, pressure_pa: f64) ->
     (plcl, zlcl.max(0.0))
 }
 
+fn is_metpy_close(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 1e-8 + 1e-5 * b.abs()
+}
+
+fn metpy_pressure_at_height(pressures: &[f64], heights: &[f64], target_z: f64) -> f64 {
+    if target_z <= heights[0] {
+        return pressures[0];
+    }
+    if target_z >= heights[heights.len() - 1] {
+        return pressures[pressures.len() - 1];
+    }
+    interp_pressure_to_height(heights, pressures, target_z)
+}
+
+fn metpy_height_layer_pressures(
+    pressures: &[f64],
+    heights: &[f64],
+    bottom_m: f64,
+    depth_m: f64,
+) -> Vec<f64> {
+    let top_m = bottom_m + depth_m;
+    let bottom_p = metpy_pressure_at_height(pressures, heights, bottom_m);
+    let top_p = metpy_pressure_at_height(pressures, heights, top_m);
+    let mut layer = Vec::new();
+
+    for &pressure in pressures {
+        if (pressure < bottom_p || is_metpy_close(pressure, bottom_p))
+            && (pressure > top_p || is_metpy_close(pressure, top_p))
+        {
+            layer.push(pressure);
+        }
+    }
+    if !layer.iter().any(|p| is_metpy_close(*p, bottom_p)) {
+        layer.push(bottom_p);
+    }
+    if !layer.iter().any(|p| is_metpy_close(*p, top_p)) {
+        layer.push(top_p);
+    }
+    layer.sort_by(|a, b| b.partial_cmp(a).unwrap());
+    layer
+}
+
+fn metpy_weighted_continuous_average_height(
+    pressures: &[f64],
+    heights: &[f64],
+    values: &[f64],
+    bottom_m: f64,
+    depth_m: f64,
+) -> f64 {
+    let layer_p = metpy_height_layer_pressures(pressures, heights, bottom_m, depth_m);
+    if layer_p.len() < 2 {
+        return values[0];
+    }
+    let layer_values: Vec<f64> = layer_p
+        .iter()
+        .map(|p| interp_log_pressure(*p, pressures, values))
+        .collect();
+    let mut numerator = 0.0;
+    let mut denominator = 0.0;
+    for i in 1..layer_p.len() {
+        let dp = layer_p[i] - layer_p[i - 1];
+        numerator += 0.5 * (layer_values[i] + layer_values[i - 1]) * dp;
+        denominator += dp;
+    }
+    if denominator.abs() > 1e-12 {
+        numerator / denominator
+    } else {
+        layer_values[0]
+    }
+}
+
 fn bunkers_storm_motion(
     pressures: &[f64],
     heights: &[f64],
@@ -1539,9 +1641,27 @@ fn bunkers_storm_motion(
 ) -> ((f64, f64), (f64, f64), (f64, f64)) {
     let z0 = heights[0];
     let height_agl: Vec<f64> = heights.iter().map(|z| z - z0).collect();
-    let pressure_hpa: Vec<f64> = pressures.iter().map(|p| p / 100.0).collect();
-    let (rm, lm) = wx_math::thermo::bunkers_storm_motion(&pressure_hpa, u, v, &height_agl);
-    let mean = ((rm.0 + lm.0) * 0.5, (rm.1 + lm.1) * 0.5);
+    let mean = (
+        metpy_weighted_continuous_average_height(pressures, &height_agl, u, 0.0, 6000.0),
+        metpy_weighted_continuous_average_height(pressures, &height_agl, v, 0.0, 6000.0),
+    );
+    let wind_500 = (
+        metpy_weighted_continuous_average_height(pressures, &height_agl, u, 0.0, 500.0),
+        metpy_weighted_continuous_average_height(pressures, &height_agl, v, 0.0, 500.0),
+    );
+    let wind_5500 = (
+        metpy_weighted_continuous_average_height(pressures, &height_agl, u, 5500.0, 500.0),
+        metpy_weighted_continuous_average_height(pressures, &height_agl, v, 5500.0, 500.0),
+    );
+    let shear = (wind_5500.0 - wind_500.0, wind_5500.1 - wind_500.1);
+    let shear_mag = (shear.0 * shear.0 + shear.1 * shear.1).sqrt();
+    if shear_mag < 1e-12 {
+        return (mean, mean, mean);
+    }
+    let deviation = 7.5 / shear_mag;
+    let rdev = (shear.1 * deviation, -shear.0 * deviation);
+    let rm = (mean.0 + rdev.0, mean.1 + rdev.1);
+    let lm = (mean.0 - rdev.0, mean.1 - rdev.1);
     (rm, lm, mean)
 }
 
@@ -2164,6 +2284,30 @@ pub fn calc_ecape_parcel(
         base.lfc_m,
         base.el_m,
     );
+    let entraining_requested = options
+        .entrainment_rate
+        .map(|rate| rate != 0.0)
+        .unwrap_or(true);
+    if entraining_requested && base.cape_jkg <= 0.0 {
+        return Ok(EcapeParcelResult {
+            ecape_jkg: 0.0,
+            ncape_jkg: ecape_info.ncape_jkg,
+            cape_jkg: 0.0,
+            cin_jkg: base.cin_jkg,
+            lfc_m: None,
+            el_m: None,
+            storm_motion_u_ms: ecape_info.storm_motion_u_ms,
+            storm_motion_v_ms: ecape_info.storm_motion_v_ms,
+            parcel_profile: ParcelProfile {
+                pressure_pa: Vec::new(),
+                height_m: Vec::new(),
+                temperature_k: Vec::new(),
+                qv_kgkg: Vec::new(),
+                qt_kgkg: Vec::new(),
+                buoyancy_ms2: Vec::new(),
+            },
+        });
+    }
     let entrainment = options.entrainment_rate.unwrap_or_else(|| {
         if let (Some(el), vsr) = (ecape_info.el_m, ecape_info.storm_relative_wind_ms) {
             if el > origin_z && base.cape_jkg > 0.0 {
