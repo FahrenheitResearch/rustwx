@@ -17,6 +17,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+shapefile = "0.7"
 rustwx-calc = { path = "../rustwx-calc" }
 rustwx-core = { path = "../rustwx-core" }
 rustwx-cross-section = { path = "../rustwx-cross-section" }

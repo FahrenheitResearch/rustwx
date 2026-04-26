@@ -2,7 +2,8 @@ use crate::cache::{load_bincode, store_bincode};
 use crate::direct::build_projected_map_with_projection;
 use crate::shared_context::PreparedProjectedContext;
 use grib_core::grib2::{
-    flip_rows, grid_latlon, unpack_message_normalized, Grib2File, Grib2Message,
+    Grib2File, Grib2Message, flip_rows, grid_latlon,
+    unpack_message_normalized as unpack_message_scan_normalized,
 };
 use rustwx_calc::{GridShape as CalcGridShape, VolumeShape};
 use rustwx_core::{
@@ -10,14 +11,14 @@ use rustwx_core::{
     LatLonGrid, ModelId, ModelRunRequest, RustwxError, SourceId,
 };
 use rustwx_io::{
-    artifact_cache_dir, fetch_bytes_with_cache, grid_projection_from_grib2_grid, CachedFetchResult,
-    FetchRequest,
+    CachedFetchResult, FetchRequest, artifact_cache_dir, fetch_bytes_with_cache,
+    grid_projection_from_grib2_grid,
 };
 use rustwx_models::{
-    latest_available_run_at_forecast_hour, latest_available_run_for_products_at_forecast_hour,
-    resolve_canonical_bundle_product, LatestRun, ResolvedCanonicalBundleProduct,
+    LatestRun, ResolvedCanonicalBundleProduct, latest_available_run_at_forecast_hour,
+    latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
 };
-use rustwx_render::{map_frame_aspect_ratio, ProjectedExtent};
+use rustwx_render::{ProjectedExtent, map_frame_aspect_ratio};
 #[cfg(feature = "wrf")]
 use rustwx_wrf as wrf;
 use serde::{Deserialize, Serialize};
@@ -943,7 +944,7 @@ fn crop_rect_for_layout(
             let idx = row_offset + x;
             let lat = layout.lat[idx];
             let lon = layout.lon[idx];
-            if lon >= bounds.0 && lon <= bounds.1 && lat >= bounds.2 && lat <= bounds.3 {
+            if point_in_geographic_bounds(lon, lat, bounds) {
                 min_x = min_x.min(x);
                 max_x = max_x.max(x);
                 min_y = min_y.min(y);
@@ -981,7 +982,7 @@ fn crop_rect_for_bounds(
             let idx = row_offset + x;
             let lat = surface.lat[idx];
             let lon = surface.lon[idx];
-            if lon >= bounds.0 && lon <= bounds.1 && lat >= bounds.2 && lat <= bounds.3 {
+            if point_in_geographic_bounds(lon, lat, bounds) {
                 min_x = min_x.min(x);
                 max_x = max_x.max(x);
                 min_y = min_y.min(y);
@@ -1735,6 +1736,38 @@ fn decode_surface_grid_from_sample(sample: &Grib2Message) -> SurfaceGridLayout {
     }
 }
 
+fn unpack_message_normalized(
+    message: &Grib2Message,
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    let mut values = unpack_message_scan_normalized(message)?;
+    rotate_values_to_normalized_longitude_rows(message, &mut values);
+    Ok(values)
+}
+
+fn rotate_values_to_normalized_longitude_rows(message: &Grib2Message, values: &mut [f64]) {
+    let nx = message.grid.nx as usize;
+    let ny = message.grid.ny as usize;
+    if nx == 0 || ny == 0 || values.len() != nx * ny {
+        return;
+    }
+
+    let (_lat_raw, mut lon_raw) = grid_latlon(&message.grid);
+    if message.grid.scan_mode & 0x40 != 0 {
+        flip_rows(&mut lon_raw, nx, ny);
+    }
+    for row in 0..ny {
+        let start = row * nx;
+        let end = start + nx;
+        let lon_row = &mut lon_raw[start..end];
+        for lon_value in lon_row.iter_mut() {
+            *lon_value = normalize_longitude(*lon_value);
+        }
+        if let Some(wrap_idx) = first_longitude_wrap(lon_row) {
+            values[start..end].rotate_left(wrap_idx);
+        }
+    }
+}
+
 fn decode_orography(messages: &[Grib2Message]) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
     if let Ok(message) = find_message(messages, &[(0, 3, 5, 1, Some(0.0)), (0, 3, 5, 1, None)]) {
         return Ok(unpack_message_normalized(message)?);
@@ -2188,11 +2221,31 @@ pub(crate) fn validate_pressure_decode_against_surface(
 }
 
 fn normalize_longitude(lon: f64) -> f64 {
-    if lon > 180.0 {
-        lon - 360.0
-    } else {
-        lon
+    if lon > 180.0 { lon - 360.0 } else { lon }
+}
+
+fn point_in_geographic_bounds(lon: f64, lat: f64, bounds: (f64, f64, f64, f64)) -> bool {
+    if !lon.is_finite() || !lat.is_finite() || lat < bounds.2 || lat > bounds.3 {
+        return false;
     }
+    let west = normalize_longitude_for_bounds(bounds.0);
+    let east = normalize_longitude_for_bounds(bounds.1);
+    let lon = normalize_longitude_for_bounds(lon);
+    if west <= east {
+        lon >= west && lon <= east
+    } else {
+        lon >= west || lon <= east
+    }
+}
+
+fn normalize_longitude_for_bounds(lon: f64) -> f64 {
+    let mut lon = lon % 360.0;
+    if lon > 180.0 {
+        lon -= 360.0;
+    } else if lon <= -180.0 {
+        lon += 360.0;
+    }
+    lon
 }
 
 fn normalize_longitude_rows(lat: &mut [f64], lon: &mut [f64], nx: usize, ny: usize) {
@@ -2305,12 +2358,14 @@ mod tests {
                 "VGRD".to_string(),
             ]
         );
-        assert!(bundle_fetch_variable_patterns(
-            ModelId::Hrrr,
-            CanonicalBundleDescriptor::SurfaceAnalysis,
-            "sfc"
-        )
-        .is_empty());
+        assert!(
+            bundle_fetch_variable_patterns(
+                ModelId::Hrrr,
+                CanonicalBundleDescriptor::SurfaceAnalysis,
+                "sfc"
+            )
+            .is_empty()
+        );
     }
 
     #[test]

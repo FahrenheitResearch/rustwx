@@ -79,6 +79,9 @@ impl GeographicBounds {
         if lat_deg < self.south_deg || lat_deg > self.north_deg {
             return false;
         }
+        if self.longitude_span_deg() >= 359.0 {
+            return true;
+        }
         let west = normalize_longitude_deg(self.west_deg);
         let east = normalize_longitude_deg(self.east_deg);
         let lon = normalize_longitude_deg(lon_deg);
@@ -86,6 +89,33 @@ impl GeographicBounds {
             lon >= west && lon <= east
         } else {
             lon >= west || lon <= east
+        }
+    }
+
+    fn center_longitude(self) -> f64 {
+        if self.longitude_span_deg() >= 359.0 {
+            return 0.0;
+        }
+        let west = normalize_longitude_deg(self.west_deg);
+        let mut east = normalize_longitude_deg(self.east_deg);
+        if east < west {
+            east += 360.0;
+        }
+        normalize_longitude_deg((west + east) / 2.0)
+    }
+
+    fn longitude_span_deg(self) -> f64 {
+        let raw_span = (self.east_deg - self.west_deg).abs();
+        if raw_span >= 359.0 {
+            return raw_span.min(360.0);
+        }
+
+        let west = normalize_longitude_deg(self.west_deg);
+        let east = normalize_longitude_deg(self.east_deg);
+        if west <= east {
+            east - west
+        } else {
+            east + 360.0 - west
         }
     }
 }
@@ -294,8 +324,19 @@ fn resolved_projector(
         .clone()
         .or_else(|| ProjectionSpec::infer_from_latlon_grid(lat_deg, lon_deg))
         .ok_or("projected map builder requires at least one finite lat/lon point")?;
+    let reference_longitude_deg = match (&projection, options.frame_source) {
+        (ProjectionSpec::Geographic, ProjectedFrameSource::GeographicBounds(bounds)) => {
+            Some(bounds.center_longitude())
+        }
+        _ => None,
+    };
     projection
-        .build_projector(options.reference_latitude_deg, lat_deg, lon_deg)
+        .build_projector(
+            options.reference_latitude_deg,
+            reference_longitude_deg,
+            lat_deg,
+            lon_deg,
+        )
         .map_err(Into::into)
 }
 
@@ -568,6 +609,35 @@ mod tests {
         assert!(
             cropped.extent.x_max - cropped.extent.x_min < full.extent.x_max - full.extent.x_min
         );
+    }
+
+    #[test]
+    fn geographic_crop_bounds_can_cross_antimeridian() {
+        let lat = vec![-20.0, -18.0, -20.0, -18.0, 0.0, 0.0, 40.0, -40.0];
+        let lon = vec![176.0, 178.0, -179.0, -178.0, -60.0, 30.0, 120.0, -100.0];
+        let cropped = build_projected_domain(
+            &lat,
+            &lon,
+            &ProjectedDomainBuildOptions::from_bounds((176.0, -178.0, -22.0, -15.0), 1.5)
+                .with_projection(ProjectionSpec::Geographic),
+        )
+        .expect("cropped antimeridian domain");
+
+        assert!(
+            cropped.extent.x_max - cropped.extent.x_min < 20.0,
+            "antimeridian crop should not frame the whole globe: {:?}",
+            cropped.extent
+        );
+    }
+
+    #[test]
+    fn global_geographic_bounds_center_on_greenwich() {
+        let bounds = GeographicBounds::new(-180.0, 179.999, -90.0, 90.0);
+
+        assert_eq!(bounds.center_longitude(), 0.0);
+        assert!(bounds.contains(0.0, 180.0));
+        assert!(bounds.contains(0.0, -179.75));
+        assert!(bounds.contains(0.0, 0.0));
     }
 
     #[test]

@@ -46,6 +46,7 @@ struct SelectorArgs {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum KindArg {
+    Country,
     Metro,
     Region,
     WatchArea,
@@ -56,6 +57,7 @@ enum KindArg {
 impl From<KindArg> for NamedGeometryKind {
     fn from(value: KindArg) -> Self {
         match value {
+            KindArg::Country => Self::Country,
             KindArg::Metro => Self::Metro,
             KindArg::Region => Self::Region,
             KindArg::WatchArea => Self::WatchArea,

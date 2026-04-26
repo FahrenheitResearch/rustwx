@@ -3,11 +3,14 @@ use std::path::PathBuf;
 
 #[path = "../contour_mode.rs"]
 mod contour_mode;
+#[path = "../domain.rs"]
+mod domain;
 #[path = "../region.rs"]
 mod region;
 
 use clap::{Parser, ValueEnum};
 use contour_mode::ContourModeArg;
+use domain::{domain_from_region_or_country, requested_domain_slug};
 use region::RegionPreset;
 use rustwx_core::{ModelId, SourceId};
 use rustwx_models::model_summary;
@@ -20,7 +23,6 @@ use rustwx_products::publication::{
     ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
     canonical_run_slug, finalize_and_publish_run_manifest, publish_failure_manifest,
 };
-use rustwx_products::shared_context::DomainSpec;
 use rustwx_products::source::ProductSourceMode;
 
 #[derive(Debug, Parser)]
@@ -41,6 +43,11 @@ struct Args {
     source: Option<SourceId>,
     #[arg(long, value_enum, default_value_t = RegionPreset::Midwest)]
     region: RegionPreset,
+    #[arg(
+        long,
+        help = "Country crop by ISO alpha-2/alpha-3 code or normalized country name, e.g. usa, us, japan"
+    )]
+    country: Option<String>,
     #[arg(long = "recipe", value_delimiter = ',', num_args = 1..)]
     recipes: Vec<String>,
     #[arg(long, default_value_t = false)]
@@ -93,7 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &args.date,
         args.cycle,
         args.forecast_hour,
-        args.region.slug(),
+        &requested_domain_slug(args.region, args.country.as_deref()),
         "derived",
     );
     let failure_out_dir = args.out_dir.clone();
@@ -139,7 +146,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         args.recipes.clone()
     };
 
-    let domain = DomainSpec::new(args.region.slug(), args.region.bounds());
+    let domain = domain_from_region_or_country(args.region, args.country.as_deref())?;
     let request = DerivedBatchRequest {
         model: args.model,
         date_yyyymmdd: args.date.clone(),

@@ -233,7 +233,7 @@ pub fn crop_native_field(
             let idx = row_offset + x;
             let lat = f64::from(field.grid.lat_deg[idx]);
             let lon = f64::from(field.grid.lon_deg[idx]);
-            if lon >= bounds.0 && lon <= bounds.1 && lat >= bounds.2 && lat <= bounds.3 {
+            if point_in_geographic_bounds(lon, lat, bounds) {
                 min_x = min_x.min(x);
                 max_x = max_x.max(x);
                 min_y = min_y.min(y);
@@ -294,6 +294,30 @@ pub fn crop_native_field(
         level_type: field.level_type,
         level_value: field.level_value,
     })
+}
+
+fn point_in_geographic_bounds(lon: f64, lat: f64, bounds: (f64, f64, f64, f64)) -> bool {
+    if !lon.is_finite() || !lat.is_finite() || lat < bounds.2 || lat > bounds.3 {
+        return false;
+    }
+    let west = normalize_longitude_for_bounds(bounds.0);
+    let east = normalize_longitude_for_bounds(bounds.1);
+    let lon = normalize_longitude_for_bounds(lon);
+    if west <= east {
+        lon >= west && lon <= east
+    } else {
+        lon >= west || lon <= east
+    }
+}
+
+fn normalize_longitude_for_bounds(lon: f64) -> f64 {
+    let mut lon = lon % 360.0;
+    if lon > 180.0 {
+        lon -= 360.0;
+    } else if lon <= -180.0 {
+        lon += 360.0;
+    }
+    lon
 }
 
 pub fn compare_native_vs_derived(

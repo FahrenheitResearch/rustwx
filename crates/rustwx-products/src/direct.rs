@@ -1488,7 +1488,7 @@ fn visible_grid_span(
             let idx = j * grid.shape.nx + i;
             let lat = grid.lat_deg[idx] as f64;
             let lon = grid.lon_deg[idx] as f64;
-            if lon >= bounds.0 && lon <= bounds.1 && lat >= bounds.2 && lat <= bounds.3 {
+            if point_in_geographic_bounds(lon, lat, bounds) {
                 min_i = min_i.min(i);
                 max_i = max_i.max(i);
                 min_j = min_j.min(j);
@@ -1502,6 +1502,50 @@ fn visible_grid_span(
     }
 
     (max_i - min_i + 1, max_j - min_j + 1)
+}
+
+fn point_in_geographic_bounds(lon: f64, lat: f64, bounds: (f64, f64, f64, f64)) -> bool {
+    if !lon.is_finite() || !lat.is_finite() || lat < bounds.2 || lat > bounds.3 {
+        return false;
+    }
+    let west = normalize_longitude_for_bounds(bounds.0);
+    let east = normalize_longitude_for_bounds(bounds.1);
+    let lon = normalize_longitude_for_bounds(lon);
+    if west <= east {
+        lon >= west && lon <= east
+    } else {
+        lon >= west || lon <= east
+    }
+}
+
+fn normalize_longitude_for_bounds(lon: f64) -> f64 {
+    let mut lon = lon % 360.0;
+    if lon > 180.0 {
+        lon -= 360.0;
+    } else if lon <= -180.0 {
+        lon += 360.0;
+    }
+    lon
+}
+
+fn is_global_scale_domain(bounds: (f64, f64, f64, f64)) -> bool {
+    let lat_span = (bounds.3 - bounds.2).abs();
+    lat_span >= 100.0 && longitude_bounds_span_deg(bounds) >= 300.0
+}
+
+fn longitude_bounds_span_deg(bounds: (f64, f64, f64, f64)) -> f64 {
+    let raw_span = (bounds.1 - bounds.0).abs();
+    if raw_span >= 359.0 {
+        return raw_span.min(360.0);
+    }
+
+    let west = normalize_longitude_for_bounds(bounds.0);
+    let east = normalize_longitude_for_bounds(bounds.1);
+    if west <= east {
+        east - west
+    } else {
+        east + 360.0 - west
+    }
 }
 
 fn composite_panel_spec(slug: &str) -> Option<CompositePanelSpec> {
@@ -2061,6 +2105,13 @@ fn build_render_request(
         density: LevelDensity::default(),
         mode: LegendMode::Stepped,
     };
+    if is_global_scale_domain(bounds) && !overlay_only {
+        request.render_density = RenderDensity::default();
+        request.legend = LegendControls {
+            density: LevelDensity::default(),
+            mode: LegendMode::SmoothRamp,
+        };
+    }
     request.supersample_factor = 2;
     request.domain_frame = Some(DomainFrame::model_data_default());
     request.projected_domain = Some(ProjectedDomain {
@@ -2976,6 +3027,12 @@ mod tests {
         let temperature_recipe = plot_recipe("2m_temperature").unwrap();
         assert!(signature_contour_direct_recipe_enabled(mslp_recipe));
         assert!(!signature_contour_direct_recipe_enabled(temperature_recipe));
+    }
+
+    #[test]
+    fn global_scale_domain_detection_handles_dateline_bounds() {
+        assert!(is_global_scale_domain((-180.0, 179.999, -90.0, 90.0)));
+        assert!(!is_global_scale_domain((-125.0, -66.0, 24.0, 50.0)));
     }
 
     /// Test-only equivalent of the legacy `build_direct_fetch_request`

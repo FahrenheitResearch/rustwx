@@ -8,6 +8,8 @@ use std::f64::consts::PI;
 const R_EARTH: f64 = 6_370_000.0;
 const DEG2RAD: f64 = PI / 180.0;
 const RAD2DEG: f64 = 180.0 / PI;
+const GEOGRAPHIC_INFERENCE_MIN_LAT_SPAN_DEG: f64 = 100.0;
+const GEOGRAPHIC_INFERENCE_MIN_LON_SPAN_DEG: f64 = 300.0;
 
 /// Lightweight, render-local projection metadata.
 ///
@@ -53,6 +55,11 @@ impl ProjectionSpec {
     pub fn infer_from_latlon_grid(lat_deg: &[f32], lon_deg: &[f32]) -> Option<Self> {
         let stats = LatLonStats::from_grid(lat_deg, lon_deg)?;
         let lat_span = (stats.max_lat - stats.min_lat).abs();
+        if lat_span >= GEOGRAPHIC_INFERENCE_MIN_LAT_SPAN_DEG
+            && stats.lon_span >= GEOGRAPHIC_INFERENCE_MIN_LON_SPAN_DEG
+        {
+            return Some(Self::Geographic);
+        }
         let (sp1, sp2) = inferred_standard_parallels(stats.min_lat, stats.max_lat, lat_span);
         Some(Self::LambertConformal {
             standard_parallel_1_deg: sp1,
@@ -64,12 +71,15 @@ impl ProjectionSpec {
     pub(crate) fn build_projector(
         &self,
         reference_latitude_deg: Option<f64>,
+        reference_longitude_deg: Option<f64>,
         lat_deg: &[f32],
         lon_deg: &[f32],
     ) -> Result<ProjectionProjector, &'static str> {
         match *self {
             Self::Geographic => {
-                let center_lon = circular_mean_longitude_deg(lon_deg)
+                let center_lon = reference_longitude_deg
+                    .map(normalize_longitude_deg)
+                    .or_else(|| circular_mean_longitude_deg(lon_deg))
                     .ok_or("projection requires at least one finite longitude")?;
                 Ok(ProjectionProjector::Geographic(GeographicProjection {
                     central_meridian_deg: center_lon,
@@ -406,6 +416,7 @@ struct LatLonStats {
     min_lat: f64,
     max_lat: f64,
     center_lon: f64,
+    lon_span: f64,
 }
 
 impl LatLonStats {
@@ -430,8 +441,37 @@ impl LatLonStats {
             min_lat,
             max_lat,
             center_lon: circular_mean_longitude_deg(lon_deg)?,
+            lon_span: minimal_longitude_span_deg(lon_deg)?,
         })
     }
+}
+
+fn minimal_longitude_span_deg(lon_deg: &[f32]) -> Option<f64> {
+    let mut lon: Vec<f64> = lon_deg
+        .iter()
+        .filter_map(|&value| {
+            let value = value as f64;
+            value
+                .is_finite()
+                .then_some(normalize_longitude_positive_deg(value))
+        })
+        .collect();
+
+    if lon.is_empty() {
+        return None;
+    }
+    lon.sort_by(f64::total_cmp);
+    lon.dedup_by(|a, b| (*a - *b).abs() < 1.0e-9);
+    if lon.len() == 1 {
+        return Some(0.0);
+    }
+
+    let mut max_gap: f64 = 0.0;
+    for pair in lon.windows(2) {
+        max_gap = max_gap.max(pair[1] - pair[0]);
+    }
+    max_gap = max_gap.max(lon[0] + 360.0 - lon[lon.len() - 1]);
+    Some((360.0 - max_gap).clamp(0.0, 360.0))
 }
 
 fn inferred_standard_parallels(min_lat: f64, max_lat: f64, lat_span: f64) -> (f64, f64) {
@@ -491,6 +531,9 @@ fn circular_mean_longitude_deg(lon_deg: &[f32]) -> Option<f64> {
     if count == 0 {
         return None;
     }
+    if sin_sum.abs() < 1.0e-9 && cos_sum.abs() < 1.0e-9 {
+        return Some(0.0);
+    }
     Some(normalize_longitude_deg(sin_sum.atan2(cos_sum) * RAD2DEG))
 }
 
@@ -512,6 +555,14 @@ fn normalize_longitude_deg(lon_deg: f64) -> f64 {
     if lon > 180.0 {
         lon -= 360.0;
     } else if lon <= -180.0 {
+        lon += 360.0;
+    }
+    lon
+}
+
+fn normalize_longitude_positive_deg(lon_deg: f64) -> f64 {
+    let mut lon = lon_deg % 360.0;
+    if lon < 0.0 {
         lon += 360.0;
     }
     lon
@@ -555,10 +606,33 @@ mod tests {
     }
 
     #[test]
+    fn inferred_projection_uses_geographic_for_global_latlon_grid() {
+        let mut lat = Vec::new();
+        let mut lon = Vec::new();
+        for row_lat in [-90.0f32, 0.0, 90.0] {
+            for col_lon in (0..360).step_by(30) {
+                lat.push(row_lat);
+                lon.push(col_lon as f32);
+            }
+        }
+
+        let inferred = ProjectionSpec::infer_from_latlon_grid(&lat, &lon)
+            .expect("finite global grid should infer a fallback projection");
+        assert_eq!(inferred, ProjectionSpec::Geographic);
+    }
+
+    #[test]
+    fn minimal_longitude_span_handles_antimeridian_domains() {
+        let lon = vec![176.0, 179.0, -179.0, -178.0];
+        let span = minimal_longitude_span_deg(&lon).expect("finite span");
+        assert!(span < 7.0, "expected a small antimeridian span, got {span}");
+    }
+
+    #[test]
     fn geographic_projector_centers_longitudes() {
         let spec = ProjectionSpec::Geographic;
         let projector = spec
-            .build_projector(None, &[40.0, 41.0], &[-110.0, -90.0])
+            .build_projector(None, None, &[40.0, 41.0], &[-110.0, -90.0])
             .expect("geographic projector");
         let (x_west, y) = projector.project(40.0, -110.0);
         let (x_east, _) = projector.project(40.0, -90.0);
@@ -590,7 +664,7 @@ mod tests {
 
         for spec in specs {
             let projector = spec
-                .build_projector(None, &lat, &lon)
+                .build_projector(None, None, &lat, &lon)
                 .expect("supported projection");
             let (x, y) = projector.project(40.0, -105.0);
             assert!(x.is_finite());
@@ -601,7 +675,9 @@ mod tests {
     #[test]
     fn unsupported_projection_template_is_rejected() {
         let spec = ProjectionSpec::Other { template: 1234 };
-        let error = spec.build_projector(None, &[40.0], &[-100.0]).unwrap_err();
+        let error = spec
+            .build_projector(None, None, &[40.0], &[-100.0])
+            .unwrap_err();
         assert!(error.contains("not supported"));
     }
 }

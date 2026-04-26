@@ -7,6 +7,7 @@ mod region;
 use clap::{Parser, ValueEnum};
 use region::RegionPreset;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
+use rustwx_products::places::{PlaceLabelDensityTier, default_place_label_overlay_for_domain};
 use rustwx_products::publication::{
     ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest,
     artifact_identity_from_path, atomic_write_json, canonical_run_slug,
@@ -45,6 +46,31 @@ impl From<ProductArg> for HrrrWindowedProduct {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+#[value(rename_all = "kebab-case")]
+enum PlaceLabelDensityArg {
+    #[value(alias("0"), alias("off"))]
+    None,
+    #[default]
+    #[value(alias("1"))]
+    Major,
+    #[value(alias("2"))]
+    MajorAndAux,
+    #[value(alias("3"), alias("full"))]
+    Dense,
+}
+
+impl From<PlaceLabelDensityArg> for PlaceLabelDensityTier {
+    fn from(value: PlaceLabelDensityArg) -> Self {
+        match value {
+            PlaceLabelDensityArg::None => Self::None,
+            PlaceLabelDensityArg::Major => Self::Major,
+            PlaceLabelDensityArg::MajorAndAux => Self::MajorAndAux,
+            PlaceLabelDensityArg::Dense => Self::Dense,
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "hrrr-windowed-batch",
@@ -75,6 +101,13 @@ struct Args {
     cache_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_cache: bool,
+    #[arg(
+        long = "place-label-density",
+        value_enum,
+        default_value_t = PlaceLabelDensityArg::None,
+        help = "Place-label density: none, major, major-and-aux, or dense. Numeric aliases 0-3 also work."
+    )]
+    place_label_density: PlaceLabelDensityArg,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -111,18 +144,24 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         ensure_dir(&cache_root)?;
     }
 
+    let domain = DomainSpec::new(args.region.slug(), args.region.bounds());
     let request = HrrrWindowedBatchRequest {
         date_yyyymmdd: args.date.clone(),
         cycle_override_utc: args.cycle,
         forecast_hour: args.forecast_hour,
         source: args.source,
-        domain: DomainSpec::new(args.region.slug(), args.region.bounds()),
+        domain: domain.clone(),
         out_dir: args.out_dir.clone(),
         cache_root,
         use_cache: !args.no_cache,
         products: args.products.iter().copied().map(Into::into).collect(),
         output_width: 1200,
         output_height: 900,
+        png_compression: rustwx_render::PngCompressionMode::Default,
+        place_label_overlay: default_place_label_overlay_for_domain(
+            &domain,
+            args.place_label_density.into(),
+        ),
     };
     let report = run_hrrr_windowed_batch(&request)?;
     let report_path = args.out_dir.join(format!(

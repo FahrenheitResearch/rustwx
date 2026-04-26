@@ -1,20 +1,27 @@
 use crate::places::{self, PlacePreset};
 use crate::shared_context::DomainSpec;
 use serde::{Deserialize, Serialize};
+use shapefile::{Shape, dbase};
 use std::fs;
 use std::path::Path;
+use std::sync::OnceLock;
 
+const GROUP_COUNTRY: &str = "country";
+const GROUP_GLOBAL_REGION: &str = "global_region";
 const GROUP_US_REGION: &str = "us_region";
 const GROUP_US_SPLIT_REGION: &str = "us_split_region";
 const GROUP_US_MAJOR_METRO: &str = "us_major_metro";
 const GROUP_CROSS_SECTION_ROUTE: &str = "cross_section_proof_route";
 
+const TAG_COUNTRY: &[&str] = &["country", "global", "admin0"];
+const TAG_GLOBAL_REGION: &[&str] = &["global", "region"];
 const TAG_US_REGION: &[&str] = &["us", "region"];
 const TAG_US_SPLIT_REGION: &[&str] = &["us", "region", "split"];
 const TAG_US_MAJOR_METRO: &[&str] = &["us", "metro", "major"];
 const TAG_CROSS_SECTION_ROUTE: &[&str] = &["route", "cross_section", "fixed"];
 
 const GROUPS_US_REGION: &[&str] = &[GROUP_US_REGION];
+const GROUPS_GLOBAL_REGION: &[&str] = &[GROUP_GLOBAL_REGION];
 const GROUPS_US_SPLIT_REGION: &[&str] = &[GROUP_US_SPLIT_REGION];
 const GROUPS_US_REGION_AND_SPLIT: &[&str] = &[GROUP_US_REGION, GROUP_US_SPLIT_REGION];
 const GROUPS_CROSS_SECTION_ROUTE: &[&str] = &[GROUP_CROSS_SECTION_ROUTE];
@@ -22,6 +29,7 @@ const GROUPS_CROSS_SECTION_ROUTE: &[&str] = &[GROUP_CROSS_SECTION_ROUTE];
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NamedGeometryKind {
+    Country,
     Metro,
     Region,
     WatchArea,
@@ -64,9 +72,13 @@ impl NamedGeoBounds {
     }
 
     pub fn center(self) -> NamedGeoPoint {
+        let mut east = self.east_deg;
+        if east < self.west_deg {
+            east += 360.0;
+        }
         NamedGeoPoint::new(
             (self.south_deg + self.north_deg) / 2.0,
-            (self.west_deg + self.east_deg) / 2.0,
+            normalize_longitude((self.west_deg + east) / 2.0),
         )
     }
 }
@@ -307,7 +319,8 @@ impl NamedGeometryCatalog {
 }
 
 pub fn built_in_named_geometry_catalog() -> NamedGeometryCatalog {
-    let mut assets = Vec::new();
+    let mut assets = Vec::<NamedGeometryAsset>::new();
+    assets.extend(built_in_country_assets());
     assets.extend(built_in_region_assets());
     assets.extend(built_in_metro_assets());
     assets.extend(built_in_watch_area_assets());
@@ -317,6 +330,18 @@ pub fn built_in_named_geometry_catalog() -> NamedGeometryCatalog {
 
 pub fn built_in_named_geometry_assets() -> Vec<NamedGeometryAsset> {
     built_in_named_geometry_catalog().assets
+}
+
+pub fn built_in_country_assets() -> Vec<NamedGeometryAsset> {
+    static CACHE: OnceLock<Vec<NamedGeometryAsset>> = OnceLock::new();
+    CACHE.get_or_init(load_country_assets).clone()
+}
+
+pub fn built_in_country_domains() -> Vec<DomainSpec> {
+    built_in_country_assets()
+        .into_iter()
+        .filter_map(|asset| asset.domain_spec())
+        .collect()
 }
 
 pub fn built_in_region_assets() -> Vec<NamedGeometryAsset> {
@@ -386,6 +411,242 @@ pub fn find_built_in_named_geometry(slug: &str) -> Option<NamedGeometryAsset> {
     built_in_named_geometry_catalog().find(slug).cloned()
 }
 
+pub fn find_built_in_country_asset(query: &str) -> Option<NamedGeometryAsset> {
+    let key = country_lookup_key(query);
+    if key.is_empty() {
+        return None;
+    }
+
+    built_in_country_assets()
+        .into_iter()
+        .find(|asset| country_asset_matches(asset, &key))
+}
+
+pub fn find_built_in_country_domain(query: &str) -> Option<DomainSpec> {
+    find_built_in_country_asset(query).and_then(|asset| asset.domain_spec())
+}
+
+fn load_country_assets() -> Vec<NamedGeometryAsset> {
+    let Some(root) = rustwx_render::checked_in_natural_earth_110m_root() else {
+        return Vec::new();
+    };
+    let path = root.join("ne_110m_admin_0_countries.shp");
+    let Ok(mut reader) = shapefile::Reader::from_path(&path) else {
+        return Vec::new();
+    };
+
+    let mut assets = Vec::<NamedGeometryAsset>::new();
+    for item in reader.iter_shapes_and_records() {
+        let Ok((shape, record)) = item else {
+            continue;
+        };
+        let Some(asset) = country_asset_from_shape_record(&shape, &record) else {
+            continue;
+        };
+        if !assets.iter().any(|existing| existing.slug == asset.slug) {
+            assets.push(asset);
+        }
+    }
+    assets.sort_by(|left, right| left.slug.cmp(&right.slug));
+    assets
+}
+
+fn country_asset_from_shape_record(
+    shape: &Shape,
+    record: &dbase::Record,
+) -> Option<NamedGeometryAsset> {
+    let iso_a3 = record_text(record, &["ISO_A3", "ADM0_A3", "SOV_A3"])?;
+    let iso_a2 = record_text(record, &["ISO_A2", "ISO_A2_EH"]);
+    let label = record_text(record, &["NAME_LONG", "ADMIN", "NAME"])?;
+    let continent = record_text(record, &["CONTINENT"]);
+    let slug = iso_a3.to_ascii_lowercase();
+    let points = lon_lat_points(shape);
+    let bounds = country_bounds_from_points(&points)?;
+    let center = bounds.center();
+
+    let mut tags = TAG_COUNTRY
+        .iter()
+        .map(|tag| (*tag).to_string())
+        .collect::<Vec<_>>();
+    tags.push(format!("iso_a3:{}", iso_a3.to_ascii_lowercase()));
+    if let Some(iso_a2) = iso_a2 {
+        tags.push(format!("iso_a2:{}", iso_a2.to_ascii_lowercase()));
+    }
+    if let Some(continent) = continent {
+        tags.push(format!("continent:{}", country_lookup_key(&continent)));
+    }
+
+    Some(
+        NamedGeometryAsset::bounds(slug, label, NamedGeometryKind::Country, bounds)
+            .with_center(center)
+            .with_group(GROUP_COUNTRY)
+            .with_tags(tags),
+    )
+}
+
+fn record_text(record: &dbase::Record, fields: &[&str]) -> Option<String> {
+    for field in fields {
+        let Some(value) = record.get(field) else {
+            continue;
+        };
+        if let dbase::FieldValue::Character(Some(text)) = value {
+            let text = text.trim();
+            if !text.is_empty() && text != "-99" {
+                return Some(text.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn lon_lat_points(shape: &Shape) -> Vec<(f64, f64)> {
+    match shape {
+        Shape::Polygon(polygon) => polygon
+            .rings()
+            .iter()
+            .flat_map(|ring| ring.points().iter().map(|point| (point.x, point.y)))
+            .filter(|(lon, lat)| lon.is_finite() && lat.is_finite())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn country_bounds_from_points(points: &[(f64, f64)]) -> Option<NamedGeoBounds> {
+    let mut lons = Vec::with_capacity(points.len());
+    let mut south = f64::INFINITY;
+    let mut north = f64::NEG_INFINITY;
+    for &(lon, lat) in points {
+        if !lon.is_finite() || !lat.is_finite() {
+            continue;
+        }
+        lons.push(normalize_longitude(lon));
+        south = south.min(lat);
+        north = north.max(lat);
+    }
+    if lons.is_empty() || !south.is_finite() || !north.is_finite() {
+        return None;
+    }
+
+    let (mut west, mut east) = minimal_longitude_bounds(&lons)?;
+    let lon_span = longitude_span(west, east);
+    let lat_span = (north - south).max(0.0);
+    let lon_pad = ((lon_span * 0.06).max(0.60)).min(6.0);
+    let lat_pad = ((lat_span * 0.06).max(0.60)).min(6.0);
+
+    if lon_span + lon_pad * 2.0 >= 359.0 {
+        west = -180.0;
+        east = 180.0;
+    } else {
+        west = normalize_longitude(west - lon_pad);
+        east = normalize_longitude(east + lon_pad);
+    }
+    south = (south - lat_pad).max(-89.5);
+    north = (north + lat_pad).min(89.5);
+
+    let min_span = 3.0;
+    if longitude_span(west, east) < min_span {
+        let center = longitude_midpoint(west, east);
+        west = normalize_longitude(center - min_span / 2.0);
+        east = normalize_longitude(center + min_span / 2.0);
+    }
+    if north - south < min_span {
+        let center = ((north + south) / 2.0).clamp(-89.0, 89.0);
+        south = (center - min_span / 2.0).max(-89.5);
+        north = (center + min_span / 2.0).min(89.5);
+    }
+
+    Some(NamedGeoBounds::new(west, east, south, north))
+}
+
+fn minimal_longitude_bounds(lons: &[f64]) -> Option<(f64, f64)> {
+    let mut sorted = lons
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .map(normalize_longitude)
+        .collect::<Vec<_>>();
+    if sorted.is_empty() {
+        return None;
+    }
+    sorted.sort_by(f64::total_cmp);
+    sorted.dedup_by(|left, right| (*left - *right).abs() < 1.0e-9);
+    if sorted.len() == 1 {
+        return Some((sorted[0], sorted[0]));
+    }
+
+    let mut largest_gap = f64::NEG_INFINITY;
+    let mut largest_gap_start = 0usize;
+    for idx in 0..sorted.len() {
+        let current = sorted[idx];
+        let next = if idx + 1 < sorted.len() {
+            sorted[idx + 1]
+        } else {
+            sorted[0] + 360.0
+        };
+        let gap = next - current;
+        if gap > largest_gap {
+            largest_gap = gap;
+            largest_gap_start = idx;
+        }
+    }
+
+    let west = sorted[(largest_gap_start + 1) % sorted.len()];
+    let east = sorted[largest_gap_start];
+    Some((normalize_longitude(west), normalize_longitude(east)))
+}
+
+fn country_asset_matches(asset: &NamedGeometryAsset, key: &str) -> bool {
+    country_lookup_key(&asset.slug) == key
+        || country_lookup_key(&asset.label) == key
+        || asset.tags.iter().any(|tag| {
+            let tail = tag.rsplit_once(':').map(|(_, value)| value).unwrap_or(tag);
+            country_lookup_key(tail) == key
+        })
+}
+
+fn country_lookup_key(value: &str) -> String {
+    let mut key = String::with_capacity(value.len());
+    let mut last_was_separator = false;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            key.push(ch.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if !key.is_empty() && !last_was_separator {
+            key.push('_');
+            last_was_separator = true;
+        }
+    }
+    key.trim_matches('_').to_string()
+}
+
+fn longitude_span(west: f64, east: f64) -> f64 {
+    let west = normalize_longitude(west);
+    let mut east = normalize_longitude(east);
+    if east < west {
+        east += 360.0;
+    }
+    (east - west).clamp(0.0, 360.0)
+}
+
+fn longitude_midpoint(west: f64, east: f64) -> f64 {
+    let west = normalize_longitude(west);
+    let mut east = normalize_longitude(east);
+    if east < west {
+        east += 360.0;
+    }
+    normalize_longitude((west + east) / 2.0)
+}
+
+fn normalize_longitude(lon: f64) -> f64 {
+    let mut normalized = lon % 360.0;
+    if normalized > 180.0 {
+        normalized -= 360.0;
+    } else if normalized <= -180.0 {
+        normalized += 360.0;
+    }
+    normalized
+}
+
 fn metro_asset_from_place(place: PlacePreset) -> NamedGeometryAsset {
     NamedGeometryAsset::bounds(
         place.slug,
@@ -453,6 +714,14 @@ impl BuiltInRoutePreset {
 }
 
 const BUILT_IN_ALL_REGION_PRESETS: &[BuiltInBoundsPreset] = &[
+    BuiltInBoundsPreset {
+        slug: "global",
+        label: "Global",
+        kind: NamedGeometryKind::Region,
+        groups: GROUPS_GLOBAL_REGION,
+        tags: TAG_GLOBAL_REGION,
+        bounds: NamedGeoBounds::new(-180.0, 179.999, -90.0, 90.0),
+    },
     BuiltInBoundsPreset {
         slug: "midwest",
         label: "Midwest",
@@ -634,6 +903,7 @@ mod tests {
             .map(|asset| asset.kind)
             .collect::<HashSet<_>>();
 
+        assert!(kinds.contains(&NamedGeometryKind::Country));
         assert!(kinds.contains(&NamedGeometryKind::Region));
         assert!(kinds.contains(&NamedGeometryKind::Metro));
         assert!(kinds.contains(&NamedGeometryKind::Route));
@@ -674,6 +944,49 @@ mod tests {
                 .all(|asset| asset.has_group(GROUP_US_SPLIT_REGION))
         );
         assert!(selected.iter().all(|asset| asset.has_tag("split")));
+    }
+
+    #[test]
+    fn country_assets_load_from_checked_in_natural_earth() {
+        let countries = built_in_country_assets();
+        assert!(
+            countries.len() >= 150,
+            "expected Natural Earth admin-0 countries, got {}",
+            countries.len()
+        );
+
+        let usa = find_built_in_country_asset("us").expect("US lookup should resolve");
+        assert_eq!(usa.slug, "usa");
+        assert_eq!(usa.kind, NamedGeometryKind::Country);
+        assert!(usa.has_group(GROUP_COUNTRY));
+        assert!(usa.has_tag("iso_a3:usa"));
+        assert!(usa.has_tag("iso_a2:us"));
+        assert_eq!(
+            find_built_in_country_domain("united_states").unwrap().slug,
+            "usa"
+        );
+    }
+
+    #[test]
+    fn country_bounds_support_antimeridian_crops() {
+        let fiji = find_built_in_country_domain("fji").expect("Fiji should resolve");
+        assert!(
+            fiji.bounds.0 > fiji.bounds.1,
+            "Fiji should use wrapped west/east bounds, got {:?}",
+            fiji.bounds
+        );
+    }
+
+    #[test]
+    fn global_region_is_available_as_a_named_domain() {
+        let global = find_built_in_named_geometry("global").expect("global domain should resolve");
+        assert_eq!(global.kind, NamedGeometryKind::Region);
+        assert!(global.has_group(GROUP_GLOBAL_REGION));
+        assert!(global.has_tag("global"));
+        assert_eq!(
+            global.domain_spec().unwrap().bounds,
+            (-180.0, 179.999, -90.0, 90.0)
+        );
     }
 
     #[test]

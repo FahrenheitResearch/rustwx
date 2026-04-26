@@ -5,6 +5,7 @@ use rustwx_products::shared_context::DomainSpec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum RegionPreset {
+    Global,
     Midwest,
     Conus,
     California,
@@ -89,6 +90,7 @@ const fn split_region(
 impl RegionPreset {
     pub fn bounds(self) -> (f64, f64, f64, f64) {
         match self {
+            Self::Global => (-180.0, 179.999, -90.0, 90.0),
             Self::Midwest => (-104.0, -74.0, 28.0, 49.0),
             Self::Conus => (-127.0, -66.0, 23.0, 51.5),
             Self::California => (-124.9, -113.8, 31.9, 42.5),
@@ -104,6 +106,7 @@ impl RegionPreset {
 
     pub fn slug(self) -> &'static str {
         match self {
+            Self::Global => "global",
             Self::Midwest => "midwest",
             Self::Conus => "conus",
             Self::California => "california",
@@ -122,6 +125,15 @@ impl RegionPreset {
 mod tests {
     use super::{RegionPreset, US_SPLIT_REGION_PRESETS};
     use std::collections::HashSet;
+
+    #[test]
+    fn global_region_slug_is_stable() {
+        assert_eq!(RegionPreset::Global.slug(), "global");
+        assert_eq!(
+            RegionPreset::Global.bounds(),
+            (-180.0, 179.999, -90.0, 90.0)
+        );
+    }
 
     #[test]
     fn california_square_contains_california_bounds() {

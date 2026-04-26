@@ -5,7 +5,6 @@ This directory holds curated proof outputs for the current `rustwx` state.
 Included here:
 
 - representative upper-air plots across multiple models
-- the current HRRR ECAPE proof panel
 - the current HRRR severe proof panel
 - native reflectivity + UH proofs
 - sounding rendering proof
@@ -21,7 +20,6 @@ Excluded by `.gitignore`:
 
 Start here:
 
-- `rustwx_hrrr_20260414_23z_f00_conus_ecape8_panel.png`
 - `rustwx_hrrr_20260414_23z_f00_midwest_severe_proof_panel.png`
 - `rustwx_gfs_20260414_18z_f000_conus_500mb_temperature_height_winds.png`
 - `rustwx_ecmwf_open_data_20260414_12z_f000_conus_500mb_temperature_height_winds.png`

@@ -3,6 +3,7 @@ use crate::gridded::{
     resolve_model_run,
 };
 use crate::hrrr::HrrrFetchRuntimeInfo;
+use crate::places::PlaceLabelOverlay;
 use crate::planner::ExecutionPlanBuilder;
 use crate::publication::{PublishedFetchIdentity, fetch_identity_from_cached_result};
 use crate::runtime::{
@@ -15,7 +16,11 @@ use crate::windowed_decoder::{
 };
 use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
 use rustwx_models::LatestRun;
-use rustwx_render::{MapRenderRequest, WeatherProduct, save_png};
+use rustwx_render::{
+    ChromeScale, DomainFrame, LegendControls, LegendMode, LevelDensity, MapRenderRequest,
+    PngCompressionMode, PngWriteOptions, ProductVisualMode, RenderDensity, WeatherProduct,
+    save_png_profile_with_options,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -33,6 +38,10 @@ fn default_output_width() -> u32 {
 
 fn default_output_height() -> u32 {
     OUTPUT_HEIGHT
+}
+
+fn default_png_compression() -> PngCompressionMode {
+    PngCompressionMode::Default
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -97,6 +106,18 @@ pub struct HrrrWindowedBatchRequest {
     pub output_width: u32,
     #[serde(default = "default_output_height")]
     pub output_height: u32,
+    #[serde(default = "default_png_compression")]
+    pub png_compression: PngCompressionMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place_label_overlay: Option<PlaceLabelOverlay>,
+}
+
+impl HrrrWindowedBatchRequest {
+    pub fn png_write_options(&self) -> PngWriteOptions {
+        PngWriteOptions {
+            compression: self.png_compression,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +218,7 @@ struct PreparedWindowedGeometryContext {
     projected: ProjectedMap,
     project_ms: u128,
     grid: rustwx_core::LatLonGrid,
+    projection: Option<rustwx_core::GridProjection>,
 }
 
 #[derive(Debug)]
@@ -250,6 +272,7 @@ fn prepare_windowed_geometry_context(
         projected,
         project_ms,
         grid: geometry.grid,
+        projection: geometry.surface_decode.value.projection.clone(),
     })
 }
 
@@ -433,6 +456,8 @@ fn sampling_windowed_request(
         products: Vec::new(),
         output_width: OUTPUT_WIDTH,
         output_height: OUTPUT_HEIGHT,
+        png_compression: PngCompressionMode::Default,
+        place_label_overlay: None,
     }
 }
 
@@ -497,6 +522,7 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
     let projected = geometry_context.projected;
     let project_ms = geometry_context.project_ms;
     let grid = geometry_context.grid;
+    let projection = geometry_context.projection;
 
     let (planned_products, mut blockers, surface_hours, nat_hours) =
         plan_windowed_products(&request.products, request.forecast_hour);
@@ -550,6 +576,7 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
     let source = latest.source;
     let projected = &projected;
     let grid = &grid;
+    let projection = projection.as_ref();
     let apcp_by_hour = &apcp_by_hour;
     let uh_by_hour = &uh_by_hour;
     let mut outcomes = thread::scope(|scope| -> Result<Vec<WindowedProductOutcome>, io::Error> {
@@ -586,41 +613,34 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
                         product.slug()
                     ));
                     let render_start = Instant::now();
-                    let mut render_request = if matches!(
+                    let mut render_request = build_windowed_render_request(
                         product,
-                        HrrrWindowedProduct::Uh25km1h
-                            | HrrrWindowedProduct::Uh25km3h
-                            | HrrrWindowedProduct::Uh25kmRunMax
-                    ) {
-                        MapRenderRequest::for_core_weather_product(
-                            computed.field.clone(),
-                            WeatherProduct::Uh,
+                        &computed,
+                        request,
+                        projected,
+                        date_yyyymmdd,
+                        cycle_utc,
+                        forecast_hour,
+                        model,
+                        source,
+                    );
+                    if let Some(overlay) = request.place_label_overlay.as_ref() {
+                        crate::apply_place_label_overlay_with_density_styling(
+                            &mut render_request,
+                            overlay,
+                            &request.domain,
+                            &computed.field.grid.lat_deg,
+                            &computed.field.grid.lon_deg,
+                            projection,
                         )
-                    } else {
-                        MapRenderRequest::from_core_field(
-                            computed.field.clone(),
-                            computed.scale.clone(),
-                        )
-                    };
-                    render_request.width = request.output_width;
-                    render_request.height = request.output_height;
-                    render_request.title = Some(computed.title.clone());
-                    render_request.subtitle_left = Some(format!(
-                        "{} {}Z F{:03}  {}",
-                        date_yyyymmdd, cycle_utc, forecast_hour, model
-                    ));
-                    render_request.subtitle_right = Some(format!(
-                        "source: {} | {}",
-                        source, computed.metadata.strategy
-                    ));
-                    render_request.projected_domain = Some(rustwx_render::ProjectedDomain {
-                        x: projected.projected_x.clone(),
-                        y: projected.projected_y.clone(),
-                        extent: projected.extent.clone(),
-                    });
-                    render_request.projected_lines = projected.lines.clone();
-                    render_request.projected_polygons = projected.polygons.clone();
-                    save_png(&render_request, &output_path).map_err(thread_windowed_error)?;
+                        .map_err(thread_windowed_error)?;
+                    }
+                    save_png_profile_with_options(
+                        &render_request,
+                        &output_path,
+                        &request.png_write_options(),
+                    )
+                    .map_err(thread_windowed_error)?;
                     let render_ms = render_start.elapsed().as_millis();
 
                     Ok(WindowedProductOutcome::Rendered {
@@ -689,6 +709,77 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
         blockers,
         total_ms: total_start.elapsed().as_millis(),
     })
+}
+
+fn build_windowed_render_request(
+    product: HrrrWindowedProduct,
+    computed: &crate::windowed_decoder::ComputedWindowedField,
+    request: &HrrrWindowedBatchRequest,
+    projected: &ProjectedMap,
+    date_yyyymmdd: &str,
+    cycle_utc: u8,
+    forecast_hour: u16,
+    model: ModelId,
+    source: SourceId,
+) -> MapRenderRequest {
+    let mut render_request = if matches!(
+        product,
+        HrrrWindowedProduct::Uh25km1h
+            | HrrrWindowedProduct::Uh25km3h
+            | HrrrWindowedProduct::Uh25kmRunMax
+    ) {
+        MapRenderRequest::for_core_weather_product(computed.field.clone(), WeatherProduct::Uh)
+    } else {
+        MapRenderRequest::from_core_field(computed.field.clone(), computed.scale.clone())
+    };
+    render_request.width = request.output_width;
+    render_request.height = request.output_height;
+    render_request.title = Some(computed.title.clone());
+    render_request.subtitle_left = Some(format!(
+        "{} {}Z F{:03}  {}",
+        date_yyyymmdd, cycle_utc, forecast_hour, model
+    ));
+    render_request.subtitle_right = Some(format!(
+        "source: {} | {}",
+        source,
+        concise_windowed_strategy(&computed.metadata.strategy)
+    ));
+    render_request.chrome_scale = ChromeScale::Fixed(1.5);
+    render_request.render_density = RenderDensity {
+        fill: LevelDensity::default(),
+        palette_multiplier: 1,
+    };
+    render_request.legend = LegendControls {
+        density: LevelDensity::default(),
+        mode: LegendMode::Stepped,
+    };
+    render_request.supersample_factor = 2;
+    render_request.domain_frame = Some(DomainFrame::model_data_default());
+    render_request.visual_mode = if product.is_qpf() {
+        ProductVisualMode::FilledMeteorology
+    } else {
+        ProductVisualMode::SevereDiagnostic
+    };
+    render_request.projected_domain = Some(rustwx_render::ProjectedDomain {
+        x: projected.projected_x.clone(),
+        y: projected.projected_y.clone(),
+        extent: projected.extent.clone(),
+    });
+    render_request.projected_lines = projected.lines.clone();
+    render_request.projected_polygons = projected.polygons.clone();
+    render_request
+}
+
+fn concise_windowed_strategy(strategy: &str) -> String {
+    let shortened = strategy
+        .replace(" accumulation", "")
+        .replace("maximum", "max")
+        .replace("hourly APCP increments", "hourly APCP");
+    if shortened.len() <= 32 {
+        shortened
+    } else {
+        format!("{}...", shortened.chars().take(29).collect::<String>())
+    }
 }
 
 fn plan_windowed_products(
@@ -1017,5 +1108,84 @@ mod tests {
         assert_eq!(fetch.fetched_product, "sfc");
         assert_eq!(fetch.resolved_source, SourceId::Nomads);
         assert!(fetch.resolved_url.contains("wrfsfc"));
+    }
+
+    #[test]
+    fn windowed_render_request_uses_modern_map_chrome() {
+        let shape = rustwx_core::GridShape::new(2, 2).unwrap();
+        let grid = rustwx_core::LatLonGrid::new(
+            shape,
+            vec![36.0, 36.0, 35.0, 35.0],
+            vec![-98.0, -97.0, -98.0, -97.0],
+        )
+        .unwrap();
+        let field = rustwx_core::Field2D::new(
+            rustwx_core::ProductKey::named("qpf_1h"),
+            "in",
+            grid,
+            vec![0.0, 0.1, 0.2, 0.3],
+        )
+        .unwrap();
+        let computed = crate::windowed_decoder::ComputedWindowedField {
+            field,
+            title: "1-h QPF".to_string(),
+            metadata: HrrrWindowedProductMetadata {
+                strategy: "test window".to_string(),
+                contributing_forecast_hours: vec![1],
+                window_hours: Some(1),
+            },
+            scale: rustwx_render::ColorScale::Discrete(crate::windowed_decoder::qpf_scale()),
+        };
+        let request = HrrrWindowedBatchRequest {
+            date_yyyymmdd: "20260424".to_string(),
+            cycle_override_utc: Some(22),
+            forecast_hour: 1,
+            source: SourceId::Nomads,
+            domain: DomainSpec::new("southern_plains", (-109.0, -90.0, 25.0, 40.5)),
+            out_dir: PathBuf::new(),
+            cache_root: PathBuf::new(),
+            use_cache: false,
+            products: vec![HrrrWindowedProduct::Qpf1h],
+            output_width: 1200,
+            output_height: 900,
+            png_compression: PngCompressionMode::Default,
+            place_label_overlay: None,
+        };
+        let projected = ProjectedMap {
+            projected_x: vec![0.0, 1.0, 0.0, 1.0],
+            projected_y: vec![1.0, 1.0, 0.0, 0.0],
+            extent: rustwx_render::ProjectedExtent {
+                x_min: 0.0,
+                x_max: 1.0,
+                y_min: 0.0,
+                y_max: 1.0,
+            },
+            lines: Vec::new(),
+            polygons: Vec::new(),
+        };
+
+        let render_request = build_windowed_render_request(
+            HrrrWindowedProduct::Qpf1h,
+            &computed,
+            &request,
+            &projected,
+            "20260424",
+            22,
+            1,
+            ModelId::Hrrr,
+            SourceId::Nomads,
+        );
+
+        assert_eq!(render_request.width, 1200);
+        assert_eq!(render_request.height, 900);
+        assert_eq!(render_request.chrome_scale, ChromeScale::Fixed(1.5));
+        assert_eq!(render_request.supersample_factor, 2);
+        assert_eq!(
+            render_request.visual_mode,
+            ProductVisualMode::FilledMeteorology
+        );
+        assert_eq!(render_request.legend.mode, LegendMode::Stepped);
+        assert!(render_request.domain_frame.is_some());
+        assert!(render_request.projected_domain.is_some());
     }
 }
