@@ -38,30 +38,6 @@ jobs:
         with:
           path: rustwx
 
-      - name: Check out metrust-py
-        uses: actions/checkout@v4
-        with:
-          repository: FahrenheitResearch/metrust-py
-          path: metrust-py
-
-      - name: Check out cfrust
-        uses: actions/checkout@v4
-        with:
-          repository: FahrenheitResearch/cfrust
-          path: cfrust
-
-      - name: Check out wrf-rust-plots
-        uses: actions/checkout@v4
-        with:
-          repository: FahrenheitResearch/wrf-rust-plots
-          path: wrf-rust-plots
-
-      - name: Check out sharprs
-        uses: actions/checkout@v4
-        with:
-          repository: FahrenheitResearch/sharprs
-          path: sharprs
-
       - name: Set up Rust 1.85.0
         uses: dtolnay/rust-toolchain@stable
         with:
