@@ -71,9 +71,27 @@ artifact bundles, and named assets, see
 | `rustwx-sounding` | sounding bridge and rendering over `sharprs` | usable |
 | `rustwx-wrf` | WRF/GDEX NetCDF4 read adapter backed by vendored `netcrust` | narrow but usable |
 | `rustwx-cli` | CLI and proof binaries | usable |
-| `rustwx-python` | thin optional Python bindings for projected maps and future cross-sections | usable, still thin |
+| `rustwx-python` | thin optional Python bindings, published to PyPI as `rustwx` | usable, still thin |
 
 Each crate has its own README in `crates/<crate>/README.md`.
+
+## Python Package
+
+The optional Python bindings are packaged as `rustwx` on PyPI:
+
+```bash
+pip install rustwx
+```
+
+```python
+import rustwx
+
+print(rustwx.list_models_json())
+```
+
+The Python package is intentionally thin. It exposes model/source metadata and
+projected-map rendering helpers while keeping fetch, decode, compute, and render
+hot paths in Rust.
 
 ## What works today
 
@@ -131,7 +149,7 @@ uses it for grid-scale products and research catalogs.
 - native projected contour-fill rendering for signature derived products
 - wind barb overlays
 - panel composition
-- public projected-map helpers in `rustwx-python`
+- public projected-map helpers in the `rustwx` Python package
 - contour topology extraction in `rustwx-contour`
 - foundational cross-section rendering via `rustwx-cross-section`
 - sounding PNG rendering

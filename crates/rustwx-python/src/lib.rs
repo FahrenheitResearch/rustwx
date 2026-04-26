@@ -149,7 +149,7 @@ fn resolve_product(model: ModelId, product: Option<&str>) -> String {
 
 #[cfg(feature = "python")]
 #[pymodule]
-fn rustwx_python(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
+fn rustwx(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(workspace_name, module)?)?;
     module.add_function(wrap_pyfunction!(list_models_json, module)?)?;
     module.add_function(wrap_pyfunction!(resolve_urls_json, module)?)?;

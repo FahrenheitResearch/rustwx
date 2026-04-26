@@ -198,6 +198,7 @@ mod tests {
 
     #[test]
     fn normalize_cross_section_rejects_degenerate_path() {
+        pyo3::prepare_freethreaded_python();
         let mut request = base_request();
         request.path.end.lat = request.path.start.lat;
         request.path.end.lon = request.path.start.lon;

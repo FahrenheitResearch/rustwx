@@ -1,6 +1,7 @@
-# rustwx-python
+# rustwx Python bindings
 
-`rustwx-python` is the optional Python binding crate for `rustwx`.
+`rustwx` is the optional Python binding package for the Rust-first `rustwx`
+weather workspace.
 
 ## Design goal
 
@@ -39,15 +40,15 @@ The projected map surface is generic and public-facing. The caller supplies:
 ## Minimal example
 
 ```python
-import rustwx_python
+import rustwx
 
-print(rustwx_python.list_models_json())
+print(rustwx.list_models_json())
 ```
 
 ## Projected render example
 
 ```python
-import rustwx_python
+import rustwx
 
 spec = {
     "output_path": "example.png",
@@ -72,7 +73,7 @@ spec = {
     "basemap_style": "none",
 }
 
-metadata = rustwx_python.render_projected_map(spec, lat, lon, field)
+metadata = rustwx.render_projected_map(spec, lat, lon, field)
 print(metadata["projection"]["kind"])
 print(metadata["pixel_bounds"])
 ```
@@ -88,13 +89,13 @@ surface = {
     "basemap_style": "filled",
 }
 
-geometry = rustwx_python.describe_projected_geometry(
+geometry = rustwx.describe_projected_geometry(
     surface,
     lat,
     lon,
     include_projected_domain=False,
 )
-overlays = rustwx_python.build_projected_basemap_overlays(
+overlays = rustwx.build_projected_basemap_overlays(
     surface,
     lat,
     lon,
@@ -110,7 +111,7 @@ print(overlays["counts"])
 `normalize_cross_section_request(...)` does not render a cross-section yet. It validates and fills defaults for a future shared cross-section API surface.
 
 ```python
-xsect = rustwx_python.normalize_cross_section_request(
+xsect = rustwx.normalize_cross_section_request(
     {
         "path": {
             "start": {"lat": 39.74, "lon": -104.99, "label": "Denver"},

@@ -118,7 +118,11 @@ pub fn grid_projection_from_grib2_grid(grid: &GridDefinition) -> Option<GridProj
 }
 
 pub fn client() -> Result<DownloadClient, IoError> {
-    DownloadClient::new_with_cache(None).map_err(|err| IoError::Download(err.to_string()))
+    // rustwx owns fetch/decode caching through the explicit cache_root passed
+    // into fetch_bytes_with_cache. Enabling wx-core's default cache here writes
+    // duplicate GRIB bytes to platform locations such as ~/.cache/metrust, which
+    // bypasses callers' storage controls on research nodes.
+    DownloadClient::new().map_err(|err| IoError::Download(err.to_string()))
 }
 
 pub fn latest_run(
