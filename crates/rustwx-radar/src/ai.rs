@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cells::{StormCell, identify_cells};
+use crate::dealias::{DealiasMethod, dealias_velocity_file};
 use crate::nexrad::detection::{HailDetection, MesocycloneDetection, TVSDetection};
 use crate::nexrad::level2::{MomentData, RadialData};
 use crate::nexrad::{Level2File, Level2Sweep, RadarProduct, RadarSite};
@@ -153,10 +154,25 @@ pub fn build_ai_frame(
         .map(StormCellExport::from)
         .collect();
 
-    let (mesos, tvs, hail) = crate::nexrad::detection::RotationDetector::detect(file, site);
+    let dealiased_file = file_has_velocity(file)
+        .then(|| dealias_velocity_file(file, DealiasMethod::SweepContinuity));
+    let detection_file = dealiased_file.as_ref().unwrap_or(file);
+    let (mesos, tvs, hail) =
+        crate::nexrad::detection::RotationDetector::detect(detection_file, site);
+    let tensor_file = if options.tensor_product.base_product() == RadarProduct::Velocity {
+        detection_file
+    } else {
+        file
+    };
     let tensor = options
         .include_tensor
-        .then(|| build_polar_tensor(file, options.tensor_product, options.max_tensor_gates))
+        .then(|| {
+            build_polar_tensor(
+                tensor_file,
+                options.tensor_product,
+                options.max_tensor_gates,
+            )
+        })
         .flatten();
 
     RadarAiFrame {
@@ -194,6 +210,12 @@ pub fn build_ai_frame(
         tds_candidates: detect_tds_candidates(file, site),
         tensor,
     }
+}
+
+fn file_has_velocity(file: &Level2File) -> bool {
+    file.sweeps
+        .iter()
+        .any(|sweep| sweep_contains_product(sweep, RadarProduct::Velocity))
 }
 
 fn products_in_sweep(sweep: &Level2Sweep) -> Vec<RadarProduct> {

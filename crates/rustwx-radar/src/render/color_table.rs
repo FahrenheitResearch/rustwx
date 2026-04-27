@@ -3,6 +3,15 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 const LUT_SIZE: usize = 8192;
+const REFLECTIVITY_NSSL_II_PAL: &str =
+    include_str!("../../assets/color_tables/reflectivity_nssl_ii.pal");
+const VELOCITY_RADARSCOPE_BVEL_PAL: &str =
+    include_str!("../../assets/color_tables/velocity_radarscope_bvel.pal");
+const CC_DEFAULT_PAL: &str = include_str!("../../assets/color_tables/cc_default.pal");
+const KDP_DEFAULT_PAL: &[u8] = include_bytes!("../../assets/color_tables/kdp_default.pal");
+const VIL_DEFAULT_PAL: &str = include_str!("../../assets/color_tables/vil_default.pal");
+const ECHO_TOPS_ENHANCED_PAL: &str =
+    include_str!("../../assets/color_tables/echo_tops_enhanced.pal");
 
 /// Named preset styles for each product
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -221,8 +230,8 @@ impl ColorTable {
     /// dual-RGB gradients, semicolon comments, +/- value prefixes.
     pub fn from_pal_string(content: &str, name: &str) -> Option<Self> {
         let mut entries = Vec::new();
-        let mut _scale: f32 = 1.0;
-        let mut _offset: f32 = 0.0;
+        let mut scale: f32 = 1.0;
+        let mut offset: f32 = 0.0;
 
         for raw_line in content.lines() {
             // Strip semicolon and // comments
@@ -231,41 +240,48 @@ impl ColorTable {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
+            let lower = line.to_ascii_lowercase();
 
             // Parse header statements
-            if let Some(val) = line.strip_prefix("Scale:") {
+            if lower.starts_with("scale:") {
+                let Some((_, val)) = line.split_once(':') else {
+                    continue;
+                };
                 if let Ok(v) = val.trim().parse::<f32>() {
-                    _scale = v;
+                    scale = v;
                 }
                 continue;
             }
-            if let Some(val) = line.strip_prefix("Offset:") {
+            if lower.starts_with("offset:") {
+                let Some((_, val)) = line.split_once(':') else {
+                    continue;
+                };
                 if let Ok(v) = val.trim().parse::<f32>() {
-                    _offset = v;
+                    offset = v;
                 }
                 continue;
             }
-            if line.starts_with("Product:")
-                || line.starts_with("Units:")
-                || line.starts_with("Step:")
-                || line.starts_with("ND:")
-                || line.starts_with("RF:")
-                || line.starts_with("Decimals:")
-                || line.starts_with("ND ")
-                || line.starts_with("RF ")
+            if lower.starts_with("product:")
+                || lower.starts_with("units:")
+                || lower.starts_with("step:")
+                || lower.starts_with("nd:")
+                || lower.starts_with("rf:")
+                || lower.starts_with("decimals:")
+                || lower.starts_with("nd ")
+                || lower.starts_with("rf ")
             {
                 continue;
             }
 
             // Strip color statement prefixes
-            let (line, has_alpha_prefix) = if let Some(rest) = line.strip_prefix("SolidColor4:") {
-                (rest.trim(), true)
-            } else if let Some(rest) = line.strip_prefix("SolidColor:") {
-                (rest.trim(), false)
-            } else if let Some(rest) = line.strip_prefix("Color4:") {
-                (rest.trim(), true)
-            } else if let Some(rest) = line.strip_prefix("Color:") {
-                (rest.trim(), false)
+            let (line, has_alpha_prefix) = if lower.starts_with("solidcolor4:") {
+                (line.split_once(':')?.1.trim(), true)
+            } else if lower.starts_with("solidcolor:") {
+                (line.split_once(':')?.1.trim(), false)
+            } else if lower.starts_with("color4:") {
+                (line.split_once(':')?.1.trim(), true)
+            } else if lower.starts_with("color:") {
+                (line.split_once(':')?.1.trim(), false)
             } else {
                 (line, false)
             };
@@ -278,11 +294,14 @@ impl ColorTable {
             let Ok(raw_value) = parts[0].parse::<f32>() else {
                 continue;
             };
-            // Apply Scale/Offset: display_value = raw_value, internal = (display - offset) / scale
-            // But color tables define display values, and our renderer uses dBZ/kts directly,
-            // so we store the value as-is (the Scale/Offset converts internal→display;
-            // the .pal file values ARE display values already)
-            let value = raw_value;
+            // .pal values are display values. Scale/Offset describe
+            // display = internal * scale + offset, while rustwx renders
+            // decoded internal moment values.
+            let value = if scale.abs() > f32::EPSILON {
+                (raw_value - offset) / scale
+            } else {
+                raw_value
+            };
 
             let Ok(r) = parts[1].parse::<u8>() else {
                 continue;
@@ -401,60 +420,80 @@ fn base(product: RadarProduct) -> RadarProduct {
     product.base_product()
 }
 
+fn embedded_pal_table(name: &str, content: &str) -> Option<ColorTable> {
+    ColorTable::from_pal_string(content, name)
+}
+
+fn embedded_pal_table_bytes(name: &str, content: &[u8]) -> Option<ColorTable> {
+    let content = String::from_utf8_lossy(content);
+    ColorTable::from_pal_string(&content, name)
+}
+
 fn nws_table(product: RadarProduct) -> ColorTable {
     let p = base(product);
     match p {
-        RadarProduct::Reflectivity => ColorTable::from_entries_vec(
-            "Reflectivity (NWS)",
-            vec![
-                ce(-30.0, 0, 0, 0, 0),
-                ce(-20.0, 100, 100, 100, 180),
-                ce(-10.0, 150, 150, 150, 200),
-                ce(0.0, 118, 118, 118, 220),
-                ce(5.0, 0, 236, 236, 255),
-                ce(10.0, 1, 160, 246, 255),
-                ce(15.0, 0, 0, 246, 255),
-                ce(20.0, 0, 255, 0, 255),
-                ce(25.0, 0, 200, 0, 255),
-                ce(30.0, 0, 144, 0, 255),
-                ce(35.0, 255, 255, 0, 255),
-                ce(40.0, 231, 192, 0, 255),
-                ce(45.0, 255, 144, 0, 255),
-                ce(50.0, 255, 0, 0, 255),
-                ce(55.0, 214, 0, 0, 255),
-                ce(60.0, 255, 0, 255, 255),
-                ce(65.0, 200, 0, 255, 255),
-                ce(70.0, 153, 85, 201, 255),
-                ce(75.0, 255, 255, 255, 255),
-                ce(80.0, 255, 255, 255, 255),
-            ],
-        ),
-        RadarProduct::Velocity => ColorTable::from_entries_vec(
-            "Velocity (NWS)",
-            vec![
-                ce(-120.0, 140, 0, 170, 255),
-                ce(-100.0, 180, 0, 170, 255),
-                ce(-80.0, 210, 0, 120, 255),
-                ce(-64.0, 235, 0, 70, 255),
-                ce(-50.0, 245, 40, 60, 255),
-                ce(-36.0, 250, 90, 90, 255),
-                ce(-26.0, 255, 135, 135, 255),
-                ce(-20.0, 255, 170, 170, 255),
-                ce(-10.0, 245, 210, 210, 255),
-                ce(-1.0, 170, 170, 170, 220),
-                ce(0.0, 0, 0, 0, 0),
-                ce(1.0, 170, 170, 170, 220),
-                ce(10.0, 200, 245, 200, 255),
-                ce(20.0, 135, 235, 135, 255),
-                ce(26.0, 60, 220, 90, 255),
-                ce(36.0, 0, 200, 90, 255),
-                ce(50.0, 0, 170, 140, 255),
-                ce(64.0, 0, 140, 220, 255),
-                ce(80.0, 0, 100, 235, 255),
-                ce(100.0, 0, 160, 255, 255),
-                ce(120.0, 140, 240, 255, 255),
-            ],
-        ),
+        RadarProduct::Reflectivity => {
+            embedded_pal_table("Reflectivity (NSSL II)", REFLECTIVITY_NSSL_II_PAL).unwrap_or_else(
+                || {
+                    ColorTable::from_entries_vec(
+                        "Reflectivity (NWS)",
+                        vec![
+                            ce(-30.0, 0, 0, 0, 0),
+                            ce(-20.0, 100, 100, 100, 180),
+                            ce(-10.0, 150, 150, 150, 200),
+                            ce(0.0, 118, 118, 118, 220),
+                            ce(5.0, 0, 236, 236, 255),
+                            ce(10.0, 1, 160, 246, 255),
+                            ce(15.0, 0, 0, 246, 255),
+                            ce(20.0, 0, 255, 0, 255),
+                            ce(25.0, 0, 200, 0, 255),
+                            ce(30.0, 0, 144, 0, 255),
+                            ce(35.0, 255, 255, 0, 255),
+                            ce(40.0, 231, 192, 0, 255),
+                            ce(45.0, 255, 144, 0, 255),
+                            ce(50.0, 255, 0, 0, 255),
+                            ce(55.0, 214, 0, 0, 255),
+                            ce(60.0, 255, 0, 255, 255),
+                            ce(65.0, 200, 0, 255, 255),
+                            ce(70.0, 153, 85, 201, 255),
+                            ce(75.0, 255, 255, 255, 255),
+                            ce(80.0, 255, 255, 255, 255),
+                        ],
+                    )
+                },
+            )
+        }
+        RadarProduct::Velocity | RadarProduct::StormRelativeVelocity => {
+            embedded_pal_table("Velocity (RadarScope BV)", VELOCITY_RADARSCOPE_BVEL_PAL)
+                .unwrap_or_else(|| {
+                    ColorTable::from_entries_vec(
+                        "Velocity (NWS)",
+                        vec![
+                            ce(-120.0, 140, 0, 170, 255),
+                            ce(-100.0, 180, 0, 170, 255),
+                            ce(-80.0, 210, 0, 120, 255),
+                            ce(-64.0, 235, 0, 70, 255),
+                            ce(-50.0, 245, 40, 60, 255),
+                            ce(-36.0, 250, 90, 90, 255),
+                            ce(-26.0, 255, 135, 135, 255),
+                            ce(-20.0, 255, 170, 170, 255),
+                            ce(-10.0, 245, 210, 210, 255),
+                            ce(-1.0, 170, 170, 170, 220),
+                            ce(0.0, 0, 0, 0, 0),
+                            ce(1.0, 170, 170, 170, 220),
+                            ce(10.0, 200, 245, 200, 255),
+                            ce(20.0, 135, 235, 135, 255),
+                            ce(26.0, 60, 220, 90, 255),
+                            ce(36.0, 0, 200, 90, 255),
+                            ce(50.0, 0, 170, 140, 255),
+                            ce(64.0, 0, 140, 220, 255),
+                            ce(80.0, 0, 100, 235, 255),
+                            ce(100.0, 0, 160, 255, 255),
+                            ce(120.0, 140, 240, 255, 255),
+                        ],
+                    )
+                })
+        }
         RadarProduct::SpectrumWidth => ColorTable::from_entries_vec(
             "Spectrum Width (NWS)",
             vec![
@@ -484,22 +523,25 @@ fn nws_table(product: RadarProduct) -> ColorTable {
                 ce(8.0, 200, 0, 200, 255),
             ],
         ),
-        RadarProduct::CorrelationCoefficient => ColorTable::from_entries_vec(
-            "CC (NWS)",
-            vec![
-                ce(0.2, 0, 0, 0, 0),
-                ce(0.5, 128, 0, 128, 255),
-                ce(0.7, 0, 0, 200, 255),
-                ce(0.8, 0, 150, 255, 255),
-                ce(0.85, 0, 200, 200, 255),
-                ce(0.90, 0, 200, 0, 255),
-                ce(0.93, 255, 255, 0, 255),
-                ce(0.95, 255, 128, 0, 255),
-                ce(0.97, 255, 0, 0, 255),
-                ce(0.99, 200, 0, 200, 255),
-                ce(1.05, 255, 255, 255, 255),
-            ],
-        ),
+        RadarProduct::CorrelationCoefficient => embedded_pal_table("CC (GRS)", CC_DEFAULT_PAL)
+            .unwrap_or_else(|| {
+                ColorTable::from_entries_vec(
+                    "CC (NWS)",
+                    vec![
+                        ce(0.2, 0, 0, 0, 0),
+                        ce(0.5, 128, 0, 128, 255),
+                        ce(0.7, 0, 0, 200, 255),
+                        ce(0.8, 0, 150, 255, 255),
+                        ce(0.85, 0, 200, 200, 255),
+                        ce(0.90, 0, 200, 0, 255),
+                        ce(0.93, 255, 255, 0, 255),
+                        ce(0.95, 255, 128, 0, 255),
+                        ce(0.97, 255, 0, 0, 255),
+                        ce(0.99, 200, 0, 200, 255),
+                        ce(1.05, 255, 255, 255, 255),
+                    ],
+                )
+            }),
         RadarProduct::DifferentialPhase => ColorTable::from_entries_vec(
             "PhiDP (NWS)",
             vec![
@@ -517,53 +559,66 @@ fn nws_table(product: RadarProduct) -> ColorTable {
                 ce(360.0, 200, 0, 200, 255),
             ],
         ),
-        RadarProduct::SpecificDiffPhase => ColorTable::from_entries_vec(
-            "KDP (NWS)",
-            vec![
-                ce(-2.0, 128, 0, 128, 255),
-                ce(-1.0, 0, 0, 200, 255),
-                ce(0.0, 100, 100, 100, 200),
-                ce(0.5, 0, 200, 0, 255),
-                ce(1.0, 0, 255, 0, 255),
-                ce(2.0, 255, 255, 0, 255),
-                ce(3.0, 255, 200, 0, 255),
-                ce(5.0, 255, 128, 0, 255),
-                ce(7.0, 255, 0, 0, 255),
-                ce(10.0, 200, 0, 200, 255),
-            ],
-        ),
-        RadarProduct::VIL => ColorTable::from_entries_vec(
-            "VIL (NWS)",
-            vec![
-                ce(0.0, 0, 0, 0, 0),
-                ce(1.0, 0, 130, 0, 200),
-                ce(5.0, 0, 200, 0, 255),
-                ce(10.0, 0, 255, 0, 255),
-                ce(15.0, 200, 255, 0, 255),
-                ce(25.0, 255, 255, 0, 255),
-                ce(30.0, 255, 200, 0, 255),
-                ce(40.0, 255, 128, 0, 255),
-                ce(50.0, 255, 0, 0, 255),
-                ce(60.0, 200, 0, 0, 255),
-                ce(70.0, 180, 0, 180, 255),
-                ce(80.0, 255, 0, 255, 255),
-            ],
-        ),
-        RadarProduct::EchoTops => ColorTable::from_entries_vec(
-            "Echo Tops (NWS)",
-            vec![
-                ce(0.0, 0, 0, 0, 0),
-                ce(1.0, 0, 0, 180, 200),
-                ce(3.0, 0, 100, 255, 255),
-                ce(5.0, 0, 200, 255, 255),
-                ce(7.0, 0, 200, 0, 255),
-                ce(10.0, 0, 255, 0, 255),
-                ce(12.0, 255, 255, 0, 255),
-                ce(15.0, 255, 200, 0, 255),
-                ce(17.0, 255, 0, 0, 255),
-                ce(20.0, 200, 0, 0, 255),
-            ],
-        ),
+        RadarProduct::SpecificDiffPhase => embedded_pal_table_bytes("KDP (GRS)", KDP_DEFAULT_PAL)
+            .unwrap_or_else(|| {
+                ColorTable::from_entries_vec(
+                    "KDP (NWS)",
+                    vec![
+                        ce(-2.0, 128, 0, 128, 255),
+                        ce(-1.0, 0, 0, 200, 255),
+                        ce(0.0, 100, 100, 100, 200),
+                        ce(0.5, 0, 200, 0, 255),
+                        ce(1.0, 0, 255, 0, 255),
+                        ce(2.0, 255, 255, 0, 255),
+                        ce(3.0, 255, 200, 0, 255),
+                        ce(5.0, 255, 128, 0, 255),
+                        ce(7.0, 255, 0, 0, 255),
+                        ce(10.0, 200, 0, 200, 255),
+                    ],
+                )
+            }),
+        RadarProduct::VIL => {
+            embedded_pal_table("VIL (GRS)", VIL_DEFAULT_PAL).unwrap_or_else(|| {
+                ColorTable::from_entries_vec(
+                    "VIL (NWS)",
+                    vec![
+                        ce(0.0, 0, 0, 0, 0),
+                        ce(1.0, 0, 130, 0, 200),
+                        ce(5.0, 0, 200, 0, 255),
+                        ce(10.0, 0, 255, 0, 255),
+                        ce(15.0, 200, 255, 0, 255),
+                        ce(25.0, 255, 255, 0, 255),
+                        ce(30.0, 255, 200, 0, 255),
+                        ce(40.0, 255, 128, 0, 255),
+                        ce(50.0, 255, 0, 0, 255),
+                        ce(60.0, 200, 0, 0, 255),
+                        ce(70.0, 180, 0, 180, 255),
+                        ce(80.0, 255, 0, 255, 255),
+                    ],
+                )
+            })
+        }
+        RadarProduct::EchoTops => {
+            embedded_pal_table("Echo Tops (Enhanced)", ECHO_TOPS_ENHANCED_PAL).unwrap_or_else(
+                || {
+                    ColorTable::from_entries_vec(
+                        "Echo Tops (NWS)",
+                        vec![
+                            ce(0.0, 0, 0, 0, 0),
+                            ce(1.0, 0, 0, 180, 200),
+                            ce(3.0, 0, 100, 255, 255),
+                            ce(5.0, 0, 200, 255, 255),
+                            ce(7.0, 0, 200, 0, 255),
+                            ce(10.0, 0, 255, 0, 255),
+                            ce(12.0, 255, 255, 0, 255),
+                            ce(15.0, 255, 200, 0, 255),
+                            ce(17.0, 255, 0, 0, 255),
+                            ce(20.0, 200, 0, 0, 255),
+                        ],
+                    )
+                },
+            )
+        }
         _ => nws_table(RadarProduct::Reflectivity),
     }
 }
@@ -941,5 +996,36 @@ impl ColorTableManager {
             ColorTableSelection::Preset(p) => p.label().to_string(),
             ColorTableSelection::Custom(n) => n,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pal_parser_handles_case_and_scale_metadata() {
+        let reflectivity =
+            ColorTable::from_pal_string(REFLECTIVITY_NSSL_II_PAL, "reflectivity").unwrap();
+        assert!(reflectivity.entries.len() >= 10);
+        assert!(reflectivity.min_value <= 5.0);
+
+        let cc = ColorTable::from_pal_string(CC_DEFAULT_PAL, "cc").unwrap();
+        assert!(cc.min_value <= 0.21);
+        assert!(cc.max_value >= 0.99);
+
+        let echo_tops = ColorTable::from_pal_string(ECHO_TOPS_ENHANCED_PAL, "et").unwrap();
+        assert!(echo_tops.max_value < 25.0);
+    }
+
+    #[test]
+    fn default_velocity_palette_is_operational_not_gray() {
+        let velocity = ColorTable::for_product(RadarProduct::Velocity);
+        let inbound = velocity.color_for_value(-20.0);
+        let outbound = velocity.color_for_value(20.0);
+
+        assert!(inbound[1] > inbound[0]);
+        assert!(outbound[0] > outbound[1]);
+        assert!(outbound[3] > 0);
     }
 }

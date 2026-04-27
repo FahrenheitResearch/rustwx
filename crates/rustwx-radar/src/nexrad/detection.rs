@@ -204,6 +204,26 @@ fn dealias(delta_v: f32, nyquist: f32) -> f32 {
     dv
 }
 
+fn velocity_delta(raw_delta: f32, nyquist: f32, sweep_is_unfolded: bool) -> f32 {
+    if sweep_is_unfolded {
+        raw_delta
+    } else {
+        dealias(raw_delta, nyquist)
+    }
+}
+
+fn sweep_has_unfolded_velocity(sweep: &Level2Sweep, nyquist: f32) -> bool {
+    sweep.radials.iter().any(|radial| {
+        radial.moments.iter().any(|moment| {
+            moment.product == RadarProduct::Velocity
+                && moment
+                    .data
+                    .iter()
+                    .any(|value| value.is_finite() && value.abs() > nyquist + 0.5)
+        })
+    })
+}
+
 /// Get the effective Nyquist velocity for a sweep.
 fn sweep_nyquist(sweep: &Level2Sweep) -> f32 {
     // Prefer the Nyquist parsed from the radial 'R' data block.
@@ -389,6 +409,7 @@ impl RotationDetector {
         if sweep.radials.is_empty() {
             return (candidates, tvs_list);
         }
+        let sweep_is_unfolded = sweep_has_unfolded_velocity(sweep, nyquist);
 
         // Sort radials by azimuth.
         let mut radials: Vec<&super::level2::RadialData> = sweep.radials.iter().collect();
@@ -471,7 +492,7 @@ impl RotationDetector {
                 }
 
                 let raw_delta = vb - va;
-                let delta_v = dealias(raw_delta, nyquist);
+                let delta_v = velocity_delta(raw_delta, nyquist, sweep_is_unfolded);
 
                 // Minimum delta-V filter: prevent noise at close range
                 if delta_v.abs() < MESO_MIN_DELTA_V {
@@ -553,7 +574,7 @@ impl RotationDetector {
                         }
 
                         let raw_delta = v_far - v_near;
-                        let delta_v = dealias(raw_delta, nyquist);
+                        let delta_v = velocity_delta(raw_delta, nyquist, sweep_is_unfolded);
                         let distance_km = gap as f32 * gate_size_km;
 
                         if distance_km < 0.01 {

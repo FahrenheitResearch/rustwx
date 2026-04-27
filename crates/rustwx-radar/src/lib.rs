@@ -7,10 +7,12 @@
 pub mod ai;
 pub mod aws;
 pub mod cells;
+pub mod dealias;
 pub mod nexrad;
 pub mod png;
 pub mod render;
 
 pub use ai::{AiExportOptions, RadarAiFrame, build_ai_frame};
+pub use dealias::{DealiasMethod, dealias_velocity_file, dealias_velocity_sweep};
 pub use nexrad::{Level2File, Level2Sweep, RadarProduct, RadarSite};
 pub use png::{RadarFrameRender, render_product_frame, render_product_png};

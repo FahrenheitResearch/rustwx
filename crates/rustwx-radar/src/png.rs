@@ -3,6 +3,7 @@ use std::io::Cursor;
 use image::{ImageBuffer, ImageFormat, Rgba};
 use serde::{Deserialize, Serialize};
 
+use crate::dealias::{DealiasMethod, dealias_velocity_sweep};
 use crate::nexrad::derived::DerivedProducts;
 use crate::nexrad::srv::SRVComputer;
 use crate::nexrad::{Level2File, Level2Sweep, RadarProduct, RadarSite};
@@ -141,26 +142,39 @@ fn resolve_render_sweep(
     file: &Level2File,
     product: RadarProduct,
 ) -> anyhow::Result<ResolvedRenderSweep<'_>> {
+    if product.base_product() == RadarProduct::Velocity {
+        if let Some((sweep_index, sweep)) = lowest_sweep_with_product(file, product) {
+            return Ok(ResolvedRenderSweep::Owned {
+                sweep_index,
+                sweep: dealias_velocity_sweep(sweep, DealiasMethod::SweepContinuity),
+            });
+        }
+    }
+
     if let Some((sweep_index, sweep)) = lowest_sweep_with_product(file, product) {
         return Ok(ResolvedRenderSweep::Borrowed { sweep_index, sweep });
     }
 
     match product {
         RadarProduct::StormRelativeVelocity => {
-            let velocity_sweeps: Vec<&Level2Sweep> = file
+            let velocity_sweeps_owned: Vec<Level2Sweep> = file
                 .sweeps
                 .iter()
                 .filter(|sweep| sweep_contains_product(sweep, RadarProduct::Velocity))
+                .map(|sweep| dealias_velocity_sweep(sweep, DealiasMethod::SweepContinuity))
                 .collect();
+            let velocity_sweeps: Vec<&Level2Sweep> = velocity_sweeps_owned.iter().collect();
             let (sweep_index, velocity_sweep) =
                 lowest_sweep_with_product(file, RadarProduct::Velocity).ok_or_else(|| {
                     anyhow::anyhow!("cannot derive SRV because the volume has no velocity")
                 })?;
             let (storm_dir_deg, storm_speed_kts) =
                 SRVComputer::estimate_storm_motion(&velocity_sweeps);
+            let velocity_sweep =
+                dealias_velocity_sweep(velocity_sweep, DealiasMethod::SweepContinuity);
             Ok(ResolvedRenderSweep::Owned {
                 sweep_index,
-                sweep: SRVComputer::compute(velocity_sweep, storm_dir_deg, storm_speed_kts),
+                sweep: SRVComputer::compute(&velocity_sweep, storm_dir_deg, storm_speed_kts),
             })
         }
         RadarProduct::VIL => {
