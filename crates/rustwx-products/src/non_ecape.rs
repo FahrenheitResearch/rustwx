@@ -1567,11 +1567,24 @@ fn windowed_artifact_detail(
             | HrrrWindowedProduct::Wind10m24to48hMax
             | HrrrWindowedProduct::Wind10m0to48hMax
     );
+    let is_temp = matches!(
+        product.product,
+        HrrrWindowedProduct::Temp2m0to24hMax
+            | HrrrWindowedProduct::Temp2m24to48hMax
+            | HrrrWindowedProduct::Temp2m0to48hMax
+            | HrrrWindowedProduct::Temp2m0to24hMin
+            | HrrrWindowedProduct::Temp2m24to48hMin
+            | HrrrWindowedProduct::Temp2m0to48hMin
+    );
     let fetches = windowed_runtime_fetches_for_product(product, shared_timing);
     let planned_family = fetches
         .first()
         .map(|fetch| fetch.planned_product.as_str())
-        .unwrap_or(if is_qpf || is_wind { "sfc" } else { "nat" });
+        .unwrap_or(if is_qpf || is_wind || is_temp {
+            "sfc"
+        } else {
+            "nat"
+        });
     let fetched_families = unique_join(fetches.iter().map(|fetch| fetch.fetched_product.as_str()));
     let resolved_sources = unique_join(fetches.iter().map(|fetch| fetch.resolved_source.as_str()));
     let hours = fetches
@@ -1658,11 +1671,22 @@ fn windowed_runtime_fetches_for_product<'a>(
             | HrrrWindowedProduct::Wind10m24to48hMax
             | HrrrWindowedProduct::Wind10m0to48hMax
     );
+    let is_temp = matches!(
+        product.product,
+        HrrrWindowedProduct::Temp2m0to24hMax
+            | HrrrWindowedProduct::Temp2m24to48hMax
+            | HrrrWindowedProduct::Temp2m0to48hMax
+            | HrrrWindowedProduct::Temp2m0to24hMin
+            | HrrrWindowedProduct::Temp2m24to48hMin
+            | HrrrWindowedProduct::Temp2m0to48hMin
+    );
     let contributing_hours = &product.metadata.contributing_forecast_hours;
     let fetches = if is_qpf {
         &shared_timing.surface_hour_fetches
     } else if is_wind {
         &shared_timing.wind_hour_fetches
+    } else if is_temp {
+        &shared_timing.temp_hour_fetches
     } else {
         &shared_timing.uh_hour_fetches
     };
@@ -2029,11 +2053,14 @@ mod tests {
                 decode_nat_ms: 0,
                 fetch_wind_ms: 0,
                 decode_wind_ms: 0,
+                fetch_temp_ms: 0,
+                decode_temp_ms: 0,
                 geometry_fetch_cache_hit: false,
                 geometry_decode_cache_hit: false,
                 surface_hours_loaded: vec![6],
                 nat_hours_loaded: vec![6],
                 wind_hours_loaded: Vec::new(),
+                temp_hours_loaded: Vec::new(),
                 geometry_fetch: Some(HrrrFetchRuntimeInfo {
                     planned_product: "sfc".into(),
                     fetched_product: "sfc".into(),
@@ -2063,6 +2090,7 @@ mod tests {
                     input_fetch: Some(windowed_fetch_identity("nat", "sfc", 6)),
                 }],
                 wind_hour_fetches: Vec::new(),
+                temp_hour_fetches: Vec::new(),
             },
             products: vec![HrrrWindowedRenderedProduct {
                 product: HrrrWindowedProduct::Qpf6h,
@@ -2252,11 +2280,14 @@ mod tests {
                 decode_nat_ms: 0,
                 fetch_wind_ms: 0,
                 decode_wind_ms: 0,
+                fetch_temp_ms: 0,
+                decode_temp_ms: 0,
                 geometry_fetch_cache_hit: false,
                 geometry_decode_cache_hit: false,
                 surface_hours_loaded: vec![6],
                 nat_hours_loaded: vec![6],
                 wind_hours_loaded: Vec::new(),
+                temp_hours_loaded: Vec::new(),
                 geometry_fetch: Some(HrrrFetchRuntimeInfo {
                     planned_product: "sfc".into(),
                     fetched_product: "sfc".into(),
@@ -2286,6 +2317,7 @@ mod tests {
                     input_fetch: Some(windowed_fetch_identity("nat", "sfc", 6)),
                 }],
                 wind_hour_fetches: Vec::new(),
+                temp_hour_fetches: Vec::new(),
             },
             products: vec![HrrrWindowedRenderedProduct {
                 product: HrrrWindowedProduct::Qpf6h,
@@ -2376,11 +2408,14 @@ mod tests {
             decode_nat_ms: 0,
             fetch_wind_ms: 0,
             decode_wind_ms: 0,
+            fetch_temp_ms: 0,
+            decode_temp_ms: 0,
             geometry_fetch_cache_hit: false,
             geometry_decode_cache_hit: false,
             surface_hours_loaded: vec![5, 6],
             nat_hours_loaded: Vec::new(),
             wind_hours_loaded: Vec::new(),
+            temp_hours_loaded: Vec::new(),
             geometry_fetch: None,
             geometry_input_fetch: None,
             surface_hour_fetches: vec![
@@ -2407,6 +2442,7 @@ mod tests {
             ],
             uh_hour_fetches: Vec::new(),
             wind_hour_fetches: Vec::new(),
+            temp_hour_fetches: Vec::new(),
         };
 
         let keys = windowed_product_input_fetch_keys(&product, &shared_timing);
@@ -2434,11 +2470,14 @@ mod tests {
                 decode_nat_ms: 0,
                 fetch_wind_ms: 0,
                 decode_wind_ms: 0,
+                fetch_temp_ms: 0,
+                decode_temp_ms: 0,
                 geometry_fetch_cache_hit: false,
                 geometry_decode_cache_hit: false,
                 surface_hours_loaded: vec![6],
                 nat_hours_loaded: vec![6],
                 wind_hours_loaded: Vec::new(),
+                temp_hours_loaded: Vec::new(),
                 geometry_fetch: None,
                 geometry_input_fetch: Some(windowed_fetch_identity("sfc", "sfc", 6)),
                 surface_hour_fetches: vec![HrrrWindowedHourFetchInfo {
@@ -2462,6 +2501,7 @@ mod tests {
                     input_fetch: Some(windowed_fetch_identity("nat", "sfc", 6)),
                 }],
                 wind_hour_fetches: Vec::new(),
+                temp_hour_fetches: Vec::new(),
             },
             products: Vec::new(),
             blockers: Vec::new(),

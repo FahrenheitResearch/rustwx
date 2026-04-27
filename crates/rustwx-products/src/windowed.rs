@@ -11,8 +11,9 @@ use crate::runtime::{
 };
 use crate::shared_context::{DomainSpec, ProjectedMap};
 use crate::windowed_decoder::{
-    HrrrApcpDecode, HrrrUhDecode, HrrrWind10mMaxDecode, compute_qpf_product, compute_uh_product,
-    compute_wind10m_product, load_or_decode_apcp, load_or_decode_uh25, load_or_decode_wind10m_max,
+    HrrrApcpDecode, HrrrTemp2mDecode, HrrrUhDecode, HrrrWind10mMaxDecode, compute_qpf_product,
+    compute_temp2m_product, compute_uh_product, compute_wind10m_product, load_or_decode_apcp,
+    load_or_decode_temp2m, load_or_decode_uh25, load_or_decode_wind10m_max,
 };
 use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
 use rustwx_models::LatestRun;
@@ -59,6 +60,12 @@ pub enum HrrrWindowedProduct {
     Wind10m0to24hMax,
     Wind10m24to48hMax,
     Wind10m0to48hMax,
+    Temp2m0to24hMax,
+    Temp2m24to48hMax,
+    Temp2m0to48hMax,
+    Temp2m0to24hMin,
+    Temp2m24to48hMin,
+    Temp2m0to48hMin,
 }
 
 impl HrrrWindowedProduct {
@@ -77,6 +84,12 @@ impl HrrrWindowedProduct {
             Self::Wind10m0to24hMax => "10m_wind_0_24h_max",
             Self::Wind10m24to48hMax => "10m_wind_24_48h_max",
             Self::Wind10m0to48hMax => "10m_wind_0_48h_max",
+            Self::Temp2m0to24hMax => "2m_temp_0_24h_max",
+            Self::Temp2m24to48hMax => "2m_temp_24_48h_max",
+            Self::Temp2m0to48hMax => "2m_temp_0_48h_max",
+            Self::Temp2m0to24hMin => "2m_temp_0_24h_min",
+            Self::Temp2m24to48hMin => "2m_temp_24_48h_min",
+            Self::Temp2m0to48hMin => "2m_temp_0_48h_min",
         }
     }
 
@@ -95,6 +108,12 @@ impl HrrrWindowedProduct {
             Self::Wind10m0to24hMax => "10 m Wind Speed (0-24 h max)",
             Self::Wind10m24to48hMax => "10 m Wind Speed (24-48 h max)",
             Self::Wind10m0to48hMax => "10 m Wind Speed (0-48 h max)",
+            Self::Temp2m0to24hMax => "2 m Temperature (0-24 h max)",
+            Self::Temp2m24to48hMax => "2 m Temperature (24-48 h max)",
+            Self::Temp2m0to48hMax => "2 m Temperature (0-48 h max)",
+            Self::Temp2m0to24hMin => "2 m Temperature (0-24 h min)",
+            Self::Temp2m24to48hMin => "2 m Temperature (24-48 h min)",
+            Self::Temp2m0to48hMin => "2 m Temperature (0-48 h min)",
         }
     }
 
@@ -125,6 +144,22 @@ impl HrrrWindowedProduct {
             self,
             Self::Wind10m0to24hMax | Self::Wind10m24to48hMax | Self::Wind10m0to48hMax
         )
+    }
+
+    fn is_temp2m(self) -> bool {
+        matches!(
+            self,
+            Self::Temp2m0to24hMax
+                | Self::Temp2m24to48hMax
+                | Self::Temp2m0to48hMax
+                | Self::Temp2m0to24hMin
+                | Self::Temp2m24to48hMin
+                | Self::Temp2m0to48hMin
+        )
+    }
+
+    fn requires_00z_extended_cycle(self) -> bool {
+        self.is_diurnal_wind10m() || self.is_temp2m()
     }
 }
 
@@ -183,12 +218,18 @@ pub struct HrrrWindowedSharedTiming {
     pub fetch_wind_ms: u128,
     #[serde(default)]
     pub decode_wind_ms: u128,
+    #[serde(default)]
+    pub fetch_temp_ms: u128,
+    #[serde(default)]
+    pub decode_temp_ms: u128,
     pub geometry_fetch_cache_hit: bool,
     pub geometry_decode_cache_hit: bool,
     pub surface_hours_loaded: Vec<u16>,
     pub nat_hours_loaded: Vec<u16>,
     #[serde(default)]
     pub wind_hours_loaded: Vec<u16>,
+    #[serde(default)]
+    pub temp_hours_loaded: Vec<u16>,
     pub geometry_fetch: Option<HrrrFetchRuntimeInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geometry_input_fetch: Option<PublishedFetchIdentity>,
@@ -196,6 +237,8 @@ pub struct HrrrWindowedSharedTiming {
     pub uh_hour_fetches: Vec<HrrrWindowedHourFetchInfo>,
     #[serde(default)]
     pub wind_hour_fetches: Vec<HrrrWindowedHourFetchInfo>,
+    #[serde(default)]
+    pub temp_hour_fetches: Vec<HrrrWindowedHourFetchInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -350,6 +393,7 @@ pub fn collect_windowed_input_fetches(
         .iter()
         .chain(report.shared_timing.uh_hour_fetches.iter())
         .chain(report.shared_timing.wind_hour_fetches.iter())
+        .chain(report.shared_timing.temp_hour_fetches.iter())
     {
         if let Some(identity) = &fetch.input_fetch {
             by_key
@@ -373,6 +417,8 @@ pub fn windowed_product_input_fetch_keys(
         &shared_timing.surface_hour_fetches
     } else if product.product.is_wind10m() {
         &shared_timing.wind_hour_fetches
+    } else if product.product.is_temp2m() {
+        &shared_timing.temp_hour_fetches
     } else {
         &shared_timing.uh_hour_fetches
     };
@@ -403,7 +449,7 @@ pub(crate) fn load_windowed_sampled_fields_from_latest(
     use_cache: bool,
     products: &[HrrrWindowedProduct],
 ) -> Result<WindowedSampledProductSet, Box<dyn std::error::Error>> {
-    let (planned_products, mut blockers, surface_hours, nat_hours, wind_hours) =
+    let (planned_products, mut blockers, surface_hours, nat_hours, wind_hours, temp_hours) =
         plan_windowed_products(products, forecast_hour, Some(latest.cycle.hour_utc));
     if planned_products.is_empty() {
         return Ok(WindowedSampledProductSet {
@@ -416,10 +462,12 @@ pub(crate) fn load_windowed_sampled_fields_from_latest(
     let mut all_hours: BTreeSet<u16> = surface_hours.iter().copied().collect();
     all_hours.extend(nat_hours.iter().copied());
     all_hours.extend(wind_hours.iter().copied());
+    all_hours.extend(temp_hours.iter().copied());
     for &hour in &all_hours {
         let requirement = BundleRequirement::new(CanonicalBundleDescriptor::NativeAnalysis, hour)
             .with_native_override("sfc");
-        if surface_hours.contains(&hour) || wind_hours.contains(&hour) {
+        if surface_hours.contains(&hour) || wind_hours.contains(&hour) || temp_hours.contains(&hour)
+        {
             plan_builder.require_with_logical_family(&requirement, Some("sfc"));
         }
         if nat_hours.contains(&hour) {
@@ -455,6 +503,8 @@ pub(crate) fn load_windowed_sampled_fields_from_latest(
         load_uh_hours_from_plan(Some(&loaded), &request, &nat_hours)?;
     let (wind_by_hour, wind_hour_fetches, _, _) =
         load_wind10m_hours_from_plan(Some(&loaded), &request, &wind_hours)?;
+    let (temp_by_hour, temp_hour_fetches, _, _) =
+        load_temp2m_hours_from_plan(Some(&loaded), &request, &temp_hours)?;
 
     let mut fields = Vec::new();
     for &product in &planned_products {
@@ -462,6 +512,8 @@ pub(crate) fn load_windowed_sampled_fields_from_latest(
             compute_qpf_product(product, forecast_hour, &grid, &apcp_by_hour)
         } else if product.is_wind10m() {
             compute_wind10m_product(product, forecast_hour, &grid, &wind_by_hour)
+        } else if product.is_temp2m() {
+            compute_temp2m_product(product, &grid, &temp_by_hour)
         } else {
             compute_uh_product(product, forecast_hour, &grid, &uh_by_hour)
         };
@@ -474,6 +526,7 @@ pub(crate) fn load_windowed_sampled_fields_from_latest(
                     &surface_hour_fetches,
                     &uh_hour_fetches,
                     &wind_hour_fetches,
+                    &temp_hour_fetches,
                 ),
                 field: computed.field,
             }),
@@ -513,11 +566,14 @@ fn input_fetches_for_windowed_product(
     surface_hour_fetches: &[HrrrWindowedHourFetchInfo],
     uh_hour_fetches: &[HrrrWindowedHourFetchInfo],
     wind_hour_fetches: &[HrrrWindowedHourFetchInfo],
+    temp_hour_fetches: &[HrrrWindowedHourFetchInfo],
 ) -> Vec<PublishedFetchIdentity> {
     let fetches = if product.is_qpf() {
         surface_hour_fetches
     } else if product.is_wind10m() {
         wind_hour_fetches
+    } else if product.is_temp2m() {
+        temp_hour_fetches
     } else {
         uh_hour_fetches
     };
@@ -573,7 +629,7 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
     let grid = geometry_context.grid;
     let projection = geometry_context.projection;
 
-    let (planned_products, mut blockers, surface_hours, nat_hours, wind_hours) =
+    let (planned_products, mut blockers, surface_hours, nat_hours, wind_hours, temp_hours) =
         plan_windowed_products(
             &request.products,
             request.forecast_hour,
@@ -583,11 +639,12 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
     // Build a planner execution plan for every contributing forecast
     // hour the windowed lane needs. APCP and native UH both live in the
     // wrfsfc file, so the planner dedupes when QPF and UH products at
-    // the same hour share a fetch — and the loader's parallel-fetch
+    // the same hour share a fetch - and the loader's parallel-fetch
     // path (off for NOMADS) keeps multi-hour runs reasonable.
     let mut all_hours: BTreeSet<u16> = surface_hours.iter().copied().collect();
     all_hours.extend(nat_hours.iter().copied());
     all_hours.extend(wind_hours.iter().copied());
+    all_hours.extend(temp_hours.iter().copied());
 
     let mut plan_builder = ExecutionPlanBuilder::new(latest, request.forecast_hour);
     for &hour in &all_hours {
@@ -598,7 +655,8 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
         // show up as "nat" because the windowed lane historically
         // logged them as native-family fetches even though both decode
         // out of wrfsfc.
-        if surface_hours.contains(&hour) || wind_hours.contains(&hour) {
+        if surface_hours.contains(&hour) || wind_hours.contains(&hour) || temp_hours.contains(&hour)
+        {
             plan_builder.require_with_logical_family(&requirement, Some("sfc"));
         }
         if nat_hours.contains(&hour) {
@@ -621,6 +679,8 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
         load_uh_hours_from_plan(loaded.as_ref(), request, &nat_hours)?;
     let (wind_by_hour, wind_hour_fetches, fetch_wind_ms, decode_wind_ms) =
         load_wind10m_hours_from_plan(loaded.as_ref(), request, &wind_hours)?;
+    let (temp_by_hour, temp_hour_fetches, fetch_temp_ms, decode_temp_ms) =
+        load_temp2m_hours_from_plan(loaded.as_ref(), request, &temp_hours)?;
 
     let product_parallelism = windowed_parallelism(request.source, planned_products.len());
     let date_yyyymmdd = request.date_yyyymmdd.as_str();
@@ -636,6 +696,7 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
     let apcp_by_hour = &apcp_by_hour;
     let uh_by_hour = &uh_by_hour;
     let wind_by_hour = &wind_by_hour;
+    let temp_by_hour = &temp_by_hour;
     let mut outcomes = thread::scope(|scope| -> Result<Vec<WindowedProductOutcome>, io::Error> {
         let mut done = Vec::with_capacity(planned_products.len());
         let mut pending = std::collections::VecDeque::new();
@@ -648,6 +709,8 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
                         compute_qpf_product(product, forecast_hour, grid, apcp_by_hour)
                     } else if product.is_wind10m() {
                         compute_wind10m_product(product, forecast_hour, grid, wind_by_hour)
+                    } else if product.is_temp2m() {
+                        compute_temp2m_product(product, grid, temp_by_hour)
                     } else {
                         compute_uh_product(product, forecast_hour, grid, uh_by_hour)
                     };
@@ -757,16 +820,20 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
             decode_nat_ms,
             fetch_wind_ms,
             decode_wind_ms,
+            fetch_temp_ms,
+            decode_temp_ms,
             geometry_fetch_cache_hit,
             geometry_decode_cache_hit,
             surface_hours_loaded: surface_hours.into_iter().collect(),
             nat_hours_loaded: nat_hours.into_iter().collect(),
             wind_hours_loaded: wind_hours.into_iter().collect(),
+            temp_hours_loaded: temp_hours.into_iter().collect(),
             geometry_fetch,
             geometry_input_fetch,
             surface_hour_fetches,
             uh_hour_fetches,
             wind_hour_fetches,
+            temp_hour_fetches,
         },
         products: rendered,
         blockers,
@@ -813,7 +880,8 @@ fn build_windowed_render_request(
     };
     render_request.supersample_factor = 2;
     render_request.domain_frame = Some(DomainFrame::model_data_default());
-    render_request.visual_mode = if product.is_qpf() || product.is_wind10m() {
+    render_request.visual_mode = if product.is_qpf() || product.is_wind10m() || product.is_temp2m()
+    {
         ProductVisualMode::FilledMeteorology
     } else {
         ProductVisualMode::SevereDiagnostic
@@ -850,6 +918,7 @@ fn plan_windowed_products(
     BTreeSet<u16>,
     BTreeSet<u16>,
     BTreeSet<u16>,
+    BTreeSet<u16>,
 ) {
     let mut seen = BTreeSet::new();
     let mut planned = Vec::new();
@@ -857,15 +926,16 @@ fn plan_windowed_products(
     let mut surface_hours = BTreeSet::new();
     let mut nat_hours = BTreeSet::new();
     let mut wind_hours = BTreeSet::new();
+    let mut temp_hours = BTreeSet::new();
 
     for &product in products {
         if !seen.insert(product.slug().to_string()) {
             continue;
         }
-        if product.is_diurnal_wind10m() && cycle_utc.is_some_and(|cycle| cycle != 0) {
+        if product.requires_00z_extended_cycle() && cycle_utc.is_some_and(|cycle| cycle != 0) {
             blockers.push(blocker(
                 product,
-                "diurnal 10 m wind max products are limited to 00Z HRRR extended cycles",
+                "fixed 24-48 h window products are limited to 00Z HRRR extended cycles",
             ));
             continue;
         }
@@ -983,12 +1053,49 @@ fn plan_windowed_products(
                 }
                 wind_hours.extend(1..=48);
             }
+            HrrrWindowedProduct::Temp2m0to24hMax | HrrrWindowedProduct::Temp2m0to24hMin => {
+                if forecast_hour < 24 {
+                    blockers.push(blocker(
+                        product,
+                        "0-24 h 2 m temperature window requires forecast hour >= 24",
+                    ));
+                    continue;
+                }
+                temp_hours.extend(1..=24);
+            }
+            HrrrWindowedProduct::Temp2m24to48hMax | HrrrWindowedProduct::Temp2m24to48hMin => {
+                if forecast_hour < 48 {
+                    blockers.push(blocker(
+                        product,
+                        "24-48 h 2 m temperature window requires forecast hour >= 48",
+                    ));
+                    continue;
+                }
+                temp_hours.extend(25..=48);
+            }
+            HrrrWindowedProduct::Temp2m0to48hMax | HrrrWindowedProduct::Temp2m0to48hMin => {
+                if forecast_hour < 48 {
+                    blockers.push(blocker(
+                        product,
+                        "0-48 h 2 m temperature window requires forecast hour >= 48",
+                    ));
+                    continue;
+                }
+                temp_hours.extend(1..=48);
+            }
         }
 
         planned.push(product);
     }
 
-    (planned, blockers, surface_hours, nat_hours, wind_hours)
+    (
+        planned,
+        blockers,
+        surface_hours,
+        nat_hours,
+        wind_hours,
+        temp_hours,
+    )
 }
 
 fn blocker(product: HrrrWindowedProduct, reason: impl Into<String>) -> HrrrWindowedBlocker {
@@ -1007,7 +1114,7 @@ fn blocker(product: HrrrWindowedProduct, reason: impl Into<String>) -> HrrrWindo
 /// windowed compute kernels (`compute_qpf_product` / `compute_uh_product`)
 /// propagate per-hour `Err` into a per-product blocker, so a single 404
 /// on one contributing hour collapses just the products whose window
-/// included that hour — the rest still render.
+/// included that hour - the rest still render.
 fn load_apcp_hours_from_plan(
     loaded: Option<&LoadedBundleSet>,
     request: &HrrrWindowedBatchRequest,
@@ -1194,6 +1301,70 @@ fn load_wind10m_hours_from_plan(
     Ok((out, fetches, total_fetch_ms, total_decode_ms))
 }
 
+/// Planner-loaded native 2 m temperature snapshot decode. HRRR does not
+/// carry reliable diurnal TMAX/TMIN fields in wrfsfc, so fixed-window
+/// temperature products reduce hourly TMP snapshots pulled by idx.
+fn load_temp2m_hours_from_plan(
+    loaded: Option<&LoadedBundleSet>,
+    request: &HrrrWindowedBatchRequest,
+    hours: &BTreeSet<u16>,
+) -> Result<
+    (
+        BTreeMap<u16, Result<HrrrTemp2mDecode, String>>,
+        Vec<HrrrWindowedHourFetchInfo>,
+        u128,
+        u128,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let mut out = BTreeMap::new();
+    let mut fetches = Vec::new();
+    let mut total_fetch_ms = 0u128;
+    let mut total_decode_ms = 0u128;
+
+    for &hour in hours {
+        let fetched = match loaded.and_then(|set| lookup_planner_bundle_for_hour(set, hour)) {
+            Some(bytes) => bytes,
+            None => {
+                let reason = planner_hour_failure_reason(loaded, hour);
+                out.insert(hour, Err(reason));
+                continue;
+            }
+        };
+        total_fetch_ms += fetched.fetch_ms;
+        let decode_path = decode_cache_path(
+            &request.cache_root,
+            &fetched.file.request,
+            "windowed_temp2m",
+        );
+        let decode_start = Instant::now();
+        let decode_result =
+            load_or_decode_temp2m(&decode_path, &fetched.file.bytes, request.use_cache)
+                .map_err(|err| err.to_string());
+        total_decode_ms += decode_start.elapsed().as_millis();
+        fetches.push(HrrrWindowedHourFetchInfo {
+            hour,
+            planned_product: "sfc".into(),
+            fetched_product: fetched.file.request.request.product.clone(),
+            requested_source: fetched
+                .file
+                .request
+                .source_override
+                .unwrap_or(fetched.file.fetched.result.source),
+            resolved_source: fetched.file.fetched.result.source,
+            resolved_url: fetched.file.fetched.result.url.clone(),
+            fetch_cache_hit: fetched.file.fetched.cache_hit,
+            input_fetch: Some(fetch_identity_from_cached_result(
+                "sfc",
+                &fetched.file.request,
+                &fetched.file.fetched,
+            )),
+        });
+        out.insert(hour, decode_result);
+    }
+    Ok((out, fetches, total_fetch_ms, total_decode_ms))
+}
+
 fn lookup_planner_bundle_for_hour<'a>(
     loaded: &'a LoadedBundleSet,
     hour: u16,
@@ -1263,41 +1434,74 @@ mod tests {
 
     #[test]
     fn plan_windowed_products_blocks_short_forecast_hours() {
-        let (planned, blockers, surface_hours, nat_hours, wind_hours) = plan_windowed_products(
-            &[HrrrWindowedProduct::Qpf24h, HrrrWindowedProduct::Uh25km3h],
-            2,
-            Some(0),
-        );
+        let (planned, blockers, surface_hours, nat_hours, wind_hours, temp_hours) =
+            plan_windowed_products(
+                &[HrrrWindowedProduct::Qpf24h, HrrrWindowedProduct::Uh25km3h],
+                2,
+                Some(0),
+            );
         assert!(planned.is_empty());
         assert_eq!(blockers.len(), 2);
         assert!(surface_hours.is_empty());
         assert!(nat_hours.is_empty());
         assert!(wind_hours.is_empty());
+        assert!(temp_hours.is_empty());
     }
 
     #[test]
     fn plan_windowed_products_adds_wind_max_hours_and_blocks_non_00z_diurnal() {
-        let (planned, blockers, surface_hours, nat_hours, wind_hours) = plan_windowed_products(
-            &[
-                HrrrWindowedProduct::Wind10m1hMax,
-                HrrrWindowedProduct::Wind10m0to24hMax,
-                HrrrWindowedProduct::Wind10m24to48hMax,
-                HrrrWindowedProduct::Wind10m0to48hMax,
-            ],
-            48,
-            Some(0),
-        );
+        let (planned, blockers, surface_hours, nat_hours, wind_hours, temp_hours) =
+            plan_windowed_products(
+                &[
+                    HrrrWindowedProduct::Wind10m1hMax,
+                    HrrrWindowedProduct::Wind10m0to24hMax,
+                    HrrrWindowedProduct::Wind10m24to48hMax,
+                    HrrrWindowedProduct::Wind10m0to48hMax,
+                ],
+                48,
+                Some(0),
+            );
         assert_eq!(planned.len(), 4);
         assert!(blockers.is_empty());
         assert!(surface_hours.is_empty());
         assert!(nat_hours.is_empty());
+        assert!(temp_hours.is_empty());
         assert_eq!(wind_hours.first(), Some(&1));
         assert_eq!(wind_hours.last(), Some(&48));
 
-        let (planned, blockers, _, _, wind_hours) =
+        let (planned, blockers, _, _, wind_hours, temp_hours) =
             plan_windowed_products(&[HrrrWindowedProduct::Wind10m0to24hMax], 24, Some(12));
         assert!(planned.is_empty());
         assert!(wind_hours.is_empty());
+        assert!(temp_hours.is_empty());
+        assert_eq!(blockers.len(), 1);
+        assert!(blockers[0].reason.contains("00Z"));
+    }
+
+    #[test]
+    fn plan_windowed_products_adds_diurnal_temperature_hours() {
+        let (planned, blockers, surface_hours, nat_hours, wind_hours, temp_hours) =
+            plan_windowed_products(
+                &[
+                    HrrrWindowedProduct::Temp2m0to24hMax,
+                    HrrrWindowedProduct::Temp2m24to48hMin,
+                    HrrrWindowedProduct::Temp2m0to48hMax,
+                ],
+                48,
+                Some(0),
+            );
+        assert_eq!(planned.len(), 3);
+        assert!(blockers.is_empty());
+        assert!(surface_hours.is_empty());
+        assert!(nat_hours.is_empty());
+        assert!(wind_hours.is_empty());
+        assert_eq!(temp_hours.first(), Some(&1));
+        assert_eq!(temp_hours.last(), Some(&48));
+
+        let (planned, blockers, _, _, _, temp_hours) =
+            plan_windowed_products(&[HrrrWindowedProduct::Temp2m0to24hMax], 24, Some(12));
+        assert!(planned.is_empty());
+        assert!(temp_hours.is_empty());
         assert_eq!(blockers.len(), 1);
         assert!(blockers[0].reason.contains("00Z"));
     }

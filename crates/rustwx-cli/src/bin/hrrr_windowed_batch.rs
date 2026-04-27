@@ -34,6 +34,12 @@ enum ProductArg {
     Wind10m0to24hMax,
     Wind10m24to48hMax,
     Wind10m0to48hMax,
+    Temp2m0to24hMax,
+    Temp2m24to48hMax,
+    Temp2m0to48hMax,
+    Temp2m0to24hMin,
+    Temp2m24to48hMin,
+    Temp2m0to48hMin,
 }
 
 impl From<ProductArg> for HrrrWindowedProduct {
@@ -52,6 +58,12 @@ impl From<ProductArg> for HrrrWindowedProduct {
             ProductArg::Wind10m0to24hMax => HrrrWindowedProduct::Wind10m0to24hMax,
             ProductArg::Wind10m24to48hMax => HrrrWindowedProduct::Wind10m24to48hMax,
             ProductArg::Wind10m0to48hMax => HrrrWindowedProduct::Wind10m0to48hMax,
+            ProductArg::Temp2m0to24hMax => HrrrWindowedProduct::Temp2m0to24hMax,
+            ProductArg::Temp2m24to48hMax => HrrrWindowedProduct::Temp2m24to48hMax,
+            ProductArg::Temp2m0to48hMax => HrrrWindowedProduct::Temp2m0to48hMax,
+            ProductArg::Temp2m0to24hMin => HrrrWindowedProduct::Temp2m0to24hMin,
+            ProductArg::Temp2m24to48hMin => HrrrWindowedProduct::Temp2m24to48hMin,
+            ProductArg::Temp2m0to48hMin => HrrrWindowedProduct::Temp2m0to48hMin,
         }
     }
 }
@@ -84,7 +96,7 @@ impl From<PlaceLabelDensityArg> for PlaceLabelDensityTier {
 #[derive(Debug, Parser)]
 #[command(
     name = "hrrr-windowed-batch",
-    about = "Generate conservative multi-hour HRRR QPF, UH, and 10 m wind window products"
+    about = "Generate conservative multi-hour HRRR QPF, UH, 10 m wind, and 2 m temperature window products"
 )]
 struct Args {
     #[arg(long, default_value = "20260414")]

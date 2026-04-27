@@ -863,7 +863,7 @@ mod tests {
     #[test]
     fn windowed_catalog_marks_hr_rr_windowed_products_supported() {
         let catalog = build_supported_products_catalog();
-        assert_eq!(catalog.windowed.len(), 13);
+        assert_eq!(catalog.windowed.len(), 19);
         assert!(
             catalog
                 .windowed
@@ -889,6 +889,12 @@ mod tests {
                 .windowed
                 .iter()
                 .any(|entry| entry.slug == "10m_wind_0_48h_max")
+        );
+        assert!(
+            catalog
+                .windowed
+                .iter()
+                .any(|entry| entry.slug == "2m_temp_0_24h_max")
         );
     }
 

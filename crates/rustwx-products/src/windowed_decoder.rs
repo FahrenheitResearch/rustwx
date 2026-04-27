@@ -1,21 +1,24 @@
 //! Decode + compute kernel for windowed products.
 //!
-//! This module owns the GRIB2 message decode for APCP, native UH, and
-//! native 10 m wind-max fields as well as the per-product window-compute
-//! kernels. It is deliberately separated from the batch orchestration in
+//! This module owns the GRIB2 message decode for APCP, native UH, native
+//! 10 m wind-max fields, and 2 m temperature snapshots as well as the
+//! per-product window-compute kernels. It is deliberately separated from the batch orchestration in
 //! [`crate::windowed`] so non-HRRR windowed products can plug in later
 //! without dragging the HRRR-specific runner along.
 //!
 //! The orchestrator in `windowed.rs` fetches bytes through the planner
 //! + runtime and then hands them here. Everything in this module is
-//! pure given bytes (plus the cache path when the caller opts in) — it
+//! pure given bytes (plus the cache path when the caller opts in) - it
 //! does no I/O of its own beyond the optional bincode cache.
 use crate::cache::{load_bincode, store_bincode};
 use crate::windowed::{HrrrWindowedProduct, HrrrWindowedProductMetadata};
 use grib_core::grib2::{Grib2File, Grib2Message, unpack_message_normalized};
 use rustwx_calc::{max_window_fields, sum_window_fields};
 use rustwx_core::{Field2D, ProductKey};
-use rustwx_render::{ColorScale, ExtendMode, WeatherPalette, WeatherProduct, palette_scale};
+use rustwx_render::{
+    ColorScale, DiscreteColorScale, ExtendMode, WeatherPalette, WeatherProduct, palette_scale,
+    weather::temperature_palette_cropped_f,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -42,6 +45,11 @@ pub(crate) struct HrrrUhDecode {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct HrrrWind10mMaxDecode {
     pub(crate) windows: Vec<WindowedFieldRecord>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct HrrrTemp2mDecode {
+    pub(crate) values: Vec<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +105,23 @@ pub(crate) fn load_or_decode_wind10m_max(
         }
     }
     let decoded = decode_wind10m_max(bytes)?;
+    if use_cache {
+        store_bincode(path, &decoded)?;
+    }
+    Ok(decoded)
+}
+
+pub(crate) fn load_or_decode_temp2m(
+    path: &Path,
+    bytes: &[u8],
+    use_cache: bool,
+) -> Result<HrrrTemp2mDecode, Box<dyn std::error::Error>> {
+    if use_cache {
+        if let Some(cached) = load_bincode::<HrrrTemp2mDecode>(path)? {
+            return Ok(cached);
+        }
+    }
+    let decoded = decode_temp2m(bytes)?;
     if use_cache {
         store_bincode(path, &decoded)?;
     }
@@ -187,6 +212,18 @@ pub(crate) fn decode_wind10m_max(
     Ok(HrrrWind10mMaxDecode { windows })
 }
 
+pub(crate) fn decode_temp2m(bytes: &[u8]) -> Result<HrrrTemp2mDecode, Box<dyn std::error::Error>> {
+    let grib = Grib2File::from_bytes(bytes)?;
+    for message in &grib.messages {
+        if is_temp2m_message(message) {
+            return Ok(HrrrTemp2mDecode {
+                values: unpack_message_normalized(message)?,
+            });
+        }
+    }
+    Err("no native 2 m temperature field was found in subset".into())
+}
+
 pub(crate) fn is_uh25_message(message: &Grib2Message) -> bool {
     matches!(
         (
@@ -205,6 +242,14 @@ pub(crate) fn is_wind10m_max_message(message: &Grib2Message) -> bool {
         && message.product.level_type == 103
         && (message.product.level_value - 10.0).abs() < 0.25
         && time_range_hours(message).is_some()
+}
+
+pub(crate) fn is_temp2m_message(message: &Grib2Message) -> bool {
+    message.discipline == 0
+        && message.product.parameter_category == 0
+        && message.product.parameter_number == 0
+        && message.product.level_type == 103
+        && (message.product.level_value - 2.0).abs() < 0.25
 }
 
 pub(crate) fn time_range_hours(message: &Grib2Message) -> Option<u16> {
@@ -464,6 +509,67 @@ pub(crate) fn compute_wind10m_product(
     })
 }
 
+pub(crate) fn compute_temp2m_product(
+    product: HrrrWindowedProduct,
+    grid: &rustwx_core::LatLonGrid,
+    temp_by_hour: &BTreeMap<u16, Result<HrrrTemp2mDecode, String>>,
+) -> Result<ComputedWindowedField, String> {
+    let (hours, is_max, window_hours) = match product {
+        HrrrWindowedProduct::Temp2m0to24hMax => ((1..=24).collect::<Vec<_>>(), true, Some(24)),
+        HrrrWindowedProduct::Temp2m24to48hMax => ((25..=48).collect::<Vec<_>>(), true, Some(24)),
+        HrrrWindowedProduct::Temp2m0to48hMax => ((1..=48).collect::<Vec<_>>(), true, Some(48)),
+        HrrrWindowedProduct::Temp2m0to24hMin => ((1..=24).collect::<Vec<_>>(), false, Some(24)),
+        HrrrWindowedProduct::Temp2m24to48hMin => ((25..=48).collect::<Vec<_>>(), false, Some(24)),
+        HrrrWindowedProduct::Temp2m0to48hMin => ((1..=48).collect::<Vec<_>>(), false, Some(48)),
+        _ => {
+            return Err(format!(
+                "{} is not a 2 m temperature window product",
+                product.slug()
+            ));
+        }
+    };
+    let windows = collect_temp2m_values(temp_by_hour, &hours)?;
+    let values_k = if is_max {
+        max_window_fields(grid.shape, &windows).map_err(|err| err.to_string())?
+    } else {
+        min_window_fields(grid.shape, &windows)?
+    };
+    let values_c = values_k
+        .into_iter()
+        .map(|value| value - 273.15)
+        .collect::<Vec<_>>();
+
+    let field = Field2D::new(
+        ProductKey::named(product.slug()),
+        "degC",
+        grid.clone(),
+        values_c.iter().map(|&value| value as f32).collect(),
+    )
+    .map_err(|err| err.to_string())?;
+    let window_label = match product {
+        HrrrWindowedProduct::Temp2m0to24hMax | HrrrWindowedProduct::Temp2m0to24hMin => "F001-F024",
+        HrrrWindowedProduct::Temp2m24to48hMax | HrrrWindowedProduct::Temp2m24to48hMin => {
+            "F025-F048"
+        }
+        HrrrWindowedProduct::Temp2m0to48hMax | HrrrWindowedProduct::Temp2m0to48hMin => "F001-F048",
+        _ => unreachable!(),
+    };
+    let operation = if is_max { "max" } else { "min" };
+
+    Ok(ComputedWindowedField {
+        field,
+        title: product.title().to_string(),
+        metadata: HrrrWindowedProductMetadata {
+            strategy: format!(
+                "pointwise {operation} of hourly 2 m temperature snapshots across {window_label}"
+            ),
+            contributing_forecast_hours: hours,
+            window_hours,
+        },
+        scale: ColorScale::Discrete(temp2m_scale()),
+    })
+}
+
 pub(crate) fn collect_apcp_windows<'a>(
     apcp_by_hour: &'a BTreeMap<u16, Result<HrrrApcpDecode, String>>,
     hours: &[u16],
@@ -533,6 +639,42 @@ pub(crate) fn collect_wind10m_windows<'a>(
     Ok(out)
 }
 
+pub(crate) fn collect_temp2m_values<'a>(
+    temp_by_hour: &'a BTreeMap<u16, Result<HrrrTemp2mDecode, String>>,
+    hours: &[u16],
+) -> Result<Vec<&'a [f64]>, String> {
+    let mut out = Vec::with_capacity(hours.len());
+    for &hour in hours {
+        let decoded = temp_by_hour
+            .get(&hour)
+            .ok_or_else(|| format!("missing native 2 m temperature fetch for F{:03}", hour))?
+            .as_ref()
+            .map_err(Clone::clone)?;
+        out.push(decoded.values.as_slice());
+    }
+    Ok(out)
+}
+
+fn min_window_fields(grid: rustwx_core::GridShape, fields: &[&[f64]]) -> Result<Vec<f64>, String> {
+    if fields.is_empty() {
+        return Err("min window requires at least one input field".to_string());
+    }
+    let expected = grid.len();
+    let mut out = vec![f64::INFINITY; expected];
+    for values in fields {
+        if values.len() != expected {
+            return Err(format!(
+                "window_field length mismatch: expected {expected}, got {}",
+                values.len()
+            ));
+        }
+        for (target, value) in out.iter_mut().zip(values.iter()) {
+            *target = target.min(*value);
+        }
+    }
+    Ok(out)
+}
+
 pub(crate) fn select_window(records: &[WindowedFieldRecord], hours: u16) -> Option<&[f64]> {
     records
         .iter()
@@ -558,6 +700,31 @@ pub(crate) fn wind10m_scale() -> rustwx_render::DiscreteColorScale {
         ExtendMode::Both,
         None,
     )
+}
+
+pub(crate) fn temp2m_scale() -> DiscreteColorScale {
+    let lo = -50.0;
+    let hi = 50.5;
+    let step = 0.5;
+    DiscreteColorScale {
+        levels: range_step(lo, hi, step),
+        colors: temperature_palette_cropped_f(
+            Some((-40.0, 120.0)),
+            (((hi - lo) / step).round() as usize).max(2),
+        ),
+        extend: ExtendMode::Both,
+        mask_below: None,
+    }
+}
+
+fn range_step(start: f64, end: f64, step: f64) -> Vec<f64> {
+    let mut values = Vec::new();
+    let mut value = start;
+    while value <= end + step * 0.5 {
+        values.push((value * 1000.0).round() / 1000.0);
+        value += step;
+    }
+    values
 }
 
 #[cfg(test)]
@@ -603,7 +770,7 @@ mod tests {
     fn compute_qpf_window_blocks_when_a_contributing_hour_is_missing() {
         // Partial-success regression: if the planner couldn't fetch one
         // hour inside a windowed QPF product's window, the compute
-        // kernel must emit a blocker for *that* product — not abort the
+        // kernel must emit a blocker for *that* product - not abort the
         // whole windowed lane. The windowed lane's loader inserts
         // Err(reason) for missing hours; compute_qpf_product surfaces
         // the reason through the normal per-product blocker path.
@@ -622,7 +789,7 @@ mod tests {
         }
         apcp.insert(2, Err("hour 2 fetch failed: 404 Not Found".to_string()));
 
-        // Qpf24h hitting forecast_hour 3 would want hours 1..=3 — the
+        // Qpf24h hitting forecast_hour 3 would want hours 1..=3 - the
         // missing hour 2 has to blocker this product. Use QpfTotal
         // (covers 1..=forecast_hour) which is more representative.
         let err = compute_qpf_product(HrrrWindowedProduct::QpfTotal, 3, &tiny_grid(), &apcp)
@@ -632,7 +799,7 @@ mod tests {
             "blocker should reference the missing hour or its upstream reason; got: {err}"
         );
 
-        // Meanwhile a 1-hour QPF at forecast_hour 3 needs only hour 3 —
+        // Meanwhile a 1-hour QPF at forecast_hour 3 needs only hour 3 -
         // the missing hour 2 doesn't block it, and the product still
         // renders.
         let ok = compute_qpf_product(HrrrWindowedProduct::Qpf1h, 3, &tiny_grid(), &apcp)
@@ -726,5 +893,36 @@ mod tests {
             "run max of native hourly 10 m wind maxima"
         );
         assert_eq!(computed.field.units, "kt");
+    }
+
+    #[test]
+    fn compute_temp2m_diurnal_windows_take_pointwise_extrema_and_convert_to_c() {
+        let mut temp = BTreeMap::new();
+        for hour in 1..=24 {
+            temp.insert(
+                hour,
+                Ok(HrrrTemp2mDecode {
+                    values: vec![273.15 + hour as f64, 310.15 - hour as f64],
+                }),
+            );
+        }
+
+        let max = compute_temp2m_product(HrrrWindowedProduct::Temp2m0to24hMax, &tiny_grid(), &temp)
+            .unwrap();
+        assert_eq!(max.field.values, vec![24.0_f32, 36.0_f32]);
+        assert_eq!(max.field.units, "degC");
+        assert_eq!(
+            max.metadata.strategy,
+            "pointwise max of hourly 2 m temperature snapshots across F001-F024"
+        );
+
+        let min = compute_temp2m_product(HrrrWindowedProduct::Temp2m0to24hMin, &tiny_grid(), &temp)
+            .unwrap();
+        assert_eq!(min.field.values, vec![1.0_f32, 13.0_f32]);
+        assert_eq!(min.field.units, "degC");
+        assert_eq!(
+            min.metadata.strategy,
+            "pointwise min of hourly 2 m temperature snapshots across F001-F024"
+        );
     }
 }

@@ -177,6 +177,36 @@ pub fn windowed_product_specs() -> Vec<ProductSpec> {
             "00Z-only fixed two-day max of native hourly 10 m wind-speed maxima from F001..F048",
             "weather_winds",
         ),
+        (
+            HrrrWindowedProduct::Temp2m0to24hMax,
+            "00Z-only fixed diurnal max of hourly 2 m temperature snapshots from F001..F024",
+            "weather_temperature",
+        ),
+        (
+            HrrrWindowedProduct::Temp2m24to48hMax,
+            "00Z-only fixed diurnal max of hourly 2 m temperature snapshots from F025..F048",
+            "weather_temperature",
+        ),
+        (
+            HrrrWindowedProduct::Temp2m0to48hMax,
+            "00Z-only fixed two-day max of hourly 2 m temperature snapshots from F001..F048",
+            "weather_temperature",
+        ),
+        (
+            HrrrWindowedProduct::Temp2m0to24hMin,
+            "00Z-only fixed diurnal min of hourly 2 m temperature snapshots from F001..F024",
+            "weather_temperature",
+        ),
+        (
+            HrrrWindowedProduct::Temp2m24to48hMin,
+            "00Z-only fixed diurnal min of hourly 2 m temperature snapshots from F025..F048",
+            "weather_temperature",
+        ),
+        (
+            HrrrWindowedProduct::Temp2m0to48hMin,
+            "00Z-only fixed two-day min of hourly 2 m temperature snapshots from F001..F048",
+            "weather_temperature",
+        ),
     ]
     .into_iter()
     .map(|(product, note, render_style)| windowed_product_spec(product, note, render_style))
@@ -322,6 +352,12 @@ fn windowed_product_spec(
                 | HrrrWindowedProduct::Wind10m0to24hMax
                 | HrrrWindowedProduct::Wind10m24to48hMax
                 | HrrrWindowedProduct::Wind10m0to48hMax => Some("m/s"),
+                HrrrWindowedProduct::Temp2m0to24hMax
+                | HrrrWindowedProduct::Temp2m24to48hMax
+                | HrrrWindowedProduct::Temp2m0to48hMax
+                | HrrrWindowedProduct::Temp2m0to24hMin
+                | HrrrWindowedProduct::Temp2m24to48hMin
+                | HrrrWindowedProduct::Temp2m0to48hMin => Some("K"),
             },
             id,
             &aliases,
@@ -333,13 +369,26 @@ fn windowed_product_spec(
         notes: {
             let mut notes = vec![
                 note.to_string(),
-                "Backed by HRRR statistical time-window metadata surfaced through grib-core"
-                    .to_string(),
+                windowed_product_source_note(product).to_string(),
             ];
             notes.extend(legacy_alias_notes(ProductKind::Windowed, product.slug()));
             notes
         },
         blocked_reasons: Vec::new(),
+    }
+}
+
+fn windowed_product_source_note(product: HrrrWindowedProduct) -> &'static str {
+    match product {
+        HrrrWindowedProduct::Temp2m0to24hMax
+        | HrrrWindowedProduct::Temp2m24to48hMax
+        | HrrrWindowedProduct::Temp2m0to48hMax
+        | HrrrWindowedProduct::Temp2m0to24hMin
+        | HrrrWindowedProduct::Temp2m24to48hMin
+        | HrrrWindowedProduct::Temp2m0to48hMin => {
+            "Computed from hourly HRRR 2 m temperature snapshots because wrfsfc does not expose reliable native TMAX/TMIN fields"
+        }
+        _ => "Backed by HRRR statistical time-window metadata surfaced through grib-core",
     }
 }
 
@@ -472,6 +521,30 @@ fn windowed_product_window(product: HrrrWindowedProduct) -> ProductWindowSpec {
         }
         HrrrWindowedProduct::Wind10m0to48hMax => ProductWindowSpec {
             process: StatisticalProcess::Maximum,
+            duration_hours: Some(48),
+        },
+        HrrrWindowedProduct::Temp2m0to24hMax => ProductWindowSpec {
+            process: StatisticalProcess::Maximum,
+            duration_hours: Some(24),
+        },
+        HrrrWindowedProduct::Temp2m24to48hMax => ProductWindowSpec {
+            process: StatisticalProcess::Maximum,
+            duration_hours: Some(24),
+        },
+        HrrrWindowedProduct::Temp2m0to48hMax => ProductWindowSpec {
+            process: StatisticalProcess::Maximum,
+            duration_hours: Some(48),
+        },
+        HrrrWindowedProduct::Temp2m0to24hMin => ProductWindowSpec {
+            process: StatisticalProcess::Minimum,
+            duration_hours: Some(24),
+        },
+        HrrrWindowedProduct::Temp2m24to48hMin => ProductWindowSpec {
+            process: StatisticalProcess::Minimum,
+            duration_hours: Some(24),
+        },
+        HrrrWindowedProduct::Temp2m0to48hMin => ProductWindowSpec {
+            process: StatisticalProcess::Minimum,
             duration_hours: Some(48),
         },
     }

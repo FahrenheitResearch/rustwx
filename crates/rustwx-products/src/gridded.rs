@@ -1286,6 +1286,7 @@ pub(crate) fn bundle_fetch_variable_patterns(
         (CanonicalBundleDescriptor::NativeAnalysis, "sfc") if matches!(model, ModelId::Hrrr) => {
             vec![
                 "APCP:surface",
+                "TMP:2 m above ground",
                 "MXUPHL:5000-2000 m above ground",
                 "WIND:10 m above ground",
             ]

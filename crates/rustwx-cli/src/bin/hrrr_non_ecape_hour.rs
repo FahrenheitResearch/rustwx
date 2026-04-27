@@ -33,6 +33,12 @@ enum WindowedProductArg {
     Wind10m0to24hMax,
     Wind10m24to48hMax,
     Wind10m0to48hMax,
+    Temp2m0to24hMax,
+    Temp2m24to48hMax,
+    Temp2m0to48hMax,
+    Temp2m0to24hMin,
+    Temp2m24to48hMin,
+    Temp2m0to48hMin,
 }
 
 impl From<WindowedProductArg> for HrrrWindowedProduct {
@@ -51,6 +57,12 @@ impl From<WindowedProductArg> for HrrrWindowedProduct {
             WindowedProductArg::Wind10m0to24hMax => HrrrWindowedProduct::Wind10m0to24hMax,
             WindowedProductArg::Wind10m24to48hMax => HrrrWindowedProduct::Wind10m24to48hMax,
             WindowedProductArg::Wind10m0to48hMax => HrrrWindowedProduct::Wind10m0to48hMax,
+            WindowedProductArg::Temp2m0to24hMax => HrrrWindowedProduct::Temp2m0to24hMax,
+            WindowedProductArg::Temp2m24to48hMax => HrrrWindowedProduct::Temp2m24to48hMax,
+            WindowedProductArg::Temp2m0to48hMax => HrrrWindowedProduct::Temp2m0to48hMax,
+            WindowedProductArg::Temp2m0to24hMin => HrrrWindowedProduct::Temp2m0to24hMin,
+            WindowedProductArg::Temp2m24to48hMin => HrrrWindowedProduct::Temp2m24to48hMin,
+            WindowedProductArg::Temp2m0to48hMin => HrrrWindowedProduct::Temp2m0to48hMin,
         }
     }
 }

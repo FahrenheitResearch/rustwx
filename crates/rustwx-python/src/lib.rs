@@ -953,6 +953,32 @@ fn parse_windowed_product(value: &str) -> PyResult<HrrrWindowedProduct> {
         "10m_wind_0_48h_max" | "10m_wind_0_48_max" | "wind10m_0_48h_max" | "wind10m_2day_max" => {
             Ok(HrrrWindowedProduct::Wind10m0to48hMax)
         }
+        "2m_temp_0_24h_max"
+        | "2m_temperature_0_24h_max"
+        | "temp2m_0_24h_max"
+        | "tmax_0_24h"
+        | "diurnal_temp_day1_max" => Ok(HrrrWindowedProduct::Temp2m0to24hMax),
+        "2m_temp_24_48h_max"
+        | "2m_temperature_24_48h_max"
+        | "temp2m_24_48h_max"
+        | "tmax_24_48h"
+        | "diurnal_temp_day2_max" => Ok(HrrrWindowedProduct::Temp2m24to48hMax),
+        "2m_temp_0_48h_max" | "2m_temperature_0_48h_max" | "temp2m_0_48h_max" | "tmax_0_48h" => {
+            Ok(HrrrWindowedProduct::Temp2m0to48hMax)
+        }
+        "2m_temp_0_24h_min"
+        | "2m_temperature_0_24h_min"
+        | "temp2m_0_24h_min"
+        | "tmin_0_24h"
+        | "diurnal_temp_day1_min" => Ok(HrrrWindowedProduct::Temp2m0to24hMin),
+        "2m_temp_24_48h_min"
+        | "2m_temperature_24_48h_min"
+        | "temp2m_24_48h_min"
+        | "tmin_24_48h"
+        | "diurnal_temp_day2_min" => Ok(HrrrWindowedProduct::Temp2m24to48hMin),
+        "2m_temp_0_48h_min" | "2m_temperature_0_48h_min" | "temp2m_0_48h_min" | "tmin_0_48h" => {
+            Ok(HrrrWindowedProduct::Temp2m0to48hMin)
+        }
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
             "unsupported windowed product '{other}'"
         ))),
@@ -975,6 +1001,12 @@ fn supported_windowed_product_slugs() -> Vec<String> {
         HrrrWindowedProduct::Wind10m0to24hMax,
         HrrrWindowedProduct::Wind10m24to48hMax,
         HrrrWindowedProduct::Wind10m0to48hMax,
+        HrrrWindowedProduct::Temp2m0to24hMax,
+        HrrrWindowedProduct::Temp2m24to48hMax,
+        HrrrWindowedProduct::Temp2m0to48hMax,
+        HrrrWindowedProduct::Temp2m0to24hMin,
+        HrrrWindowedProduct::Temp2m24to48hMin,
+        HrrrWindowedProduct::Temp2m0to48hMin,
     ]
     .into_iter()
     .map(|product| product.slug().to_string())
@@ -1376,6 +1408,29 @@ mod tests {
         assert!(routed.direct_recipe_slugs.is_empty());
         assert_eq!(routed.derived_recipe_slugs, vec!["mlcape", "srh_0_3km"]);
         assert_eq!(routed.windowed_products, vec![HrrrWindowedProduct::Qpf1h]);
+    }
+
+    #[test]
+    fn render_maps_router_accepts_diurnal_temp_aliases_as_windowed_products() {
+        let request = RenderMapsRequestJson {
+            products: Some(vec![
+                "diurnal_temp_day1_max".to_string(),
+                "tmin_24_48h".to_string(),
+            ]),
+            ..RenderMapsRequestJson::default()
+        };
+
+        let routed = route_requested_products(ModelId::Hrrr, &request).unwrap();
+
+        assert!(routed.direct_recipe_slugs.is_empty());
+        assert!(routed.derived_recipe_slugs.is_empty());
+        assert_eq!(
+            routed.windowed_products,
+            vec![
+                HrrrWindowedProduct::Temp2m0to24hMax,
+                HrrrWindowedProduct::Temp2m24to48hMin
+            ]
+        );
     }
 
     #[test]
