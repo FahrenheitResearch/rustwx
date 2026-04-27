@@ -1575,6 +1575,9 @@ fn windowed_artifact_detail(
             | HrrrWindowedProduct::Temp2m0to24hMin
             | HrrrWindowedProduct::Temp2m24to48hMin
             | HrrrWindowedProduct::Temp2m0to48hMin
+            | HrrrWindowedProduct::Temp2m0to24hRange
+            | HrrrWindowedProduct::Temp2m24to48hRange
+            | HrrrWindowedProduct::Temp2m0to48hRange
     );
     let fetches = windowed_runtime_fetches_for_product(product, shared_timing);
     let planned_family = fetches
@@ -1679,6 +1682,9 @@ fn windowed_runtime_fetches_for_product<'a>(
             | HrrrWindowedProduct::Temp2m0to24hMin
             | HrrrWindowedProduct::Temp2m24to48hMin
             | HrrrWindowedProduct::Temp2m0to48hMin
+            | HrrrWindowedProduct::Temp2m0to24hRange
+            | HrrrWindowedProduct::Temp2m24to48hRange
+            | HrrrWindowedProduct::Temp2m0to48hRange
     );
     let contributing_hours = &product.metadata.contributing_forecast_hours;
     let fetches = if is_qpf {

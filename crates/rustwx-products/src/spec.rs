@@ -207,6 +207,21 @@ pub fn windowed_product_specs() -> Vec<ProductSpec> {
             "00Z-only fixed two-day min of hourly 2 m temperature snapshots from F001..F048",
             "weather_temperature",
         ),
+        (
+            HrrrWindowedProduct::Temp2m0to24hRange,
+            "00Z-only fixed diurnal max-minus-min range of hourly 2 m temperature snapshots from F001..F024",
+            "weather_temperature",
+        ),
+        (
+            HrrrWindowedProduct::Temp2m24to48hRange,
+            "00Z-only fixed diurnal max-minus-min range of hourly 2 m temperature snapshots from F025..F048",
+            "weather_temperature",
+        ),
+        (
+            HrrrWindowedProduct::Temp2m0to48hRange,
+            "00Z-only fixed two-day max-minus-min range of hourly 2 m temperature snapshots from F001..F048",
+            "weather_temperature",
+        ),
     ]
     .into_iter()
     .map(|(product, note, render_style)| windowed_product_spec(product, note, render_style))
@@ -357,7 +372,10 @@ fn windowed_product_spec(
                 | HrrrWindowedProduct::Temp2m0to48hMax
                 | HrrrWindowedProduct::Temp2m0to24hMin
                 | HrrrWindowedProduct::Temp2m24to48hMin
-                | HrrrWindowedProduct::Temp2m0to48hMin => Some("K"),
+                | HrrrWindowedProduct::Temp2m0to48hMin
+                | HrrrWindowedProduct::Temp2m0to24hRange
+                | HrrrWindowedProduct::Temp2m24to48hRange
+                | HrrrWindowedProduct::Temp2m0to48hRange => Some("K"),
             },
             id,
             &aliases,
@@ -385,7 +403,10 @@ fn windowed_product_source_note(product: HrrrWindowedProduct) -> &'static str {
         | HrrrWindowedProduct::Temp2m0to48hMax
         | HrrrWindowedProduct::Temp2m0to24hMin
         | HrrrWindowedProduct::Temp2m24to48hMin
-        | HrrrWindowedProduct::Temp2m0to48hMin => {
+        | HrrrWindowedProduct::Temp2m0to48hMin
+        | HrrrWindowedProduct::Temp2m0to24hRange
+        | HrrrWindowedProduct::Temp2m24to48hRange
+        | HrrrWindowedProduct::Temp2m0to48hRange => {
             "Computed from hourly HRRR 2 m temperature snapshots because wrfsfc does not expose reliable native TMAX/TMIN fields"
         }
         _ => "Backed by HRRR statistical time-window metadata surfaced through grib-core",
@@ -545,6 +566,18 @@ fn windowed_product_window(product: HrrrWindowedProduct) -> ProductWindowSpec {
         },
         HrrrWindowedProduct::Temp2m0to48hMin => ProductWindowSpec {
             process: StatisticalProcess::Minimum,
+            duration_hours: Some(48),
+        },
+        HrrrWindowedProduct::Temp2m0to24hRange => ProductWindowSpec {
+            process: StatisticalProcess::Range,
+            duration_hours: Some(24),
+        },
+        HrrrWindowedProduct::Temp2m24to48hRange => ProductWindowSpec {
+            process: StatisticalProcess::Range,
+            duration_hours: Some(24),
+        },
+        HrrrWindowedProduct::Temp2m0to48hRange => ProductWindowSpec {
+            process: StatisticalProcess::Range,
             duration_hours: Some(48),
         },
     }

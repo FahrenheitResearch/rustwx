@@ -66,6 +66,9 @@ pub enum HrrrWindowedProduct {
     Temp2m0to24hMin,
     Temp2m24to48hMin,
     Temp2m0to48hMin,
+    Temp2m0to24hRange,
+    Temp2m24to48hRange,
+    Temp2m0to48hRange,
 }
 
 impl HrrrWindowedProduct {
@@ -90,6 +93,9 @@ impl HrrrWindowedProduct {
             Self::Temp2m0to24hMin => "2m_temp_0_24h_min",
             Self::Temp2m24to48hMin => "2m_temp_24_48h_min",
             Self::Temp2m0to48hMin => "2m_temp_0_48h_min",
+            Self::Temp2m0to24hRange => "2m_temp_0_24h_range",
+            Self::Temp2m24to48hRange => "2m_temp_24_48h_range",
+            Self::Temp2m0to48hRange => "2m_temp_0_48h_range",
         }
     }
 
@@ -114,6 +120,9 @@ impl HrrrWindowedProduct {
             Self::Temp2m0to24hMin => "2 m Temperature (0-24 h min)",
             Self::Temp2m24to48hMin => "2 m Temperature (24-48 h min)",
             Self::Temp2m0to48hMin => "2 m Temperature (0-48 h min)",
+            Self::Temp2m0to24hRange => "2 m Temperature Range (0-24 h)",
+            Self::Temp2m24to48hRange => "2 m Temperature Range (24-48 h)",
+            Self::Temp2m0to48hRange => "2 m Temperature Range (0-48 h)",
         }
     }
 
@@ -155,6 +164,9 @@ impl HrrrWindowedProduct {
                 | Self::Temp2m0to24hMin
                 | Self::Temp2m24to48hMin
                 | Self::Temp2m0to48hMin
+                | Self::Temp2m0to24hRange
+                | Self::Temp2m24to48hRange
+                | Self::Temp2m0to48hRange
         )
     }
 
@@ -1053,7 +1065,9 @@ fn plan_windowed_products(
                 }
                 wind_hours.extend(1..=48);
             }
-            HrrrWindowedProduct::Temp2m0to24hMax | HrrrWindowedProduct::Temp2m0to24hMin => {
+            HrrrWindowedProduct::Temp2m0to24hMax
+            | HrrrWindowedProduct::Temp2m0to24hMin
+            | HrrrWindowedProduct::Temp2m0to24hRange => {
                 if forecast_hour < 24 {
                     blockers.push(blocker(
                         product,
@@ -1063,7 +1077,9 @@ fn plan_windowed_products(
                 }
                 temp_hours.extend(1..=24);
             }
-            HrrrWindowedProduct::Temp2m24to48hMax | HrrrWindowedProduct::Temp2m24to48hMin => {
+            HrrrWindowedProduct::Temp2m24to48hMax
+            | HrrrWindowedProduct::Temp2m24to48hMin
+            | HrrrWindowedProduct::Temp2m24to48hRange => {
                 if forecast_hour < 48 {
                     blockers.push(blocker(
                         product,
@@ -1073,7 +1089,9 @@ fn plan_windowed_products(
                 }
                 temp_hours.extend(25..=48);
             }
-            HrrrWindowedProduct::Temp2m0to48hMax | HrrrWindowedProduct::Temp2m0to48hMin => {
+            HrrrWindowedProduct::Temp2m0to48hMax
+            | HrrrWindowedProduct::Temp2m0to48hMin
+            | HrrrWindowedProduct::Temp2m0to48hRange => {
                 if forecast_hour < 48 {
                     blockers.push(blocker(
                         product,
@@ -1486,11 +1504,12 @@ mod tests {
                     HrrrWindowedProduct::Temp2m0to24hMax,
                     HrrrWindowedProduct::Temp2m24to48hMin,
                     HrrrWindowedProduct::Temp2m0to48hMax,
+                    HrrrWindowedProduct::Temp2m0to48hRange,
                 ],
                 48,
                 Some(0),
             );
-        assert_eq!(planned.len(), 3);
+        assert_eq!(planned.len(), 4);
         assert!(blockers.is_empty());
         assert!(surface_hours.is_empty());
         assert!(nat_hours.is_empty());

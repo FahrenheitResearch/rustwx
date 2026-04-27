@@ -587,6 +587,9 @@ fn parse_windowed_product_slug(slug: &str) -> Option<HrrrWindowedProduct> {
         HrrrWindowedProduct::Temp2m0to24hMin,
         HrrrWindowedProduct::Temp2m24to48hMin,
         HrrrWindowedProduct::Temp2m0to48hMin,
+        HrrrWindowedProduct::Temp2m0to24hRange,
+        HrrrWindowedProduct::Temp2m24to48hRange,
+        HrrrWindowedProduct::Temp2m0to48hRange,
     ]
     .into_iter()
     .find(|product| normalize_sampling_slug(product.slug()) == wanted)

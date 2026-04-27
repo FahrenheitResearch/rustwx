@@ -602,6 +602,7 @@ pub enum StatisticalProcess {
     Average,
     Maximum,
     Minimum,
+    Range,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

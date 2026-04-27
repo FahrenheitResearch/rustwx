@@ -514,13 +514,40 @@ pub(crate) fn compute_temp2m_product(
     grid: &rustwx_core::LatLonGrid,
     temp_by_hour: &BTreeMap<u16, Result<HrrrTemp2mDecode, String>>,
 ) -> Result<ComputedWindowedField, String> {
-    let (hours, is_max, window_hours) = match product {
-        HrrrWindowedProduct::Temp2m0to24hMax => ((1..=24).collect::<Vec<_>>(), true, Some(24)),
-        HrrrWindowedProduct::Temp2m24to48hMax => ((25..=48).collect::<Vec<_>>(), true, Some(24)),
-        HrrrWindowedProduct::Temp2m0to48hMax => ((1..=48).collect::<Vec<_>>(), true, Some(48)),
-        HrrrWindowedProduct::Temp2m0to24hMin => ((1..=24).collect::<Vec<_>>(), false, Some(24)),
-        HrrrWindowedProduct::Temp2m24to48hMin => ((25..=48).collect::<Vec<_>>(), false, Some(24)),
-        HrrrWindowedProduct::Temp2m0to48hMin => ((1..=48).collect::<Vec<_>>(), false, Some(48)),
+    let (hours, operation, window_hours) = match product {
+        HrrrWindowedProduct::Temp2m0to24hMax => {
+            ((1..=24).collect::<Vec<_>>(), Temp2mWindowOp::Max, Some(24))
+        }
+        HrrrWindowedProduct::Temp2m24to48hMax => {
+            ((25..=48).collect::<Vec<_>>(), Temp2mWindowOp::Max, Some(24))
+        }
+        HrrrWindowedProduct::Temp2m0to48hMax => {
+            ((1..=48).collect::<Vec<_>>(), Temp2mWindowOp::Max, Some(48))
+        }
+        HrrrWindowedProduct::Temp2m0to24hMin => {
+            ((1..=24).collect::<Vec<_>>(), Temp2mWindowOp::Min, Some(24))
+        }
+        HrrrWindowedProduct::Temp2m24to48hMin => {
+            ((25..=48).collect::<Vec<_>>(), Temp2mWindowOp::Min, Some(24))
+        }
+        HrrrWindowedProduct::Temp2m0to48hMin => {
+            ((1..=48).collect::<Vec<_>>(), Temp2mWindowOp::Min, Some(48))
+        }
+        HrrrWindowedProduct::Temp2m0to24hRange => (
+            (1..=24).collect::<Vec<_>>(),
+            Temp2mWindowOp::Range,
+            Some(24),
+        ),
+        HrrrWindowedProduct::Temp2m24to48hRange => (
+            (25..=48).collect::<Vec<_>>(),
+            Temp2mWindowOp::Range,
+            Some(24),
+        ),
+        HrrrWindowedProduct::Temp2m0to48hRange => (
+            (1..=48).collect::<Vec<_>>(),
+            Temp2mWindowOp::Range,
+            Some(48),
+        ),
         _ => {
             return Err(format!(
                 "{} is not a 2 m temperature window product",
@@ -529,45 +556,76 @@ pub(crate) fn compute_temp2m_product(
         }
     };
     let windows = collect_temp2m_values(temp_by_hour, &hours)?;
-    let values_k = if is_max {
-        max_window_fields(grid.shape, &windows).map_err(|err| err.to_string())?
-    } else {
-        min_window_fields(grid.shape, &windows)?
+    let values = match operation {
+        Temp2mWindowOp::Max => max_window_fields(grid.shape, &windows)
+            .map_err(|err| err.to_string())?
+            .into_iter()
+            .map(|value| value - 273.15)
+            .collect::<Vec<_>>(),
+        Temp2mWindowOp::Min => min_window_fields(grid.shape, &windows)?
+            .into_iter()
+            .map(|value| value - 273.15)
+            .collect::<Vec<_>>(),
+        Temp2mWindowOp::Range => {
+            let max_values =
+                max_window_fields(grid.shape, &windows).map_err(|err| err.to_string())?;
+            let min_values = min_window_fields(grid.shape, &windows)?;
+            max_values
+                .into_iter()
+                .zip(min_values)
+                .map(|(max_value, min_value)| max_value - min_value)
+                .collect::<Vec<_>>()
+        }
     };
-    let values_c = values_k
-        .into_iter()
-        .map(|value| value - 273.15)
-        .collect::<Vec<_>>();
 
     let field = Field2D::new(
         ProductKey::named(product.slug()),
         "degC",
         grid.clone(),
-        values_c.iter().map(|&value| value as f32).collect(),
+        values.iter().map(|&value| value as f32).collect(),
     )
     .map_err(|err| err.to_string())?;
     let window_label = match product {
-        HrrrWindowedProduct::Temp2m0to24hMax | HrrrWindowedProduct::Temp2m0to24hMin => "F001-F024",
-        HrrrWindowedProduct::Temp2m24to48hMax | HrrrWindowedProduct::Temp2m24to48hMin => {
-            "F025-F048"
-        }
-        HrrrWindowedProduct::Temp2m0to48hMax | HrrrWindowedProduct::Temp2m0to48hMin => "F001-F048",
+        HrrrWindowedProduct::Temp2m0to24hMax
+        | HrrrWindowedProduct::Temp2m0to24hMin
+        | HrrrWindowedProduct::Temp2m0to24hRange => "F001-F024",
+        HrrrWindowedProduct::Temp2m24to48hMax
+        | HrrrWindowedProduct::Temp2m24to48hMin
+        | HrrrWindowedProduct::Temp2m24to48hRange => "F025-F048",
+        HrrrWindowedProduct::Temp2m0to48hMax
+        | HrrrWindowedProduct::Temp2m0to48hMin
+        | HrrrWindowedProduct::Temp2m0to48hRange => "F001-F048",
         _ => unreachable!(),
     };
-    let operation = if is_max { "max" } else { "min" };
+    let operation_label = match operation {
+        Temp2mWindowOp::Max => "max",
+        Temp2mWindowOp::Min => "min",
+        Temp2mWindowOp::Range => "max-min range",
+    };
 
     Ok(ComputedWindowedField {
         field,
         title: product.title().to_string(),
         metadata: HrrrWindowedProductMetadata {
             strategy: format!(
-                "pointwise {operation} of hourly 2 m temperature snapshots across {window_label}"
+                "pointwise {operation_label} of hourly 2 m temperature snapshots across {window_label}"
             ),
             contributing_forecast_hours: hours,
             window_hours,
         },
-        scale: ColorScale::Discrete(temp2m_scale()),
+        scale: ColorScale::Discrete(if operation == Temp2mWindowOp::Range {
+            temp2m_range_scale()
+        } else {
+            temp2m_scale()
+        }),
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Temp2mWindowOp {
+    Max,
+    Min,
+    Range,
 }
 
 pub(crate) fn collect_apcp_windows<'a>(
@@ -713,6 +771,21 @@ pub(crate) fn temp2m_scale() -> DiscreteColorScale {
             (((hi - lo) / step).round() as usize).max(2),
         ),
         extend: ExtendMode::Both,
+        mask_below: None,
+    }
+}
+
+pub(crate) fn temp2m_range_scale() -> DiscreteColorScale {
+    let lo = 0.0;
+    let hi = 40.5;
+    let step = 0.5;
+    DiscreteColorScale {
+        levels: range_step(lo, hi, step),
+        colors: temperature_palette_cropped_f(
+            Some((32.0, 110.0)),
+            (((hi - lo) / step).round() as usize).max(2),
+        ),
+        extend: ExtendMode::Max,
         mask_below: None,
     }
 }
@@ -923,6 +996,16 @@ mod tests {
         assert_eq!(
             min.metadata.strategy,
             "pointwise min of hourly 2 m temperature snapshots across F001-F024"
+        );
+
+        let range =
+            compute_temp2m_product(HrrrWindowedProduct::Temp2m0to24hRange, &tiny_grid(), &temp)
+                .unwrap();
+        assert_eq!(range.field.values, vec![23.0_f32, 23.0_f32]);
+        assert_eq!(range.field.units, "degC");
+        assert_eq!(
+            range.metadata.strategy,
+            "pointwise max-min range of hourly 2 m temperature snapshots across F001-F024"
         );
     }
 }

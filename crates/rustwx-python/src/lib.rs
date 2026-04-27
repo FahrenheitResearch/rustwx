@@ -979,6 +979,20 @@ fn parse_windowed_product(value: &str) -> PyResult<HrrrWindowedProduct> {
         "2m_temp_0_48h_min" | "2m_temperature_0_48h_min" | "temp2m_0_48h_min" | "tmin_0_48h" => {
             Ok(HrrrWindowedProduct::Temp2m0to48hMin)
         }
+        "2m_temp_0_24h_range"
+        | "2m_temperature_0_24h_range"
+        | "temp2m_0_24h_range"
+        | "dtr_0_24h"
+        | "diurnal_temp_day1_range" => Ok(HrrrWindowedProduct::Temp2m0to24hRange),
+        "2m_temp_24_48h_range"
+        | "2m_temperature_24_48h_range"
+        | "temp2m_24_48h_range"
+        | "dtr_24_48h"
+        | "diurnal_temp_day2_range" => Ok(HrrrWindowedProduct::Temp2m24to48hRange),
+        "2m_temp_0_48h_range"
+        | "2m_temperature_0_48h_range"
+        | "temp2m_0_48h_range"
+        | "dtr_0_48h" => Ok(HrrrWindowedProduct::Temp2m0to48hRange),
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
             "unsupported windowed product '{other}'"
         ))),
@@ -1007,6 +1021,9 @@ fn supported_windowed_product_slugs() -> Vec<String> {
         HrrrWindowedProduct::Temp2m0to24hMin,
         HrrrWindowedProduct::Temp2m24to48hMin,
         HrrrWindowedProduct::Temp2m0to48hMin,
+        HrrrWindowedProduct::Temp2m0to24hRange,
+        HrrrWindowedProduct::Temp2m24to48hRange,
+        HrrrWindowedProduct::Temp2m0to48hRange,
     ]
     .into_iter()
     .map(|product| product.slug().to_string())
@@ -1416,6 +1433,7 @@ mod tests {
             products: Some(vec![
                 "diurnal_temp_day1_max".to_string(),
                 "tmin_24_48h".to_string(),
+                "dtr_0_48h".to_string(),
             ]),
             ..RenderMapsRequestJson::default()
         };
@@ -1428,7 +1446,8 @@ mod tests {
             routed.windowed_products,
             vec![
                 HrrrWindowedProduct::Temp2m0to24hMax,
-                HrrrWindowedProduct::Temp2m24to48hMin
+                HrrrWindowedProduct::Temp2m24to48hMin,
+                HrrrWindowedProduct::Temp2m0to48hRange
             ]
         );
     }
