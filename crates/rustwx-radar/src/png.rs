@@ -3,6 +3,8 @@ use std::io::Cursor;
 use image::{ImageBuffer, ImageFormat, Rgba};
 use serde::{Deserialize, Serialize};
 
+use crate::nexrad::derived::DerivedProducts;
+use crate::nexrad::srv::SRVComputer;
 use crate::nexrad::{Level2File, Level2Sweep, RadarProduct, RadarSite};
 use crate::render::{ColorTable, RadarRenderer, RenderedSweep};
 
@@ -62,16 +64,19 @@ pub fn render_product_frame(
     product: RadarProduct,
     options: RadarPngOptions,
 ) -> anyhow::Result<RadarFrameRender> {
-    let (sweep_index, sweep) = lowest_sweep_with_product(file, product).ok_or_else(|| {
-        anyhow::anyhow!("volume does not contain product {}", product.short_name())
-    })?;
+    let resolved = resolve_render_sweep(file, product)?;
     let table = match options.min_value {
         Some(min_value) => ColorTable::for_product(product).with_min_value(min_value),
         None => ColorTable::for_product(product),
     };
-    let rendered =
-        RadarRenderer::render_sweep_with_table(sweep, product, site, options.size, &table)
-            .ok_or_else(|| anyhow::anyhow!("failed to render product {}", product.short_name()))?;
+    let rendered = RadarRenderer::render_sweep_with_table(
+        resolved.sweep(),
+        product,
+        site,
+        options.size,
+        &table,
+    )
+    .ok_or_else(|| anyhow::anyhow!("failed to render product {}", product.short_name()))?;
     let pixels = composite_dark_frame(&rendered, options);
     let png = encode_png(&pixels, rendered.width, rendered.height)?;
     Ok(RadarFrameRender {
@@ -82,8 +87,107 @@ pub fn render_product_frame(
         center_lat: rendered.center_lat,
         center_lon: rendered.center_lon,
         product,
-        sweep_index,
-        elevation_deg: sweep.elevation_angle,
+        sweep_index: resolved.sweep_index(),
+        elevation_deg: resolved.sweep().elevation_angle,
+    })
+}
+
+pub fn renderable_products(file: &Level2File) -> Vec<RadarProduct> {
+    let mut products = file.available_products();
+    if lowest_sweep_with_product(file, RadarProduct::Velocity).is_some() {
+        push_unique(&mut products, RadarProduct::StormRelativeVelocity);
+    }
+    if lowest_sweep_with_product(file, RadarProduct::Reflectivity).is_some() {
+        push_unique(&mut products, RadarProduct::VIL);
+        push_unique(&mut products, RadarProduct::EchoTops);
+    }
+    products.sort_by_key(|product| product.short_name().to_string());
+    products
+}
+
+fn push_unique(products: &mut Vec<RadarProduct>, product: RadarProduct) {
+    if !products.contains(&product) {
+        products.push(product);
+    }
+}
+
+enum ResolvedRenderSweep<'a> {
+    Borrowed {
+        sweep_index: usize,
+        sweep: &'a Level2Sweep,
+    },
+    Owned {
+        sweep_index: usize,
+        sweep: Level2Sweep,
+    },
+}
+
+impl ResolvedRenderSweep<'_> {
+    fn sweep(&self) -> &Level2Sweep {
+        match self {
+            Self::Borrowed { sweep, .. } => sweep,
+            Self::Owned { sweep, .. } => sweep,
+        }
+    }
+
+    fn sweep_index(&self) -> usize {
+        match self {
+            Self::Borrowed { sweep_index, .. } | Self::Owned { sweep_index, .. } => *sweep_index,
+        }
+    }
+}
+
+fn resolve_render_sweep(
+    file: &Level2File,
+    product: RadarProduct,
+) -> anyhow::Result<ResolvedRenderSweep<'_>> {
+    if let Some((sweep_index, sweep)) = lowest_sweep_with_product(file, product) {
+        return Ok(ResolvedRenderSweep::Borrowed { sweep_index, sweep });
+    }
+
+    match product {
+        RadarProduct::StormRelativeVelocity => {
+            let velocity_sweeps: Vec<&Level2Sweep> = file
+                .sweeps
+                .iter()
+                .filter(|sweep| sweep_contains_product(sweep, RadarProduct::Velocity))
+                .collect();
+            let (sweep_index, velocity_sweep) =
+                lowest_sweep_with_product(file, RadarProduct::Velocity).ok_or_else(|| {
+                    anyhow::anyhow!("cannot derive SRV because the volume has no velocity")
+                })?;
+            let (storm_dir_deg, storm_speed_kts) =
+                SRVComputer::estimate_storm_motion(&velocity_sweeps);
+            Ok(ResolvedRenderSweep::Owned {
+                sweep_index,
+                sweep: SRVComputer::compute(velocity_sweep, storm_dir_deg, storm_speed_kts),
+            })
+        }
+        RadarProduct::VIL => {
+            let sweep = DerivedProducts::compute_vil(file);
+            ensure_nonempty_derived(product, sweep)
+        }
+        RadarProduct::EchoTops => {
+            let sweep = DerivedProducts::compute_echo_tops(file, 18.0);
+            ensure_nonempty_derived(product, sweep)
+        }
+        _ => Err(anyhow::anyhow!(
+            "volume does not contain product {}",
+            product.short_name()
+        )),
+    }
+}
+
+fn ensure_nonempty_derived(
+    product: RadarProduct,
+    sweep: Level2Sweep,
+) -> anyhow::Result<ResolvedRenderSweep<'static>> {
+    if sweep.radials.is_empty() {
+        anyhow::bail!("cannot derive {} from this volume", product.short_name());
+    }
+    Ok(ResolvedRenderSweep::Owned {
+        sweep_index: usize::MAX,
+        sweep,
     })
 }
 
