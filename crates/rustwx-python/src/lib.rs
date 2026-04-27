@@ -12,7 +12,6 @@ use rustwx_core::{CycleSpec, ModelId, ModelRunRequest, SourceId};
 use rustwx_io::{FetchRequest, available_forecast_hours, probe_sources};
 #[cfg(feature = "python")]
 use rustwx_products::{
-    cache::default_proof_cache_dir,
     derived::{
         DerivedBatchReport, DerivedBatchRequest, NativeContourRenderMode,
         is_heavy_derived_recipe_slug, run_derived_batch, supported_derived_recipe_inventory,
@@ -377,6 +376,7 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
             "derived_recipes": "optional explicit derived product slugs; heavy ECAPE recipes route through the canonical derived_batch ECAPE path",
             "windowed_products": "optional explicit HRRR windowed product slugs",
             "out_dir": "optional output directory",
+            "cache_dir": "optional shared fetch/decode cache; default rustwx_outputs/cache, or RUSTWX_CACHE_DIR when set",
             "place_label_density": "none, major, major-and-aux, or dense"
         }
     });
@@ -462,7 +462,7 @@ fn build_render_maps_plan(request: RenderMapsRequestJson) -> PyResult<RenderMaps
     let cache_root = request
         .cache_dir
         .clone()
-        .unwrap_or_else(|| default_proof_cache_dir(&out_dir));
+        .unwrap_or_else(default_render_maps_cache_dir);
     let use_cache = request.use_cache.unwrap_or(true) && !request.no_cache.unwrap_or(false);
     let source_mode = parse_product_source_mode(request.source_mode.as_deref())?;
     let place_density = parse_place_label_density(request.place_label_density.as_deref())?;
@@ -500,6 +500,19 @@ fn build_render_maps_plan(request: RenderMapsRequestJson) -> PyResult<RenderMaps
             domain_jobs: request.domain_jobs,
         },
     })
+}
+
+#[cfg(feature = "python")]
+fn default_render_maps_cache_dir() -> PathBuf {
+    default_render_maps_cache_dir_from_env(std::env::var_os("RUSTWX_CACHE_DIR"))
+}
+
+#[cfg(feature = "python")]
+fn default_render_maps_cache_dir_from_env(cache_env: Option<std::ffi::OsString>) -> PathBuf {
+    cache_env
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("rustwx_outputs").join("cache"))
 }
 
 #[cfg(feature = "python")]
@@ -1117,7 +1130,7 @@ fn print_list_domains_help() {
 #[cfg(feature = "python")]
 fn print_render_maps_help() {
     println!(
-        "USAGE:\n  rustwx render-maps --date YYYYMMDD [--model hrrr] [--cycle H] [--forecast-hour H] [--domain conus] [--product PRODUCT] [--out-dir DIR]\n  rustwx render-maps --request request.json\n\nOptions include --source, --bounds west,east,south,north, --direct-recipe, --derived-recipe, --windowed-product, --place-label-density, --width, --height, --cache-dir, --no-cache."
+        "USAGE:\n  rustwx render-maps --date YYYYMMDD [--model hrrr] [--cycle H] [--forecast-hour H] [--domain conus] [--product PRODUCT] [--out-dir DIR]\n  rustwx render-maps --request request.json\n\nOptions include --source, --bounds west,east,south,north, --direct-recipe, --derived-recipe, --windowed-product, --place-label-density, --width, --height, --cache-dir, --no-cache.\n\nDefault cache: rustwx_outputs/cache, or RUSTWX_CACHE_DIR when set."
     );
 }
 
@@ -1449,6 +1462,71 @@ mod tests {
                 HrrrWindowedProduct::Temp2m24to48hMin,
                 HrrrWindowedProduct::Temp2m0to48hRange
             ]
+        );
+    }
+
+    #[test]
+    fn render_maps_default_cache_is_shared_across_bounds_and_output_dirs() {
+        let redding = RenderMapsRequestJson {
+            date_yyyymmdd: Some("20260424".to_string()),
+            cycle_utc: Some(0),
+            forecast_hour: Some(1),
+            domain: Some("redding".to_string()),
+            bounds: Some(vec![-123.0, -121.5, 39.8, 41.2]),
+            out_dir: Some(PathBuf::from("target/render-cache/redding")),
+            direct_recipes: Some(vec!["2m_temperature_10m_winds".to_string()]),
+            ..RenderMapsRequestJson::default()
+        };
+        let bakersfield = RenderMapsRequestJson {
+            date_yyyymmdd: Some("20260424".to_string()),
+            cycle_utc: Some(0),
+            forecast_hour: Some(1),
+            domain: Some("bakersfield".to_string()),
+            bounds: Some(vec![-120.2, -117.8, 34.5, 36.2]),
+            out_dir: Some(PathBuf::from("target/render-cache/bakersfield")),
+            direct_recipes: Some(vec!["2m_temperature_10m_winds".to_string()]),
+            ..RenderMapsRequestJson::default()
+        };
+
+        let redding_plan = build_render_maps_plan(redding).unwrap();
+        let bakersfield_plan = build_render_maps_plan(bakersfield).unwrap();
+
+        assert_ne!(
+            redding_plan.request.out_dir,
+            bakersfield_plan.request.out_dir
+        );
+        assert_ne!(
+            redding_plan.request.domains[0].bounds,
+            bakersfield_plan.request.domains[0].bounds
+        );
+        assert_eq!(
+            redding_plan.request.cache_root,
+            bakersfield_plan.request.cache_root
+        );
+        assert_eq!(
+            redding_plan.request.cache_root,
+            default_render_maps_cache_dir()
+        );
+    }
+
+    #[test]
+    fn render_maps_explicit_cache_dir_is_honored() {
+        let request = RenderMapsRequestJson {
+            date_yyyymmdd: Some("20260424".to_string()),
+            cycle_utc: Some(0),
+            forecast_hour: Some(1),
+            bounds: Some(vec![-123.0, -121.5, 39.8, 41.2]),
+            out_dir: Some(PathBuf::from("target/render-cache/redding")),
+            cache_dir: Some(PathBuf::from("target/render-cache/shared")),
+            direct_recipes: Some(vec!["2m_temperature_10m_winds".to_string()]),
+            ..RenderMapsRequestJson::default()
+        };
+
+        let plan = build_render_maps_plan(request).unwrap();
+
+        assert_eq!(
+            plan.request.cache_root,
+            PathBuf::from("target/render-cache/shared")
         );
     }
 

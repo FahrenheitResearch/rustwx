@@ -37,6 +37,12 @@ ECAPE slugs such as `sbecape`, `mlecape`, `muecape`, ECAPE/CAPE ratios, NCAPE,
 ECIN, and ECAPE EHI/SCP/STP use the canonical `derived_batch` ECAPE path; they
 do not require callers to discover or run separate binaries.
 
+When `cache_dir` / `--cache-dir` is omitted, the agent API uses a shared
+`rustwx_outputs/cache` fetch/decode cache, or `RUSTWX_CACHE_DIR` when that
+environment variable is set. The cache is intentionally independent of
+`out_dir` and map bounds, so city or bbox sweeps can reuse the same upstream
+GRIB fetches while writing PNGs into different output folders.
+
 MCP servers should call these stable Python/CLI entry points instead of invoking
 internal proof binaries.
 
