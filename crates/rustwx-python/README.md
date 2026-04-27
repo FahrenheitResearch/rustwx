@@ -32,8 +32,13 @@ rustwx render-maps --date 20260424 --model hrrr --domain california --product 2m
 ```
 
 `render-maps` accepts mixed product slugs and routes them to the appropriate
-direct, derived, or HRRR windowed product path. MCP servers should call these
-stable Python/CLI entry points instead of invoking internal proof binaries.
+direct, light derived, heavy ECAPE-derived, or HRRR windowed product path. Heavy
+ECAPE slugs such as `sbecape`, `mlecape`, `muecape`, ECAPE/CAPE ratios, NCAPE,
+ECIN, and ECAPE EHI/SCP/STP use the canonical `derived_batch` ECAPE path; they
+do not require callers to discover or run separate binaries.
+
+MCP servers should call these stable Python/CLI entry points instead of invoking
+internal proof binaries.
 
 Every new projected helper has both a Python-object entry point and a `_json` variant:
 
@@ -145,6 +150,7 @@ print(xsect["request"]["axis"])
 
 - projected rendering still expects caller-owned arrays
 - cross-section support is validation/normalization only in this crate
-- full fetch/download/render orchestration is still outside this binding layer
+- `render_maps_json` covers model fetch/download/render orchestration for
+  direct, derived, heavy ECAPE-derived, and HRRR windowed map products
 - sounding rendering expects a caller-supplied validated column; model fetch and
   lat/lon extraction live in the Rust CLI for now

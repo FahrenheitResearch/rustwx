@@ -13,7 +13,11 @@ use rustwx_io::{FetchRequest, available_forecast_hours, probe_sources};
 #[cfg(feature = "python")]
 use rustwx_products::{
     cache::default_proof_cache_dir,
-    derived::supported_derived_recipe_slugs,
+    derived::{
+        DerivedBatchReport, DerivedBatchRequest, NativeContourRenderMode,
+        is_heavy_derived_recipe_slug, run_derived_batch, supported_derived_recipe_inventory,
+        supported_derived_recipe_slugs,
+    },
     direct::supported_direct_recipe_slugs,
     named_geometry::{
         NamedGeometryCatalog, NamedGeometryKind, find_built_in_country_domain,
@@ -37,6 +41,8 @@ use std::collections::HashMap;
 use std::fs;
 #[cfg(feature = "python")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "python")]
+use std::time::Instant;
 #[cfg(feature = "python")]
 use wrf_render::{
     build_projected_basemap_overlays, build_projected_basemap_overlays_json,
@@ -286,17 +292,45 @@ struct RenderMapsRequestJson {
 }
 
 #[cfg(feature = "python")]
+#[derive(Debug, Clone)]
+struct RenderMapsPlan {
+    request: NonEcapeMultiDomainRequest,
+    heavy_derived_recipe_slugs: Vec<String>,
+    place_density: PlaceLabelDensityTier,
+}
+
+#[cfg(feature = "python")]
+#[derive(Debug, Clone)]
+struct RoutedRenderProducts {
+    direct_recipe_slugs: Vec<String>,
+    derived_recipe_slugs: Vec<String>,
+    heavy_derived_recipe_slugs: Vec<String>,
+    windowed_products: Vec<HrrrWindowedProduct>,
+}
+
+#[cfg(feature = "python")]
 fn agent_capabilities_json_impl() -> PyResult<String> {
     let models = BUILT_IN_MODELS
         .iter()
         .copied()
         .map(|model| {
+            let derived_inventory = supported_derived_recipe_inventory();
             serde_json::json!({
                 "id": model.as_str(),
                 "default_product": rustwx_models::model_summary(model).default_product,
                 "default_render_product": default_render_product(model),
                 "direct_recipes": supported_direct_recipe_slugs(model),
                 "derived_recipes": supported_derived_recipe_slugs(model),
+                "light_derived_recipes": derived_inventory
+                    .iter()
+                    .filter(|recipe| !recipe.heavy)
+                    .map(|recipe| recipe.slug)
+                    .collect::<Vec<_>>(),
+                "heavy_derived_recipes": derived_inventory
+                    .iter()
+                    .filter(|recipe| recipe.heavy)
+                    .map(|recipe| recipe.slug)
+                    .collect::<Vec<_>>(),
                 "windowed_products": if model == ModelId::Hrrr {
                     supported_windowed_product_slugs()
                 } else {
@@ -340,7 +374,7 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
             "bounds": "optional [west,east,south,north] custom domain override",
             "products": "optional mixed product slugs; rustwx routes to direct, derived, or HRRR windowed products",
             "direct_recipes": "optional explicit direct product slugs",
-            "derived_recipes": "optional explicit derived product slugs",
+            "derived_recipes": "optional explicit derived product slugs; heavy ECAPE recipes route through the canonical derived_batch ECAPE path",
             "windowed_products": "optional explicit HRRR windowed product slugs",
             "out_dir": "optional output directory",
             "place_label_density": "none, major, major-and-aux, or dense"
@@ -352,17 +386,60 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
 
 #[cfg(feature = "python")]
 fn render_maps_json_impl(request: RenderMapsRequestJson) -> PyResult<String> {
-    let render_request = build_render_maps_request(request)?;
-    let report = run_model_non_ecape_hour_multi_domain(&render_request)
-        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+    let plan = build_render_maps_plan(request)?;
+    let report = run_render_maps_plan(plan)?;
     serde_json::to_string_pretty(&report)
         .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
 }
 
 #[cfg(feature = "python")]
-fn build_render_maps_request(
-    request: RenderMapsRequestJson,
-) -> PyResult<NonEcapeMultiDomainRequest> {
+fn run_render_maps_plan(plan: RenderMapsPlan) -> PyResult<serde_json::Value> {
+    let non_ecape_work = !plan.request.direct_recipe_slugs.is_empty()
+        || !plan.request.derived_recipe_slugs.is_empty()
+        || !plan.request.windowed_products.is_empty();
+    if plan.heavy_derived_recipe_slugs.is_empty() {
+        let report = run_model_non_ecape_hour_multi_domain(&plan.request)
+            .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+        return serde_json::to_value(&report)
+            .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()));
+    }
+
+    let total_start = Instant::now();
+    let non_ecape_report = if non_ecape_work {
+        Some(
+            run_model_non_ecape_hour_multi_domain(&plan.request)
+                .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?,
+        )
+    } else {
+        None
+    };
+    let pinned = non_ecape_report.as_ref().map(|report| {
+        (
+            report.date_yyyymmdd.clone(),
+            Some(report.cycle_utc),
+            report.source,
+        )
+    });
+    let heavy_reports = run_heavy_derived_domains(&plan, pinned)?;
+    let total_ms = total_start.elapsed().as_millis();
+
+    if let Some(report) = non_ecape_report {
+        let mut value = serde_json::to_value(&report)
+            .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+        attach_heavy_derived_reports(
+            &mut value,
+            &plan.heavy_derived_recipe_slugs,
+            &heavy_reports,
+            total_ms,
+        )?;
+        Ok(value)
+    } else {
+        heavy_only_render_maps_report(&plan, &heavy_reports, total_ms)
+    }
+}
+
+#[cfg(feature = "python")]
+fn build_render_maps_plan(request: RenderMapsRequestJson) -> PyResult<RenderMapsPlan> {
     let model = request.model.as_deref().unwrap_or("hrrr").parse().map_err(
         |err: rustwx_core::RustwxError| pyo3::exceptions::PyValueError::new_err(err.to_string()),
     )?;
@@ -388,38 +465,242 @@ fn build_render_maps_request(
         .unwrap_or_else(|| default_proof_cache_dir(&out_dir));
     let use_cache = request.use_cache.unwrap_or(true) && !request.no_cache.unwrap_or(false);
     let source_mode = parse_product_source_mode(request.source_mode.as_deref())?;
-    let (direct_recipe_slugs, derived_recipe_slugs, windowed_products) =
-        route_requested_products(model, &request)?;
     let place_density = parse_place_label_density(request.place_label_density.as_deref())?;
+    let routed = route_requested_products(model, &request)?;
     let place_label_overlay = domains
         .first()
         .and_then(|domain| default_place_label_overlay_for_domain(domain, place_density));
 
-    Ok(NonEcapeMultiDomainRequest {
-        model,
-        date_yyyymmdd,
-        cycle_override_utc: request.cycle_utc,
-        forecast_hour: request.forecast_hour.unwrap_or(0),
-        source,
-        domains,
-        out_dir,
-        cache_root,
-        use_cache,
-        source_mode,
-        direct_recipe_slugs,
-        derived_recipe_slugs,
-        direct_product_overrides: request.direct_product_overrides.clone(),
-        surface_product_override: request.surface_product_override.clone(),
-        pressure_product_override: request.pressure_product_override.clone(),
-        allow_large_heavy_domain: request.allow_large_heavy_domain.unwrap_or(false),
-        windowed_products,
-        output_width: request.output_width.unwrap_or(1400),
-        output_height: request.output_height.unwrap_or(1100),
-        png_compression: PngCompressionMode::Fast,
-        custom_poi_overlay: None,
-        place_label_overlay,
-        domain_jobs: request.domain_jobs,
+    Ok(RenderMapsPlan {
+        heavy_derived_recipe_slugs: routed.heavy_derived_recipe_slugs,
+        place_density,
+        request: NonEcapeMultiDomainRequest {
+            model,
+            date_yyyymmdd,
+            cycle_override_utc: request.cycle_utc,
+            forecast_hour: request.forecast_hour.unwrap_or(0),
+            source,
+            domains,
+            out_dir,
+            cache_root,
+            use_cache,
+            source_mode,
+            direct_recipe_slugs: routed.direct_recipe_slugs,
+            derived_recipe_slugs: routed.derived_recipe_slugs,
+            direct_product_overrides: request.direct_product_overrides.clone(),
+            surface_product_override: request.surface_product_override.clone(),
+            pressure_product_override: request.pressure_product_override.clone(),
+            allow_large_heavy_domain: request.allow_large_heavy_domain.unwrap_or(false),
+            windowed_products: routed.windowed_products,
+            output_width: request.output_width.unwrap_or(1400),
+            output_height: request.output_height.unwrap_or(1100),
+            png_compression: PngCompressionMode::Fast,
+            custom_poi_overlay: None,
+            place_label_overlay,
+            domain_jobs: request.domain_jobs,
+        },
     })
+}
+
+#[cfg(feature = "python")]
+fn run_heavy_derived_domains(
+    plan: &RenderMapsPlan,
+    initial_pin: Option<(String, Option<u8>, SourceId)>,
+) -> PyResult<Vec<DerivedBatchReport>> {
+    let mut pinned = initial_pin;
+    let mut reports = Vec::with_capacity(plan.request.domains.len());
+    for domain in &plan.request.domains {
+        let (date_yyyymmdd, cycle_override_utc, source) = pinned.clone().unwrap_or_else(|| {
+            (
+                plan.request.date_yyyymmdd.clone(),
+                plan.request.cycle_override_utc,
+                plan.request.source,
+            )
+        });
+        let request = DerivedBatchRequest {
+            model: plan.request.model,
+            date_yyyymmdd,
+            cycle_override_utc,
+            forecast_hour: plan.request.forecast_hour,
+            source,
+            domain: domain.clone(),
+            out_dir: plan.request.out_dir.join(&domain.slug),
+            cache_root: plan.request.cache_root.clone(),
+            use_cache: plan.request.use_cache,
+            recipe_slugs: plan.heavy_derived_recipe_slugs.clone(),
+            surface_product_override: plan.request.surface_product_override.clone(),
+            pressure_product_override: plan.request.pressure_product_override.clone(),
+            source_mode: plan.request.source_mode,
+            allow_large_heavy_domain: plan.request.allow_large_heavy_domain,
+            contour_mode: NativeContourRenderMode::Automatic,
+            native_fill_level_multiplier: 1,
+            output_width: plan.request.output_width,
+            output_height: plan.request.output_height,
+            png_compression: plan.request.png_compression,
+            custom_poi_overlay: plan.request.custom_poi_overlay.clone(),
+            place_label_overlay: default_place_label_overlay_for_domain(domain, plan.place_density),
+        };
+        let report = run_derived_batch(&request)
+            .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+        if pinned.is_none() {
+            pinned = Some((
+                report.date_yyyymmdd.clone(),
+                Some(report.cycle_utc),
+                report.source,
+            ));
+        }
+        reports.push(report);
+    }
+    Ok(reports)
+}
+
+#[cfg(feature = "python")]
+fn attach_heavy_derived_reports(
+    value: &mut serde_json::Value,
+    heavy_recipe_slugs: &[String],
+    heavy_reports: &[DerivedBatchReport],
+    total_ms: u128,
+) -> PyResult<()> {
+    let heavy_summary = heavy_derived_summary_value(heavy_recipe_slugs, heavy_reports, total_ms)?;
+    let reports_by_domain = heavy_reports
+        .iter()
+        .map(|report| {
+            serde_json::to_value(report)
+                .map(|value| (report.domain.slug.clone(), value))
+                .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
+        })
+        .collect::<PyResult<HashMap<_, _>>>()?;
+
+    let Some(object) = value.as_object_mut() else {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "render-maps report was not a JSON object",
+        ));
+    };
+    object.insert(
+        "agent_api".to_string(),
+        serde_json::json!(AGENT_API_VERSION),
+    );
+    object.insert(
+        "run_kind".to_string(),
+        serde_json::json!("render_maps_mixed"),
+    );
+    object.insert("agent_total_ms".to_string(), serde_json::json!(total_ms));
+    object.insert("heavy_derived".to_string(), heavy_summary);
+
+    if let Some(domains) = object
+        .get_mut("domains")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for domain_value in domains {
+            let Some(domain_object) = domain_value.as_object_mut() else {
+                continue;
+            };
+            let slug = domain_object
+                .get("domain")
+                .and_then(|domain| domain.get("slug"))
+                .and_then(serde_json::Value::as_str);
+            if let Some(report) = slug.and_then(|slug| reports_by_domain.get(slug)) {
+                domain_object.insert("heavy_derived".to_string(), report.clone());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "python")]
+fn heavy_only_render_maps_report(
+    plan: &RenderMapsPlan,
+    heavy_reports: &[DerivedBatchReport],
+    total_ms: u128,
+) -> PyResult<serde_json::Value> {
+    let first = heavy_reports.first();
+    let domains = heavy_reports
+        .iter()
+        .map(|report| {
+            serde_json::to_value(report).map(|report_value| {
+                serde_json::json!({
+                    "domain": report.domain,
+                    "summary": {
+                        "png_count": report.recipes.len(),
+                        "blocker_count": report.blockers.len(),
+                    },
+                    "derived": report_value.clone(),
+                    "heavy_derived": report_value,
+                    "total_ms": report.total_ms,
+                })
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+
+    let value = serde_json::json!({
+        "agent_api": AGENT_API_VERSION,
+        "run_kind": "render_maps_heavy_derived",
+        "model": plan.request.model,
+        "date_yyyymmdd": first
+            .map(|report| report.date_yyyymmdd.as_str())
+            .unwrap_or(plan.request.date_yyyymmdd.as_str()),
+        "cycle_utc": first
+            .map(|report| report.cycle_utc)
+            .or(plan.request.cycle_override_utc),
+        "forecast_hour": plan.request.forecast_hour,
+        "source": first
+            .map(|report| report.source)
+            .unwrap_or(plan.request.source),
+        "out_dir": plan.request.out_dir,
+        "cache_root": plan.request.cache_root,
+        "use_cache": plan.request.use_cache,
+        "source_mode": plan.request.source_mode,
+        "requested": {
+            "direct_recipe_slugs": Vec::<String>::new(),
+            "derived_recipe_slugs": plan.heavy_derived_recipe_slugs,
+            "windowed_products": Vec::<String>::new(),
+        },
+        "domains": domains,
+        "heavy_derived": heavy_derived_summary_value(
+            &plan.heavy_derived_recipe_slugs,
+            heavy_reports,
+            total_ms,
+        )?,
+        "agent_total_ms": total_ms,
+        "total_ms": total_ms,
+    });
+    Ok(value)
+}
+
+#[cfg(feature = "python")]
+fn heavy_derived_summary_value(
+    heavy_recipe_slugs: &[String],
+    heavy_reports: &[DerivedBatchReport],
+    total_ms: u128,
+) -> PyResult<serde_json::Value> {
+    let domains = heavy_reports
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+    let output_count = heavy_reports
+        .iter()
+        .map(|report| report.recipes.len())
+        .sum::<usize>();
+    let blocker_count = heavy_reports
+        .iter()
+        .map(|report| report.blockers.len())
+        .sum::<usize>();
+    Ok(serde_json::json!({
+        "runner": "derived_batch",
+        "route": "heavy_ecape",
+        "source_mode": heavy_reports
+            .first()
+            .map(|report| report.source_mode)
+            .unwrap_or(ProductSourceMode::Canonical),
+        "requested_recipe_slugs": heavy_recipe_slugs,
+        "domain_count": heavy_reports.len(),
+        "output_count": output_count,
+        "blocker_count": blocker_count,
+        "domains": domains,
+        "total_ms": total_ms,
+    }))
 }
 
 #[cfg(feature = "python")]
@@ -474,7 +755,7 @@ fn resolve_named_domain(value: &str) -> PyResult<DomainSpec> {
 fn route_requested_products(
     model: ModelId,
     request: &RenderMapsRequestJson,
-) -> PyResult<(Vec<String>, Vec<String>, Vec<HrrrWindowedProduct>)> {
+) -> PyResult<RoutedRenderProducts> {
     let mut direct = request.direct_recipes.clone().unwrap_or_default();
     let mut derived = request.derived_recipes.clone().unwrap_or_default();
     let mut windowed = request
@@ -489,11 +770,12 @@ fn route_requested_products(
         let supported_direct = supported_direct_recipe_slugs(model);
         let supported_derived = supported_derived_recipe_slugs(model);
         for product in products {
-            if supported_direct.iter().any(|slug| slug == product) {
-                push_unique(&mut direct, product.clone());
-            } else if supported_derived.iter().any(|slug| slug == product) {
-                push_unique(&mut derived, product.clone());
-            } else if let Ok(windowed_product) = parse_windowed_product(product) {
+            let normalized = normalize_slug(product);
+            if supported_direct.iter().any(|slug| slug == &normalized) {
+                push_unique(&mut direct, normalized);
+            } else if supported_derived.iter().any(|slug| slug == &normalized) {
+                push_unique(&mut derived, normalized);
+            } else if let Ok(windowed_product) = parse_windowed_product(&normalized) {
                 push_unique_windowed(&mut windowed, windowed_product);
             } else {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -511,7 +793,27 @@ fn route_requested_products(
             "windowed_products are currently HRRR-only",
         ));
     }
-    Ok((direct, derived, windowed))
+    let (derived, heavy_derived) = split_heavy_derived_recipes(derived);
+    Ok(RoutedRenderProducts {
+        direct_recipe_slugs: direct,
+        derived_recipe_slugs: derived,
+        heavy_derived_recipe_slugs: heavy_derived,
+        windowed_products: windowed,
+    })
+}
+
+#[cfg(feature = "python")]
+fn split_heavy_derived_recipes(recipe_slugs: Vec<String>) -> (Vec<String>, Vec<String>) {
+    let mut light = Vec::new();
+    let mut heavy = Vec::new();
+    for slug in recipe_slugs {
+        if is_heavy_derived_recipe_slug(&slug) {
+            push_unique(&mut heavy, slug);
+        } else {
+            push_unique(&mut light, slug);
+        }
+    }
+    (light, heavy)
 }
 
 #[cfg(feature = "python")]
@@ -1029,6 +1331,59 @@ fn resolve_product(model: ModelId, product: Option<&str>) -> String {
     product
         .unwrap_or(rustwx_models::model_summary(model).default_product)
         .to_string()
+}
+
+#[cfg(all(test, feature = "python"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_maps_router_splits_heavy_ecape_from_non_ecape_work() {
+        let request = RenderMapsRequestJson {
+            products: Some(vec![
+                "mlecape".to_string(),
+                "mlcape".to_string(),
+                "srh_0_3km".to_string(),
+                "qpf_1h".to_string(),
+            ]),
+            ..RenderMapsRequestJson::default()
+        };
+
+        let routed = route_requested_products(ModelId::Hrrr, &request).unwrap();
+
+        assert_eq!(routed.heavy_derived_recipe_slugs, vec!["mlecape"]);
+        assert!(routed.direct_recipe_slugs.is_empty());
+        assert_eq!(routed.derived_recipe_slugs, vec!["mlcape", "srh_0_3km"]);
+        assert_eq!(routed.windowed_products, vec![HrrrWindowedProduct::Qpf1h]);
+    }
+
+    #[test]
+    fn render_maps_plan_keeps_heavy_only_requests_out_of_non_ecape_runner() {
+        let request = RenderMapsRequestJson {
+            date_yyyymmdd: Some("20260424".to_string()),
+            cycle_utc: Some(22),
+            forecast_hour: Some(1),
+            domain: Some("heavy-smoke".to_string()),
+            bounds: Some(vec![-102.0, -94.0, 33.0, 38.0]),
+            products: Some(vec![
+                "sbecape".to_string(),
+                "mlecape".to_string(),
+                "muecape".to_string(),
+            ]),
+            ..RenderMapsRequestJson::default()
+        };
+
+        let plan = build_render_maps_plan(request).unwrap();
+
+        assert!(plan.request.direct_recipe_slugs.is_empty());
+        assert!(plan.request.derived_recipe_slugs.is_empty());
+        assert!(plan.request.windowed_products.is_empty());
+        assert_eq!(
+            plan.heavy_derived_recipe_slugs,
+            vec!["sbecape", "mlecape", "muecape"]
+        );
+        assert_eq!(plan.request.domains[0].slug, "heavy_smoke");
+    }
 }
 
 #[cfg(feature = "python")]
