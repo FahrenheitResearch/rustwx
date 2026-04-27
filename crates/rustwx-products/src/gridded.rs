@@ -2,8 +2,8 @@ use crate::cache::{load_bincode, store_bincode};
 use crate::direct::build_projected_map_with_projection;
 use crate::shared_context::PreparedProjectedContext;
 use grib_core::grib2::{
-    Grib2File, Grib2Message, flip_rows, grid_latlon,
-    unpack_message_normalized as unpack_message_scan_normalized,
+    flip_rows, grid_latlon, unpack_message_normalized as unpack_message_scan_normalized, Grib2File,
+    Grib2Message,
 };
 use rustwx_calc::{GridShape as CalcGridShape, VolumeShape};
 use rustwx_core::{
@@ -11,14 +11,14 @@ use rustwx_core::{
     LatLonGrid, ModelId, ModelRunRequest, RustwxError, SourceId,
 };
 use rustwx_io::{
-    CachedFetchResult, FetchRequest, artifact_cache_dir, fetch_bytes_with_cache,
-    grid_projection_from_grib2_grid,
+    artifact_cache_dir, fetch_bytes_with_cache, grid_projection_from_grib2_grid, CachedFetchResult,
+    FetchRequest,
 };
 use rustwx_models::{
-    LatestRun, ResolvedCanonicalBundleProduct, latest_available_run_at_forecast_hour,
-    latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
+    latest_available_run_at_forecast_hour, latest_available_run_for_products_at_forecast_hour,
+    resolve_canonical_bundle_product, LatestRun, ResolvedCanonicalBundleProduct,
 };
-use rustwx_render::{ProjectedExtent, map_frame_aspect_ratio};
+use rustwx_render::{map_frame_aspect_ratio, ProjectedExtent};
 #[cfg(feature = "wrf")]
 use rustwx_wrf as wrf;
 use serde::{Deserialize, Serialize};
@@ -1285,8 +1285,21 @@ pub(crate) fn bundle_fetch_variable_patterns(
         .collect(),
         (CanonicalBundleDescriptor::NativeAnalysis, "sfc") if matches!(model, ModelId::Hrrr) => {
             vec![
+                "PRES:surface",
                 "APCP:surface",
                 "TMP:2 m above ground",
+                "DPT:2 m above ground",
+                "RH:2 m above ground",
+                "UGRD:10 m above ground",
+                "VGRD:10 m above ground",
+                "GUST:surface",
+                "GUST:10 m above ground",
+                "MSLMA:mean sea level",
+                "PRMSL:mean sea level",
+                "MSLET:mean sea level",
+                "LCDC:low cloud layer",
+                "MCDC:middle cloud layer",
+                "HCDC:high cloud layer",
                 "MXUPHL:5000-2000 m above ground",
                 "WIND:10 m above ground",
             ]
@@ -2277,7 +2290,11 @@ pub(crate) fn validate_pressure_decode_against_surface(
 }
 
 fn normalize_longitude(lon: f64) -> f64 {
-    if lon > 180.0 { lon - 360.0 } else { lon }
+    if lon > 180.0 {
+        lon - 360.0
+    } else {
+        lon
+    }
 }
 
 fn point_in_geographic_bounds(lon: f64, lat: f64, bounds: (f64, f64, f64, f64)) -> bool {

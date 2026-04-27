@@ -4,12 +4,13 @@ use crate::colormap::LeveledColormap;
 use crate::draw;
 use crate::overlay::{
     BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPlaceLabelOverlay,
-    ProjectedPolygon, ProjectedPolyline,
+    ProjectedPointOverlay, ProjectedPolygon, ProjectedPolyline,
 };
 use crate::presentation::{ProductVisualMode, RenderPresentation, TitleAnchor};
 use crate::rasterize;
 use crate::request::{
-    ChromeScale, DomainFrame, ProjectedLabelPlacement, ProjectedPlaceLabelPriority,
+    ChromeScale, DomainFrame, ProjectedLabelPlacement, ProjectedMarkerShape,
+    ProjectedPlaceLabelPriority,
 };
 use crate::text;
 use image::ExtendedColorType;
@@ -54,6 +55,7 @@ pub struct RenderOpts {
     pub projected_polygons: Vec<ProjectedPolygon>,
     pub projected_data_polygons: Vec<ProjectedPolygon>,
     pub projected_place_labels: Vec<ProjectedPlaceLabelOverlay>,
+    pub projected_points: Vec<ProjectedPointOverlay>,
     pub projected_lines: Vec<ProjectedPolyline>,
     pub contours: Vec<ContourOverlay>,
     pub barbs: Vec<BarbOverlay>,
@@ -145,6 +147,7 @@ impl Default for RenderOpts {
             projected_polygons: vec![],
             projected_data_polygons: vec![],
             projected_place_labels: vec![],
+            projected_points: vec![],
             projected_lines: vec![],
             contours: vec![],
             barbs: vec![],
@@ -710,6 +713,41 @@ fn draw_projected_lines(
         }
         if current.len() >= 2 {
             draw::draw_polyline_aa(img, &current, style.color, style.width);
+        }
+    }
+}
+
+fn draw_projected_points(
+    img: &mut RgbaImage,
+    layout: &Layout,
+    extent: &MapExtent,
+    points: &[ProjectedPointOverlay],
+    clip_mask: Option<&RgbaImage>,
+) {
+    for point in points {
+        let Some((px, py)) = extent.to_pixel(point.x, point.y, layout.map_w, layout.map_h) else {
+            continue;
+        };
+        if let Some(mask) = clip_mask {
+            if !mask_contains_local_pixel(mask, px, py) {
+                continue;
+            }
+        }
+
+        let x = layout.map_x as f64 + px.clamp(0.0, layout.map_w.saturating_sub(1) as f64);
+        let y = layout.map_y as f64 + py.clamp(0.0, layout.map_h.saturating_sub(1) as f64);
+        let radius = point.radius_px.max(1) as f64;
+        let width = point.width_px.max(1);
+        match point.shape {
+            ProjectedMarkerShape::Circle => {
+                draw::draw_circle_stroke_aa(img, x, y, radius, point.color, width);
+            }
+            ProjectedMarkerShape::Plus => {
+                draw::draw_plus_marker_aa(img, x, y, radius, point.color, width);
+            }
+            ProjectedMarkerShape::Cross => {
+                draw::draw_cross_marker_aa(img, x, y, radius, point.color, width);
+            }
         }
     }
 }
@@ -1512,6 +1550,10 @@ fn scale_render_opts_for_supersample(opts: &RenderOpts, factor: u32) -> RenderOp
     }
     for line in &mut scaled.projected_lines {
         line.width = line.width.max(1).saturating_mul(factor);
+    }
+    for point in &mut scaled.projected_points {
+        point.radius_px = point.radius_px.max(1).saturating_mul(factor);
+        point.width_px = point.width_px.max(1).saturating_mul(factor);
     }
     for place_label in &mut scaled.projected_place_labels {
         place_label.style.marker_radius_px =
@@ -2424,6 +2466,18 @@ fn draw_variable_layers(
     }
     let linework_ms = linework_start.elapsed().as_millis();
 
+    let point_start = Instant::now();
+    if let Some(ref extent) = opts.map_extent {
+        draw_projected_points(
+            img,
+            layout,
+            extent,
+            &opts.projected_points,
+            domain_clip_mask.as_ref(),
+        );
+    }
+    let point_ms = point_start.elapsed().as_millis();
+
     let contour_start = Instant::now();
     for contour in &opts.contours {
         draw_contours(
@@ -2472,7 +2526,9 @@ fn draw_variable_layers(
     VariableLayerTiming {
         rasterize_ms,
         raster_blit_ms,
-        linework_ms: linework_ms.saturating_add(label_ms),
+        linework_ms: linework_ms
+            .saturating_add(point_ms)
+            .saturating_add(label_ms),
         contour_ms,
         barb_ms,
         outside_frame_clear_ms,
@@ -2997,6 +3053,7 @@ mod tests {
             projected_polygons: Vec::new(),
             projected_data_polygons: Vec::new(),
             projected_place_labels: Vec::new(),
+            projected_points: Vec::new(),
             projected_lines: Vec::new(),
             contours: Vec::new(),
             barbs: Vec::new(),
@@ -3105,6 +3162,14 @@ mod tests {
             width: 2,
             role: crate::presentation::LineworkRole::Generic,
         }];
+        opts.projected_points = vec![ProjectedPointOverlay {
+            x: 0.50,
+            y: 0.50,
+            color: Rgba::new(255, 80, 40),
+            radius_px: 5,
+            width_px: 2,
+            shape: ProjectedMarkerShape::Plus,
+        }];
         opts.contours = vec![ContourOverlay {
             data: vec![500.0, 504.0, 508.0, 512.0],
             ny: 2,
@@ -3133,6 +3198,8 @@ mod tests {
         assert_eq!(scaled.width, opts.width * 2);
         assert_eq!(scaled.height, opts.height * 2);
         assert_eq!(scaled.projected_lines[0].width, 4);
+        assert_eq!(scaled.projected_points[0].radius_px, 10);
+        assert_eq!(scaled.projected_points[0].width_px, 4);
         assert_eq!(scaled.projected_place_labels[0].style.marker_radius_px, 8);
         assert_eq!(scaled.projected_place_labels[0].style.label_scale, 2);
         assert_eq!(scaled.projected_place_labels[0].style.label_offset_x_px, 12);
@@ -3178,6 +3245,28 @@ mod tests {
             bright_pixels > 200,
             "marker fill and halo should be visible"
         );
+    }
+
+    #[test]
+    fn projected_points_render_visible_marker() {
+        let mut opts = sample_projected_opts();
+        opts.projected_points = vec![ProjectedPointOverlay {
+            x: 0.50,
+            y: 0.50,
+            color: Rgba::new(255, 50, 20),
+            radius_px: 8,
+            width_px: 2,
+            shape: ProjectedMarkerShape::Plus,
+        }];
+        let data = vec![0.5, 1.0, 1.5, 2.0];
+
+        let image = render_to_image(&data, 2, 2, &opts);
+        let red_pixels = image
+            .pixels()
+            .filter(|pixel| pixel.0[0] > 200 && pixel.0[1] < 100 && pixel.0[2] < 100)
+            .count();
+
+        assert!(red_pixels > 15, "projected point marker should be visible");
     }
 
     #[test]

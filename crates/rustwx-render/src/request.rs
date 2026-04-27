@@ -339,6 +339,26 @@ pub struct ProjectedLineOverlay {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+pub enum ProjectedMarkerShape {
+    Circle,
+    #[default]
+    Plus,
+    Cross,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectedPointOverlay {
+    pub x: f64,
+    pub y: f64,
+    pub color: Color,
+    pub radius_px: u32,
+    pub width_px: u32,
+    #[serde(default)]
+    pub shape: ProjectedMarkerShape,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum ProjectedLabelPlacement {
     Center,
     Left,
@@ -594,6 +614,8 @@ pub struct MapRenderRequest {
     pub projected_data_polygons: Vec<ProjectedPolygonFill>,
     #[serde(default)]
     pub projected_place_labels: Vec<ProjectedPlaceLabel>,
+    #[serde(default)]
+    pub projected_points: Vec<ProjectedPointOverlay>,
     pub projected_lines: Vec<ProjectedLineOverlay>,
     pub contours: Vec<ContourLayer>,
     pub wind_barbs: Vec<WindBarbLayer>,
@@ -629,6 +651,7 @@ impl MapRenderRequest {
             projected_polygons: Vec::new(),
             projected_data_polygons: Vec::new(),
             projected_place_labels: Vec::new(),
+            projected_points: Vec::new(),
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),

@@ -12,7 +12,8 @@ Keep Python convenient, keep the hot path in Rust, and expose generic render/mod
 With the `python` feature enabled, the module exposes:
 
 - agent-facing discovery and map rendering via `agent_capabilities_json`,
-  `list_domains_json`, and `render_maps_json`
+  `list_domains_json`, `render_maps_json`, `render_glm_lightning_json`, and
+  `sample_point_timeseries_json`
 - model listing and source/model helpers
 - projected-grid rendering via `render_projected_map` and `render_projected_map_json`
 - compatibility aliases `render_wrf_map` and `render_wrf_map_json`
@@ -29,6 +30,8 @@ adapters:
 rustwx capabilities
 rustwx list-domains --kind country --limit 5
 rustwx render-maps --date 20260424 --model hrrr --domain california --product 2m_temperature_10m_winds --out-dir out
+rustwx render-lightning --domain california --data-dir C:\Users\drew\lightning-test\data\glm --out-dir out
+rustwx sample-point-timeseries --date 20260427 --cycle 0 --lat 40.802 --lon -124.164 --forecast-hour-end 6
 ```
 
 `render-maps` accepts mixed product slugs and routes them to the appropriate
@@ -45,6 +48,18 @@ GRIB fetches while writing PNGs into different output folders.
 
 MCP servers should call these stable Python/CLI entry points instead of invoking
 internal proof binaries.
+
+`render_glm_lightning_json` / `rustwx render-lightning` reads GOES GLM
+`OR_GLM-L2-LCFA_*.nc` files, renders native Rust projected flash maps, and
+writes a JSON flash artifact with lat/lon, time, energy, and area fields for
+agent consumption.
+
+`sample_point_timeseries_json` samples native model fields at a lat/lon over a
+forecast-hour range for meteograms and point-and-click agent tools. The default
+variable set is HRRR-meteogram ready: 2 m T/Td/Tw/RH, 10 m wind/gust, hourly
+and accumulated QPF, low/mid/high clouds, MSLP, VPD, HDW, and the fire-weather
+composite. It uses rustwx's GRIB/idx fetch path and shared cache rather than
+cfgrib/xarray.
 
 Every new projected helper has both a Python-object entry point and a `_json` variant:
 
@@ -70,6 +85,26 @@ The projected map surface is generic and public-facing. The caller supplies:
 import rustwx
 
 print(rustwx.list_models_json())
+```
+
+## Point time-series example
+
+```python
+import json
+import rustwx
+
+report = rustwx.sample_point_timeseries_json(json.dumps({
+    "model": "hrrr",
+    "date_yyyymmdd": "20260427",
+    "cycle_utc": 0,
+    "source": "nomads",
+    "lat": 40.802,
+    "lon": -124.164,
+    "forecast_hour_start": 0,
+    "forecast_hour_end": 6,
+    "variables": ["temperature_2m_c", "relative_humidity_2m_pct", "wind_speed_10m_ms", "hdw"],
+}))
+print(report)
 ```
 
 ## Projected render example
@@ -158,5 +193,7 @@ print(xsect["request"]["axis"])
 - cross-section support is validation/normalization only in this crate
 - `render_maps_json` covers model fetch/download/render orchestration for
   direct, derived, heavy ECAPE-derived, and HRRR windowed map products
+- `sample_point_timeseries_json` is a point data primitive; consumer-specific
+  meteogram styling stays outside the Python wheel
 - sounding rendering expects a caller-supplied validated column; model fetch and
   lat/lon extraction live in the Rust CLI for now

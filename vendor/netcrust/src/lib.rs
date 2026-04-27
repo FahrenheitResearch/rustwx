@@ -253,6 +253,7 @@ pub struct Variable {
     name: String,
     dimensions: Vec<Dimension>,
     dtype: DataType,
+    attributes: Vec<Attribute>,
 }
 
 impl Variable {
@@ -270,6 +271,7 @@ impl Variable {
                 .map(|dim| Dimension::try_from(dim, &dimension_overrides))
                 .collect::<Result<_>>()?,
             dtype: DataType::from(var.dtype()),
+            attributes: var.attributes().iter().map(Attribute::from_reader).collect(),
         })
     }
 
@@ -291,6 +293,14 @@ impl Variable {
 
     pub fn dtype(&self) -> &DataType {
         &self.dtype
+    }
+
+    pub fn attributes(&self) -> &[Attribute] {
+        &self.attributes
+    }
+
+    pub fn attribute(&self, name: &str) -> Option<&Attribute> {
+        self.attributes.iter().find(|attr| attr.name() == name)
     }
 
     /// Read this variable as promoted `f64` values with shape metadata.

@@ -1,26 +1,27 @@
 use crate::gridded::{
-    FetchRuntimeInfo, decode_cache_path, decode_surface_grid, load_surface_geometry_from_latest,
-    resolve_model_run,
+    decode_cache_path, decode_surface_grid, load_surface_geometry_from_latest, resolve_model_run,
+    FetchRuntimeInfo,
 };
 use crate::hrrr::HrrrFetchRuntimeInfo;
 use crate::places::PlaceLabelOverlay;
 use crate::planner::ExecutionPlanBuilder;
-use crate::publication::{PublishedFetchIdentity, fetch_identity_from_cached_result};
+use crate::publication::{fetch_identity_from_cached_result, PublishedFetchIdentity};
 use crate::runtime::{
-    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
+    load_execution_plan, BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet,
 };
 use crate::shared_context::{DomainSpec, ProjectedMap};
 use crate::windowed_decoder::{
-    HrrrApcpDecode, HrrrTemp2mDecode, HrrrUhDecode, HrrrWind10mMaxDecode, compute_qpf_product,
-    compute_temp2m_product, compute_uh_product, compute_wind10m_product, load_or_decode_apcp,
-    load_or_decode_temp2m, load_or_decode_uh25, load_or_decode_wind10m_max,
+    compute_qpf_product, compute_surface_snapshot_product, compute_uh_product,
+    compute_wind10m_product, load_or_decode_apcp, load_or_decode_surface_snapshot,
+    load_or_decode_uh25, load_or_decode_wind10m_max, HrrrApcpDecode, HrrrSurfaceSnapshotDecode,
+    HrrrUhDecode, HrrrWind10mMaxDecode,
 };
 use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
 use rustwx_models::LatestRun;
 use rustwx_render::{
-    ChromeScale, DomainFrame, LegendControls, LegendMode, LevelDensity, MapRenderRequest,
-    PngCompressionMode, PngWriteOptions, ProductVisualMode, RenderDensity, WeatherProduct,
-    save_png_profile_with_options,
+    save_png_profile_with_options, ChromeScale, DomainFrame, LegendControls, LegendMode,
+    LevelDensity, MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode,
+    RenderDensity, WeatherProduct,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -69,9 +70,40 @@ pub enum HrrrWindowedProduct {
     Temp2m0to24hRange,
     Temp2m24to48hRange,
     Temp2m0to48hRange,
+    Rh2m0to24hMax,
+    Rh2m24to48hMax,
+    Rh2m0to48hMax,
+    Rh2m0to24hMin,
+    Rh2m24to48hMin,
+    Rh2m0to48hMin,
+    Rh2m0to24hRange,
+    Rh2m24to48hRange,
+    Rh2m0to48hRange,
+    Dewpoint2m0to24hMax,
+    Dewpoint2m24to48hMax,
+    Dewpoint2m0to48hMax,
+    Dewpoint2m0to24hMin,
+    Dewpoint2m24to48hMin,
+    Dewpoint2m0to48hMin,
+    Dewpoint2m0to24hRange,
+    Dewpoint2m24to48hRange,
+    Dewpoint2m0to48hRange,
+    Vpd2m0to24hMax,
+    Vpd2m24to48hMax,
+    Vpd2m0to48hMax,
+    Vpd2m0to24hMin,
+    Vpd2m24to48hMin,
+    Vpd2m0to48hMin,
+    Vpd2m0to24hRange,
+    Vpd2m24to48hRange,
+    Vpd2m0to48hRange,
 }
 
 impl HrrrWindowedProduct {
+    pub fn supported_products() -> &'static [Self] {
+        SUPPORTED_HRRR_WINDOWED_PRODUCTS
+    }
+
     pub fn slug(self) -> &'static str {
         match self {
             Self::Qpf1h => "qpf_1h",
@@ -96,6 +128,33 @@ impl HrrrWindowedProduct {
             Self::Temp2m0to24hRange => "2m_temp_0_24h_range",
             Self::Temp2m24to48hRange => "2m_temp_24_48h_range",
             Self::Temp2m0to48hRange => "2m_temp_0_48h_range",
+            Self::Rh2m0to24hMax => "2m_rh_0_24h_max",
+            Self::Rh2m24to48hMax => "2m_rh_24_48h_max",
+            Self::Rh2m0to48hMax => "2m_rh_0_48h_max",
+            Self::Rh2m0to24hMin => "2m_rh_0_24h_min",
+            Self::Rh2m24to48hMin => "2m_rh_24_48h_min",
+            Self::Rh2m0to48hMin => "2m_rh_0_48h_min",
+            Self::Rh2m0to24hRange => "2m_rh_0_24h_range",
+            Self::Rh2m24to48hRange => "2m_rh_24_48h_range",
+            Self::Rh2m0to48hRange => "2m_rh_0_48h_range",
+            Self::Dewpoint2m0to24hMax => "2m_dewpoint_0_24h_max",
+            Self::Dewpoint2m24to48hMax => "2m_dewpoint_24_48h_max",
+            Self::Dewpoint2m0to48hMax => "2m_dewpoint_0_48h_max",
+            Self::Dewpoint2m0to24hMin => "2m_dewpoint_0_24h_min",
+            Self::Dewpoint2m24to48hMin => "2m_dewpoint_24_48h_min",
+            Self::Dewpoint2m0to48hMin => "2m_dewpoint_0_48h_min",
+            Self::Dewpoint2m0to24hRange => "2m_dewpoint_0_24h_range",
+            Self::Dewpoint2m24to48hRange => "2m_dewpoint_24_48h_range",
+            Self::Dewpoint2m0to48hRange => "2m_dewpoint_0_48h_range",
+            Self::Vpd2m0to24hMax => "2m_vpd_0_24h_max",
+            Self::Vpd2m24to48hMax => "2m_vpd_24_48h_max",
+            Self::Vpd2m0to48hMax => "2m_vpd_0_48h_max",
+            Self::Vpd2m0to24hMin => "2m_vpd_0_24h_min",
+            Self::Vpd2m24to48hMin => "2m_vpd_24_48h_min",
+            Self::Vpd2m0to48hMin => "2m_vpd_0_48h_min",
+            Self::Vpd2m0to24hRange => "2m_vpd_0_24h_range",
+            Self::Vpd2m24to48hRange => "2m_vpd_24_48h_range",
+            Self::Vpd2m0to48hRange => "2m_vpd_0_48h_range",
         }
     }
 
@@ -123,6 +182,33 @@ impl HrrrWindowedProduct {
             Self::Temp2m0to24hRange => "2 m Temperature Range (0-24 h)",
             Self::Temp2m24to48hRange => "2 m Temperature Range (24-48 h)",
             Self::Temp2m0to48hRange => "2 m Temperature Range (0-48 h)",
+            Self::Rh2m0to24hMax => "2 m Relative Humidity (0-24 h max)",
+            Self::Rh2m24to48hMax => "2 m Relative Humidity (24-48 h max)",
+            Self::Rh2m0to48hMax => "2 m Relative Humidity (0-48 h max)",
+            Self::Rh2m0to24hMin => "2 m Relative Humidity (0-24 h min)",
+            Self::Rh2m24to48hMin => "2 m Relative Humidity (24-48 h min)",
+            Self::Rh2m0to48hMin => "2 m Relative Humidity (0-48 h min)",
+            Self::Rh2m0to24hRange => "2 m Relative Humidity Range (0-24 h)",
+            Self::Rh2m24to48hRange => "2 m Relative Humidity Range (24-48 h)",
+            Self::Rh2m0to48hRange => "2 m Relative Humidity Range (0-48 h)",
+            Self::Dewpoint2m0to24hMax => "2 m Dewpoint (0-24 h max)",
+            Self::Dewpoint2m24to48hMax => "2 m Dewpoint (24-48 h max)",
+            Self::Dewpoint2m0to48hMax => "2 m Dewpoint (0-48 h max)",
+            Self::Dewpoint2m0to24hMin => "2 m Dewpoint (0-24 h min)",
+            Self::Dewpoint2m24to48hMin => "2 m Dewpoint (24-48 h min)",
+            Self::Dewpoint2m0to48hMin => "2 m Dewpoint (0-48 h min)",
+            Self::Dewpoint2m0to24hRange => "2 m Dewpoint Range (0-24 h)",
+            Self::Dewpoint2m24to48hRange => "2 m Dewpoint Range (24-48 h)",
+            Self::Dewpoint2m0to48hRange => "2 m Dewpoint Range (0-48 h)",
+            Self::Vpd2m0to24hMax => "2 m Vapor Pressure Deficit (0-24 h max)",
+            Self::Vpd2m24to48hMax => "2 m Vapor Pressure Deficit (24-48 h max)",
+            Self::Vpd2m0to48hMax => "2 m Vapor Pressure Deficit (0-48 h max)",
+            Self::Vpd2m0to24hMin => "2 m Vapor Pressure Deficit (0-24 h min)",
+            Self::Vpd2m24to48hMin => "2 m Vapor Pressure Deficit (24-48 h min)",
+            Self::Vpd2m0to48hMin => "2 m Vapor Pressure Deficit (0-48 h min)",
+            Self::Vpd2m0to24hRange => "2 m Vapor Pressure Deficit Range (0-24 h)",
+            Self::Vpd2m24to48hRange => "2 m Vapor Pressure Deficit Range (24-48 h)",
+            Self::Vpd2m0to48hRange => "2 m Vapor Pressure Deficit Range (0-48 h)",
         }
     }
 
@@ -155,7 +241,7 @@ impl HrrrWindowedProduct {
         )
     }
 
-    fn is_temp2m(self) -> bool {
+    pub fn is_surface_snapshot(self) -> bool {
         matches!(
             self,
             Self::Temp2m0to24hMax
@@ -167,13 +253,92 @@ impl HrrrWindowedProduct {
                 | Self::Temp2m0to24hRange
                 | Self::Temp2m24to48hRange
                 | Self::Temp2m0to48hRange
+                | Self::Rh2m0to24hMax
+                | Self::Rh2m24to48hMax
+                | Self::Rh2m0to48hMax
+                | Self::Rh2m0to24hMin
+                | Self::Rh2m24to48hMin
+                | Self::Rh2m0to48hMin
+                | Self::Rh2m0to24hRange
+                | Self::Rh2m24to48hRange
+                | Self::Rh2m0to48hRange
+                | Self::Dewpoint2m0to24hMax
+                | Self::Dewpoint2m24to48hMax
+                | Self::Dewpoint2m0to48hMax
+                | Self::Dewpoint2m0to24hMin
+                | Self::Dewpoint2m24to48hMin
+                | Self::Dewpoint2m0to48hMin
+                | Self::Dewpoint2m0to24hRange
+                | Self::Dewpoint2m24to48hRange
+                | Self::Dewpoint2m0to48hRange
+                | Self::Vpd2m0to24hMax
+                | Self::Vpd2m24to48hMax
+                | Self::Vpd2m0to48hMax
+                | Self::Vpd2m0to24hMin
+                | Self::Vpd2m24to48hMin
+                | Self::Vpd2m0to48hMin
+                | Self::Vpd2m0to24hRange
+                | Self::Vpd2m24to48hRange
+                | Self::Vpd2m0to48hRange
         )
     }
 
     fn requires_00z_extended_cycle(self) -> bool {
-        self.is_diurnal_wind10m() || self.is_temp2m()
+        self.is_diurnal_wind10m() || self.is_surface_snapshot()
     }
 }
+
+pub static SUPPORTED_HRRR_WINDOWED_PRODUCTS: &[HrrrWindowedProduct] = &[
+    HrrrWindowedProduct::Qpf1h,
+    HrrrWindowedProduct::Qpf6h,
+    HrrrWindowedProduct::Qpf12h,
+    HrrrWindowedProduct::Qpf24h,
+    HrrrWindowedProduct::QpfTotal,
+    HrrrWindowedProduct::Uh25km1h,
+    HrrrWindowedProduct::Uh25km3h,
+    HrrrWindowedProduct::Uh25kmRunMax,
+    HrrrWindowedProduct::Wind10m1hMax,
+    HrrrWindowedProduct::Wind10mRunMax,
+    HrrrWindowedProduct::Wind10m0to24hMax,
+    HrrrWindowedProduct::Wind10m24to48hMax,
+    HrrrWindowedProduct::Wind10m0to48hMax,
+    HrrrWindowedProduct::Temp2m0to24hMax,
+    HrrrWindowedProduct::Temp2m24to48hMax,
+    HrrrWindowedProduct::Temp2m0to48hMax,
+    HrrrWindowedProduct::Temp2m0to24hMin,
+    HrrrWindowedProduct::Temp2m24to48hMin,
+    HrrrWindowedProduct::Temp2m0to48hMin,
+    HrrrWindowedProduct::Temp2m0to24hRange,
+    HrrrWindowedProduct::Temp2m24to48hRange,
+    HrrrWindowedProduct::Temp2m0to48hRange,
+    HrrrWindowedProduct::Rh2m0to24hMax,
+    HrrrWindowedProduct::Rh2m24to48hMax,
+    HrrrWindowedProduct::Rh2m0to48hMax,
+    HrrrWindowedProduct::Rh2m0to24hMin,
+    HrrrWindowedProduct::Rh2m24to48hMin,
+    HrrrWindowedProduct::Rh2m0to48hMin,
+    HrrrWindowedProduct::Rh2m0to24hRange,
+    HrrrWindowedProduct::Rh2m24to48hRange,
+    HrrrWindowedProduct::Rh2m0to48hRange,
+    HrrrWindowedProduct::Dewpoint2m0to24hMax,
+    HrrrWindowedProduct::Dewpoint2m24to48hMax,
+    HrrrWindowedProduct::Dewpoint2m0to48hMax,
+    HrrrWindowedProduct::Dewpoint2m0to24hMin,
+    HrrrWindowedProduct::Dewpoint2m24to48hMin,
+    HrrrWindowedProduct::Dewpoint2m0to48hMin,
+    HrrrWindowedProduct::Dewpoint2m0to24hRange,
+    HrrrWindowedProduct::Dewpoint2m24to48hRange,
+    HrrrWindowedProduct::Dewpoint2m0to48hRange,
+    HrrrWindowedProduct::Vpd2m0to24hMax,
+    HrrrWindowedProduct::Vpd2m24to48hMax,
+    HrrrWindowedProduct::Vpd2m0to48hMax,
+    HrrrWindowedProduct::Vpd2m0to24hMin,
+    HrrrWindowedProduct::Vpd2m24to48hMin,
+    HrrrWindowedProduct::Vpd2m0to48hMin,
+    HrrrWindowedProduct::Vpd2m0to24hRange,
+    HrrrWindowedProduct::Vpd2m24to48hRange,
+    HrrrWindowedProduct::Vpd2m0to48hRange,
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HrrrWindowedBatchRequest {
@@ -429,7 +594,7 @@ pub fn windowed_product_input_fetch_keys(
         &shared_timing.surface_hour_fetches
     } else if product.product.is_wind10m() {
         &shared_timing.wind_hour_fetches
-    } else if product.product.is_temp2m() {
+    } else if product.product.is_surface_snapshot() {
         &shared_timing.temp_hour_fetches
     } else {
         &shared_timing.uh_hour_fetches
@@ -515,8 +680,8 @@ pub(crate) fn load_windowed_sampled_fields_from_latest(
         load_uh_hours_from_plan(Some(&loaded), &request, &nat_hours)?;
     let (wind_by_hour, wind_hour_fetches, _, _) =
         load_wind10m_hours_from_plan(Some(&loaded), &request, &wind_hours)?;
-    let (temp_by_hour, temp_hour_fetches, _, _) =
-        load_temp2m_hours_from_plan(Some(&loaded), &request, &temp_hours)?;
+    let (snapshot_by_hour, temp_hour_fetches, _, _) =
+        load_surface_snapshot_hours_from_plan(Some(&loaded), &request, &temp_hours)?;
 
     let mut fields = Vec::new();
     for &product in &planned_products {
@@ -524,8 +689,8 @@ pub(crate) fn load_windowed_sampled_fields_from_latest(
             compute_qpf_product(product, forecast_hour, &grid, &apcp_by_hour)
         } else if product.is_wind10m() {
             compute_wind10m_product(product, forecast_hour, &grid, &wind_by_hour)
-        } else if product.is_temp2m() {
-            compute_temp2m_product(product, &grid, &temp_by_hour)
+        } else if product.is_surface_snapshot() {
+            compute_surface_snapshot_product(product, &grid, &snapshot_by_hour)
         } else {
             compute_uh_product(product, forecast_hour, &grid, &uh_by_hour)
         };
@@ -584,7 +749,7 @@ fn input_fetches_for_windowed_product(
         surface_hour_fetches
     } else if product.is_wind10m() {
         wind_hour_fetches
-    } else if product.is_temp2m() {
+    } else if product.is_surface_snapshot() {
         temp_hour_fetches
     } else {
         uh_hour_fetches
@@ -691,8 +856,8 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
         load_uh_hours_from_plan(loaded.as_ref(), request, &nat_hours)?;
     let (wind_by_hour, wind_hour_fetches, fetch_wind_ms, decode_wind_ms) =
         load_wind10m_hours_from_plan(loaded.as_ref(), request, &wind_hours)?;
-    let (temp_by_hour, temp_hour_fetches, fetch_temp_ms, decode_temp_ms) =
-        load_temp2m_hours_from_plan(loaded.as_ref(), request, &temp_hours)?;
+    let (snapshot_by_hour, temp_hour_fetches, fetch_temp_ms, decode_temp_ms) =
+        load_surface_snapshot_hours_from_plan(loaded.as_ref(), request, &temp_hours)?;
 
     let product_parallelism = windowed_parallelism(request.source, planned_products.len());
     let date_yyyymmdd = request.date_yyyymmdd.as_str();
@@ -708,7 +873,7 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
     let apcp_by_hour = &apcp_by_hour;
     let uh_by_hour = &uh_by_hour;
     let wind_by_hour = &wind_by_hour;
-    let temp_by_hour = &temp_by_hour;
+    let snapshot_by_hour = &snapshot_by_hour;
     let mut outcomes = thread::scope(|scope| -> Result<Vec<WindowedProductOutcome>, io::Error> {
         let mut done = Vec::with_capacity(planned_products.len());
         let mut pending = std::collections::VecDeque::new();
@@ -721,8 +886,8 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
                         compute_qpf_product(product, forecast_hour, grid, apcp_by_hour)
                     } else if product.is_wind10m() {
                         compute_wind10m_product(product, forecast_hour, grid, wind_by_hour)
-                    } else if product.is_temp2m() {
-                        compute_temp2m_product(product, grid, temp_by_hour)
+                    } else if product.is_surface_snapshot() {
+                        compute_surface_snapshot_product(product, grid, snapshot_by_hour)
                     } else {
                         compute_uh_product(product, forecast_hour, grid, uh_by_hour)
                     };
@@ -872,15 +1037,12 @@ fn build_windowed_render_request(
     render_request.width = request.output_width;
     render_request.height = request.output_height;
     render_request.title = Some(computed.title.clone());
+    let hour_label = windowed_display_hour_label(product, &computed.metadata, forecast_hour);
     render_request.subtitle_left = Some(format!(
-        "{} {}Z F{:03}  {}",
-        date_yyyymmdd, cycle_utc, forecast_hour, model
+        "{} {}Z {}  {}",
+        date_yyyymmdd, cycle_utc, hour_label, model
     ));
-    render_request.subtitle_right = Some(format!(
-        "source: {} | {}",
-        source,
-        concise_windowed_strategy(&computed.metadata.strategy)
-    ));
+    render_request.subtitle_right = Some(format!("source: {}", source));
     render_request.chrome_scale = ChromeScale::Fixed(1.5);
     render_request.render_density = RenderDensity {
         fill: LevelDensity::default(),
@@ -892,12 +1054,12 @@ fn build_windowed_render_request(
     };
     render_request.supersample_factor = 2;
     render_request.domain_frame = Some(DomainFrame::model_data_default());
-    render_request.visual_mode = if product.is_qpf() || product.is_wind10m() || product.is_temp2m()
-    {
-        ProductVisualMode::FilledMeteorology
-    } else {
-        ProductVisualMode::SevereDiagnostic
-    };
+    render_request.visual_mode =
+        if product.is_qpf() || product.is_wind10m() || product.is_surface_snapshot() {
+            ProductVisualMode::FilledMeteorology
+        } else {
+            ProductVisualMode::SevereDiagnostic
+        };
     render_request.projected_domain = Some(rustwx_render::ProjectedDomain {
         x: projected.projected_x.clone(),
         y: projected.projected_y.clone(),
@@ -908,15 +1070,33 @@ fn build_windowed_render_request(
     render_request
 }
 
-fn concise_windowed_strategy(strategy: &str) -> String {
-    let shortened = strategy
-        .replace(" accumulation", "")
-        .replace("maximum", "max")
-        .replace("hourly APCP increments", "hourly APCP");
-    if shortened.len() <= 32 {
-        shortened
-    } else {
-        format!("{}...", shortened.chars().take(29).collect::<String>())
+fn windowed_display_hour_label(
+    product: HrrrWindowedProduct,
+    metadata: &HrrrWindowedProductMetadata,
+    forecast_hour: u16,
+) -> String {
+    if let Some((start_hour, end_hour, _)) = surface_snapshot_window_hours(product) {
+        return format!("F{start_hour:03}-F{end_hour:03}");
+    }
+    match metadata.contributing_forecast_hours.as_slice() {
+        [] => format!("F{forecast_hour:03}"),
+        [hour] => {
+            if let Some(window_hours) = metadata.window_hours.filter(|window| *window > 1) {
+                let start_hour = forecast_hour.saturating_add(1).saturating_sub(window_hours);
+                format!("F{start_hour:03}-F{forecast_hour:03}")
+            } else {
+                format!("F{hour:03}")
+            }
+        }
+        hours => {
+            let start_hour = hours.first().copied().unwrap_or(forecast_hour);
+            let end_hour = hours.last().copied().unwrap_or(forecast_hour);
+            if start_hour == end_hour {
+                format!("F{end_hour:03}")
+            } else {
+                format!("F{start_hour:03}-F{end_hour:03}")
+            }
+        }
     }
 }
 
@@ -949,6 +1129,18 @@ fn plan_windowed_products(
                 product,
                 "fixed 24-48 h window products are limited to 00Z HRRR extended cycles",
             ));
+            continue;
+        }
+        if let Some((start_hour, end_hour, label)) = surface_snapshot_window_hours(product) {
+            if forecast_hour < end_hour {
+                blockers.push(blocker(
+                    product,
+                    format!("{label} requires forecast hour >= {end_hour}"),
+                ));
+                continue;
+            }
+            temp_hours.extend(start_hour..=end_hour);
+            planned.push(product);
             continue;
         }
 
@@ -1065,42 +1257,7 @@ fn plan_windowed_products(
                 }
                 wind_hours.extend(1..=48);
             }
-            HrrrWindowedProduct::Temp2m0to24hMax
-            | HrrrWindowedProduct::Temp2m0to24hMin
-            | HrrrWindowedProduct::Temp2m0to24hRange => {
-                if forecast_hour < 24 {
-                    blockers.push(blocker(
-                        product,
-                        "0-24 h 2 m temperature window requires forecast hour >= 24",
-                    ));
-                    continue;
-                }
-                temp_hours.extend(1..=24);
-            }
-            HrrrWindowedProduct::Temp2m24to48hMax
-            | HrrrWindowedProduct::Temp2m24to48hMin
-            | HrrrWindowedProduct::Temp2m24to48hRange => {
-                if forecast_hour < 48 {
-                    blockers.push(blocker(
-                        product,
-                        "24-48 h 2 m temperature window requires forecast hour >= 48",
-                    ));
-                    continue;
-                }
-                temp_hours.extend(25..=48);
-            }
-            HrrrWindowedProduct::Temp2m0to48hMax
-            | HrrrWindowedProduct::Temp2m0to48hMin
-            | HrrrWindowedProduct::Temp2m0to48hRange => {
-                if forecast_hour < 48 {
-                    blockers.push(blocker(
-                        product,
-                        "0-48 h 2 m temperature window requires forecast hour >= 48",
-                    ));
-                    continue;
-                }
-                temp_hours.extend(1..=48);
-            }
+            _ => unreachable!("surface snapshot window products are handled before match"),
         }
 
         planned.push(product);
@@ -1114,6 +1271,49 @@ fn plan_windowed_products(
         wind_hours,
         temp_hours,
     )
+}
+
+fn surface_snapshot_window_hours(product: HrrrWindowedProduct) -> Option<(u16, u16, &'static str)> {
+    use HrrrWindowedProduct::*;
+    match product {
+        Temp2m0to24hMax
+        | Temp2m0to24hMin
+        | Temp2m0to24hRange
+        | Rh2m0to24hMax
+        | Rh2m0to24hMin
+        | Rh2m0to24hRange
+        | Dewpoint2m0to24hMax
+        | Dewpoint2m0to24hMin
+        | Dewpoint2m0to24hRange
+        | Vpd2m0to24hMax
+        | Vpd2m0to24hMin
+        | Vpd2m0to24hRange => Some((1, 24, "0-24 h 2 m surface snapshot window")),
+        Temp2m24to48hMax
+        | Temp2m24to48hMin
+        | Temp2m24to48hRange
+        | Rh2m24to48hMax
+        | Rh2m24to48hMin
+        | Rh2m24to48hRange
+        | Dewpoint2m24to48hMax
+        | Dewpoint2m24to48hMin
+        | Dewpoint2m24to48hRange
+        | Vpd2m24to48hMax
+        | Vpd2m24to48hMin
+        | Vpd2m24to48hRange => Some((25, 48, "24-48 h 2 m surface snapshot window")),
+        Temp2m0to48hMax
+        | Temp2m0to48hMin
+        | Temp2m0to48hRange
+        | Rh2m0to48hMax
+        | Rh2m0to48hMin
+        | Rh2m0to48hRange
+        | Dewpoint2m0to48hMax
+        | Dewpoint2m0to48hMin
+        | Dewpoint2m0to48hRange
+        | Vpd2m0to48hMax
+        | Vpd2m0to48hMin
+        | Vpd2m0to48hRange => Some((1, 48, "0-48 h 2 m surface snapshot window")),
+        _ => None,
+    }
 }
 
 fn blocker(product: HrrrWindowedProduct, reason: impl Into<String>) -> HrrrWindowedBlocker {
@@ -1319,16 +1519,16 @@ fn load_wind10m_hours_from_plan(
     Ok((out, fetches, total_fetch_ms, total_decode_ms))
 }
 
-/// Planner-loaded native 2 m temperature snapshot decode. HRRR does not
-/// carry reliable diurnal TMAX/TMIN fields in wrfsfc, so fixed-window
-/// temperature products reduce hourly TMP snapshots pulled by idx.
-fn load_temp2m_hours_from_plan(
+/// Planner-loaded native 2 m surface snapshot decode. HRRR does not
+/// carry reliable fixed-window extrema for these fields in wrfsfc, so
+/// diurnal products reduce hourly snapshots pulled by idx.
+fn load_surface_snapshot_hours_from_plan(
     loaded: Option<&LoadedBundleSet>,
     request: &HrrrWindowedBatchRequest,
     hours: &BTreeSet<u16>,
 ) -> Result<
     (
-        BTreeMap<u16, Result<HrrrTemp2mDecode, String>>,
+        BTreeMap<u16, Result<HrrrSurfaceSnapshotDecode, String>>,
         Vec<HrrrWindowedHourFetchInfo>,
         u128,
         u128,
@@ -1353,11 +1553,11 @@ fn load_temp2m_hours_from_plan(
         let decode_path = decode_cache_path(
             &request.cache_root,
             &fetched.file.request,
-            "windowed_temp2m",
+            "windowed_surface_snapshot",
         );
         let decode_start = Instant::now();
         let decode_result =
-            load_or_decode_temp2m(&decode_path, &fetched.file.bytes, request.use_cache)
+            load_or_decode_surface_snapshot(&decode_path, &fetched.file.bytes, request.use_cache)
                 .map_err(|err| err.to_string());
         total_decode_ms += decode_start.elapsed().as_millis();
         fetches.push(HrrrWindowedHourFetchInfo {
@@ -1505,11 +1705,14 @@ mod tests {
                     HrrrWindowedProduct::Temp2m24to48hMin,
                     HrrrWindowedProduct::Temp2m0to48hMax,
                     HrrrWindowedProduct::Temp2m0to48hRange,
+                    HrrrWindowedProduct::Rh2m0to24hMin,
+                    HrrrWindowedProduct::Dewpoint2m24to48hMax,
+                    HrrrWindowedProduct::Vpd2m0to48hRange,
                 ],
                 48,
                 Some(0),
             );
-        assert_eq!(planned.len(), 4);
+        assert_eq!(planned.len(), 7);
         assert!(blockers.is_empty());
         assert!(surface_hours.is_empty());
         assert!(nat_hours.is_empty());
@@ -1614,11 +1817,95 @@ mod tests {
         assert_eq!(render_request.chrome_scale, ChromeScale::Fixed(1.5));
         assert_eq!(render_request.supersample_factor, 2);
         assert_eq!(
+            render_request.subtitle_left.as_deref(),
+            Some("20260424 22Z F001  hrrr")
+        );
+        assert_eq!(
+            render_request.subtitle_right.as_deref(),
+            Some("source: nomads")
+        );
+        assert_eq!(
             render_request.visual_mode,
             ProductVisualMode::FilledMeteorology
         );
         assert_eq!(render_request.legend.mode, LegendMode::Stepped);
         assert!(render_request.domain_frame.is_some());
         assert!(render_request.projected_domain.is_some());
+    }
+
+    #[test]
+    fn windowed_render_request_labels_fixed_window_instead_of_requested_end_hour() {
+        let shape = rustwx_core::GridShape::new(2, 2).unwrap();
+        let grid = rustwx_core::LatLonGrid::new(
+            shape,
+            vec![36.0, 36.0, 35.0, 35.0],
+            vec![-98.0, -97.0, -98.0, -97.0],
+        )
+        .unwrap();
+        let field = rustwx_core::Field2D::new(
+            rustwx_core::ProductKey::named("2m_rh_24_48h_range"),
+            "%",
+            grid,
+            vec![10.0, 20.0, 30.0, 40.0],
+        )
+        .unwrap();
+        let computed = crate::windowed_decoder::ComputedWindowedField {
+            field,
+            title: "2 m Relative Humidity Range (24-48 h)".to_string(),
+            metadata: HrrrWindowedProductMetadata {
+                strategy: "pointwise max-min range of hourly 2 m relative humidity snapshots across F025-F048".to_string(),
+                contributing_forecast_hours: (25..=48).collect(),
+                window_hours: Some(24),
+            },
+            scale: rustwx_render::ColorScale::Discrete(crate::windowed_decoder::rh2m_scale(true)),
+        };
+        let request = HrrrWindowedBatchRequest {
+            date_yyyymmdd: "20260424".to_string(),
+            cycle_override_utc: Some(0),
+            forecast_hour: 48,
+            source: SourceId::Aws,
+            domain: DomainSpec::new("california", (-124.9, -113.8, 31.9, 42.5)),
+            out_dir: PathBuf::new(),
+            cache_root: PathBuf::new(),
+            use_cache: false,
+            products: vec![HrrrWindowedProduct::Rh2m24to48hRange],
+            output_width: 1200,
+            output_height: 900,
+            png_compression: PngCompressionMode::Default,
+            place_label_overlay: None,
+        };
+        let projected = ProjectedMap {
+            projected_x: vec![0.0, 1.0, 0.0, 1.0],
+            projected_y: vec![1.0, 1.0, 0.0, 0.0],
+            extent: rustwx_render::ProjectedExtent {
+                x_min: 0.0,
+                x_max: 1.0,
+                y_min: 0.0,
+                y_max: 1.0,
+            },
+            lines: Vec::new(),
+            polygons: Vec::new(),
+        };
+
+        let render_request = build_windowed_render_request(
+            HrrrWindowedProduct::Rh2m24to48hRange,
+            &computed,
+            &request,
+            &projected,
+            "20260424",
+            0,
+            48,
+            ModelId::Hrrr,
+            SourceId::Aws,
+        );
+
+        assert_eq!(
+            render_request.subtitle_left.as_deref(),
+            Some("20260424 0Z F025-F048  hrrr")
+        );
+        assert_eq!(
+            render_request.subtitle_right.as_deref(),
+            Some("source: aws")
+        );
     }
 }

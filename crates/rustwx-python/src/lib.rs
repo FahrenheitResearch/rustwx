@@ -7,23 +7,27 @@ mod wrf_render;
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
 #[cfg(feature = "python")]
-use rustwx_core::{CycleSpec, ModelId, ModelRunRequest, SourceId};
+use rustwx_core::{
+    CycleSpec, FieldPointSampleMethod, GeoPoint, ModelId, ModelRunRequest, SourceId,
+};
 #[cfg(feature = "python")]
-use rustwx_io::{FetchRequest, available_forecast_hours, probe_sources};
+use rustwx_io::{available_forecast_hours, probe_sources, FetchRequest};
 #[cfg(feature = "python")]
 use rustwx_products::{
     derived::{
-        DerivedBatchReport, DerivedBatchRequest, NativeContourRenderMode,
         is_heavy_derived_recipe_slug, run_derived_batch, supported_derived_recipe_inventory,
-        supported_derived_recipe_slugs,
+        supported_derived_recipe_slugs, DerivedBatchReport, DerivedBatchRequest,
+        NativeContourRenderMode,
     },
     direct::supported_direct_recipe_slugs,
+    lightning::{default_glm_data_dir, render_glm_lightning_map, GlmLightningRenderRequest},
     named_geometry::{
-        NamedGeometryCatalog, NamedGeometryKind, find_built_in_country_domain,
-        find_built_in_named_geometry,
+        find_built_in_country_domain, find_built_in_named_geometry, NamedGeometryCatalog,
+        NamedGeometryKind,
     },
-    non_ecape::{NonEcapeMultiDomainRequest, run_model_non_ecape_hour_multi_domain},
-    places::{PlaceLabelDensityTier, default_place_label_overlay_for_domain},
+    non_ecape::{run_model_non_ecape_hour_multi_domain, NonEcapeMultiDomainRequest},
+    places::{default_place_label_overlay_for_domain, PlaceLabelDensityTier},
+    point_timeseries::{sample_point_timeseries, PointTimeseriesRequest},
     shared_context::DomainSpec,
     source::ProductSourceMode,
     windowed::HrrrWindowedProduct,
@@ -31,7 +35,7 @@ use rustwx_products::{
 #[cfg(feature = "python")]
 use rustwx_render::PngCompressionMode;
 #[cfg(feature = "python")]
-use rustwx_sounding::{SoundingColumn, write_full_sounding_png};
+use rustwx_sounding::{write_full_sounding_png, SoundingColumn};
 #[cfg(feature = "python")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "python")]
@@ -183,6 +187,32 @@ fn render_maps_json(request_json: &str) -> PyResult<String> {
 
 #[cfg(feature = "python")]
 #[pyfunction]
+#[pyo3(signature = (request_json))]
+fn render_glm_lightning_json(request_json: &str) -> PyResult<String> {
+    let request: RenderGlmLightningRequestJson =
+        serde_json::from_str(request_json).map_err(|err| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "Invalid render-glm-lightning request: {err}"
+            ))
+        })?;
+    render_glm_lightning_json_impl(request)
+}
+
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (request_json))]
+fn sample_point_timeseries_json(request_json: &str) -> PyResult<String> {
+    let request: SamplePointTimeseriesRequestJson =
+        serde_json::from_str(request_json).map_err(|err| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "Invalid sample-point-timeseries request: {err}"
+            ))
+        })?;
+    sample_point_timeseries_json_impl(request)
+}
+
+#[cfg(feature = "python")]
+#[pyfunction]
 #[pyo3(signature = (kind=None, limit=None))]
 fn list_domains_json(kind: Option<&str>, limit: Option<usize>) -> PyResult<String> {
     let kind = kind.map(parse_named_geometry_kind).transpose()?;
@@ -291,6 +321,64 @@ struct RenderMapsRequestJson {
 }
 
 #[cfg(feature = "python")]
+#[derive(Debug, Clone, Default, Deserialize)]
+struct RenderGlmLightningRequestJson {
+    #[serde(default)]
+    domain: Option<String>,
+    #[serde(default)]
+    bounds: Option<Vec<f64>>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    data_dir: Option<PathBuf>,
+    #[serde(default, alias = "out")]
+    out_dir: Option<PathBuf>,
+    #[serde(default)]
+    width: Option<u32>,
+    #[serde(default)]
+    height: Option<u32>,
+    #[serde(default)]
+    max_age_min: Option<f64>,
+    #[serde(default)]
+    high_speed_png: Option<bool>,
+}
+
+#[cfg(feature = "python")]
+#[derive(Debug, Clone, Default, Deserialize)]
+struct SamplePointTimeseriesRequestJson {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default, alias = "date")]
+    date_yyyymmdd: Option<String>,
+    #[serde(default, alias = "cycle")]
+    cycle_utc: Option<u8>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    lat: Option<f64>,
+    #[serde(default)]
+    lon: Option<f64>,
+    #[serde(default)]
+    point: Option<GeoPoint>,
+    #[serde(default, alias = "forecastHourStart", alias = "fhour_start")]
+    forecast_hour_start: Option<u16>,
+    #[serde(default, alias = "forecastHourEnd", alias = "fhour_end")]
+    forecast_hour_end: Option<u16>,
+    #[serde(default)]
+    forecast_hours: Option<Vec<u16>>,
+    #[serde(default)]
+    variables: Option<Vec<String>>,
+    #[serde(default)]
+    cache_dir: Option<PathBuf>,
+    #[serde(default)]
+    use_cache: Option<bool>,
+    #[serde(default)]
+    no_cache: Option<bool>,
+    #[serde(default)]
+    method: Option<String>,
+}
+
+#[cfg(feature = "python")]
 #[derive(Debug, Clone)]
 struct RenderMapsPlan {
     request: NonEcapeMultiDomainRequest,
@@ -347,12 +435,14 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
             "python": [
                 "rustwx.agent_capabilities_json()",
                 "rustwx.list_domains_json(kind=None, limit=None)",
-                "rustwx.render_maps_json(request_json)"
+                "rustwx.render_maps_json(request_json)",
+                "rustwx.render_glm_lightning_json(request_json)",
+                "rustwx.sample_point_timeseries_json(request_json)"
             ],
             "console_scripts": [
                 {
                     "name": "rustwx",
-                    "commands": ["capabilities", "list-domains", "render-maps"]
+                    "commands": ["capabilities", "list-domains", "render-maps", "render-lightning", "sample-point-timeseries"]
                 }
             ]
         },
@@ -378,6 +468,30 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
             "out_dir": "optional output directory",
             "cache_dir": "optional shared fetch/decode cache; default rustwx_outputs/cache, or RUSTWX_CACHE_DIR when set",
             "place_label_density": "none, major, major-and-aux, or dense"
+        },
+        "render_glm_lightning_request_schema": {
+            "domain": "optional built-in domain/country/metro slug; default california",
+            "bounds": "optional [west,east,south,north] custom domain override",
+            "label": "optional display label for custom domains",
+            "data_dir": "folder containing OR_GLM-L2-LCFA_*.nc files; default RUSTWX_GLM_DIR, CWT_GLM_DIR, or ~/lightning-test/data/glm",
+            "out_dir": "optional output directory",
+            "width": "optional PNG width; default 1500",
+            "height": "optional PNG height; default 1300",
+            "max_age_min": "recency color-ramp upper bound; default 30"
+        },
+        "sample_point_timeseries_request_schema": {
+            "model": "optional model id; default hrrr",
+            "date_yyyymmdd": "YYYYMMDD, required",
+            "cycle_utc": "optional integer UTC cycle; omitted means latest available for date/forecast_hours/source",
+            "source": "optional source id; default nomads",
+            "lat": "point latitude in degrees; use with lon",
+            "lon": "point longitude in degrees; use with lat",
+            "forecast_hours": "optional explicit forecast-hour list; default range forecast_hour_start..forecast_hour_end",
+            "forecast_hour_start": "optional range start; default 0",
+            "forecast_hour_end": "optional range end; default 48",
+            "variables": "optional variables; defaults to meteogram-ready T/Td/Tw/RH/wind/gust/QPF/cloud/MSLP/VPD/HDW/fire composite",
+            "cache_dir": "optional shared fetch/decode cache; default rustwx_outputs/cache, or RUSTWX_CACHE_DIR when set",
+            "method": "nearest or inverse-distance-4; default nearest"
         }
     });
     serde_json::to_string_pretty(&payload)
@@ -388,6 +502,109 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
 fn render_maps_json_impl(request: RenderMapsRequestJson) -> PyResult<String> {
     let plan = build_render_maps_plan(request)?;
     let report = run_render_maps_plan(plan)?;
+    serde_json::to_string_pretty(&report)
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
+}
+
+#[cfg(feature = "python")]
+fn render_glm_lightning_json_impl(request: RenderGlmLightningRequestJson) -> PyResult<String> {
+    let domain = render_glm_lightning_domain(&request)?;
+    let mut render_request = GlmLightningRenderRequest::new(
+        request.data_dir.unwrap_or_else(default_glm_data_dir),
+        domain.slug.clone(),
+        request
+            .label
+            .unwrap_or_else(|| domain_label_for_slug(&domain.slug)),
+        domain.bounds,
+        request
+            .out_dir
+            .unwrap_or_else(|| PathBuf::from("rustwx_outputs")),
+    );
+    if let Some(width) = request.width {
+        render_request.width = width;
+    }
+    if let Some(height) = request.height {
+        render_request.height = height;
+    }
+    if let Some(max_age_min) = request.max_age_min {
+        render_request.max_age_min = max_age_min;
+    }
+    if request.high_speed_png.unwrap_or(false) {
+        render_request.png_compression = PngCompressionMode::Fast;
+    }
+
+    let report = render_glm_lightning_map(&render_request)
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+    serde_json::to_string_pretty(&report)
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
+}
+
+#[cfg(feature = "python")]
+fn sample_point_timeseries_json_impl(
+    request: SamplePointTimeseriesRequestJson,
+) -> PyResult<String> {
+    let model = request.model.as_deref().unwrap_or("hrrr").parse().map_err(
+        |err: rustwx_core::RustwxError| pyo3::exceptions::PyValueError::new_err(err.to_string()),
+    )?;
+    let date_yyyymmdd = request.date_yyyymmdd.clone().ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(
+            "sample-point-timeseries request requires date_yyyymmdd",
+        )
+    })?;
+    let source = request
+        .source
+        .as_deref()
+        .unwrap_or("nomads")
+        .parse()
+        .map_err(|err: rustwx_core::RustwxError| {
+            pyo3::exceptions::PyValueError::new_err(err.to_string())
+        })?;
+    let point = match (request.point, request.lat, request.lon) {
+        (Some(point), _, _) => point,
+        (None, Some(lat), Some(lon)) => GeoPoint::new(lat, lon),
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "sample-point-timeseries request requires point={lat_deg,lon_deg} or lat/lon",
+            ));
+        }
+    };
+    let forecast_hours = match request.forecast_hours.clone() {
+        Some(hours) if !hours.is_empty() => {
+            let mut hours = hours;
+            hours.sort_unstable();
+            hours.dedup();
+            hours
+        }
+        _ => {
+            let start = request.forecast_hour_start.unwrap_or(0);
+            let end = request.forecast_hour_end.unwrap_or(48);
+            if start > end {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "forecast_hour_start must be <= forecast_hour_end",
+                ));
+            }
+            (start..=end).collect()
+        }
+    };
+    let method = parse_point_sample_method(request.method.as_deref())?;
+    let use_cache = request.use_cache.unwrap_or(true) && !request.no_cache.unwrap_or(false);
+    let point_request = PointTimeseriesRequest {
+        model,
+        date_yyyymmdd,
+        cycle_override_utc: request.cycle_utc,
+        source,
+        point,
+        forecast_hours,
+        variables: request.variables.unwrap_or_default(),
+        cache_root: request
+            .cache_dir
+            .clone()
+            .unwrap_or_else(default_render_maps_cache_dir),
+        use_cache,
+        method,
+    };
+    let report = sample_point_timeseries(&point_request)
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
     serde_json::to_string_pretty(&report)
         .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
 }
@@ -747,6 +964,15 @@ fn render_domains(request: &RenderMapsRequestJson) -> PyResult<Vec<DomainSpec>> 
 }
 
 #[cfg(feature = "python")]
+fn render_glm_lightning_domain(request: &RenderGlmLightningRequestJson) -> PyResult<DomainSpec> {
+    if let Some(bounds) = &request.bounds {
+        let slug = request.domain.as_deref().unwrap_or("custom");
+        return bounds_domain(slug, bounds.as_slice());
+    }
+    resolve_named_domain(request.domain.as_deref().unwrap_or("california"))
+}
+
+#[cfg(feature = "python")]
 fn resolve_named_domain(value: &str) -> PyResult<DomainSpec> {
     let slug = normalize_slug(value);
     if let Some(asset) = find_built_in_named_geometry(&slug) {
@@ -762,6 +988,24 @@ fn resolve_named_domain(value: &str) -> PyResult<DomainSpec> {
     Err(pyo3::exceptions::PyValueError::new_err(format!(
         "unknown bounded domain '{value}'; use rustwx list-domains or pass bounds=[west,east,south,north]"
     )))
+}
+
+#[cfg(feature = "python")]
+fn domain_label_for_slug(slug: &str) -> String {
+    if let Some(asset) = find_built_in_named_geometry(slug) {
+        return asset.label;
+    }
+    slug.split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(feature = "python")]
@@ -911,6 +1155,24 @@ fn parse_place_label_density(value: Option<&str>) -> PyResult<PlaceLabelDensityT
 }
 
 #[cfg(feature = "python")]
+fn parse_point_sample_method(value: Option<&str>) -> PyResult<FieldPointSampleMethod> {
+    match value
+        .unwrap_or("nearest")
+        .to_ascii_lowercase()
+        .replace('_', "-")
+        .as_str()
+    {
+        "nearest" | "nearest-cell" => Ok(FieldPointSampleMethod::Nearest),
+        "inverse-distance-4" | "inverse-distance" | "idw4" | "idw" => {
+            Ok(FieldPointSampleMethod::InverseDistance4)
+        }
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unsupported point sample method '{other}'; expected nearest or inverse-distance-4"
+        ))),
+    }
+}
+
+#[cfg(feature = "python")]
 fn parse_named_geometry_kind(value: &str) -> PyResult<NamedGeometryKind> {
     match normalize_slug(value).as_str() {
         "country" => Ok(NamedGeometryKind::Country),
@@ -939,7 +1201,11 @@ fn named_geometry_kind_slug(kind: NamedGeometryKind) -> &'static str {
 
 #[cfg(feature = "python")]
 fn parse_windowed_product(value: &str) -> PyResult<HrrrWindowedProduct> {
-    match normalize_slug(value).as_str() {
+    let normalized = normalize_slug(value);
+    if let Some(product) = parse_surface_snapshot_windowed_alias(&normalized) {
+        return Ok(product);
+    }
+    match normalized.as_str() {
         "qpf_1h" | "qpf1h" => Ok(HrrrWindowedProduct::Qpf1h),
         "qpf_6h" | "qpf6h" => Ok(HrrrWindowedProduct::Qpf6h),
         "qpf_12h" | "qpf12h" => Ok(HrrrWindowedProduct::Qpf12h),
@@ -1013,34 +1279,99 @@ fn parse_windowed_product(value: &str) -> PyResult<HrrrWindowedProduct> {
 }
 
 #[cfg(feature = "python")]
+fn parse_surface_snapshot_windowed_alias(value: &str) -> Option<HrrrWindowedProduct> {
+    let field_prefixes = [
+        ("2m_temperature", "temp"),
+        ("2m_temp", "temp"),
+        ("temp2m", "temp"),
+        ("diurnal_temp", "temp"),
+        ("2m_relative_humidity", "rh"),
+        ("relative_humidity_2m", "rh"),
+        ("2m_rh", "rh"),
+        ("rh2m", "rh"),
+        ("diurnal_rh", "rh"),
+        ("2m_dewpoint", "dewpoint"),
+        ("dewpoint2m", "dewpoint"),
+        ("td2m", "dewpoint"),
+        ("diurnal_dewpoint", "dewpoint"),
+        ("2m_vapor_pressure_deficit", "vpd"),
+        ("vapor_pressure_deficit_2m", "vpd"),
+        ("2m_vpd", "vpd"),
+        ("vpd2m", "vpd"),
+        ("diurnal_vpd", "vpd"),
+    ];
+    for (prefix, field) in field_prefixes {
+        if let Some(rest) = value.strip_prefix(prefix) {
+            let rest = rest.strip_prefix('_').unwrap_or(rest);
+            if let Some(product) = surface_snapshot_product_from_parts(field, rest) {
+                return Some(product);
+            }
+        }
+    }
+    match value {
+        "tmax_0_24h" => Some(HrrrWindowedProduct::Temp2m0to24hMax),
+        "tmax_24_48h" => Some(HrrrWindowedProduct::Temp2m24to48hMax),
+        "tmax_0_48h" => Some(HrrrWindowedProduct::Temp2m0to48hMax),
+        "tmin_0_24h" => Some(HrrrWindowedProduct::Temp2m0to24hMin),
+        "tmin_24_48h" => Some(HrrrWindowedProduct::Temp2m24to48hMin),
+        "tmin_0_48h" => Some(HrrrWindowedProduct::Temp2m0to48hMin),
+        "dtr_0_24h" => Some(HrrrWindowedProduct::Temp2m0to24hRange),
+        "dtr_24_48h" => Some(HrrrWindowedProduct::Temp2m24to48hRange),
+        "dtr_0_48h" => Some(HrrrWindowedProduct::Temp2m0to48hRange),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "python")]
+fn surface_snapshot_product_from_parts(field: &str, rest: &str) -> Option<HrrrWindowedProduct> {
+    use HrrrWindowedProduct::*;
+    match (field, rest) {
+        ("temp", "0_24h_max" | "0_24_max" | "day1_max") => Some(Temp2m0to24hMax),
+        ("temp", "24_48h_max" | "24_48_max" | "day2_max") => Some(Temp2m24to48hMax),
+        ("temp", "0_48h_max" | "0_48_max" | "2day_max") => Some(Temp2m0to48hMax),
+        ("temp", "0_24h_min" | "0_24_min" | "day1_min") => Some(Temp2m0to24hMin),
+        ("temp", "24_48h_min" | "24_48_min" | "day2_min") => Some(Temp2m24to48hMin),
+        ("temp", "0_48h_min" | "0_48_min" | "2day_min") => Some(Temp2m0to48hMin),
+        ("temp", "0_24h_range" | "0_24_range" | "day1_range") => Some(Temp2m0to24hRange),
+        ("temp", "24_48h_range" | "24_48_range" | "day2_range") => Some(Temp2m24to48hRange),
+        ("temp", "0_48h_range" | "0_48_range" | "2day_range") => Some(Temp2m0to48hRange),
+        ("rh", "0_24h_max" | "0_24_max" | "day1_max") => Some(Rh2m0to24hMax),
+        ("rh", "24_48h_max" | "24_48_max" | "day2_max") => Some(Rh2m24to48hMax),
+        ("rh", "0_48h_max" | "0_48_max" | "2day_max") => Some(Rh2m0to48hMax),
+        ("rh", "0_24h_min" | "0_24_min" | "day1_min") => Some(Rh2m0to24hMin),
+        ("rh", "24_48h_min" | "24_48_min" | "day2_min") => Some(Rh2m24to48hMin),
+        ("rh", "0_48h_min" | "0_48_min" | "2day_min") => Some(Rh2m0to48hMin),
+        ("rh", "0_24h_range" | "0_24_range" | "day1_range") => Some(Rh2m0to24hRange),
+        ("rh", "24_48h_range" | "24_48_range" | "day2_range") => Some(Rh2m24to48hRange),
+        ("rh", "0_48h_range" | "0_48_range" | "2day_range") => Some(Rh2m0to48hRange),
+        ("dewpoint", "0_24h_max" | "0_24_max" | "day1_max") => Some(Dewpoint2m0to24hMax),
+        ("dewpoint", "24_48h_max" | "24_48_max" | "day2_max") => Some(Dewpoint2m24to48hMax),
+        ("dewpoint", "0_48h_max" | "0_48_max" | "2day_max") => Some(Dewpoint2m0to48hMax),
+        ("dewpoint", "0_24h_min" | "0_24_min" | "day1_min") => Some(Dewpoint2m0to24hMin),
+        ("dewpoint", "24_48h_min" | "24_48_min" | "day2_min") => Some(Dewpoint2m24to48hMin),
+        ("dewpoint", "0_48h_min" | "0_48_min" | "2day_min") => Some(Dewpoint2m0to48hMin),
+        ("dewpoint", "0_24h_range" | "0_24_range" | "day1_range") => Some(Dewpoint2m0to24hRange),
+        ("dewpoint", "24_48h_range" | "24_48_range" | "day2_range") => Some(Dewpoint2m24to48hRange),
+        ("dewpoint", "0_48h_range" | "0_48_range" | "2day_range") => Some(Dewpoint2m0to48hRange),
+        ("vpd", "0_24h_max" | "0_24_max" | "day1_max") => Some(Vpd2m0to24hMax),
+        ("vpd", "24_48h_max" | "24_48_max" | "day2_max") => Some(Vpd2m24to48hMax),
+        ("vpd", "0_48h_max" | "0_48_max" | "2day_max") => Some(Vpd2m0to48hMax),
+        ("vpd", "0_24h_min" | "0_24_min" | "day1_min") => Some(Vpd2m0to24hMin),
+        ("vpd", "24_48h_min" | "24_48_min" | "day2_min") => Some(Vpd2m24to48hMin),
+        ("vpd", "0_48h_min" | "0_48_min" | "2day_min") => Some(Vpd2m0to48hMin),
+        ("vpd", "0_24h_range" | "0_24_range" | "day1_range") => Some(Vpd2m0to24hRange),
+        ("vpd", "24_48h_range" | "24_48_range" | "day2_range") => Some(Vpd2m24to48hRange),
+        ("vpd", "0_48h_range" | "0_48_range" | "2day_range") => Some(Vpd2m0to48hRange),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "python")]
 fn supported_windowed_product_slugs() -> Vec<String> {
-    [
-        HrrrWindowedProduct::Qpf1h,
-        HrrrWindowedProduct::Qpf6h,
-        HrrrWindowedProduct::Qpf12h,
-        HrrrWindowedProduct::Qpf24h,
-        HrrrWindowedProduct::QpfTotal,
-        HrrrWindowedProduct::Uh25km1h,
-        HrrrWindowedProduct::Uh25km3h,
-        HrrrWindowedProduct::Uh25kmRunMax,
-        HrrrWindowedProduct::Wind10m1hMax,
-        HrrrWindowedProduct::Wind10mRunMax,
-        HrrrWindowedProduct::Wind10m0to24hMax,
-        HrrrWindowedProduct::Wind10m24to48hMax,
-        HrrrWindowedProduct::Wind10m0to48hMax,
-        HrrrWindowedProduct::Temp2m0to24hMax,
-        HrrrWindowedProduct::Temp2m24to48hMax,
-        HrrrWindowedProduct::Temp2m0to48hMax,
-        HrrrWindowedProduct::Temp2m0to24hMin,
-        HrrrWindowedProduct::Temp2m24to48hMin,
-        HrrrWindowedProduct::Temp2m0to48hMin,
-        HrrrWindowedProduct::Temp2m0to24hRange,
-        HrrrWindowedProduct::Temp2m24to48hRange,
-        HrrrWindowedProduct::Temp2m0to48hRange,
-    ]
-    .into_iter()
-    .map(|product| product.slug().to_string())
-    .collect()
+    HrrrWindowedProduct::supported_products()
+        .iter()
+        .map(|product| product.slug().to_string())
+        .collect()
 }
 
 #[cfg(feature = "python")]
@@ -1110,6 +1441,36 @@ fn run_agent_cli(argv: &[String]) -> Result<i32, String> {
             );
             Ok(0)
         }
+        "render-lightning" | "render-glm-lightning" | "lightning" => {
+            if args[1..]
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+            {
+                print_render_lightning_help();
+                return Ok(0);
+            }
+            let request = render_glm_lightning_request_from_cli(&args[1..])?;
+            println!(
+                "{}",
+                render_glm_lightning_json_impl(request).map_err(|err| err.to_string())?
+            );
+            Ok(0)
+        }
+        "sample-point-timeseries" | "point-timeseries" | "meteogram-data" => {
+            if args[1..]
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+            {
+                print_sample_point_timeseries_help();
+                return Ok(0);
+            }
+            let request = sample_point_timeseries_request_from_cli(&args[1..])?;
+            println!(
+                "{}",
+                sample_point_timeseries_json_impl(request).map_err(|err| err.to_string())?
+            );
+            Ok(0)
+        }
         other => Err(format!("unknown command '{other}'")),
     }
 }
@@ -1117,7 +1478,7 @@ fn run_agent_cli(argv: &[String]) -> Result<i32, String> {
 #[cfg(feature = "python")]
 fn print_agent_help() {
     println!(
-        "rustwx {}\n\nUSAGE:\n  rustwx capabilities\n  rustwx list-domains [--kind country|region|metro|watch-area] [--limit N]\n  rustwx render-maps --date YYYYMMDD [--model hrrr] [--cycle H] [--forecast-hour H] [--domain conus] [--product PRODUCT] [--out-dir DIR]\n  rustwx render-maps --request request.json\n\nPython API: rustwx.agent_capabilities_json(), rustwx.list_domains_json(), rustwx.render_maps_json(request_json).",
+        "rustwx {}\n\nUSAGE:\n  rustwx capabilities\n  rustwx list-domains [--kind country|region|metro|watch-area] [--limit N]\n  rustwx render-maps --date YYYYMMDD [--model hrrr] [--cycle H] [--forecast-hour H] [--domain conus] [--product PRODUCT] [--out-dir DIR]\n  rustwx render-maps --request request.json\n  rustwx render-lightning [--domain california] [--data-dir DIR] [--out-dir DIR]\n  rustwx sample-point-timeseries --date YYYYMMDD --lat LAT --lon LON [--forecast-hour-end 48]\n\nPython API: rustwx.agent_capabilities_json(), rustwx.list_domains_json(), rustwx.render_maps_json(request_json), rustwx.render_glm_lightning_json(request_json), rustwx.sample_point_timeseries_json(request_json).",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -1131,6 +1492,20 @@ fn print_list_domains_help() {
 fn print_render_maps_help() {
     println!(
         "USAGE:\n  rustwx render-maps --date YYYYMMDD [--model hrrr] [--cycle H] [--forecast-hour H] [--domain conus] [--product PRODUCT] [--out-dir DIR]\n  rustwx render-maps --request request.json\n\nOptions include --source, --bounds west,east,south,north, --direct-recipe, --derived-recipe, --windowed-product, --place-label-density, --width, --height, --cache-dir, --no-cache.\n\nDefault cache: rustwx_outputs/cache, or RUSTWX_CACHE_DIR when set."
+    );
+}
+
+#[cfg(feature = "python")]
+fn print_render_lightning_help() {
+    println!(
+        "USAGE:\n  rustwx render-lightning [--domain california] [--data-dir DIR] [--out-dir DIR]\n  rustwx render-lightning --bounds west,east,south,north [--label NAME]\n  rustwx render-lightning --request request.json\n\nOptions include --width, --height, --max-age-min, and --high-speed-png.\n\nDefault GLM data dir: RUSTWX_GLM_DIR, CWT_GLM_DIR, or ~/lightning-test/data/glm."
+    );
+}
+
+#[cfg(feature = "python")]
+fn print_sample_point_timeseries_help() {
+    println!(
+        "USAGE:\n  rustwx sample-point-timeseries --date YYYYMMDD --lat LAT --lon LON [--cycle H] [--forecast-hour-start H] [--forecast-hour-end H]\n  rustwx sample-point-timeseries --request request.json\n\nOptions include --model, --source, --forecast-hours comma-list, --variable, --cache-dir, --method nearest|inverse-distance-4, and --no-cache.\n\nDefault variables: meteogram-ready T/Td/Tw/RH, wind/gust, QPF, clouds, MSLP, VPD, HDW, fire composite."
     );
 }
 
@@ -1153,6 +1528,132 @@ fn list_domains_args_from_cli(args: &[String]) -> Result<(Option<String>, Option
         index += 1;
     }
     Ok((kind, limit))
+}
+
+#[cfg(feature = "python")]
+fn render_glm_lightning_request_from_cli(
+    args: &[String],
+) -> Result<RenderGlmLightningRequestJson, String> {
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
+        print_render_lightning_help();
+        return Err("help requested".to_string());
+    }
+
+    let mut request = RenderGlmLightningRequestJson::default();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        match arg {
+            "--request" => {
+                let path = next_cli_value(args, &mut index, arg)?;
+                let payload = fs::read_to_string(&path)
+                    .map_err(|err| format!("failed to read request file '{path}': {err}"))?;
+                return serde_json::from_str(&payload)
+                    .map_err(|err| format!("invalid request JSON in '{path}': {err}"));
+            }
+            "--request-json" => {
+                let payload = next_cli_value(args, &mut index, arg)?;
+                return serde_json::from_str(&payload)
+                    .map_err(|err| format!("invalid request JSON: {err}"));
+            }
+            "--domain" | "--region" => {
+                request.domain = Some(next_cli_value(args, &mut index, arg)?)
+            }
+            "--bounds" => {
+                let raw = next_cli_value(args, &mut index, arg)?;
+                request.bounds = Some(parse_comma_f64s(&raw, "--bounds")?);
+            }
+            "--label" => request.label = Some(next_cli_value(args, &mut index, arg)?),
+            "--data-dir" => {
+                request.data_dir = Some(PathBuf::from(next_cli_value(args, &mut index, arg)?))
+            }
+            "--out-dir" | "--out" => {
+                request.out_dir = Some(PathBuf::from(next_cli_value(args, &mut index, arg)?));
+            }
+            "--width" => request.width = Some(parse_cli_value(args, &mut index, arg)?),
+            "--height" => request.height = Some(parse_cli_value(args, &mut index, arg)?),
+            "--max-age-min" => request.max_age_min = Some(parse_cli_value(args, &mut index, arg)?),
+            "--high-speed-png" => request.high_speed_png = Some(true),
+            other => return Err(format!("unknown render-lightning option '{other}'")),
+        }
+        index += 1;
+    }
+    Ok(request)
+}
+
+#[cfg(feature = "python")]
+fn sample_point_timeseries_request_from_cli(
+    args: &[String],
+) -> Result<SamplePointTimeseriesRequestJson, String> {
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
+        print_sample_point_timeseries_help();
+        return Err("help requested".to_string());
+    }
+
+    let mut request = SamplePointTimeseriesRequestJson::default();
+    let mut variables = Vec::<String>::new();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        match arg {
+            "--request" => {
+                let path = next_cli_value(args, &mut index, arg)?;
+                let payload = fs::read_to_string(&path)
+                    .map_err(|err| format!("failed to read request file '{path}': {err}"))?;
+                return serde_json::from_str(&payload)
+                    .map_err(|err| format!("invalid request JSON in '{path}': {err}"));
+            }
+            "--request-json" => {
+                let payload = next_cli_value(args, &mut index, arg)?;
+                return serde_json::from_str(&payload)
+                    .map_err(|err| format!("invalid request JSON: {err}"));
+            }
+            "--model" => request.model = Some(next_cli_value(args, &mut index, arg)?),
+            "--date" | "--date-yyyymmdd" => {
+                request.date_yyyymmdd = Some(next_cli_value(args, &mut index, arg)?);
+            }
+            "--cycle" | "--cycle-utc" => {
+                request.cycle_utc = Some(parse_cli_value(args, &mut index, arg)?);
+            }
+            "--source" => request.source = Some(next_cli_value(args, &mut index, arg)?),
+            "--lat" | "--latitude" => {
+                request.lat = Some(parse_cli_value(args, &mut index, arg)?);
+            }
+            "--lon" | "--longitude" => {
+                request.lon = Some(parse_cli_value(args, &mut index, arg)?);
+            }
+            "--forecast-hour-start" | "--fhour-start" => {
+                request.forecast_hour_start = Some(parse_cli_value(args, &mut index, arg)?);
+            }
+            "--forecast-hour-end" | "--fhour-end" => {
+                request.forecast_hour_end = Some(parse_cli_value(args, &mut index, arg)?);
+            }
+            "--forecast-hours" | "--fhours" => {
+                let raw = next_cli_value(args, &mut index, arg)?;
+                request.forecast_hours = Some(parse_comma_u16s(&raw, arg)?);
+            }
+            "--variable" | "--variables" => {
+                extend_comma_values(&mut variables, &next_cli_value(args, &mut index, arg)?);
+            }
+            "--cache-dir" => {
+                request.cache_dir = Some(PathBuf::from(next_cli_value(args, &mut index, arg)?));
+            }
+            "--method" => request.method = Some(next_cli_value(args, &mut index, arg)?),
+            "--no-cache" => request.no_cache = Some(true),
+            other => return Err(format!("unknown sample-point-timeseries option '{other}'")),
+        }
+        index += 1;
+    }
+    if !variables.is_empty() {
+        request.variables = Some(variables);
+    }
+    Ok(request)
 }
 
 #[cfg(feature = "python")]
@@ -1289,6 +1790,17 @@ fn parse_comma_f64s(raw: &str, flag: &str) -> Result<Vec<f64>, String> {
         .map(|part| {
             part.trim()
                 .parse::<f64>()
+                .map_err(|err| format!("invalid {flag} component '{part}': {err}"))
+        })
+        .collect()
+}
+
+#[cfg(feature = "python")]
+fn parse_comma_u16s(raw: &str, flag: &str) -> Result<Vec<u16>, String> {
+    raw.split(',')
+        .map(|part| {
+            part.trim()
+                .parse::<u16>()
                 .map_err(|err| format!("invalid {flag} component '{part}': {err}"))
         })
         .collect()
@@ -1447,6 +1959,9 @@ mod tests {
                 "diurnal_temp_day1_max".to_string(),
                 "tmin_24_48h".to_string(),
                 "dtr_0_48h".to_string(),
+                "diurnal_rh_day1_min".to_string(),
+                "2m_dewpoint_24_48h_max".to_string(),
+                "vpd2m_0_48h_range".to_string(),
             ]),
             ..RenderMapsRequestJson::default()
         };
@@ -1460,7 +1975,10 @@ mod tests {
             vec![
                 HrrrWindowedProduct::Temp2m0to24hMax,
                 HrrrWindowedProduct::Temp2m24to48hMin,
-                HrrrWindowedProduct::Temp2m0to48hRange
+                HrrrWindowedProduct::Temp2m0to48hRange,
+                HrrrWindowedProduct::Rh2m0to24hMin,
+                HrrrWindowedProduct::Dewpoint2m24to48hMax,
+                HrrrWindowedProduct::Vpd2m0to48hRange
             ]
         );
     }
@@ -1571,6 +2089,8 @@ fn rustwx(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(agent_capabilities_json, module)?)?;
     module.add_function(wrap_pyfunction!(list_domains_json, module)?)?;
     module.add_function(wrap_pyfunction!(render_maps_json, module)?)?;
+    module.add_function(wrap_pyfunction!(render_glm_lightning_json, module)?)?;
+    module.add_function(wrap_pyfunction!(sample_point_timeseries_json, module)?)?;
     module.add_function(wrap_pyfunction!(cli_main, module)?)?;
     module.add_function(wrap_pyfunction!(
         describe_projected_projection_json,

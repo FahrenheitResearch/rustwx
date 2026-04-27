@@ -168,6 +168,37 @@ pub fn draw_line_aa_width(
     draw_line_aa_kernel(img, x0, y0, x1, y1, color, width.max(1));
 }
 
+pub fn draw_plus_marker_aa(
+    img: &mut RgbaImage,
+    cx: f64,
+    cy: f64,
+    radius: f64,
+    color: Rgba,
+    width: u32,
+) {
+    if !cx.is_finite() || !cy.is_finite() || !radius.is_finite() || radius <= 0.0 {
+        return;
+    }
+    draw_line_aa_width(img, cx - radius, cy, cx + radius, cy, color, width);
+    draw_line_aa_width(img, cx, cy - radius, cx, cy + radius, color, width);
+}
+
+pub fn draw_cross_marker_aa(
+    img: &mut RgbaImage,
+    cx: f64,
+    cy: f64,
+    radius: f64,
+    color: Rgba,
+    width: u32,
+) {
+    if !cx.is_finite() || !cy.is_finite() || !radius.is_finite() || radius <= 0.0 {
+        return;
+    }
+    let r = radius / 2.0_f64.sqrt();
+    draw_line_aa_width(img, cx - r, cy - r, cx + r, cy + r, color, width);
+    draw_line_aa_width(img, cx - r, cy + r, cx + r, cy - r, color, width);
+}
+
 pub fn draw_polyline_aa(img: &mut RgbaImage, points: &[(f64, f64)], color: Rgba, width: u32) {
     if points.len() < 2 {
         return;

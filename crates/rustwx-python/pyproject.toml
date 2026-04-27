@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rustwx"
-version = "0.4.2"
+version = "0.4.3"
 description = "Rust-first weather model metadata and projected map rendering bindings"
 readme = "README.md"
 license = "MIT"

@@ -46,9 +46,9 @@ pub use request::{
     ChromeScale, Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, DomainFrame,
     ExtendMode, Field2D, GridShape, LatLonGrid, MapRenderRequest, ProductKey, ProductMaturity,
     ProductSemanticFlag, ProductSemantics, ProjectedDomain, ProjectedExtent,
-    ProjectedLabelPlacement, ProjectedLineOverlay, ProjectedPlaceLabel,
-    ProjectedPlaceLabelPriority, ProjectedPlaceLabelStyle, ProjectedPolygonFill, WindBarbLayer,
-    WindBarbStyle,
+    ProjectedLabelPlacement, ProjectedLineOverlay, ProjectedMarkerShape, ProjectedPlaceLabel,
+    ProjectedPlaceLabelPriority, ProjectedPlaceLabelStyle, ProjectedPointOverlay,
+    ProjectedPolygonFill, WindBarbLayer, WindBarbStyle,
 };
 pub use rustwx_core::{
     Field2D as CoreField2D, GridProjection as CoreGridProjection, GridShape as CoreGridShape,
@@ -67,7 +67,7 @@ pub use crate::colormap::{
 use crate::colormap::{Extend, LeveledColormap};
 use crate::overlay::{
     BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPlaceLabelOverlay,
-    ProjectedPolygon, ProjectedPolyline,
+    ProjectedPointOverlay as RenderProjectedPointOverlay, ProjectedPolygon, ProjectedPolyline,
 };
 use crate::render::{
     RenderOpts, encode_rgba_png_profile_with_options, render_to_image as native_render_to_image,
@@ -469,6 +469,19 @@ fn with_render_state_profile<T>(
             });
         }
 
+        let projected_points = request
+            .projected_points
+            .iter()
+            .map(|point| RenderProjectedPointOverlay {
+                x: point.x,
+                y: point.y,
+                color: point.color.into(),
+                radius_px: point.radius_px,
+                width_px: point.width_px,
+                shape: point.shape,
+            })
+            .collect::<Vec<_>>();
+
         let contour_start = Instant::now();
         let mut contours = Vec::with_capacity(request.contours.len());
         for layer in &request.contours {
@@ -527,6 +540,7 @@ fn with_render_state_profile<T>(
             projected_polygons,
             projected_data_polygons,
             projected_place_labels,
+            projected_points,
             projected_lines,
             contours,
             barbs,
@@ -756,6 +770,7 @@ mod tests {
             projected_polygons: Vec::new(),
             projected_data_polygons: Vec::new(),
             projected_place_labels: Vec::new(),
+            projected_points: Vec::new(),
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),
@@ -817,6 +832,7 @@ mod tests {
             projected_polygons: Vec::new(),
             projected_data_polygons: Vec::new(),
             projected_place_labels: Vec::new(),
+            projected_points: Vec::new(),
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),

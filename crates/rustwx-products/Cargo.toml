@@ -26,3 +26,4 @@ rustwx-models = { path = "../rustwx-models" }
 rustwx-render = { path = "../rustwx-render" }
 rustwx-wrf = { path = "../rustwx-wrf", optional = true }
 grib-core = { path = "../../vendor/grib-core" }
+netcrust = { path = "../../vendor/netcrust" }

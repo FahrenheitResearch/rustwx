@@ -1,6 +1,6 @@
 use crate::color::Rgba;
 use crate::presentation::{LineworkRole, PolygonRole};
-use crate::request::{ProjectedLabelPlacement, ProjectedPlaceLabelPriority};
+use crate::request::{ProjectedLabelPlacement, ProjectedMarkerShape, ProjectedPlaceLabelPriority};
 
 #[derive(Clone, Debug)]
 pub struct MapExtent {
@@ -43,6 +43,16 @@ pub struct ProjectedPolyline {
     pub color: Rgba,
     pub width: u32,
     pub role: LineworkRole,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProjectedPointOverlay {
+    pub x: f64,
+    pub y: f64,
+    pub color: Rgba,
+    pub radius_px: u32,
+    pub width_px: u32,
+    pub shape: ProjectedMarkerShape,
 }
 
 /// A filled polygon in projected map coordinates. The first ring is the outer

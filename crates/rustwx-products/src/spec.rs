@@ -2,12 +2,12 @@ use rustwx_core::{
     CanonicalProductIdentity, ProductId, ProductKeyMetadata, ProductKind, ProductLineage,
     ProductProvenance, ProductWindowSpec, StatisticalProcess,
 };
-use rustwx_models::{PlotRecipe, RenderStyle, built_in_plot_recipes};
+use rustwx_models::{built_in_plot_recipes, PlotRecipe, RenderStyle};
 use rustwx_render::{ProductMaturity, ProductSemanticFlag};
 
 use crate::derived::{
-    BlockedDerivedRecipeInventoryEntry, DerivedRecipeInventoryEntry,
     blocked_derived_recipe_inventory, supported_derived_recipe_inventory,
+    BlockedDerivedRecipeInventoryEntry, DerivedRecipeInventoryEntry,
 };
 use crate::hrrr::HrrrBatchProduct;
 use crate::windowed::HrrrWindowedProduct;
@@ -222,6 +222,141 @@ pub fn windowed_product_specs() -> Vec<ProductSpec> {
             "00Z-only fixed two-day max-minus-min range of hourly 2 m temperature snapshots from F001..F048",
             "weather_temperature",
         ),
+        (
+            HrrrWindowedProduct::Rh2m0to24hMax,
+            "00Z-only fixed diurnal max of hourly 2 m relative humidity snapshots from F001..F024",
+            "weather_rh",
+        ),
+        (
+            HrrrWindowedProduct::Rh2m24to48hMax,
+            "00Z-only fixed diurnal max of hourly 2 m relative humidity snapshots from F025..F048",
+            "weather_rh",
+        ),
+        (
+            HrrrWindowedProduct::Rh2m0to48hMax,
+            "00Z-only fixed two-day max of hourly 2 m relative humidity snapshots from F001..F048",
+            "weather_rh",
+        ),
+        (
+            HrrrWindowedProduct::Rh2m0to24hMin,
+            "00Z-only fixed diurnal min of hourly 2 m relative humidity snapshots from F001..F024",
+            "weather_rh",
+        ),
+        (
+            HrrrWindowedProduct::Rh2m24to48hMin,
+            "00Z-only fixed diurnal min of hourly 2 m relative humidity snapshots from F025..F048",
+            "weather_rh",
+        ),
+        (
+            HrrrWindowedProduct::Rh2m0to48hMin,
+            "00Z-only fixed two-day min of hourly 2 m relative humidity snapshots from F001..F048",
+            "weather_rh",
+        ),
+        (
+            HrrrWindowedProduct::Rh2m0to24hRange,
+            "00Z-only fixed diurnal max-minus-min range of hourly 2 m relative humidity snapshots from F001..F024",
+            "weather_rh",
+        ),
+        (
+            HrrrWindowedProduct::Rh2m24to48hRange,
+            "00Z-only fixed diurnal max-minus-min range of hourly 2 m relative humidity snapshots from F025..F048",
+            "weather_rh",
+        ),
+        (
+            HrrrWindowedProduct::Rh2m0to48hRange,
+            "00Z-only fixed two-day max-minus-min range of hourly 2 m relative humidity snapshots from F001..F048",
+            "weather_rh",
+        ),
+        (
+            HrrrWindowedProduct::Dewpoint2m0to24hMax,
+            "00Z-only fixed diurnal max of hourly 2 m dewpoint snapshots from F001..F024",
+            "weather_dewpoint",
+        ),
+        (
+            HrrrWindowedProduct::Dewpoint2m24to48hMax,
+            "00Z-only fixed diurnal max of hourly 2 m dewpoint snapshots from F025..F048",
+            "weather_dewpoint",
+        ),
+        (
+            HrrrWindowedProduct::Dewpoint2m0to48hMax,
+            "00Z-only fixed two-day max of hourly 2 m dewpoint snapshots from F001..F048",
+            "weather_dewpoint",
+        ),
+        (
+            HrrrWindowedProduct::Dewpoint2m0to24hMin,
+            "00Z-only fixed diurnal min of hourly 2 m dewpoint snapshots from F001..F024",
+            "weather_dewpoint",
+        ),
+        (
+            HrrrWindowedProduct::Dewpoint2m24to48hMin,
+            "00Z-only fixed diurnal min of hourly 2 m dewpoint snapshots from F025..F048",
+            "weather_dewpoint",
+        ),
+        (
+            HrrrWindowedProduct::Dewpoint2m0to48hMin,
+            "00Z-only fixed two-day min of hourly 2 m dewpoint snapshots from F001..F048",
+            "weather_dewpoint",
+        ),
+        (
+            HrrrWindowedProduct::Dewpoint2m0to24hRange,
+            "00Z-only fixed diurnal max-minus-min range of hourly 2 m dewpoint snapshots from F001..F024",
+            "weather_dewpoint",
+        ),
+        (
+            HrrrWindowedProduct::Dewpoint2m24to48hRange,
+            "00Z-only fixed diurnal max-minus-min range of hourly 2 m dewpoint snapshots from F025..F048",
+            "weather_dewpoint",
+        ),
+        (
+            HrrrWindowedProduct::Dewpoint2m0to48hRange,
+            "00Z-only fixed two-day max-minus-min range of hourly 2 m dewpoint snapshots from F001..F048",
+            "weather_dewpoint",
+        ),
+        (
+            HrrrWindowedProduct::Vpd2m0to24hMax,
+            "00Z-only fixed diurnal max of hourly 2 m vapor pressure deficit snapshots from F001..F024",
+            "weather_vpd",
+        ),
+        (
+            HrrrWindowedProduct::Vpd2m24to48hMax,
+            "00Z-only fixed diurnal max of hourly 2 m vapor pressure deficit snapshots from F025..F048",
+            "weather_vpd",
+        ),
+        (
+            HrrrWindowedProduct::Vpd2m0to48hMax,
+            "00Z-only fixed two-day max of hourly 2 m vapor pressure deficit snapshots from F001..F048",
+            "weather_vpd",
+        ),
+        (
+            HrrrWindowedProduct::Vpd2m0to24hMin,
+            "00Z-only fixed diurnal min of hourly 2 m vapor pressure deficit snapshots from F001..F024",
+            "weather_vpd",
+        ),
+        (
+            HrrrWindowedProduct::Vpd2m24to48hMin,
+            "00Z-only fixed diurnal min of hourly 2 m vapor pressure deficit snapshots from F025..F048",
+            "weather_vpd",
+        ),
+        (
+            HrrrWindowedProduct::Vpd2m0to48hMin,
+            "00Z-only fixed two-day min of hourly 2 m vapor pressure deficit snapshots from F001..F048",
+            "weather_vpd",
+        ),
+        (
+            HrrrWindowedProduct::Vpd2m0to24hRange,
+            "00Z-only fixed diurnal max-minus-min range of hourly 2 m vapor pressure deficit snapshots from F001..F024",
+            "weather_vpd",
+        ),
+        (
+            HrrrWindowedProduct::Vpd2m24to48hRange,
+            "00Z-only fixed diurnal max-minus-min range of hourly 2 m vapor pressure deficit snapshots from F025..F048",
+            "weather_vpd",
+        ),
+        (
+            HrrrWindowedProduct::Vpd2m0to48hRange,
+            "00Z-only fixed two-day max-minus-min range of hourly 2 m vapor pressure deficit snapshots from F001..F048",
+            "weather_vpd",
+        ),
     ]
     .into_iter()
     .map(|(product, note, render_style)| windowed_product_spec(product, note, render_style))
@@ -376,6 +511,33 @@ fn windowed_product_spec(
                 | HrrrWindowedProduct::Temp2m0to24hRange
                 | HrrrWindowedProduct::Temp2m24to48hRange
                 | HrrrWindowedProduct::Temp2m0to48hRange => Some("K"),
+                HrrrWindowedProduct::Rh2m0to24hMax
+                | HrrrWindowedProduct::Rh2m24to48hMax
+                | HrrrWindowedProduct::Rh2m0to48hMax
+                | HrrrWindowedProduct::Rh2m0to24hMin
+                | HrrrWindowedProduct::Rh2m24to48hMin
+                | HrrrWindowedProduct::Rh2m0to48hMin
+                | HrrrWindowedProduct::Rh2m0to24hRange
+                | HrrrWindowedProduct::Rh2m24to48hRange
+                | HrrrWindowedProduct::Rh2m0to48hRange => Some("%"),
+                HrrrWindowedProduct::Dewpoint2m0to24hMax
+                | HrrrWindowedProduct::Dewpoint2m24to48hMax
+                | HrrrWindowedProduct::Dewpoint2m0to48hMax
+                | HrrrWindowedProduct::Dewpoint2m0to24hMin
+                | HrrrWindowedProduct::Dewpoint2m24to48hMin
+                | HrrrWindowedProduct::Dewpoint2m0to48hMin
+                | HrrrWindowedProduct::Dewpoint2m0to24hRange
+                | HrrrWindowedProduct::Dewpoint2m24to48hRange
+                | HrrrWindowedProduct::Dewpoint2m0to48hRange => Some("K"),
+                HrrrWindowedProduct::Vpd2m0to24hMax
+                | HrrrWindowedProduct::Vpd2m24to48hMax
+                | HrrrWindowedProduct::Vpd2m0to48hMax
+                | HrrrWindowedProduct::Vpd2m0to24hMin
+                | HrrrWindowedProduct::Vpd2m24to48hMin
+                | HrrrWindowedProduct::Vpd2m0to48hMin
+                | HrrrWindowedProduct::Vpd2m0to24hRange
+                | HrrrWindowedProduct::Vpd2m24to48hRange
+                | HrrrWindowedProduct::Vpd2m0to48hRange => Some("hPa"),
             },
             id,
             &aliases,
@@ -397,19 +559,10 @@ fn windowed_product_spec(
 }
 
 fn windowed_product_source_note(product: HrrrWindowedProduct) -> &'static str {
-    match product {
-        HrrrWindowedProduct::Temp2m0to24hMax
-        | HrrrWindowedProduct::Temp2m24to48hMax
-        | HrrrWindowedProduct::Temp2m0to48hMax
-        | HrrrWindowedProduct::Temp2m0to24hMin
-        | HrrrWindowedProduct::Temp2m24to48hMin
-        | HrrrWindowedProduct::Temp2m0to48hMin
-        | HrrrWindowedProduct::Temp2m0to24hRange
-        | HrrrWindowedProduct::Temp2m24to48hRange
-        | HrrrWindowedProduct::Temp2m0to48hRange => {
-            "Computed from hourly HRRR 2 m temperature snapshots because wrfsfc does not expose reliable native TMAX/TMIN fields"
-        }
-        _ => "Backed by HRRR statistical time-window metadata surfaced through grib-core",
+    if product.is_surface_snapshot() {
+        "Computed from hourly HRRR 2 m surface snapshots pulled from wrfsfc idx subsets; fixed windows are pointwise max/min/range reductions"
+    } else {
+        "Backed by HRRR statistical time-window metadata surfaced through grib-core"
     }
 }
 
@@ -493,6 +646,9 @@ fn heavy_product_metadata(
 }
 
 fn windowed_product_window(product: HrrrWindowedProduct) -> ProductWindowSpec {
+    if let Some(window) = surface_snapshot_product_window(product) {
+        return window;
+    }
     match product {
         HrrrWindowedProduct::Qpf1h => ProductWindowSpec {
             process: StatisticalProcess::Accumulation,
@@ -544,43 +700,31 @@ fn windowed_product_window(product: HrrrWindowedProduct) -> ProductWindowSpec {
             process: StatisticalProcess::Maximum,
             duration_hours: Some(48),
         },
-        HrrrWindowedProduct::Temp2m0to24hMax => ProductWindowSpec {
-            process: StatisticalProcess::Maximum,
-            duration_hours: Some(24),
-        },
-        HrrrWindowedProduct::Temp2m24to48hMax => ProductWindowSpec {
-            process: StatisticalProcess::Maximum,
-            duration_hours: Some(24),
-        },
-        HrrrWindowedProduct::Temp2m0to48hMax => ProductWindowSpec {
-            process: StatisticalProcess::Maximum,
-            duration_hours: Some(48),
-        },
-        HrrrWindowedProduct::Temp2m0to24hMin => ProductWindowSpec {
-            process: StatisticalProcess::Minimum,
-            duration_hours: Some(24),
-        },
-        HrrrWindowedProduct::Temp2m24to48hMin => ProductWindowSpec {
-            process: StatisticalProcess::Minimum,
-            duration_hours: Some(24),
-        },
-        HrrrWindowedProduct::Temp2m0to48hMin => ProductWindowSpec {
-            process: StatisticalProcess::Minimum,
-            duration_hours: Some(48),
-        },
-        HrrrWindowedProduct::Temp2m0to24hRange => ProductWindowSpec {
-            process: StatisticalProcess::Range,
-            duration_hours: Some(24),
-        },
-        HrrrWindowedProduct::Temp2m24to48hRange => ProductWindowSpec {
-            process: StatisticalProcess::Range,
-            duration_hours: Some(24),
-        },
-        HrrrWindowedProduct::Temp2m0to48hRange => ProductWindowSpec {
-            process: StatisticalProcess::Range,
-            duration_hours: Some(48),
-        },
+        _ => unreachable!("surface snapshot window products are handled before match"),
     }
+}
+
+fn surface_snapshot_product_window(product: HrrrWindowedProduct) -> Option<ProductWindowSpec> {
+    if !product.is_surface_snapshot() {
+        return None;
+    }
+    let slug = product.slug();
+    let process = if slug.ends_with("_max") {
+        StatisticalProcess::Maximum
+    } else if slug.ends_with("_min") {
+        StatisticalProcess::Minimum
+    } else {
+        StatisticalProcess::Range
+    };
+    let duration_hours = if slug.contains("_0_48h_") {
+        Some(48)
+    } else {
+        Some(24)
+    };
+    Some(ProductWindowSpec {
+        process,
+        duration_hours,
+    })
 }
 
 fn windowed_product_metadata(
@@ -748,30 +892,23 @@ mod tests {
             theta_e.id,
             ProductId::new(ProductKind::Derived, "theta_e_2m_10m_winds")
         );
-        assert!(
-            theta_e
-                .aliases
-                .iter()
-                .any(|alias| alias.slug == "2m_theta_e_10m_winds")
-        );
-        assert!(
-            theta_e
-                .aliases
-                .iter()
-                .any(|alias| alias.id
-                    == ProductId::new(ProductKind::Derived, "2m_theta_e_10m_winds"))
-        );
+        assert!(theta_e
+            .aliases
+            .iter()
+            .any(|alias| alias.slug == "2m_theta_e_10m_winds"));
+        assert!(theta_e
+            .aliases
+            .iter()
+            .any(|alias| alias.id == ProductId::new(ProductKind::Derived, "2m_theta_e_10m_winds")));
         let identity = theta_e
             .product_metadata
             .as_ref()
             .and_then(|metadata| metadata.identity.as_ref())
             .expect("derived spec should expose canonical identity");
         assert_eq!(identity.canonical, theta_e.id);
-        assert!(
-            identity
-                .alias_slugs
-                .contains(&"2m_theta_e_10m_winds".to_string())
-        );
+        assert!(identity
+            .alias_slugs
+            .contains(&"2m_theta_e_10m_winds".to_string()));
         assert_eq!(
             theta_e
                 .product_metadata

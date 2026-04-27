@@ -1,7 +1,7 @@
 //! Decode + compute kernel for windowed products.
 //!
 //! This module owns the GRIB2 message decode for APCP, native UH, native
-//! 10 m wind-max fields, and 2 m temperature snapshots as well as the
+//! 10 m wind-max fields, and 2 m surface snapshots as well as the
 //! per-product window-compute kernels. It is deliberately separated from the batch orchestration in
 //! [`crate::windowed`] so non-HRRR windowed products can plug in later
 //! without dragging the HRRR-specific runner along.
@@ -12,12 +12,13 @@
 //! does no I/O of its own beyond the optional bincode cache.
 use crate::cache::{load_bincode, store_bincode};
 use crate::windowed::{HrrrWindowedProduct, HrrrWindowedProductMetadata};
-use grib_core::grib2::{Grib2File, Grib2Message, unpack_message_normalized};
+use grib_core::grib2::{unpack_message_normalized, Grib2File, Grib2Message};
 use rustwx_calc::{max_window_fields, sum_window_fields};
 use rustwx_core::{Field2D, ProductKey};
 use rustwx_render::{
-    ColorScale, DiscreteColorScale, ExtendMode, WeatherPalette, WeatherProduct, palette_scale,
-    weather::temperature_palette_cropped_f,
+    palette_scale,
+    weather::{dewpoint_palette_params, temperature_palette_cropped_f},
+    Color, ColorScale, DiscreteColorScale, ExtendMode, WeatherPalette, WeatherProduct,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -48,8 +49,10 @@ pub(crate) struct HrrrWind10mMaxDecode {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub(crate) struct HrrrTemp2mDecode {
-    pub(crate) values: Vec<f64>,
+pub(crate) struct HrrrSurfaceSnapshotDecode {
+    pub(crate) temp2m_k: Option<Vec<f64>>,
+    pub(crate) rh2m_pct: Option<Vec<f64>>,
+    pub(crate) dewpoint2m_k: Option<Vec<f64>>,
 }
 
 #[derive(Debug, Clone)]
@@ -111,17 +114,17 @@ pub(crate) fn load_or_decode_wind10m_max(
     Ok(decoded)
 }
 
-pub(crate) fn load_or_decode_temp2m(
+pub(crate) fn load_or_decode_surface_snapshot(
     path: &Path,
     bytes: &[u8],
     use_cache: bool,
-) -> Result<HrrrTemp2mDecode, Box<dyn std::error::Error>> {
+) -> Result<HrrrSurfaceSnapshotDecode, Box<dyn std::error::Error>> {
     if use_cache {
-        if let Some(cached) = load_bincode::<HrrrTemp2mDecode>(path)? {
+        if let Some(cached) = load_bincode::<HrrrSurfaceSnapshotDecode>(path)? {
             return Ok(cached);
         }
     }
-    let decoded = decode_temp2m(bytes)?;
+    let decoded = decode_surface_snapshot(bytes)?;
     if use_cache {
         store_bincode(path, &decoded)?;
     }
@@ -212,16 +215,24 @@ pub(crate) fn decode_wind10m_max(
     Ok(HrrrWind10mMaxDecode { windows })
 }
 
-pub(crate) fn decode_temp2m(bytes: &[u8]) -> Result<HrrrTemp2mDecode, Box<dyn std::error::Error>> {
+pub(crate) fn decode_surface_snapshot(
+    bytes: &[u8],
+) -> Result<HrrrSurfaceSnapshotDecode, Box<dyn std::error::Error>> {
     let grib = Grib2File::from_bytes(bytes)?;
+    let mut decoded = HrrrSurfaceSnapshotDecode::default();
     for message in &grib.messages {
         if is_temp2m_message(message) {
-            return Ok(HrrrTemp2mDecode {
-                values: unpack_message_normalized(message)?,
-            });
+            decoded.temp2m_k = Some(unpack_message_normalized(message)?);
+        } else if is_rh2m_message(message) {
+            decoded.rh2m_pct = Some(unpack_message_normalized(message)?);
+        } else if is_dewpoint2m_message(message) {
+            decoded.dewpoint2m_k = Some(unpack_message_normalized(message)?);
         }
     }
-    Err("no native 2 m temperature field was found in subset".into())
+    if decoded.temp2m_k.is_none() && decoded.rh2m_pct.is_none() && decoded.dewpoint2m_k.is_none() {
+        return Err("no native 2 m temperature/RH/dewpoint fields were found in subset".into());
+    }
+    Ok(decoded)
 }
 
 pub(crate) fn is_uh25_message(message: &Grib2Message) -> bool {
@@ -248,6 +259,22 @@ pub(crate) fn is_temp2m_message(message: &Grib2Message) -> bool {
     message.discipline == 0
         && message.product.parameter_category == 0
         && message.product.parameter_number == 0
+        && message.product.level_type == 103
+        && (message.product.level_value - 2.0).abs() < 0.25
+}
+
+pub(crate) fn is_rh2m_message(message: &Grib2Message) -> bool {
+    message.discipline == 0
+        && message.product.parameter_category == 1
+        && message.product.parameter_number == 1
+        && message.product.level_type == 103
+        && (message.product.level_value - 2.0).abs() < 0.25
+}
+
+pub(crate) fn is_dewpoint2m_message(message: &Grib2Message) -> bool {
+    message.discipline == 0
+        && message.product.parameter_category == 0
+        && message.product.parameter_number == 6
         && message.product.level_type == 103
         && (message.product.level_value - 2.0).abs() < 0.25
 }
@@ -509,67 +536,28 @@ pub(crate) fn compute_wind10m_product(
     })
 }
 
-pub(crate) fn compute_temp2m_product(
+pub(crate) fn compute_surface_snapshot_product(
     product: HrrrWindowedProduct,
     grid: &rustwx_core::LatLonGrid,
-    temp_by_hour: &BTreeMap<u16, Result<HrrrTemp2mDecode, String>>,
+    snapshot_by_hour: &BTreeMap<u16, Result<HrrrSurfaceSnapshotDecode, String>>,
 ) -> Result<ComputedWindowedField, String> {
-    let (hours, operation, window_hours) = match product {
-        HrrrWindowedProduct::Temp2m0to24hMax => {
-            ((1..=24).collect::<Vec<_>>(), Temp2mWindowOp::Max, Some(24))
+    let spec = surface_snapshot_window_spec(product).ok_or_else(|| {
+        format!(
+            "{} is not a 2 m surface snapshot window product",
+            product.slug()
+        )
+    })?;
+    let windows = collect_surface_snapshot_values(snapshot_by_hour, &spec.hours, spec.field)?;
+    let window_refs = windows.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let values = match spec.operation {
+        SurfaceSnapshotWindowOp::Max => {
+            max_window_fields(grid.shape, &window_refs).map_err(|err| err.to_string())?
         }
-        HrrrWindowedProduct::Temp2m24to48hMax => {
-            ((25..=48).collect::<Vec<_>>(), Temp2mWindowOp::Max, Some(24))
-        }
-        HrrrWindowedProduct::Temp2m0to48hMax => {
-            ((1..=48).collect::<Vec<_>>(), Temp2mWindowOp::Max, Some(48))
-        }
-        HrrrWindowedProduct::Temp2m0to24hMin => {
-            ((1..=24).collect::<Vec<_>>(), Temp2mWindowOp::Min, Some(24))
-        }
-        HrrrWindowedProduct::Temp2m24to48hMin => {
-            ((25..=48).collect::<Vec<_>>(), Temp2mWindowOp::Min, Some(24))
-        }
-        HrrrWindowedProduct::Temp2m0to48hMin => {
-            ((1..=48).collect::<Vec<_>>(), Temp2mWindowOp::Min, Some(48))
-        }
-        HrrrWindowedProduct::Temp2m0to24hRange => (
-            (1..=24).collect::<Vec<_>>(),
-            Temp2mWindowOp::Range,
-            Some(24),
-        ),
-        HrrrWindowedProduct::Temp2m24to48hRange => (
-            (25..=48).collect::<Vec<_>>(),
-            Temp2mWindowOp::Range,
-            Some(24),
-        ),
-        HrrrWindowedProduct::Temp2m0to48hRange => (
-            (1..=48).collect::<Vec<_>>(),
-            Temp2mWindowOp::Range,
-            Some(48),
-        ),
-        _ => {
-            return Err(format!(
-                "{} is not a 2 m temperature window product",
-                product.slug()
-            ));
-        }
-    };
-    let windows = collect_temp2m_values(temp_by_hour, &hours)?;
-    let values = match operation {
-        Temp2mWindowOp::Max => max_window_fields(grid.shape, &windows)
-            .map_err(|err| err.to_string())?
-            .into_iter()
-            .map(|value| value - 273.15)
-            .collect::<Vec<_>>(),
-        Temp2mWindowOp::Min => min_window_fields(grid.shape, &windows)?
-            .into_iter()
-            .map(|value| value - 273.15)
-            .collect::<Vec<_>>(),
-        Temp2mWindowOp::Range => {
+        SurfaceSnapshotWindowOp::Min => min_window_fields(grid.shape, &window_refs)?,
+        SurfaceSnapshotWindowOp::Range => {
             let max_values =
-                max_window_fields(grid.shape, &windows).map_err(|err| err.to_string())?;
-            let min_values = min_window_fields(grid.shape, &windows)?;
+                max_window_fields(grid.shape, &window_refs).map_err(|err| err.to_string())?;
+            let min_values = min_window_fields(grid.shape, &window_refs)?;
             max_values
                 .into_iter()
                 .zip(min_values)
@@ -580,52 +568,403 @@ pub(crate) fn compute_temp2m_product(
 
     let field = Field2D::new(
         ProductKey::named(product.slug()),
-        "degC",
+        spec.field.units(),
         grid.clone(),
         values.iter().map(|&value| value as f32).collect(),
     )
     .map_err(|err| err.to_string())?;
-    let window_label = match product {
-        HrrrWindowedProduct::Temp2m0to24hMax
-        | HrrrWindowedProduct::Temp2m0to24hMin
-        | HrrrWindowedProduct::Temp2m0to24hRange => "F001-F024",
-        HrrrWindowedProduct::Temp2m24to48hMax
-        | HrrrWindowedProduct::Temp2m24to48hMin
-        | HrrrWindowedProduct::Temp2m24to48hRange => "F025-F048",
-        HrrrWindowedProduct::Temp2m0to48hMax
-        | HrrrWindowedProduct::Temp2m0to48hMin
-        | HrrrWindowedProduct::Temp2m0to48hRange => "F001-F048",
-        _ => unreachable!(),
-    };
-    let operation_label = match operation {
-        Temp2mWindowOp::Max => "max",
-        Temp2mWindowOp::Min => "min",
-        Temp2mWindowOp::Range => "max-min range",
-    };
+    let operation_label = spec.operation.label();
 
     Ok(ComputedWindowedField {
         field,
         title: product.title().to_string(),
         metadata: HrrrWindowedProductMetadata {
             strategy: format!(
-                "pointwise {operation_label} of hourly 2 m temperature snapshots across {window_label}"
+                "pointwise {operation_label} of hourly {} snapshots across {}",
+                spec.field.label(),
+                spec.window_label
             ),
-            contributing_forecast_hours: hours,
-            window_hours,
+            contributing_forecast_hours: spec.hours,
+            window_hours: spec.window_hours,
         },
-        scale: ColorScale::Discrete(if operation == Temp2mWindowOp::Range {
-            temp2m_range_scale()
-        } else {
-            temp2m_scale()
-        }),
+        scale: ColorScale::Discrete(spec.field.scale(spec.operation)),
     })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Temp2mWindowOp {
+enum SurfaceSnapshotField {
+    Temp2m,
+    Rh2m,
+    Dewpoint2m,
+    Vpd2m,
+}
+
+impl SurfaceSnapshotField {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Temp2m => "2 m temperature",
+            Self::Rh2m => "2 m relative humidity",
+            Self::Dewpoint2m => "2 m dewpoint",
+            Self::Vpd2m => "2 m vapor pressure deficit",
+        }
+    }
+
+    fn units(self) -> &'static str {
+        match self {
+            Self::Temp2m | Self::Dewpoint2m => "degC",
+            Self::Rh2m => "%",
+            Self::Vpd2m => "hPa",
+        }
+    }
+
+    fn scale(self, operation: SurfaceSnapshotWindowOp) -> DiscreteColorScale {
+        match self {
+            Self::Temp2m => {
+                if operation == SurfaceSnapshotWindowOp::Range {
+                    temp2m_range_scale()
+                } else {
+                    temp2m_scale()
+                }
+            }
+            Self::Rh2m => rh2m_scale(operation == SurfaceSnapshotWindowOp::Range),
+            Self::Dewpoint2m => {
+                if operation == SurfaceSnapshotWindowOp::Range {
+                    temp2m_range_scale()
+                } else {
+                    dewpoint2m_scale()
+                }
+            }
+            Self::Vpd2m => vpd2m_scale(operation == SurfaceSnapshotWindowOp::Range),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SurfaceSnapshotWindowOp {
     Max,
     Min,
     Range,
+}
+
+impl SurfaceSnapshotWindowOp {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Max => "max",
+            Self::Min => "min",
+            Self::Range => "max-min range",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SurfaceSnapshotWindowSpec {
+    field: SurfaceSnapshotField,
+    operation: SurfaceSnapshotWindowOp,
+    hours: Vec<u16>,
+    window_hours: Option<u16>,
+    window_label: &'static str,
+}
+
+fn surface_snapshot_window_spec(product: HrrrWindowedProduct) -> Option<SurfaceSnapshotWindowSpec> {
+    use HrrrWindowedProduct::*;
+    let (field, operation, start, end, window_hours, window_label) = match product {
+        Temp2m0to24hMax => (
+            SurfaceSnapshotField::Temp2m,
+            SurfaceSnapshotWindowOp::Max,
+            1,
+            24,
+            Some(24),
+            "F001-F024",
+        ),
+        Temp2m24to48hMax => (
+            SurfaceSnapshotField::Temp2m,
+            SurfaceSnapshotWindowOp::Max,
+            25,
+            48,
+            Some(24),
+            "F025-F048",
+        ),
+        Temp2m0to48hMax => (
+            SurfaceSnapshotField::Temp2m,
+            SurfaceSnapshotWindowOp::Max,
+            1,
+            48,
+            Some(48),
+            "F001-F048",
+        ),
+        Temp2m0to24hMin => (
+            SurfaceSnapshotField::Temp2m,
+            SurfaceSnapshotWindowOp::Min,
+            1,
+            24,
+            Some(24),
+            "F001-F024",
+        ),
+        Temp2m24to48hMin => (
+            SurfaceSnapshotField::Temp2m,
+            SurfaceSnapshotWindowOp::Min,
+            25,
+            48,
+            Some(24),
+            "F025-F048",
+        ),
+        Temp2m0to48hMin => (
+            SurfaceSnapshotField::Temp2m,
+            SurfaceSnapshotWindowOp::Min,
+            1,
+            48,
+            Some(48),
+            "F001-F048",
+        ),
+        Temp2m0to24hRange => (
+            SurfaceSnapshotField::Temp2m,
+            SurfaceSnapshotWindowOp::Range,
+            1,
+            24,
+            Some(24),
+            "F001-F024",
+        ),
+        Temp2m24to48hRange => (
+            SurfaceSnapshotField::Temp2m,
+            SurfaceSnapshotWindowOp::Range,
+            25,
+            48,
+            Some(24),
+            "F025-F048",
+        ),
+        Temp2m0to48hRange => (
+            SurfaceSnapshotField::Temp2m,
+            SurfaceSnapshotWindowOp::Range,
+            1,
+            48,
+            Some(48),
+            "F001-F048",
+        ),
+        Rh2m0to24hMax => (
+            SurfaceSnapshotField::Rh2m,
+            SurfaceSnapshotWindowOp::Max,
+            1,
+            24,
+            Some(24),
+            "F001-F024",
+        ),
+        Rh2m24to48hMax => (
+            SurfaceSnapshotField::Rh2m,
+            SurfaceSnapshotWindowOp::Max,
+            25,
+            48,
+            Some(24),
+            "F025-F048",
+        ),
+        Rh2m0to48hMax => (
+            SurfaceSnapshotField::Rh2m,
+            SurfaceSnapshotWindowOp::Max,
+            1,
+            48,
+            Some(48),
+            "F001-F048",
+        ),
+        Rh2m0to24hMin => (
+            SurfaceSnapshotField::Rh2m,
+            SurfaceSnapshotWindowOp::Min,
+            1,
+            24,
+            Some(24),
+            "F001-F024",
+        ),
+        Rh2m24to48hMin => (
+            SurfaceSnapshotField::Rh2m,
+            SurfaceSnapshotWindowOp::Min,
+            25,
+            48,
+            Some(24),
+            "F025-F048",
+        ),
+        Rh2m0to48hMin => (
+            SurfaceSnapshotField::Rh2m,
+            SurfaceSnapshotWindowOp::Min,
+            1,
+            48,
+            Some(48),
+            "F001-F048",
+        ),
+        Rh2m0to24hRange => (
+            SurfaceSnapshotField::Rh2m,
+            SurfaceSnapshotWindowOp::Range,
+            1,
+            24,
+            Some(24),
+            "F001-F024",
+        ),
+        Rh2m24to48hRange => (
+            SurfaceSnapshotField::Rh2m,
+            SurfaceSnapshotWindowOp::Range,
+            25,
+            48,
+            Some(24),
+            "F025-F048",
+        ),
+        Rh2m0to48hRange => (
+            SurfaceSnapshotField::Rh2m,
+            SurfaceSnapshotWindowOp::Range,
+            1,
+            48,
+            Some(48),
+            "F001-F048",
+        ),
+        Dewpoint2m0to24hMax => (
+            SurfaceSnapshotField::Dewpoint2m,
+            SurfaceSnapshotWindowOp::Max,
+            1,
+            24,
+            Some(24),
+            "F001-F024",
+        ),
+        Dewpoint2m24to48hMax => (
+            SurfaceSnapshotField::Dewpoint2m,
+            SurfaceSnapshotWindowOp::Max,
+            25,
+            48,
+            Some(24),
+            "F025-F048",
+        ),
+        Dewpoint2m0to48hMax => (
+            SurfaceSnapshotField::Dewpoint2m,
+            SurfaceSnapshotWindowOp::Max,
+            1,
+            48,
+            Some(48),
+            "F001-F048",
+        ),
+        Dewpoint2m0to24hMin => (
+            SurfaceSnapshotField::Dewpoint2m,
+            SurfaceSnapshotWindowOp::Min,
+            1,
+            24,
+            Some(24),
+            "F001-F024",
+        ),
+        Dewpoint2m24to48hMin => (
+            SurfaceSnapshotField::Dewpoint2m,
+            SurfaceSnapshotWindowOp::Min,
+            25,
+            48,
+            Some(24),
+            "F025-F048",
+        ),
+        Dewpoint2m0to48hMin => (
+            SurfaceSnapshotField::Dewpoint2m,
+            SurfaceSnapshotWindowOp::Min,
+            1,
+            48,
+            Some(48),
+            "F001-F048",
+        ),
+        Dewpoint2m0to24hRange => (
+            SurfaceSnapshotField::Dewpoint2m,
+            SurfaceSnapshotWindowOp::Range,
+            1,
+            24,
+            Some(24),
+            "F001-F024",
+        ),
+        Dewpoint2m24to48hRange => (
+            SurfaceSnapshotField::Dewpoint2m,
+            SurfaceSnapshotWindowOp::Range,
+            25,
+            48,
+            Some(24),
+            "F025-F048",
+        ),
+        Dewpoint2m0to48hRange => (
+            SurfaceSnapshotField::Dewpoint2m,
+            SurfaceSnapshotWindowOp::Range,
+            1,
+            48,
+            Some(48),
+            "F001-F048",
+        ),
+        Vpd2m0to24hMax => (
+            SurfaceSnapshotField::Vpd2m,
+            SurfaceSnapshotWindowOp::Max,
+            1,
+            24,
+            Some(24),
+            "F001-F024",
+        ),
+        Vpd2m24to48hMax => (
+            SurfaceSnapshotField::Vpd2m,
+            SurfaceSnapshotWindowOp::Max,
+            25,
+            48,
+            Some(24),
+            "F025-F048",
+        ),
+        Vpd2m0to48hMax => (
+            SurfaceSnapshotField::Vpd2m,
+            SurfaceSnapshotWindowOp::Max,
+            1,
+            48,
+            Some(48),
+            "F001-F048",
+        ),
+        Vpd2m0to24hMin => (
+            SurfaceSnapshotField::Vpd2m,
+            SurfaceSnapshotWindowOp::Min,
+            1,
+            24,
+            Some(24),
+            "F001-F024",
+        ),
+        Vpd2m24to48hMin => (
+            SurfaceSnapshotField::Vpd2m,
+            SurfaceSnapshotWindowOp::Min,
+            25,
+            48,
+            Some(24),
+            "F025-F048",
+        ),
+        Vpd2m0to48hMin => (
+            SurfaceSnapshotField::Vpd2m,
+            SurfaceSnapshotWindowOp::Min,
+            1,
+            48,
+            Some(48),
+            "F001-F048",
+        ),
+        Vpd2m0to24hRange => (
+            SurfaceSnapshotField::Vpd2m,
+            SurfaceSnapshotWindowOp::Range,
+            1,
+            24,
+            Some(24),
+            "F001-F024",
+        ),
+        Vpd2m24to48hRange => (
+            SurfaceSnapshotField::Vpd2m,
+            SurfaceSnapshotWindowOp::Range,
+            25,
+            48,
+            Some(24),
+            "F025-F048",
+        ),
+        Vpd2m0to48hRange => (
+            SurfaceSnapshotField::Vpd2m,
+            SurfaceSnapshotWindowOp::Range,
+            1,
+            48,
+            Some(48),
+            "F001-F048",
+        ),
+        _ => return None,
+    };
+    Some(SurfaceSnapshotWindowSpec {
+        field,
+        operation,
+        hours: (start..=end).collect(),
+        window_hours,
+        window_label,
+    })
 }
 
 pub(crate) fn collect_apcp_windows<'a>(
@@ -697,20 +1036,107 @@ pub(crate) fn collect_wind10m_windows<'a>(
     Ok(out)
 }
 
-pub(crate) fn collect_temp2m_values<'a>(
-    temp_by_hour: &'a BTreeMap<u16, Result<HrrrTemp2mDecode, String>>,
+fn collect_surface_snapshot_values(
+    snapshot_by_hour: &BTreeMap<u16, Result<HrrrSurfaceSnapshotDecode, String>>,
     hours: &[u16],
-) -> Result<Vec<&'a [f64]>, String> {
+    field: SurfaceSnapshotField,
+) -> Result<Vec<Vec<f64>>, String> {
     let mut out = Vec::with_capacity(hours.len());
     for &hour in hours {
-        let decoded = temp_by_hour
+        let decoded = snapshot_by_hour
             .get(&hour)
-            .ok_or_else(|| format!("missing native 2 m temperature fetch for F{:03}", hour))?
+            .ok_or_else(|| format!("missing native surface snapshot fetch for F{:03}", hour))?
             .as_ref()
             .map_err(Clone::clone)?;
-        out.push(decoded.values.as_slice());
+        out.push(surface_snapshot_values_for_hour(decoded, field, hour)?);
     }
     Ok(out)
+}
+
+fn surface_snapshot_values_for_hour(
+    decoded: &HrrrSurfaceSnapshotDecode,
+    field: SurfaceSnapshotField,
+    hour: u16,
+) -> Result<Vec<f64>, String> {
+    match field {
+        SurfaceSnapshotField::Temp2m => {
+            let temp = decoded
+                .temp2m_k
+                .as_deref()
+                .ok_or_else(|| format!("native F{hour:03} missing 2 m temperature field"))?;
+            Ok(temp.iter().map(|value| *value - 273.15).collect())
+        }
+        SurfaceSnapshotField::Rh2m => {
+            let rh = decoded
+                .rh2m_pct
+                .as_deref()
+                .ok_or_else(|| format!("native F{hour:03} missing 2 m relative humidity field"))?;
+            Ok(rh.iter().map(|value| (*value).clamp(0.0, 100.0)).collect())
+        }
+        SurfaceSnapshotField::Dewpoint2m => {
+            let dewpoint = decoded
+                .dewpoint2m_k
+                .as_deref()
+                .ok_or_else(|| format!("native F{hour:03} missing 2 m dewpoint field"))?;
+            Ok(dewpoint.iter().map(|value| *value - 273.15).collect())
+        }
+        SurfaceSnapshotField::Vpd2m => vpd2m_values_for_hour(decoded, hour),
+    }
+}
+
+fn vpd2m_values_for_hour(
+    decoded: &HrrrSurfaceSnapshotDecode,
+    hour: u16,
+) -> Result<Vec<f64>, String> {
+    let temp = decoded
+        .temp2m_k
+        .as_deref()
+        .ok_or_else(|| format!("native F{hour:03} missing 2 m temperature field for VPD"))?;
+    if let Some(rh) = decoded.rh2m_pct.as_deref() {
+        if rh.len() != temp.len() {
+            return Err(format!(
+                "native F{hour:03} VPD length mismatch: temperature has {}, RH has {}",
+                temp.len(),
+                rh.len()
+            ));
+        }
+        return Ok(temp
+            .iter()
+            .zip(rh.iter())
+            .map(|(temp_k, rh_pct)| {
+                let temp_c = *temp_k - 273.15;
+                let es_hpa = saturation_vapor_pressure_hpa(temp_c);
+                let rh_fraction = (*rh_pct / 100.0).clamp(0.0, 1.0);
+                es_hpa * (1.0 - rh_fraction)
+            })
+            .collect());
+    }
+
+    let dewpoint = decoded
+        .dewpoint2m_k
+        .as_deref()
+        .ok_or_else(|| format!("native F{hour:03} missing 2 m RH/dewpoint field for VPD"))?;
+    if dewpoint.len() != temp.len() {
+        return Err(format!(
+            "native F{hour:03} VPD length mismatch: temperature has {}, dewpoint has {}",
+            temp.len(),
+            dewpoint.len()
+        ));
+    }
+    Ok(temp
+        .iter()
+        .zip(dewpoint.iter())
+        .map(|(temp_k, dewpoint_k)| {
+            let temp_c = *temp_k - 273.15;
+            let dewpoint_c = *dewpoint_k - 273.15;
+            (saturation_vapor_pressure_hpa(temp_c) - saturation_vapor_pressure_hpa(dewpoint_c))
+                .max(0.0)
+        })
+        .collect())
+}
+
+fn saturation_vapor_pressure_hpa(temp_c: f64) -> f64 {
+    6.112 * ((17.67 * temp_c) / (temp_c + 243.5)).exp()
 }
 
 fn min_window_fields(grid: rustwx_core::GridShape, fields: &[&[f64]]) -> Result<Vec<f64>, String> {
@@ -785,6 +1211,52 @@ pub(crate) fn temp2m_range_scale() -> DiscreteColorScale {
             Some((32.0, 110.0)),
             (((hi - lo) / step).round() as usize).max(2),
         ),
+        extend: ExtendMode::Max,
+        mask_below: None,
+    }
+}
+
+pub(crate) fn rh2m_scale(range: bool) -> DiscreteColorScale {
+    palette_scale(
+        WeatherPalette::Rh,
+        range_step(0.0, 101.0, 1.0),
+        if range {
+            ExtendMode::Max
+        } else {
+            ExtendMode::Both
+        },
+        None,
+    )
+}
+
+pub(crate) fn dewpoint2m_scale() -> DiscreteColorScale {
+    DiscreteColorScale {
+        levels: range_step(-40.0, 31.0, 1.0),
+        colors: dewpoint_palette_params(90, 50),
+        extend: ExtendMode::Both,
+        mask_below: None,
+    }
+}
+
+pub(crate) fn vpd2m_scale(range: bool) -> DiscreteColorScale {
+    DiscreteColorScale {
+        levels: if range {
+            range_step(0.0, 16.0, 1.0)
+        } else {
+            range_step(0.0, 11.0, 1.0)
+        },
+        colors: vec![
+            Color::rgba(26, 152, 80, 255),
+            Color::rgba(85, 180, 95, 255),
+            Color::rgba(120, 198, 102, 255),
+            Color::rgba(166, 217, 106, 255),
+            Color::rgba(217, 239, 139, 255),
+            Color::rgba(254, 224, 139, 255),
+            Color::rgba(253, 174, 97, 255),
+            Color::rgba(244, 109, 67, 255),
+            Color::rgba(215, 48, 39, 255),
+            Color::rgba(165, 0, 38, 255),
+        ],
         extend: ExtendMode::Max,
         mask_below: None,
     }
@@ -974,14 +1446,20 @@ mod tests {
         for hour in 1..=24 {
             temp.insert(
                 hour,
-                Ok(HrrrTemp2mDecode {
-                    values: vec![273.15 + hour as f64, 310.15 - hour as f64],
+                Ok(HrrrSurfaceSnapshotDecode {
+                    temp2m_k: Some(vec![273.15 + hour as f64, 310.15 - hour as f64]),
+                    rh2m_pct: None,
+                    dewpoint2m_k: None,
                 }),
             );
         }
 
-        let max = compute_temp2m_product(HrrrWindowedProduct::Temp2m0to24hMax, &tiny_grid(), &temp)
-            .unwrap();
+        let max = compute_surface_snapshot_product(
+            HrrrWindowedProduct::Temp2m0to24hMax,
+            &tiny_grid(),
+            &temp,
+        )
+        .unwrap();
         assert_eq!(max.field.values, vec![24.0_f32, 36.0_f32]);
         assert_eq!(max.field.units, "degC");
         assert_eq!(
@@ -989,8 +1467,12 @@ mod tests {
             "pointwise max of hourly 2 m temperature snapshots across F001-F024"
         );
 
-        let min = compute_temp2m_product(HrrrWindowedProduct::Temp2m0to24hMin, &tiny_grid(), &temp)
-            .unwrap();
+        let min = compute_surface_snapshot_product(
+            HrrrWindowedProduct::Temp2m0to24hMin,
+            &tiny_grid(),
+            &temp,
+        )
+        .unwrap();
         assert_eq!(min.field.values, vec![1.0_f32, 13.0_f32]);
         assert_eq!(min.field.units, "degC");
         assert_eq!(
@@ -998,14 +1480,60 @@ mod tests {
             "pointwise min of hourly 2 m temperature snapshots across F001-F024"
         );
 
-        let range =
-            compute_temp2m_product(HrrrWindowedProduct::Temp2m0to24hRange, &tiny_grid(), &temp)
-                .unwrap();
+        let range = compute_surface_snapshot_product(
+            HrrrWindowedProduct::Temp2m0to24hRange,
+            &tiny_grid(),
+            &temp,
+        )
+        .unwrap();
         assert_eq!(range.field.values, vec![23.0_f32, 23.0_f32]);
         assert_eq!(range.field.units, "degC");
         assert_eq!(
             range.metadata.strategy,
             "pointwise max-min range of hourly 2 m temperature snapshots across F001-F024"
         );
+    }
+
+    #[test]
+    fn compute_surface_snapshot_diurnal_windows_cover_rh_dewpoint_and_vpd() {
+        let mut snapshots = BTreeMap::new();
+        for hour in 1..=24 {
+            snapshots.insert(
+                hour,
+                Ok(HrrrSurfaceSnapshotDecode {
+                    temp2m_k: Some(vec![303.15, 293.15]),
+                    rh2m_pct: Some(vec![20.0 + hour as f64, 80.0 - hour as f64]),
+                    dewpoint2m_k: Some(vec![283.15 + hour as f64 * 0.1, 273.15]),
+                }),
+            );
+        }
+
+        let rh_range = compute_surface_snapshot_product(
+            HrrrWindowedProduct::Rh2m0to24hRange,
+            &tiny_grid(),
+            &snapshots,
+        )
+        .unwrap();
+        assert_eq!(rh_range.field.units, "%");
+        assert_eq!(rh_range.field.values, vec![23.0_f32, 23.0_f32]);
+
+        let dewpoint_max = compute_surface_snapshot_product(
+            HrrrWindowedProduct::Dewpoint2m0to24hMax,
+            &tiny_grid(),
+            &snapshots,
+        )
+        .unwrap();
+        assert_eq!(dewpoint_max.field.units, "degC");
+        assert!((dewpoint_max.field.values[0] - 12.4).abs() < 0.01);
+
+        let vpd_max = compute_surface_snapshot_product(
+            HrrrWindowedProduct::Vpd2m0to24hMax,
+            &tiny_grid(),
+            &snapshots,
+        )
+        .unwrap();
+        assert_eq!(vpd_max.field.units, "hPa");
+        assert!(vpd_max.field.values[0] > vpd_max.field.values[1]);
+        assert!(vpd_max.metadata.strategy.contains("vapor pressure deficit"));
     }
 }
