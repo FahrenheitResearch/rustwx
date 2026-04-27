@@ -11,6 +11,8 @@ Keep Python convenient, keep the hot path in Rust, and expose generic render/mod
 
 With the `python` feature enabled, the module exposes:
 
+- agent-facing discovery and map rendering via `agent_capabilities_json`,
+  `list_domains_json`, and `render_maps_json`
 - model listing and source/model helpers
 - projected-grid rendering via `render_projected_map` and `render_projected_map_json`
 - compatibility aliases `render_wrf_map` and `render_wrf_map_json`
@@ -19,6 +21,19 @@ With the `python` feature enabled, the module exposes:
 - standalone projected CONUS basemap overlay extraction via `build_projected_basemap_overlays`
 - future-facing cross-section request validation/normalization via `normalize_cross_section_request`
 - native sounding-column rendering via `render_sounding_column` and `render_sounding_column_json`
+
+The wheel also installs a stable `rustwx` console command for agent and MCP
+adapters:
+
+```powershell
+rustwx capabilities
+rustwx list-domains --kind country --limit 5
+rustwx render-maps --date 20260424 --model hrrr --domain california --product 2m_temperature_10m_winds --out-dir out
+```
+
+`render-maps` accepts mixed product slugs and routes them to the appropriate
+direct, derived, or HRRR windowed product path. MCP servers should call these
+stable Python/CLI entry points instead of invoking internal proof binaries.
 
 Every new projected helper has both a Python-object entry point and a `_json` variant:
 

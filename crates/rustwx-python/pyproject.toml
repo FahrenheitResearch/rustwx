@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rustwx"
-version = "0.2.0"
+version = "0.3.0"
 description = "Rust-first weather model metadata and projected map rendering bindings"
 readme = "README.md"
 license = "MIT"
@@ -25,6 +25,9 @@ classifiers = [
 
 [project.urls]
 Repository = "https://github.com/FahrenheitResearch/rustwx"
+
+[project.scripts]
+rustwx = "rustwx:cli_main"
 
 [tool.maturin]
 module-name = "rustwx"
