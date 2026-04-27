@@ -2277,15 +2277,16 @@ fn apply_below_ground_nan_mask(mask: &[bool], values: &mut [f32]) {
 }
 
 fn maybe_apply_experimental_projected_contours(
-    recipe: &PlotRecipe,
+    _recipe: &PlotRecipe,
     request: &mut MapRenderRequest,
     contour_mode: NativeContourRenderMode,
     native_fill_level_multiplier: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let enabled = match contour_mode {
-        NativeContourRenderMode::Automatic | NativeContourRenderMode::LegacyRaster => false,
+        NativeContourRenderMode::Automatic
+        | NativeContourRenderMode::LegacyRaster
+        | NativeContourRenderMode::Signature => false,
         NativeContourRenderMode::ExperimentalAllProjected => true,
-        NativeContourRenderMode::Signature => signature_contour_direct_recipe_enabled(recipe),
     };
     if !enabled {
         return Ok(());
@@ -2306,17 +2307,6 @@ fn maybe_apply_experimental_projected_contours(
     request.projected_lines.extend(geometry.lines);
     request.field.values.fill(f32::NAN);
     Ok(())
-}
-
-fn signature_contour_direct_recipe_enabled(recipe: &PlotRecipe) -> bool {
-    matches!(
-        recipe.slug,
-        "mslp_10m_winds"
-            | "200mb_height_winds"
-            | "200mb_absolute_vorticity_height_winds"
-            | "300mb_temperature_height_winds"
-            | "700mb_height_winds"
-    )
 }
 
 fn densify_direct_native_contour_scale(
@@ -3019,14 +3009,6 @@ mod tests {
             custom_poi_overlay: None,
             place_label_overlay: None,
         }
-    }
-
-    #[test]
-    fn signature_contour_direct_recipe_list_is_curated() {
-        let mslp_recipe = plot_recipe("mslp_10m_winds").unwrap();
-        let temperature_recipe = plot_recipe("2m_temperature").unwrap();
-        assert!(signature_contour_direct_recipe_enabled(mslp_recipe));
-        assert!(!signature_contour_direct_recipe_enabled(temperature_recipe));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use clap::Parser;
-use ecape_rs::{calc_ecape_ncape, calc_ecape_parcel, CapeType, ParcelOptions, StormMotionType};
+use ecape_rs::{CapeType, ParcelOptions, StormMotionType, calc_ecape_ncape, calc_ecape_parcel};
 use rustwx_core::{ModelId, SourceId};
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::gridded::{
@@ -719,11 +719,7 @@ fn storm_relative_helicity_layer(
         let (_, u1, v1) = window[1];
         srh += (u1 - storm_u) * (v0 - storm_v) - (u0 - storm_u) * (v1 - storm_v);
     }
-    if srh.is_finite() {
-        Some(srh)
-    } else {
-        None
-    }
+    if srh.is_finite() { Some(srh) } else { None }
 }
 
 fn clipped_wind_profile(

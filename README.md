@@ -28,7 +28,7 @@ Working proof lanes:
 - severe diagnostics exposed as regular derived maps plus bundled convenience runners
 - bounded HRRR weather-native map proofs through `hrrr_native_proof`
 - separate real-data HRRR temperature cross-section proof through `hrrr_temperature_xsection`
-- sounding rendering through `sharprs` with external ECAPE annotations
+- sounding rendering with a rustwx-owned parameter table and verified `ecape-rs` ECAPE/NCAPE values
 - native composite reflectivity + UH proofs for HRRR and RRFS-A
 
 Current design constraints:
@@ -152,8 +152,8 @@ uses it for grid-scale products and research catalogs.
 - public projected-map helpers in the `rustwx` Python package
 - contour topology extraction in `rustwx-contour`
 - foundational cross-section rendering via `rustwx-cross-section`
-- sounding PNG rendering
-- external ECAPE annotation block for soundings
+- sounding PNG rendering with a rustwx-owned table/title layer
+- verified ECAPE/NCAPE values in soundings, plus optional external ECAPE annotation blocks
 
 ## What does not work yet
 
@@ -328,6 +328,25 @@ cargo run -p rustwx-cli --release --bin hrrr_temperature_xsection -- `
   --forecast-hour 0 `
   --out-dir proof
 ```
+
+### Generate a model sounding plot
+
+```powershell
+cargo run -p rustwx-cli --release --bin sounding_plot -- `
+  --model hrrr `
+  --date 20260424 `
+  --cycle 22 `
+  --forecast-hour 1 `
+  --source aws `
+  --lat 35.222 `
+  --lon -97.439 `
+  --station-id "Norman OK" `
+  --out-dir proof/soundings
+```
+
+For a box-averaged model sounding, add `--sample-method box-mean
+--box-radius-km 25`. The JSON manifest records the contributing grid points
+and effective box radius.
 
 ## Proof artifacts
 

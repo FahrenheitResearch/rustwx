@@ -2,12 +2,11 @@ use image::ExtendedColorType;
 use image::ImageEncoder;
 use image::RgbaImage;
 use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
-use image::imageops::crop_imm;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use rustwx_render::{
     Color, DomainFrame, Field2D, GridShape, LatLonGrid, LevelDensity, MapRenderRequest, ProductKey,
-    ProductVisualMode, ProjectedDomain, RenderDensity, RenderPresentation, render_image,
+    ProductVisualMode, ProjectedDomain, RenderDensity, render_image,
 };
 use serde::Serialize;
 use std::fs;
@@ -214,38 +213,6 @@ fn strip_overlay_background(image: &mut RgbaImage) {
     }
 }
 
-fn row_is_background(image: &RgbaImage, y: u32, background: [u8; 4]) -> bool {
-    (0..image.width()).all(|x| {
-        let px = image.get_pixel(x, y).0;
-        let diff = u16::from(px[0].abs_diff(background[0]))
-            + u16::from(px[1].abs_diff(background[1]))
-            + u16::from(px[2].abs_diff(background[2]))
-            + u16::from(px[3].abs_diff(background[3]));
-        diff <= 6
-    })
-}
-
-fn trim_vertical_canvas_whitespace(image: &RgbaImage, background: [u8; 4]) -> (RgbaImage, u32) {
-    if image.height() <= 2 {
-        return (image.clone(), 0);
-    }
-    let first_non_bg = (0..image.height()).find(|&y| !row_is_background(image, y, background));
-    let last_non_bg = (0..image.height()).rfind(|&y| !row_is_background(image, y, background));
-    let (Some(first), Some(last)) = (first_non_bg, last_non_bg) else {
-        return (image.clone(), 0);
-    };
-    let crop_top = first.saturating_sub(2);
-    let crop_bottom = last.saturating_add(2).min(image.height().saturating_sub(1));
-    let crop_h = crop_bottom.saturating_sub(crop_top).saturating_add(1);
-    if crop_top == 0 && crop_h == image.height() {
-        return (image.clone(), 0);
-    }
-    (
-        crop_imm(image, 0, crop_top, image.width(), crop_h).to_image(),
-        crop_top,
-    )
-}
-
 fn write_png(path: &Path, image: &RgbaImage) -> PyResult<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(io_error)?;
@@ -323,12 +290,8 @@ pub(crate) fn render_projected_map_impl(
         alpha_composite(&mut image, &overlay_image);
     }
 
-    let background = RenderPresentation::for_mode(context.visual_mode)
-        .canvas_background
-        .to_image_rgba()
-        .0;
-    let (trimmed, crop_top) = trim_vertical_canvas_whitespace(&image, background);
-    write_png(Path::new(&spec.output_path), &trimmed)?;
+    let crop_top = 0;
+    write_png(Path::new(&spec.output_path), &image)?;
 
     let base = geometry_metadata(
         "projected_map_render",

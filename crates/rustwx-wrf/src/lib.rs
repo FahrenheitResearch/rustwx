@@ -1196,8 +1196,7 @@ fn dim_len(file: &netcrust::File, name: &str) -> Result<usize, WrfError> {
 }
 
 fn global_attr_f64(file: &netcrust::File, name: &str) -> Result<f64, WrfError> {
-    file
-        .attribute(name)
+    file.attribute(name)
         .ok_or_else(|| WrfError::MissingVariable(name.to_string()))?
         .as_f64()
         .ok_or_else(|| WrfError::Netcdf(format!("attribute '{name}' was not numeric")))

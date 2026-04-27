@@ -2,12 +2,12 @@ use rustwx_core::{
     CanonicalProductIdentity, ProductId, ProductKeyMetadata, ProductKind, ProductLineage,
     ProductProvenance, ProductWindowSpec, StatisticalProcess,
 };
-use rustwx_models::{built_in_plot_recipes, PlotRecipe, RenderStyle};
+use rustwx_models::{PlotRecipe, RenderStyle, built_in_plot_recipes};
 use rustwx_render::{ProductMaturity, ProductSemanticFlag};
 
 use crate::derived::{
-    blocked_derived_recipe_inventory, supported_derived_recipe_inventory,
     BlockedDerivedRecipeInventoryEntry, DerivedRecipeInventoryEntry,
+    blocked_derived_recipe_inventory, supported_derived_recipe_inventory,
 };
 use crate::hrrr::HrrrBatchProduct;
 use crate::windowed::HrrrWindowedProduct;
@@ -594,23 +594,30 @@ mod tests {
             theta_e.id,
             ProductId::new(ProductKind::Derived, "theta_e_2m_10m_winds")
         );
-        assert!(theta_e
-            .aliases
-            .iter()
-            .any(|alias| alias.slug == "2m_theta_e_10m_winds"));
-        assert!(theta_e
-            .aliases
-            .iter()
-            .any(|alias| alias.id == ProductId::new(ProductKind::Derived, "2m_theta_e_10m_winds")));
+        assert!(
+            theta_e
+                .aliases
+                .iter()
+                .any(|alias| alias.slug == "2m_theta_e_10m_winds")
+        );
+        assert!(
+            theta_e
+                .aliases
+                .iter()
+                .any(|alias| alias.id
+                    == ProductId::new(ProductKind::Derived, "2m_theta_e_10m_winds"))
+        );
         let identity = theta_e
             .product_metadata
             .as_ref()
             .and_then(|metadata| metadata.identity.as_ref())
             .expect("derived spec should expose canonical identity");
         assert_eq!(identity.canonical, theta_e.id);
-        assert!(identity
-            .alias_slugs
-            .contains(&"2m_theta_e_10m_winds".to_string()));
+        assert!(
+            identity
+                .alias_slugs
+                .contains(&"2m_theta_e_10m_winds".to_string())
+        );
         assert_eq!(
             theta_e
                 .product_metadata

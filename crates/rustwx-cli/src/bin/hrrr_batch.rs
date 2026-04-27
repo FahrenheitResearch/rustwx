@@ -7,11 +7,10 @@ mod region;
 use clap::{Parser, ValueEnum};
 use region::RegionPreset;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
-use rustwx_products::heavy::{run_heavy_panel_hour, HeavyPanelHourRequest};
+use rustwx_products::heavy::{HeavyPanelHourRequest, run_heavy_panel_hour};
 use rustwx_products::publication::{
-    atomic_write_json, canonical_run_slug, finalize_and_publish_run_manifest,
-    publish_failure_manifest, ArtifactPublicationState, PublishedArtifactRecord,
-    RunPublicationManifest,
+    ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
+    canonical_run_slug, finalize_and_publish_run_manifest, publish_failure_manifest,
 };
 use rustwx_products::shared_context::DomainSpec;
 

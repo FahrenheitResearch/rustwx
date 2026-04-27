@@ -1,29 +1,29 @@
 use crate::direct::build_projected_map_with_projection;
 use crate::gridded::{
-    prepare_heavy_volume, prepare_heavy_volume_timed, resolve_thermo_pair_run, PressureFields,
-    SharedTiming, SurfaceFields,
+    PressureFields, SharedTiming, SurfaceFields, prepare_heavy_volume, prepare_heavy_volume_timed,
+    resolve_thermo_pair_run,
 };
 use crate::heavy::{
-    crop_and_guard_heavy_domain, heavy_map_target_aspect_ratio, render_heavy_map_group,
-    HeavyComputeTiming, HeavyRenderedArtifact,
+    HeavyComputeTiming, HeavyRenderedArtifact, crop_and_guard_heavy_domain,
+    heavy_map_target_aspect_ratio, render_heavy_map_group,
 };
-use crate::publication::{artifact_identity_from_path, PublishedFetchIdentity};
-use crate::runtime::{load_execution_plan, BundleLoaderConfig};
+use crate::publication::{PublishedFetchIdentity, artifact_identity_from_path};
+use crate::runtime::{BundleLoaderConfig, load_execution_plan};
 use crate::severe::{
     build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
 };
 use crate::shared_context::{
-    build_weather_map_request, DomainSpec, ProjectedMap, WeatherPanelField,
+    DomainSpec, ProjectedMap, WeatherPanelField, build_weather_map_request,
 };
 use rustwx_calc::{
-    compute_ecape_triplet_with_failure_mask_from_parts, compute_ehi, compute_mlcape_cin,
-    compute_scp_ehi, compute_stp_effective, compute_wind_diagnostics_bundle, EcapeTripletOptions,
-    EcapeVolumeInputs, EffectiveStpInputs, ScpEhiInputs, SurfaceInputs, WindGridInputs,
+    EcapeTripletOptions, EcapeVolumeInputs, EffectiveStpInputs, ScpEhiInputs, SurfaceInputs,
+    WindGridInputs, compute_ecape_triplet_with_failure_mask_from_parts, compute_ehi,
+    compute_mlcape_cin, compute_scp_ehi, compute_stp_effective, compute_wind_diagnostics_bundle,
 };
 use rustwx_core::{ModelId, SourceId};
 use rustwx_render::{
-    save_png_profile, Color, ContourStyle, Field2D as RenderField2D,
-    ProductKey as RenderProductKey, WeatherProduct,
+    Color, ContourStyle, Field2D as RenderField2D, ProductKey as RenderProductKey, WeatherProduct,
+    save_png_profile,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;

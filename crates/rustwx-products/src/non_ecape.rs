@@ -1079,6 +1079,8 @@ fn run_prepared_non_ecape_domain(
         products: prepared.normalized.windowed_products.clone(),
         output_width: request.output_width,
         output_height: request.output_height,
+        png_compression: request.png_compression,
+        place_label_overlay: request.place_label_overlay.clone(),
     });
 
     let lane_result = run_fanout3(

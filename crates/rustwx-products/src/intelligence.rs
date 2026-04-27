@@ -191,7 +191,10 @@ pub fn bounds_from_named_asset(
     asset: &NamedGeometryAsset,
 ) -> Result<NamedGeoBounds, Box<dyn std::error::Error>> {
     match asset.kind {
-        NamedGeometryKind::Region | NamedGeometryKind::Metro | NamedGeometryKind::WatchArea => {}
+        NamedGeometryKind::Country
+        | NamedGeometryKind::Region
+        | NamedGeometryKind::Metro
+        | NamedGeometryKind::WatchArea => {}
         NamedGeometryKind::Route | NamedGeometryKind::Other => {
             return Err(format!("named asset '{}' does not carry bounds", asset.slug).into());
         }

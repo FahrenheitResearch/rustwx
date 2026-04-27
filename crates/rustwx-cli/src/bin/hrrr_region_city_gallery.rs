@@ -198,6 +198,9 @@ struct Args {
     mode: RunModeArg,
     #[arg(long, value_enum, default_value_t = ValidationScopeArg::All)]
     scope: ValidationScopeArg,
+    /// Restrict the run to one or more domain slugs. Repeat or comma-separate.
+    #[arg(long = "domain", value_delimiter = ',', num_args = 1..)]
+    domain_slugs: Vec<String>,
     #[arg(long)]
     report: Option<PathBuf>,
     #[arg(long, default_value = "20260422")]
@@ -337,9 +340,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
-    validate_args(args)?;
-
     let domain_catalog = build_domain_catalog();
+    validate_args(args, &domain_catalog)?;
+
     let out_dir = resolve_out_dir(args);
     fs::create_dir_all(&out_dir)?;
 
@@ -362,7 +365,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         &report,
         &domain_catalog,
         galleries,
-    );
+    )?;
     let summary_path = summary_path(&out_dir, &report, args.scope);
     atomic_write_json(&summary_path, &summary)?;
 
@@ -379,9 +382,15 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn validate_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
+fn validate_args(
+    args: &Args,
+    domain_catalog: &DomainCatalog,
+) -> Result<(), Box<dyn std::error::Error>> {
     if args.mode == RunModeArg::Summarize && args.report.is_none() {
         return Err("`--report` is required in summarize mode".into());
+    }
+    if select_domain_entries(args, domain_catalog)?.is_empty() {
+        return Err("domain selection resolved to zero domains".into());
     }
     Ok(())
 }
@@ -547,6 +556,10 @@ impl DomainCatalog {
             .collect()
     }
 
+    fn contains(&self, slug: &str) -> bool {
+        self.lookup.contains_key(slug)
+    }
+
     fn classify(&self, slug: &str) -> DomainClass {
         match self.lookup.get(slug).map(|entry| entry.kind) {
             Some(DomainKind::Region) => DomainClass::Region,
@@ -570,6 +583,34 @@ impl DomainCatalog {
     }
 }
 
+fn select_domain_entries(
+    args: &Args,
+    domain_catalog: &DomainCatalog,
+) -> Result<Vec<DomainCatalogEntry>, Box<dyn std::error::Error>> {
+    let mut entries = domain_catalog.selected_entries(args.scope);
+    if args.domain_slugs.is_empty() {
+        return Ok(entries);
+    }
+
+    let requested = args
+        .domain_slugs
+        .iter()
+        .map(|slug| slug.trim().to_ascii_lowercase())
+        .filter(|slug| !slug.is_empty())
+        .collect::<HashSet<_>>();
+    let unknown = requested
+        .iter()
+        .filter(|slug| !domain_catalog.contains(slug))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unknown.is_empty() {
+        return Err(format!("unknown domain slug(s): {}", unknown.join(", ")).into());
+    }
+
+    entries.retain(|entry| requested.contains(&entry.slug));
+    Ok(entries)
+}
+
 fn run_validation(
     args: &Args,
     out_dir: &Path,
@@ -583,8 +624,7 @@ fn run_validation(
         ensure_dir(&cache_root)?;
     }
 
-    let domains = domain_catalog
-        .selected_entries(args.scope)
+    let domains = select_domain_entries(args, domain_catalog)?
         .into_iter()
         .map(|entry| entry.domain)
         .collect::<Vec<_>>();
@@ -864,8 +904,8 @@ fn build_summary(
     report: &HrrrNonEcapeMultiDomainReport,
     domain_catalog: &DomainCatalog,
     galleries: Vec<GalleryBuildSummary>,
-) -> RegionCityGallerySummary {
-    let expected_entries = domain_catalog.selected_entries(args.scope);
+) -> Result<RegionCityGallerySummary, Box<dyn std::error::Error>> {
+    let expected_entries = select_domain_entries(args, domain_catalog)?;
     let expected_slugs = expected_entries
         .iter()
         .map(|entry| entry.slug.clone())
@@ -906,7 +946,7 @@ fn build_summary(
         .filter(|domain| domain.domain_type == DomainKind::City.as_str())
         .count();
 
-    RegionCityGallerySummary {
+    Ok(RegionCityGallerySummary {
         runner: "hrrr_region_city_gallery",
         mode: args.mode.as_str().to_string(),
         scope: args.scope.as_str().to_string(),
@@ -944,7 +984,7 @@ fn build_summary(
         total_ms: report.total_ms,
         galleries,
         domains,
-    }
+    })
 }
 
 fn build_domain_summaries(
@@ -1064,7 +1104,7 @@ mod tests {
     use super::{
         Args, DomainCatalog, DomainKind, GallerySection, PlaceLabelDensityArg, ProofGalleryIndex,
         ValidationScopeArg, build_domain_catalog, decorate_and_sort_index, gallery_sections,
-        proof_run_kind_order, run_kind_title,
+        proof_run_kind_order, run_kind_title, select_domain_entries,
     };
     use clap::Parser;
     use rustwx_products::gallery::{
@@ -1132,6 +1172,22 @@ mod tests {
         assert_eq!(all.len(), regions.len() + cities.len());
         assert!(regions.iter().all(|entry| entry.kind == DomainKind::Region));
         assert!(cities.iter().all(|entry| entry.kind == DomainKind::City));
+    }
+
+    #[test]
+    fn domain_filter_restricts_selected_entries_in_catalog_order() {
+        let catalog = build_domain_catalog();
+        let args = Args::parse_from([
+            "hrrr_region_city_gallery",
+            "--domain",
+            "ca_sacramento,california_square",
+        ]);
+        let slugs = select_domain_entries(&args, &catalog)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.slug)
+            .collect::<Vec<_>>();
+        assert_eq!(slugs, vec!["california_square", "ca_sacramento"]);
     }
 
     #[test]

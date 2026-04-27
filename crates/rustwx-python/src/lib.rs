@@ -11,6 +11,12 @@ use rustwx_core::{CycleSpec, ModelId, ModelRunRequest, SourceId};
 #[cfg(feature = "python")]
 use rustwx_io::{FetchRequest, available_forecast_hours, probe_sources};
 #[cfg(feature = "python")]
+use rustwx_sounding::{SoundingColumn, write_full_sounding_png};
+#[cfg(feature = "python")]
+use serde::Serialize;
+#[cfg(feature = "python")]
+use std::path::Path;
+#[cfg(feature = "python")]
 use wrf_render::{
     build_projected_basemap_overlays, build_projected_basemap_overlays_json,
     describe_projected_geometry, describe_projected_geometry_json, describe_projected_projection,
@@ -123,6 +129,93 @@ fn probe_sources_json(
 }
 
 #[cfg(feature = "python")]
+#[derive(Debug, Serialize)]
+struct SoundingRenderResult {
+    renderer: &'static str,
+    output_path: String,
+    levels: usize,
+    station_id: String,
+    valid_time: String,
+}
+
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (column_json, output_path))]
+fn render_sounding_column_json(column_json: &str, output_path: &str) -> PyResult<String> {
+    let result =
+        render_sounding_column_impl(parse_sounding_column_json(column_json)?, output_path)?;
+    serde_json::to_string_pretty(&result)
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
+}
+
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (column, output_path))]
+fn render_sounding_column(
+    py: Python<'_>,
+    column: &Bound<'_, PyAny>,
+    output_path: &str,
+) -> PyResult<Py<PyAny>> {
+    let result = render_sounding_column_impl(
+        parse_sounding_column_json(&python_value_to_json(column)?)?,
+        output_path,
+    )?;
+    json_to_python(
+        py,
+        &serde_json::to_string_pretty(&result)
+            .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?,
+    )
+}
+
+#[cfg(feature = "python")]
+fn render_sounding_column_impl(
+    column: SoundingColumn,
+    output_path: &str,
+) -> PyResult<SoundingRenderResult> {
+    if let Some(parent) = Path::new(output_path)
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+    }
+    write_full_sounding_png(&column, output_path)
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+    Ok(SoundingRenderResult {
+        renderer: "rustwx-sounding native Rust SHARPpy-style renderer",
+        output_path: output_path.to_string(),
+        levels: column.len(),
+        station_id: column.metadata.station_id,
+        valid_time: column.metadata.valid_time,
+    })
+}
+
+#[cfg(feature = "python")]
+fn parse_sounding_column_json(payload: &str) -> PyResult<SoundingColumn> {
+    serde_json::from_str(payload).map_err(|err| {
+        pyo3::exceptions::PyValueError::new_err(format!("Invalid sounding column: {err}"))
+    })
+}
+
+#[cfg(feature = "python")]
+fn python_value_to_json(value: &Bound<'_, PyAny>) -> PyResult<String> {
+    if let Ok(text) = value.extract::<String>() {
+        return Ok(text);
+    }
+    let json_module = pyo3::types::PyModule::import(value.py(), "json")?;
+    json_module
+        .getattr("dumps")?
+        .call1((value,))?
+        .extract::<String>()
+}
+
+#[cfg(feature = "python")]
+fn json_to_python(py: Python<'_>, payload: &str) -> PyResult<Py<PyAny>> {
+    let json_module = pyo3::types::PyModule::import(py, "json")?;
+    Ok(json_module.getattr("loads")?.call1((payload,))?.unbind())
+}
+
+#[cfg(feature = "python")]
 fn parse_model(model: &str) -> PyResult<ModelId> {
     model.parse().map_err(|err: rustwx_core::RustwxError| {
         pyo3::exceptions::PyValueError::new_err(err.to_string())
@@ -177,5 +270,7 @@ fn rustwx(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(render_projected_map_json, module)?)?;
     module.add_function(wrap_pyfunction!(render_wrf_map, module)?)?;
     module.add_function(wrap_pyfunction!(render_wrf_map_json, module)?)?;
+    module.add_function(wrap_pyfunction!(render_sounding_column, module)?)?;
+    module.add_function(wrap_pyfunction!(render_sounding_column_json, module)?)?;
     Ok(())
 }

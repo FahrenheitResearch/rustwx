@@ -21,10 +21,10 @@ pub use derived::{
 pub use ecape::{
     EcapeFields, EcapeFieldsWithFailureMask, EcapeGridInputs, EcapeOptions, EcapeTripletFields,
     EcapeTripletFieldsWithFailureMask, EcapeTripletOptions, EcapeVolumeInputs, SurfaceInputs,
-    VolumeShape, compute_ecape, compute_ecape_from_parts, compute_ecape_triplet,
-    compute_ecape_triplet_from_parts, compute_ecape_triplet_with_failure_mask,
-    compute_ecape_triplet_with_failure_mask_from_parts, compute_ecape_with_failure_mask,
-    compute_ecape_with_failure_mask_from_parts,
+    VolumeShape, compute_analytic_ecape_triplet_with_failure_mask_from_parts, compute_ecape,
+    compute_ecape_from_parts, compute_ecape_triplet, compute_ecape_triplet_from_parts,
+    compute_ecape_triplet_with_failure_mask, compute_ecape_triplet_with_failure_mask_from_parts,
+    compute_ecape_with_failure_mask, compute_ecape_with_failure_mask_from_parts,
 };
 pub use error::CalcError;
 pub use rustwx_core::GridShape;

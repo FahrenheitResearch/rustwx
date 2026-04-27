@@ -13,12 +13,12 @@ use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId,
 };
 use rustwx_render::{
-    ChromeScale, Color, DerivedProductStyle, DomainFrame, ExtendMode, LevelDensity,
-    MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode,
-    ProjectedContourLineStyle, ProjectedDomain, ProjectedExtent, ProjectedMap, RenderImageTiming,
-    RenderStateTiming, WeatherPalette, WeatherProduct, WindBarbLayer,
+    ChromeScale, Color, ColorScale, DerivedProductStyle, DiscreteColorScale, DomainFrame,
+    ExtendMode, LevelDensity, MapRenderRequest, PngCompressionMode, PngWriteOptions,
+    ProductVisualMode, ProjectedContourLineStyle, ProjectedDomain, ProjectedExtent, ProjectedMap,
+    RenderImageTiming, RenderStateTiming, WeatherPalette, WeatherProduct, WindBarbLayer,
     build_projected_contour_geometry_profile, densify_discrete_scale, map_frame_aspect_ratio,
-    save_png_profile_with_options,
+    save_png_profile_with_options, weather::temperature_palette_cropped_f,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -3897,15 +3897,13 @@ fn build_render_artifact_with_contour_mode(
             ExtendMode::Max,
             Some(8.0),
         )?,
-        DerivedRecipe::Wetbulb2m => palette_request(
+        DerivedRecipe::Wetbulb2m => scale_request(
             recipe,
             grid,
             "degC",
             required_values(&computed.wetbulb_2m_c, recipe, "wetbulb_2m_c")?.clone(),
-            WeatherPalette::Temperature,
-            range_step(-40.0, 31.0, 5.0),
-            ExtendMode::Both,
-            Some(10.0),
+            surface_temperature_scale_c(0.5),
+            Some(5.0),
         )?,
         DerivedRecipe::FireWeatherComposite => custom_scale_request(
             recipe,
@@ -4251,15 +4249,13 @@ fn build_render_artifact_with_contour_mode_profiled(
             ExtendMode::Max,
             Some(8.0),
         )?,
-        DerivedRecipe::Wetbulb2m => palette_request(
+        DerivedRecipe::Wetbulb2m => scale_request(
             recipe,
             grid,
             "degC",
             required_values(&computed.wetbulb_2m_c, recipe, "wetbulb_2m_c")?.clone(),
-            WeatherPalette::Temperature,
-            range_step(-40.0, 31.0, 5.0),
-            ExtendMode::Both,
-            Some(10.0),
+            surface_temperature_scale_c(0.5),
+            Some(5.0),
         )?,
         DerivedRecipe::FireWeatherComposite => custom_scale_request(
             recipe,
@@ -4599,32 +4595,6 @@ fn native_contour_product_config(recipe: DerivedRecipe) -> Option<NativeContourP
     }
 }
 
-fn signature_contour_recipe_enabled(recipe: DerivedRecipe) -> bool {
-    matches!(
-        recipe,
-        DerivedRecipe::StpFixed
-            | DerivedRecipe::Srh01km
-            | DerivedRecipe::Srh03km
-            | DerivedRecipe::Ehi01km
-            | DerivedRecipe::Ehi03km
-            | DerivedRecipe::Mlcape
-            | DerivedRecipe::Sbcape
-            | DerivedRecipe::LapseRate700500
-            | DerivedRecipe::BulkShear01km
-            | DerivedRecipe::BulkShear06km
-            | DerivedRecipe::ThetaE2m10mWinds
-            | DerivedRecipe::Vpd2m
-            | DerivedRecipe::DewpointDepression2m
-            | DerivedRecipe::Wetbulb2m
-            | DerivedRecipe::FireWeatherComposite
-            | DerivedRecipe::ApparentTemperature2m
-            | DerivedRecipe::HeatIndex2m
-            | DerivedRecipe::LiftedIndex
-            | DerivedRecipe::TemperatureAdvection700mb
-            | DerivedRecipe::TemperatureAdvection850mb
-    )
-}
-
 pub fn native_contour_line_levels_for_recipe_slug(
     recipe_slug: &str,
 ) -> Result<Option<Vec<f64>>, String> {
@@ -4661,20 +4631,8 @@ fn maybe_apply_native_contour_fill_for_mode_profiled(
         return Ok(NativeContourBuildTiming::default());
     };
     let config = match contour_mode {
-        NativeContourRenderMode::Automatic => match native_contour_product_config(recipe) {
-            Some(config) => config,
-            None => return Ok(NativeContourBuildTiming::default()),
-        },
-        NativeContourRenderMode::Signature => {
-            if !signature_contour_recipe_enabled(recipe) {
-                return Ok(NativeContourBuildTiming::default());
-            }
-            native_contour_product_config(recipe).unwrap_or_else(|| NativeContourProductConfig {
-                scale: request.scale.clone(),
-                line_levels: &[],
-                line_style: ProjectedContourLineStyle::default(),
-                tick_step: request.cbar_tick_step,
-            })
+        NativeContourRenderMode::Automatic | NativeContourRenderMode::Signature => {
+            return Ok(NativeContourBuildTiming::default());
         }
         NativeContourRenderMode::ExperimentalAllProjected => native_contour_product_config(recipe)
             .unwrap_or_else(|| NativeContourProductConfig {
@@ -5160,6 +5118,21 @@ fn palette_request(
     Ok((field, request))
 }
 
+fn scale_request(
+    recipe: DerivedRecipe,
+    grid: &rustwx_core::LatLonGrid,
+    units: &str,
+    values: Vec<f64>,
+    scale: ColorScale,
+    tick_step: Option<f64>,
+) -> Result<(Field2D, MapRenderRequest), Box<dyn std::error::Error>> {
+    let field = core_field(recipe, units, grid, values)?;
+    let mut request =
+        MapRenderRequest::new(field.clone().into(), scale).with_visual_mode(recipe.visual_mode());
+    request.cbar_tick_step = tick_step;
+    Ok((field, request))
+}
+
 fn custom_scale_request(
     recipe: DerivedRecipe,
     grid: &rustwx_core::LatLonGrid,
@@ -5196,6 +5169,20 @@ fn derived_style_request(
     let request = MapRenderRequest::for_derived_product(field.clone().into(), style)
         .with_visual_mode(recipe.visual_mode());
     Ok((field, request))
+}
+
+fn surface_temperature_scale_c(level_step_c: f64) -> ColorScale {
+    let lo = -50.0;
+    let hi = 50.5;
+    ColorScale::Discrete(DiscreteColorScale {
+        levels: range_step(lo, hi, level_step_c),
+        colors: temperature_palette_cropped_f(
+            Some((-40.0, 120.0)),
+            (((hi - lo) / level_step_c).round() as usize).max(2),
+        ),
+        extend: ExtendMode::Both,
+        mask_below: None,
+    })
 }
 
 fn core_field(
@@ -5862,14 +5849,58 @@ mod tests {
     }
 
     #[test]
-    fn contour_render_mode_can_force_native_products_back_to_legacy_raster() {
+    fn wetbulb_uses_raster_temperature_scale_without_contour_promotion() {
+        assert!(native_contour_product_config(DerivedRecipe::Wetbulb2m).is_none());
+
+        let grid = sample_native_contour_grid();
+        let projected = sample_projected_map();
+        let computed = sample_fire_weather_computed_fields();
+        let artifact = build_render_artifact_with_contour_mode(
+            DerivedRecipe::Wetbulb2m,
+            &grid,
+            &projected,
+            "20260414",
+            23,
+            0,
+            SourceId::Nomads,
+            ModelId::Hrrr,
+            1200,
+            900,
+            &computed,
+            NativeContourRenderMode::Automatic,
+            1,
+        )
+        .unwrap();
+
+        assert!(artifact.request.projected_data_polygons.is_empty());
+        assert!(
+            artifact
+                .request
+                .field
+                .values
+                .iter()
+                .any(|value| value.is_finite())
+        );
+        let ColorScale::Discrete(scale) = artifact.request.scale else {
+            panic!("wet-bulb scale should be discrete");
+        };
+        assert_eq!(scale.extend, ExtendMode::Both);
+        assert_eq!(scale.levels[0], -50.0);
+        assert_eq!(scale.levels[1] - scale.levels[0], 0.5);
+        assert!(scale.levels.contains(&0.0));
+        assert!(scale.levels.contains(&40.0));
+        assert_ne!(scale.levels[1] - scale.levels[0], 5.0);
+    }
+
+    #[test]
+    fn automatic_contour_mode_keeps_native_products_rasterized() {
         let grid = sample_native_contour_grid();
         let projected = sample_projected_map();
         let values = vec![
             0.0, 500.0, 1000.0, 250.0, 1250.0, 2250.0, 750.0, 2000.0, 3500.0,
         ];
 
-        let native = build_native_render_artifact(
+        let automatic = build_native_render_artifact(
             DerivedRecipe::Sbcape,
             &grid,
             &projected,
@@ -5885,14 +5916,14 @@ mod tests {
             1,
         )
         .unwrap();
-        assert!(!native.request.projected_data_polygons.is_empty());
+        assert!(automatic.request.projected_data_polygons.is_empty());
         assert!(
-            native
+            automatic
                 .request
                 .field
                 .values
                 .iter()
-                .all(|value| value.is_nan())
+                .any(|value| value.is_finite())
         );
 
         let legacy = build_native_render_artifact(
@@ -5974,7 +6005,7 @@ mod tests {
     }
 
     #[test]
-    fn signature_contour_mode_promotes_selected_signature_products() {
+    fn signature_contour_mode_keeps_selected_products_rasterized() {
         let grid = sample_native_contour_grid();
         let projected = sample_projected_map();
         let values = vec![-9.0, -6.0, -3.0, -2.0, 0.0, 2.0, 4.0, 7.0, 10.0];
@@ -5995,14 +6026,14 @@ mod tests {
             1,
         )
         .unwrap();
-        assert!(!signature.request.projected_data_polygons.is_empty());
+        assert!(signature.request.projected_data_polygons.is_empty());
         assert!(
             signature
                 .request
                 .field
                 .values
                 .iter()
-                .all(|value| value.is_nan())
+                .any(|value| value.is_finite())
         );
     }
 
@@ -6040,7 +6071,7 @@ mod tests {
     }
 
     #[test]
-    fn fire_weather_family_render_artifacts_build_and_signature_mode_projects() {
+    fn fire_weather_family_render_artifacts_build_and_stay_rasterized() {
         let grid = sample_native_contour_grid();
         let projected = sample_projected_map();
         let computed = sample_fire_weather_computed_fields();
@@ -6088,14 +6119,14 @@ mod tests {
             1,
         )
         .unwrap();
-        assert!(!signature.request.projected_data_polygons.is_empty());
+        assert!(signature.request.projected_data_polygons.is_empty());
         assert!(
             signature
                 .request
                 .field
                 .values
                 .iter()
-                .all(|value| value.is_nan())
+                .any(|value| value.is_finite())
         );
     }
 

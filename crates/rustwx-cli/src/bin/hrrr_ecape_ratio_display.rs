@@ -8,7 +8,7 @@ use clap::Parser;
 use region::RegionPreset;
 use rustwx_core::{ModelId, SourceId};
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
-use rustwx_products::ecape::{run_ecape_ratio_display_batch, EcapeBatchRequest};
+use rustwx_products::ecape::{EcapeBatchRequest, run_ecape_ratio_display_batch};
 use rustwx_products::publication::{
     atomic_write_json, canonical_run_slug, publish_failure_manifest,
 };

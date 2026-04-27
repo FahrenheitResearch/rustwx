@@ -62,6 +62,44 @@ pub(crate) struct Geometry {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct ProjectedBounds {
+    x_min: f64,
+    x_max: f64,
+    y_min: f64,
+    y_max: f64,
+}
+
+impl ProjectedBounds {
+    fn empty() -> Self {
+        Self {
+            x_min: f64::INFINITY,
+            x_max: f64::NEG_INFINITY,
+            y_min: f64::INFINITY,
+            y_max: f64::NEG_INFINITY,
+        }
+    }
+
+    fn include(&mut self, x: f64, y: f64) {
+        if !x.is_finite() || !y.is_finite() {
+            return;
+        }
+        self.x_min = self.x_min.min(x);
+        self.x_max = self.x_max.max(x);
+        self.y_min = self.y_min.min(y);
+        self.y_max = self.y_max.max(y);
+    }
+
+    fn is_valid(self) -> bool {
+        self.x_min.is_finite()
+            && self.x_max.is_finite()
+            && self.y_min.is_finite()
+            && self.y_max.is_finite()
+            && self.x_min <= self.x_max
+            && self.y_min <= self.y_max
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct SurfaceContext {
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -82,7 +120,7 @@ pub(crate) struct ProjectedRenderArrays {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct LambertProjector {
+pub(crate) struct LambertProjector {
     n: f64,
     f: f64,
     rho0: f64,
@@ -126,7 +164,7 @@ impl LambertProjector {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PolarProjector {
+pub(crate) struct PolarProjector {
     stand_lon: f64,
     truelat1: f64,
     north_pole: bool,
@@ -148,7 +186,7 @@ impl PolarProjector {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct MercatorProjector {
+pub(crate) struct MercatorProjector {
     truelat1: f64,
     cen_lon: f64,
 }
@@ -546,11 +584,13 @@ fn build_geometry(
         map_frame_aspect_ratio_for_mode(visual_mode, width, height, colorbar, has_title);
     let mut x = Vec::with_capacity(lat.values.len());
     let mut y = Vec::with_capacity(lat.values.len());
+    let mut data_bounds = ProjectedBounds::empty();
 
     for (&lat_deg, &lon_deg) in lat.values.iter().zip(lon.values.iter()) {
         let (px, py) = projector.project(lat_deg, lon_deg);
         x.push(px);
         y.push(py);
+        data_bounds.include(px, py);
     }
 
     let nx = lat.nx;
@@ -592,22 +632,17 @@ fn build_geometry(
             }
         })
         .collect();
-    let data_x_min = projected_corners
-        .iter()
-        .map(|corner| corner.x)
-        .fold(f64::INFINITY, f64::min);
-    let data_x_max = projected_corners
-        .iter()
-        .map(|corner| corner.x)
-        .fold(f64::NEG_INFINITY, f64::max);
-    let data_y_min = projected_corners
-        .iter()
-        .map(|corner| corner.y)
-        .fold(f64::INFINITY, f64::min);
-    let data_y_max = projected_corners
-        .iter()
-        .map(|corner| corner.y)
-        .fold(f64::NEG_INFINITY, f64::max);
+    if !data_bounds.is_valid() {
+        data_bounds = ProjectedBounds::empty();
+        for corner in &projected_corners {
+            data_bounds.include(corner.x, corner.y);
+        }
+    }
+
+    let data_x_min = data_bounds.x_min;
+    let data_x_max = data_bounds.x_max;
+    let data_y_min = data_bounds.y_min;
+    let data_y_max = data_bounds.y_max;
 
     let valid_extent = ProjectedExtent {
         x_min: data_x_min,
@@ -926,6 +961,43 @@ pub(crate) fn projected_overlay_description(
         line_overlays: include_geometry.then_some(line_overlays),
         polygon_fills: include_geometry.then_some(polygon_fills),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn projected_geometry_extent_uses_all_grid_points_not_only_corners() {
+        let lat = Array2Data {
+            ny: 3,
+            nx: 3,
+            values: vec![0.0, 0.0, 0.0, 0.0, 5.0, 0.0, 1.0, 1.0, 1.0],
+        };
+        let lon = Array2Data {
+            ny: 3,
+            nx: 3,
+            values: vec![0.0, 1.0, 2.0, 0.0, 5.0, 2.0, 0.0, 1.0, 2.0],
+        };
+
+        let geometry = build_geometry(
+            Projector::LatLon,
+            &lat,
+            &lon,
+            600,
+            600,
+            false,
+            false,
+            ProductVisualMode::FilledMeteorology,
+        );
+
+        assert_eq!(geometry.valid_extent.x_min, 0.0);
+        assert_eq!(geometry.valid_extent.y_min, 0.0);
+        assert_eq!(geometry.valid_extent.x_max, 5.0);
+        assert_eq!(geometry.valid_extent.y_max, 5.0);
+        assert!(geometry.padded_extent.x_max >= geometry.valid_extent.x_max);
+        assert!(geometry.padded_extent.y_max >= geometry.valid_extent.y_max);
+    }
 }
 
 pub(crate) fn projection_description(

@@ -1,17 +1,17 @@
 use rustwx_core::{ModelId, ProductId, ProductKeyMetadata, ProductKind};
 use rustwx_models::{
-    built_in_models, plot_recipe_fetch_blockers, plot_recipe_fetch_plan, PlotRecipeFetchMode,
+    PlotRecipeFetchMode, built_in_models, plot_recipe_fetch_blockers, plot_recipe_fetch_plan,
 };
 use rustwx_render::{ProductMaturity, ProductSemanticFlag};
 use serde::{Deserialize, Serialize};
 
 use crate::derived::is_heavy_derived_recipe_slug;
-use crate::source::{direct_route_for_recipe_slug, ProductSourceRoute};
+use crate::source::{ProductSourceRoute, direct_route_for_recipe_slug};
 use crate::spec::{
-    blocked_derived_product_specs, direct_product_specs, heavy_product_specs,
-    supported_derived_product_specs, windowed_product_specs, ProductSpec,
+    ProductSpec, blocked_derived_product_specs, direct_product_specs, heavy_product_specs,
+    supported_derived_product_specs, windowed_product_specs,
 };
-use crate::thermo_native::{native_candidate_for_slug, NativeSemantics};
+use crate::thermo_native::{NativeSemantics, native_candidate_for_slug};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -464,10 +464,12 @@ mod tests {
             cloud_levels.render_style.as_deref(),
             Some("weather_panel_grid")
         );
-        assert!(cloud_levels
-            .notes
-            .iter()
-            .any(|note| note.contains("composite panel")));
+        assert!(
+            cloud_levels
+                .notes
+                .iter()
+                .any(|note| note.contains("composite panel"))
+        );
         assert!(cloud_levels.support.iter().any(|target| {
             target.model == Some(ModelId::Hrrr)
                 && matches!(target.status, ProductTargetStatus::Supported)
@@ -482,18 +484,22 @@ mod tests {
             precipitation_type.render_style.as_deref(),
             Some("weather_panel_grid")
         );
-        assert!(precipitation_type
-            .notes
-            .iter()
-            .any(|note| note.contains("freezing-rain")));
+        assert!(
+            precipitation_type
+                .notes
+                .iter()
+                .any(|note| note.contains("freezing-rain"))
+        );
         assert_eq!(precipitation_type.maturity, ProductMaturity::Operational);
-        assert!(precipitation_type
-            .product_metadata
-            .as_ref()
-            .and_then(|metadata| metadata.provenance.as_ref())
-            .expect("direct composite should carry provenance")
-            .flags
-            .contains(&rustwx_core::ProductSemanticFlag::Composite));
+        assert!(
+            precipitation_type
+                .product_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.provenance.as_ref())
+                .expect("direct composite should carry provenance")
+                .flags
+                .contains(&rustwx_core::ProductSemanticFlag::Composite)
+        );
         let hrrr_support = precipitation_type
             .support
             .iter()
@@ -526,10 +532,12 @@ mod tests {
             rustwx_core::ProductLineage::Derived
         );
         assert_eq!(entry.support.len(), built_in_models().len());
-        assert!(entry
-            .support
-            .iter()
-            .all(|target| matches!(target.status, ProductTargetStatus::Blocked)));
+        assert!(
+            entry
+                .support
+                .iter()
+                .all(|target| matches!(target.status, ProductTargetStatus::Blocked))
+        );
         assert!(
             entry
                 .support
@@ -561,10 +569,12 @@ mod tests {
                 .lineage,
             rustwx_core::ProductLineage::Derived
         );
-        assert!(entry
-            .support
-            .iter()
-            .all(|target| target.source_routes == vec![ProductSourceRoute::CanonicalDerived]));
+        assert!(
+            entry
+                .support
+                .iter()
+                .all(|target| target.source_routes == vec![ProductSourceRoute::CanonicalDerived])
+        );
     }
 
     #[test]
@@ -663,10 +673,12 @@ mod tests {
                 .iter()
                 .find(|entry| entry.slug == slug)
                 .unwrap_or_else(|| panic!("catalog should expose {slug} as derived"));
-            assert!(entry
-                .runners
-                .iter()
-                .any(|runner| runner == "hrrr_derived_batch"));
+            assert!(
+                entry
+                    .runners
+                    .iter()
+                    .any(|runner| runner == "hrrr_derived_batch")
+            );
         }
     }
 
@@ -678,22 +690,30 @@ mod tests {
             .iter()
             .find(|entry| entry.slug == "sbecape")
             .expect("catalog should expose sbecape derived entry");
-        assert!(sbecape
-            .runners
-            .iter()
-            .any(|runner| runner == "derived_batch"));
-        assert!(sbecape
-            .runners
-            .iter()
-            .any(|runner| runner == "hrrr_derived_batch"));
-        assert!(!sbecape
-            .runners
-            .iter()
-            .any(|runner| runner == "non_ecape_hour"));
-        assert!(!sbecape
-            .runners
-            .iter()
-            .any(|runner| runner == "hrrr_non_ecape_hour"));
+        assert!(
+            sbecape
+                .runners
+                .iter()
+                .any(|runner| runner == "derived_batch")
+        );
+        assert!(
+            sbecape
+                .runners
+                .iter()
+                .any(|runner| runner == "hrrr_derived_batch")
+        );
+        assert!(
+            !sbecape
+                .runners
+                .iter()
+                .any(|runner| runner == "non_ecape_hour")
+        );
+        assert!(
+            !sbecape
+                .runners
+                .iter()
+                .any(|runner| runner == "hrrr_non_ecape_hour")
+        );
     }
 
     #[test]
@@ -707,10 +727,12 @@ mod tests {
         assert_eq!(severe.title, "Severe Map Set");
         assert!(severe.runners.iter().any(|runner| runner == "severe_batch"));
         assert_eq!(severe.support.len(), built_in_models().len());
-        assert!(severe
-            .support
-            .iter()
-            .all(|target| matches!(target.status, ProductTargetStatus::Supported)));
+        assert!(
+            severe
+                .support
+                .iter()
+                .all(|target| matches!(target.status, ProductTargetStatus::Supported))
+        );
     }
 
     #[test]
@@ -732,47 +754,60 @@ mod tests {
             theta_e.id,
             ProductId::new(ProductKind::Derived, "theta_e_2m_10m_winds")
         );
-        assert!(theta_e
-            .aliases
-            .iter()
-            .any(|alias| alias.slug == "2m_theta_e_10m_winds"));
-        assert!(theta_e
-            .aliases
-            .iter()
-            .any(|alias| alias.id == ProductId::new(ProductKind::Derived, "2m_theta_e_10m_winds")));
-        assert!(theta_e
-            .notes
-            .iter()
-            .any(|note| note.contains("derived lane")));
+        assert!(
+            theta_e
+                .aliases
+                .iter()
+                .any(|alias| alias.slug == "2m_theta_e_10m_winds")
+        );
+        assert!(
+            theta_e
+                .aliases
+                .iter()
+                .any(|alias| alias.id
+                    == ProductId::new(ProductKind::Derived, "2m_theta_e_10m_winds"))
+        );
+        assert!(
+            theta_e
+                .notes
+                .iter()
+                .any(|note| note.contains("derived lane"))
+        );
         let identity = theta_e
             .product_metadata
             .as_ref()
             .and_then(|metadata| metadata.identity.as_ref())
             .expect("catalog entry should expose canonical identity");
         assert_eq!(identity.canonical, theta_e.id);
-        assert!(identity
-            .alias_slugs
-            .contains(&"2m_theta_e_10m_winds".to_string()));
+        assert!(
+            identity
+                .alias_slugs
+                .contains(&"2m_theta_e_10m_winds".to_string())
+        );
 
         let heat_index = catalog
             .derived
             .iter()
             .find(|entry| entry.slug == "heat_index_2m")
             .expect("catalog should expose canonical heat index product");
-        assert!(heat_index
-            .aliases
-            .iter()
-            .any(|alias| alias.slug == "2m_heat_index"));
+        assert!(
+            heat_index
+                .aliases
+                .iter()
+                .any(|alias| alias.slug == "2m_heat_index")
+        );
 
         let wind_chill = catalog
             .derived
             .iter()
             .find(|entry| entry.slug == "wind_chill_2m")
             .expect("catalog should expose canonical wind chill product");
-        assert!(wind_chill
-            .aliases
-            .iter()
-            .any(|alias| alias.slug == "2m_wind_chill"));
+        assert!(
+            wind_chill
+                .aliases
+                .iter()
+                .any(|alias| alias.slug == "2m_wind_chill")
+        );
     }
 
     #[test]
@@ -789,10 +824,12 @@ mod tests {
             .expect("catalog should expose canonical 1-hour QPF windowed product");
         assert_eq!(qpf_1h.id, ProductId::new(ProductKind::Windowed, "qpf_1h"));
         assert!(qpf_1h.aliases.iter().any(|alias| alias.slug == "1h_qpf"));
-        assert!(qpf_1h
-            .aliases
-            .iter()
-            .any(|alias| alias.id == ProductId::new(ProductKind::Windowed, "1h_qpf")));
+        assert!(
+            qpf_1h
+                .aliases
+                .iter()
+                .any(|alias| alias.id == ProductId::new(ProductKind::Windowed, "1h_qpf"))
+        );
         assert!(
             qpf_1h
                 .notes
@@ -827,14 +864,18 @@ mod tests {
     fn windowed_catalog_marks_hr_rr_windowed_products_supported() {
         let catalog = build_supported_products_catalog();
         assert_eq!(catalog.windowed.len(), 8);
-        assert!(catalog
-            .windowed
-            .iter()
-            .all(|entry| entry.status == ProductCatalogStatus::Supported));
-        assert!(catalog
-            .windowed
-            .iter()
-            .all(|entry| entry.maturity == ProductMaturity::Operational));
+        assert!(
+            catalog
+                .windowed
+                .iter()
+                .all(|entry| entry.status == ProductCatalogStatus::Supported)
+        );
+        assert!(
+            catalog
+                .windowed
+                .iter()
+                .all(|entry| entry.maturity == ProductMaturity::Operational)
+        );
         assert!(catalog.windowed.iter().any(|entry| {
             entry.slug == "qpf_6h"
                 && entry

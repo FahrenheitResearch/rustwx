@@ -404,6 +404,97 @@ pub fn compute_ecape_triplet_with_failure_mask_from_parts(
     })
 }
 
+pub fn compute_analytic_ecape_triplet_with_failure_mask_from_parts(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+    options: EcapeTripletOptions<'_>,
+) -> Result<EcapeTripletFieldsWithFailureMask, CalcError> {
+    validate_triplet_inputs(grid, volume, surface)?;
+
+    let (storm_u, storm_v) = unzip_triplet_storm_motion(options);
+    let triplet = if pressure_is_levels(volume) {
+        metrust::calc::severe::grid::compute_analytic_ecape_triplet_with_failure_mask_levels(
+            volume.pressure_pa,
+            volume.temperature_c,
+            volume.qvapor_kgkg,
+            volume.height_agl_m,
+            volume.u_ms,
+            volume.v_ms,
+            surface.psfc_pa,
+            surface.t2_k,
+            surface.q2_kgkg,
+            surface.u10_ms,
+            surface.v10_ms,
+            grid.nx,
+            grid.ny,
+            volume.nz,
+            options.storm_motion_type,
+            options.pseudoadiabatic,
+            storm_u,
+            storm_v,
+        )
+    } else {
+        metrust::calc::severe::grid::compute_analytic_ecape_triplet_with_failure_mask(
+            volume.pressure_pa,
+            volume.temperature_c,
+            volume.qvapor_kgkg,
+            volume.height_agl_m,
+            volume.u_ms,
+            volume.v_ms,
+            surface.psfc_pa,
+            surface.t2_k,
+            surface.q2_kgkg,
+            surface.u10_ms,
+            surface.v10_ms,
+            grid.nx,
+            grid.ny,
+            volume.nz,
+            options.storm_motion_type,
+            options.pseudoadiabatic,
+            storm_u,
+            storm_v,
+        )
+    }
+    .map_err(CalcError::Metrust)?;
+
+    Ok(EcapeTripletFieldsWithFailureMask {
+        sb: EcapeFieldsWithFailureMask {
+            fields: EcapeFields {
+                ecape_jkg: triplet.sb.fields.ecape,
+                ncape_jkg: triplet.sb.fields.ncape,
+                cape_jkg: triplet.sb.fields.cape,
+                cin_jkg: triplet.sb.fields.cin,
+                lfc_m: triplet.sb.fields.lfc,
+                el_m: triplet.sb.fields.el,
+            },
+            failure_mask: triplet.sb.failure_mask,
+        },
+        ml: EcapeFieldsWithFailureMask {
+            fields: EcapeFields {
+                ecape_jkg: triplet.ml.fields.ecape,
+                ncape_jkg: triplet.ml.fields.ncape,
+                cape_jkg: triplet.ml.fields.cape,
+                cin_jkg: triplet.ml.fields.cin,
+                lfc_m: triplet.ml.fields.lfc,
+                el_m: triplet.ml.fields.el,
+            },
+            failure_mask: triplet.ml.failure_mask,
+        },
+        mu: EcapeFieldsWithFailureMask {
+            fields: EcapeFields {
+                ecape_jkg: triplet.mu.fields.ecape,
+                ncape_jkg: triplet.mu.fields.ncape,
+                cape_jkg: triplet.mu.fields.cape,
+                cin_jkg: triplet.mu.fields.cin,
+                lfc_m: triplet.mu.fields.lfc,
+                el_m: triplet.mu.fields.el,
+            },
+            failure_mask: triplet.mu.failure_mask,
+        },
+    })
+}
+
 pub fn compute_ecape_triplet_from_parts(
     grid: GridShape,
     volume: EcapeVolumeInputs<'_>,

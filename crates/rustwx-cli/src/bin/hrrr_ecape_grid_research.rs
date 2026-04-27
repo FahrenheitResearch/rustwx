@@ -1,8 +1,9 @@
 use clap::Parser;
 use rustwx_calc::{
+    EcapeTripletOptions, EcapeVolumeInputs, SurfaceInputs, WindGridInputs,
+    compute_analytic_ecape_triplet_with_failure_mask_from_parts,
     compute_ecape_triplet_with_failure_mask_from_parts, compute_ehi,
-    compute_wind_diagnostics_bundle, EcapeTripletOptions, EcapeVolumeInputs, SurfaceInputs,
-    WindGridInputs,
+    compute_wind_diagnostics_bundle,
 };
 use rustwx_core::{ModelId, SourceId};
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
@@ -10,7 +11,8 @@ use rustwx_products::gridded::{
     load_model_timestep_from_parts_cropped, prepare_heavy_volume_timed,
 };
 use serde::Serialize;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
+use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -46,6 +48,14 @@ struct Args {
     no_cache: bool,
     #[arg(long)]
     output: PathBuf,
+    #[arg(long)]
+    components_csv: Option<PathBuf>,
+    #[arg(long)]
+    reports_csv: Option<PathBuf>,
+    #[arg(long)]
+    report_overlap_csv: Option<PathBuf>,
+    #[arg(long)]
+    field_grid_csv: Option<PathBuf>,
 }
 
 #[derive(Debug, Serialize)]
@@ -54,6 +64,7 @@ struct GridResearchReport {
     grid: GridSummary,
     timing: TimingSummary,
     failure_count: usize,
+    analytic_failure_count: usize,
     masks: Vec<MaskSummary>,
     fields: Vec<FieldSummary>,
 }
@@ -87,6 +98,7 @@ struct TimingSummary {
     load_ms: u128,
     prepare_ms: u128,
     ecape_ms: u128,
+    analytic_ecape_ms: u128,
     wind_ms: u128,
     stats_ms: u128,
     total_ms: u128,
@@ -157,6 +169,14 @@ struct NamedField {
     values: Vec<f64>,
 }
 
+#[derive(Debug, Clone)]
+struct ReportPoint {
+    report_id: String,
+    report_type: String,
+    lat: f64,
+    lon: f64,
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let total_start = Instant::now();
@@ -219,6 +239,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let ecape_ms = ecape_start.elapsed().as_millis();
 
+    let analytic_ecape_start = Instant::now();
+    let analytic_triplet = compute_analytic_ecape_triplet_with_failure_mask_from_parts(
+        prepared.grid,
+        volume,
+        surface_inputs,
+        EcapeTripletOptions::new("right_moving"),
+    )?;
+    let analytic_ecape_ms = analytic_ecape_start.elapsed().as_millis();
+
     let wind_start = Instant::now();
     let wind = compute_wind_diagnostics_bundle(WindGridInputs {
         shape: prepared.shape,
@@ -246,6 +275,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ml_ehi_03 = compute_ehi(
         prepared.grid,
         &triplet.ml.fields.ecape_jkg,
+        &wind.srh_03km_m2s2,
+    )?;
+    let ml_cape_ehi_03 = compute_ehi(
+        prepared.grid,
+        &triplet.ml.fields.cape_jkg,
+        &wind.srh_03km_m2s2,
+    )?;
+    let ml_analytic_ehi_03 = compute_ehi(
+        prepared.grid,
+        &analytic_triplet.ml.fields.ecape_jkg,
         &wind.srh_03km_m2s2,
     )?;
     let mu_ehi_03 = compute_ehi(
@@ -299,10 +338,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         NamedField::new("srh_0_1km", "m2/s2", wind.srh_01km_m2s2.clone()),
         NamedField::new("srh_0_3km", "m2/s2", wind.srh_03km_m2s2.clone()),
         NamedField::new("shear_0_6km", "m/s", wind.shear_06km_ms.clone()),
+        NamedField::new(
+            "ml_analytic_ecape",
+            "J/kg",
+            analytic_triplet.ml.fields.ecape_jkg.clone(),
+        ),
+        NamedField::new(
+            "ml_ecape_minus_analytic_ecape",
+            "J/kg",
+            diff(
+                &triplet.ml.fields.ecape_jkg,
+                &analytic_triplet.ml.fields.ecape_jkg,
+            ),
+        ),
         NamedField::new("sb_ecape_ehi_0_1km", "dimensionless", sb_ehi_01),
         NamedField::new("sb_ecape_ehi_0_3km", "dimensionless", sb_ehi_03),
         NamedField::new("ml_ecape_ehi_0_1km", "dimensionless", ml_ehi_01),
         NamedField::new("ml_ecape_ehi_0_3km", "dimensionless", ml_ehi_03.clone()),
+        NamedField::new("ml_cape_ehi_0_3km", "dimensionless", ml_cape_ehi_03.clone()),
+        NamedField::new(
+            "ml_analytic_ecape_ehi_0_3km",
+            "dimensionless",
+            ml_analytic_ehi_03.clone(),
+        ),
         NamedField::new("mu_ecape_ehi_0_3km", "dimensionless", mu_ehi_03),
     ];
     if let Some(native_mlcape) = surface.native_mlcape_jkg.as_ref() {
@@ -321,8 +379,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let masks = build_masks(
         &triplet.ml.fields.cape_jkg,
         &triplet.ml.fields.ecape_jkg,
+        &analytic_triplet.ml.fields.ecape_jkg,
         &ml_ratio,
         &ml_ehi_03,
+        &ml_cape_ehi_03,
+        &ml_analytic_ehi_03,
         &wind.srh_03km_m2s2,
         &wind.shear_06km_ms,
     );
@@ -346,6 +407,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .map(|field| summarize_field(field, &masks))
         .collect::<Vec<_>>();
+
+    if let Some(path) = args.components_csv.as_ref() {
+        write_components_csv(
+            path,
+            &args,
+            &masks,
+            surface.nx,
+            surface.ny,
+            &surface.lat,
+            &surface.lon,
+            cell_area_km2,
+        )?;
+    }
+
+    if let (Some(reports_path), Some(overlap_path)) =
+        (args.reports_csv.as_ref(), args.report_overlap_csv.as_ref())
+    {
+        let reports = read_report_points_csv(reports_path)?;
+        write_report_overlap_csv(
+            overlap_path,
+            &args,
+            &masks,
+            surface.nx,
+            surface.ny,
+            &surface.lat,
+            &surface.lon,
+            cell_area_km2,
+            &reports,
+        )?;
+    }
+
+    if let Some(path) = args.field_grid_csv.as_ref() {
+        write_field_grid_csv(
+            path,
+            surface.nx,
+            surface.ny,
+            &surface.lat,
+            &surface.lon,
+            &fields,
+        )?;
+    }
+
     let stats_ms = stats_start.elapsed().as_millis();
 
     let report = GridResearchReport {
@@ -373,11 +476,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             load_ms,
             prepare_ms,
             ecape_ms,
+            analytic_ecape_ms,
             wind_ms,
             stats_ms,
             total_ms: total_start.elapsed().as_millis(),
         },
         failure_count: triplet.total_failure_count(),
+        analytic_failure_count: analytic_triplet.total_failure_count(),
         masks: mask_summaries,
         fields: field_summaries,
     };
@@ -402,61 +507,69 @@ impl NamedField {
 fn build_masks(
     ml_cape: &[f64],
     ml_ecape: &[f64],
+    ml_analytic_ecape: &[f64],
     ml_ratio: &[f64],
     ml_ehi_03: &[f64],
+    ml_cape_ehi_03: &[f64],
+    ml_analytic_ehi_03: &[f64],
     srh_03: &[f64],
     shear_06: &[f64],
 ) -> Vec<NamedMask> {
-    vec![
-        mask_threshold(
-            "ml_cape_ge_500",
-            "ML undiluted CAPE >= 500 J/kg",
+    let mut masks = Vec::new();
+    for threshold in CAPE_ECAPE_THRESHOLDS {
+        push_threshold_mask(
+            &mut masks,
+            "ml_cape_ge",
+            "ML undiluted CAPE",
+            "J/kg",
             ml_cape,
-            500.0,
-        ),
-        mask_threshold(
-            "ml_cape_ge_1000",
-            "ML undiluted CAPE >= 1000 J/kg",
-            ml_cape,
-            1000.0,
-        ),
-        mask_threshold(
-            "ml_cape_ge_2000",
-            "ML undiluted CAPE >= 2000 J/kg",
-            ml_cape,
-            2000.0,
-        ),
-        mask_threshold("ml_ecape_ge_500", "ML ECAPE >= 500 J/kg", ml_ecape, 500.0),
-        mask_threshold(
-            "ml_ecape_ge_1000",
-            "ML ECAPE >= 1000 J/kg",
+            *threshold,
+        );
+        push_threshold_mask(
+            &mut masks,
+            "ml_ecape_ge",
+            "ML ECAPE",
+            "J/kg",
             ml_ecape,
-            1000.0,
-        ),
-        mask_threshold(
-            "ml_ecape_ge_2000",
-            "ML ECAPE >= 2000 J/kg",
-            ml_ecape,
-            2000.0,
-        ),
-        mask_threshold(
-            "ml_ecape_ehi03_ge_1",
-            "ML ECAPE-EHI 0-3 km >= 1",
+            *threshold,
+        );
+        push_threshold_mask(
+            &mut masks,
+            "ml_analytic_ecape_ge",
+            "ML analytic ECAPE",
+            "J/kg",
+            ml_analytic_ecape,
+            *threshold,
+        );
+    }
+    for threshold in EHI_THRESHOLDS {
+        push_threshold_mask(
+            &mut masks,
+            "ml_ecape_ehi03_ge",
+            "ML ECAPE-EHI 0-3 km",
+            "",
             ml_ehi_03,
-            1.0,
-        ),
-        mask_threshold(
-            "ml_ecape_ehi03_ge_2",
-            "ML ECAPE-EHI 0-3 km >= 2",
-            ml_ehi_03,
-            2.0,
-        ),
-        mask_threshold(
-            "ml_ecape_ehi03_ge_3",
-            "ML ECAPE-EHI 0-3 km >= 3",
-            ml_ehi_03,
-            3.0,
-        ),
+            *threshold,
+        );
+        push_threshold_mask(
+            &mut masks,
+            "ml_cape_ehi03_ge",
+            "Traditional ML CAPE-EHI 0-3 km",
+            "",
+            ml_cape_ehi_03,
+            *threshold,
+        );
+        push_threshold_mask(
+            &mut masks,
+            "ml_analytic_ecape_ehi03_ge",
+            "Analytic ML ECAPE-EHI 0-3 km",
+            "",
+            ml_analytic_ehi_03,
+            *threshold,
+        );
+    }
+
+    masks.extend([
         NamedMask {
             name: "warm_sector_combo",
             description: "ML CAPE >= 500 J/kg, 0-3 km SRH >= 100 m2/s2, 0-6 km shear >= 20 m/s",
@@ -477,6 +590,15 @@ fn build_masks(
                 .collect(),
         },
         NamedMask {
+            name: "ratio_low_cape250_plume",
+            description: "ML ECAPE/CAPE ratio < 0.75 where ML undiluted CAPE >= 250 J/kg",
+            values: ml_ratio
+                .iter()
+                .zip(ml_cape.iter())
+                .map(|(&ratio, &cape)| ratio.is_finite() && cape >= 250.0 && ratio < 0.75)
+                .collect(),
+        },
+        NamedMask {
             name: "ratio_high_cape_plume",
             description: "ML ECAPE/CAPE ratio >= 1.0 where ML undiluted CAPE >= 500 J/kg",
             values: ml_ratio
@@ -485,7 +607,74 @@ fn build_masks(
                 .map(|(&ratio, &cape)| ratio.is_finite() && cape >= 500.0 && ratio >= 1.0)
                 .collect(),
         },
-    ]
+        NamedMask {
+            name: "ratio_high_cape250_plume",
+            description: "ML ECAPE/CAPE ratio >= 1.0 where ML undiluted CAPE >= 250 J/kg",
+            values: ml_ratio
+                .iter()
+                .zip(ml_cape.iter())
+                .map(|(&ratio, &cape)| ratio.is_finite() && cape >= 250.0 && ratio >= 1.0)
+                .collect(),
+        },
+        NamedMask {
+            name: "ratio_high_ecape500_plume",
+            description: "ML ECAPE/CAPE ratio >= 1.0 where ML ECAPE >= 500 J/kg",
+            values: ml_ratio
+                .iter()
+                .zip(ml_ecape.iter())
+                .map(|(&ratio, &ecape)| ratio.is_finite() && ecape >= 500.0 && ratio >= 1.0)
+                .collect(),
+        },
+    ]);
+
+    masks
+}
+
+const CAPE_ECAPE_THRESHOLDS: &[f64] = &[
+    100.0, 250.0, 400.0, 500.0, 600.0, 750.0, 900.0, 1000.0, 1250.0, 1500.0, 1750.0, 2000.0, 2500.0,
+];
+
+const EHI_THRESHOLDS: &[f64] = &[
+    0.10, 0.25, 0.40, 0.50, 0.65, 0.75, 1.00, 1.25, 1.50, 2.00, 2.50, 3.00, 4.00,
+];
+
+fn threshold_label(threshold: f64) -> String {
+    if threshold.fract().abs() < 1.0e-9 {
+        format!("{threshold:.0}")
+    } else {
+        let text = format!("{threshold:.2}");
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+fn threshold_token(threshold: f64) -> String {
+    threshold_label(threshold).replace('.', "p")
+}
+
+fn leaked(text: String) -> &'static str {
+    Box::leak(text.into_boxed_str())
+}
+
+fn push_threshold_mask(
+    masks: &mut Vec<NamedMask>,
+    prefix: &str,
+    label: &str,
+    units: &str,
+    values: &[f64],
+    threshold: f64,
+) {
+    let threshold_text = threshold_label(threshold);
+    let unit_text = if units.is_empty() {
+        String::new()
+    } else {
+        format!(" {units}")
+    };
+    masks.push(mask_threshold(
+        leaked(format!("{}_{}", prefix, threshold_token(threshold))),
+        leaked(format!("{label} >= {threshold_text}{unit_text}")),
+        values,
+        threshold,
+    ));
 }
 
 fn mask_threshold(
@@ -627,6 +816,82 @@ fn largest_component_summary(
 }
 
 #[derive(Debug, Default)]
+struct ComponentDetail {
+    indices: Vec<usize>,
+    accumulator: ComponentAccumulator,
+}
+
+impl ComponentDetail {
+    fn add(&mut self, idx: usize, lat: &[f64], lon: &[f64]) {
+        self.indices.push(idx);
+        self.accumulator.add(idx, lat, lon);
+    }
+
+    fn summary(
+        &self,
+        grid_count: usize,
+        mask_count: usize,
+        cell_area_km2: f64,
+    ) -> ComponentSummary {
+        self.accumulator
+            .to_summary(grid_count, mask_count, cell_area_km2)
+    }
+}
+
+fn collect_components(
+    mask: &NamedMask,
+    nx: usize,
+    ny: usize,
+    lat: &[f64],
+    lon: &[f64],
+) -> Vec<ComponentDetail> {
+    if nx == 0 || ny == 0 || mask.values.len() != nx * ny {
+        return Vec::new();
+    }
+
+    let mut visited = vec![false; mask.values.len()];
+    let mut components = Vec::new();
+    let mut queue = VecDeque::new();
+
+    for start in 0..mask.values.len() {
+        if visited[start] || !mask.values[start] {
+            continue;
+        }
+        visited[start] = true;
+        queue.push_back(start);
+        let mut current = ComponentDetail::default();
+
+        while let Some(idx) = queue.pop_front() {
+            current.add(idx, lat, lon);
+            let x = idx % nx;
+            let y = idx / nx;
+            let x_start = x.saturating_sub(1);
+            let y_start = y.saturating_sub(1);
+            let x_end = (x + 1).min(nx - 1);
+            let y_end = (y + 1).min(ny - 1);
+
+            for yy in y_start..=y_end {
+                for xx in x_start..=x_end {
+                    if xx == x && yy == y {
+                        continue;
+                    }
+                    let neighbor = yy * nx + xx;
+                    if !visited[neighbor] && mask.values[neighbor] {
+                        visited[neighbor] = true;
+                        queue.push_back(neighbor);
+                    }
+                }
+            }
+        }
+
+        components.push(current);
+    }
+
+    components.sort_by(|a, b| b.accumulator.count.cmp(&a.accumulator.count));
+    components
+}
+
+#[derive(Debug, Default)]
 struct ComponentAccumulator {
     count: usize,
     lat_sum: f64,
@@ -667,6 +932,15 @@ impl ComponentAccumulator {
         mask_count: usize,
         cell_area_km2: f64,
     ) -> ComponentSummary {
+        self.to_summary(grid_count, mask_count, cell_area_km2)
+    }
+
+    fn to_summary(
+        &self,
+        grid_count: usize,
+        mask_count: usize,
+        cell_area_km2: f64,
+    ) -> ComponentSummary {
         ComponentSummary {
             count: self.count,
             fraction: if grid_count == 0 {
@@ -686,6 +960,535 @@ impl ComponentAccumulator {
             )),
         }
     }
+}
+
+fn write_components_csv(
+    path: &PathBuf,
+    args: &Args,
+    masks: &[NamedMask],
+    nx: usize,
+    ny: usize,
+    lat: &[f64],
+    lon: &[f64],
+    cell_area_km2: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::File::create(path)?;
+    writeln!(
+        file,
+        "case_id,date,cycle,forecast_hour,domain_slug,mask,component_rank,cell_count,area_km2,fraction_grid,fraction_mask,centroid_lat,centroid_lon,lon_min,lon_max,lat_min,lat_max"
+    )?;
+    let case_id = format!("{}_{}z_{}", args.date, args.cycle, args.domain_slug);
+    let grid_count = nx * ny;
+    for mask in masks {
+        let mask_count = mask.values.iter().filter(|&&value| value).count();
+        let components = collect_components(mask, nx, ny, lat, lon);
+        for (rank, component) in components.iter().enumerate() {
+            let summary = component.summary(grid_count, mask_count, cell_area_km2);
+            let bbox = summary.bounding_box;
+            writeln!(
+                file,
+                "{},{},{},{},{},{},{},{},{:.6},{:.10},{},{},{},{},{},{},{}",
+                csv_cell(&case_id),
+                args.date,
+                args.cycle,
+                args.forecast_hour,
+                csv_cell(&args.domain_slug),
+                csv_cell(mask.name),
+                rank + 1,
+                summary.count,
+                summary.area_km2_approx,
+                summary.fraction,
+                opt_f64(summary.fraction_of_mask),
+                opt_f64(summary.centroid_lat),
+                opt_f64(summary.centroid_lon),
+                opt_f64(bbox.map(|value| value.0)),
+                opt_f64(bbox.map(|value| value.1)),
+                opt_f64(bbox.map(|value| value.2)),
+                opt_f64(bbox.map(|value| value.3)),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn read_report_points_csv(path: &PathBuf) -> Result<Vec<ReportPoint>, Box<dyn std::error::Error>> {
+    let file = std::fs::File::open(path)?;
+    let reader = std::io::BufReader::new(file);
+    let mut lines = reader.lines();
+    let Some(header_line) = lines.next() else {
+        return Ok(Vec::new());
+    };
+    let header = split_simple_csv(&header_line?);
+    let lat_idx = find_column(&header, &["lat", "latitude"])?;
+    let lon_idx = find_column(&header, &["lon", "longitude"])?;
+    let type_idx = find_column(&header, &["report_type", "type"])?;
+    let id_idx = find_column_optional(&header, &["report_id", "id"]);
+    let mut reports = Vec::new();
+
+    for (row_idx, line) in lines.enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let cols = split_simple_csv(&line);
+        let Some(lat) = cols
+            .get(lat_idx)
+            .and_then(|value| value.parse::<f64>().ok())
+        else {
+            continue;
+        };
+        let Some(lon) = cols
+            .get(lon_idx)
+            .and_then(|value| value.parse::<f64>().ok())
+        else {
+            continue;
+        };
+        if !lat.is_finite() || !lon.is_finite() {
+            continue;
+        }
+        let report_type = cols
+            .get(type_idx)
+            .map(|value| value.trim().to_ascii_lowercase())
+            .unwrap_or_else(|| "unknown".to_string());
+        let report_id = id_idx
+            .and_then(|idx| cols.get(idx).cloned())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| format!("report_{}", row_idx + 1));
+        reports.push(ReportPoint {
+            report_id,
+            report_type,
+            lat,
+            lon,
+        });
+    }
+
+    Ok(reports)
+}
+
+fn write_field_grid_csv(
+    path: &PathBuf,
+    nx: usize,
+    ny: usize,
+    lat: &[f64],
+    lon: &[f64],
+    fields: &[NamedField],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let wanted = [
+        "ml_cape_undiluted",
+        "ml_ecape",
+        "ml_analytic_ecape",
+        "ml_cape_minus_ecape",
+        "ml_ecape_minus_analytic_ecape",
+        "ml_ecape_ehi_0_3km",
+        "ml_cape_ehi_0_3km",
+        "ml_analytic_ecape_ehi_0_3km",
+        "srh_0_3km",
+        "shear_0_6km",
+    ];
+    let selected = wanted
+        .iter()
+        .filter_map(|name| {
+            fields
+                .iter()
+                .find(|field| field.name == *name)
+                .map(|field| (*name, field.values.as_slice()))
+        })
+        .collect::<Vec<_>>();
+    let grid_count = nx.saturating_mul(ny);
+    if lat.len() != grid_count || lon.len() != grid_count {
+        return Err(format!(
+            "lat/lon length mismatch: nx={nx} ny={ny} lat={} lon={}",
+            lat.len(),
+            lon.len()
+        )
+        .into());
+    }
+    for (name, values) in &selected {
+        if values.len() != grid_count {
+            return Err(format!(
+                "field {name} length mismatch: expected {grid_count}, got {}",
+                values.len()
+            )
+            .into());
+        }
+    }
+
+    let file = std::fs::File::create(path)?;
+    let mut writer = std::io::BufWriter::new(file);
+    write!(writer, "i,j,lat,lon")?;
+    for (name, _values) in &selected {
+        write!(writer, ",{}", csv_cell(name))?;
+    }
+    writeln!(writer)?;
+
+    for idx in 0..grid_count {
+        let i = idx % nx;
+        let j = idx / nx;
+        write!(writer, "{i},{j},{:.6},{:.6}", lat[idx], lon[idx])?;
+        for (_name, values) in &selected {
+            write!(writer, ",{}", values[idx])?;
+        }
+        writeln!(writer)?;
+    }
+    Ok(())
+}
+
+fn write_report_overlap_csv(
+    path: &PathBuf,
+    args: &Args,
+    masks: &[NamedMask],
+    nx: usize,
+    ny: usize,
+    lat: &[f64],
+    lon: &[f64],
+    cell_area_km2: f64,
+    reports: &[ReportPoint],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::File::create(path)?;
+    writeln!(
+        file,
+        "case_id,date,cycle,forecast_hour,domain_slug,mask,report_type,num_reports,coverage_fraction,coverage_area_km2,largest_object_fraction,largest_object_area_km2,reports_inside_any,reports_within_25km_any,reports_within_40km_any,reports_within_80km_any,median_distance_any_km,p90_distance_any_km,reports_inside_largest,reports_within_25km_largest,reports_within_40km_largest,reports_within_80km_largest,median_distance_largest_km,p90_distance_largest_km,object_efficiency_40km_any,object_efficiency_40km_largest,search_radius_km"
+    )?;
+
+    let case_id = format!("{}_{}z_{}", args.date, args.cycle, args.domain_slug);
+    let grid_count = nx * ny;
+    let search_radius_km = 90.0;
+    let search_radius_cells = ((search_radius_km / cell_area_km2.sqrt().max(1.0)).ceil() as usize)
+        .saturating_add(6)
+        .max(35);
+    let nearest_indices = reports
+        .iter()
+        .map(|report| nearest_grid_index(report.lat, report.lon, nx, ny, lat, lon))
+        .collect::<Vec<_>>();
+    let mut report_types = BTreeSet::new();
+    report_types.insert("all".to_string());
+    for report in reports {
+        report_types.insert(report.report_type.clone());
+    }
+
+    for mask in masks {
+        let mask_count = mask.values.iter().filter(|&&value| value).count();
+        let coverage_fraction = if grid_count == 0 {
+            0.0
+        } else {
+            mask_count as f64 / grid_count as f64
+        };
+        let coverage_area_km2 = mask_count as f64 * cell_area_km2;
+        let components = collect_components(mask, nx, ny, lat, lon);
+        let mut largest_values = vec![false; mask.values.len()];
+        if let Some(largest) = components.first() {
+            for &idx in &largest.indices {
+                largest_values[idx] = true;
+            }
+        }
+        let largest_count = components
+            .first()
+            .map(|component| component.indices.len())
+            .unwrap_or(0);
+        let largest_fraction = if grid_count == 0 {
+            0.0
+        } else {
+            largest_count as f64 / grid_count as f64
+        };
+        let largest_area_km2 = largest_count as f64 * cell_area_km2;
+
+        for report_type in &report_types {
+            let report_indices = reports
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, report)| {
+                    (report_type == "all" || &report.report_type == report_type).then_some(idx)
+                })
+                .collect::<Vec<_>>();
+            let stats_any = overlap_stats_for_reports(
+                &report_indices,
+                reports,
+                &nearest_indices,
+                &mask.values,
+                nx,
+                ny,
+                lat,
+                lon,
+                search_radius_cells,
+            );
+            let stats_largest = overlap_stats_for_reports(
+                &report_indices,
+                reports,
+                &nearest_indices,
+                &largest_values,
+                nx,
+                ny,
+                lat,
+                lon,
+                search_radius_cells,
+            );
+            let n = report_indices.len();
+            let object_eff_any = efficiency(stats_any.within_40km, n, coverage_fraction);
+            let object_eff_largest = efficiency(stats_largest.within_40km, n, largest_fraction);
+            writeln!(
+                file,
+                "{},{},{},{},{},{},{},{},{:.10},{:.6},{:.10},{:.6},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.1}",
+                csv_cell(&case_id),
+                args.date,
+                args.cycle,
+                args.forecast_hour,
+                csv_cell(&args.domain_slug),
+                csv_cell(mask.name),
+                csv_cell(report_type),
+                n,
+                coverage_fraction,
+                coverage_area_km2,
+                largest_fraction,
+                largest_area_km2,
+                stats_any.inside,
+                stats_any.within_25km,
+                stats_any.within_40km,
+                stats_any.within_80km,
+                fmt_f64(stats_any.median_distance_km),
+                fmt_f64(stats_any.p90_distance_km),
+                stats_largest.inside,
+                stats_largest.within_25km,
+                stats_largest.within_40km,
+                stats_largest.within_80km,
+                fmt_f64(stats_largest.median_distance_km),
+                fmt_f64(stats_largest.p90_distance_km),
+                fmt_f64(object_eff_any),
+                fmt_f64(object_eff_largest),
+                search_radius_km,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Default)]
+struct OverlapStats {
+    inside: usize,
+    within_25km: usize,
+    within_40km: usize,
+    within_80km: usize,
+    median_distance_km: Option<f64>,
+    p90_distance_km: Option<f64>,
+}
+
+fn overlap_stats_for_reports(
+    report_indices: &[usize],
+    reports: &[ReportPoint],
+    nearest_indices: &[Option<usize>],
+    mask_values: &[bool],
+    nx: usize,
+    ny: usize,
+    lat: &[f64],
+    lon: &[f64],
+    search_radius_cells: usize,
+) -> OverlapStats {
+    let mut distances = Vec::new();
+    let mut stats = OverlapStats::default();
+    for &report_idx in report_indices {
+        let Some(report) = reports.get(report_idx) else {
+            continue;
+        };
+        let Some(nearest_idx) = nearest_indices.get(report_idx).and_then(|value| *value) else {
+            continue;
+        };
+        let distance = distance_to_mask_near_index(
+            mask_values,
+            nx,
+            ny,
+            lat,
+            lon,
+            nearest_idx,
+            report.lat,
+            report.lon,
+            search_radius_cells,
+        )
+        .unwrap_or(999.0);
+        if distance <= 0.01 {
+            stats.inside += 1;
+        }
+        if distance <= 25.0 {
+            stats.within_25km += 1;
+        }
+        if distance <= 40.0 {
+            stats.within_40km += 1;
+        }
+        if distance <= 80.0 {
+            stats.within_80km += 1;
+        }
+        distances.push(distance);
+    }
+    distances.sort_by(|a, b| a.total_cmp(b));
+    stats.median_distance_km = percentile(&distances, 0.50);
+    stats.p90_distance_km = percentile(&distances, 0.90);
+    stats
+}
+
+fn nearest_grid_index(
+    report_lat: f64,
+    report_lon: f64,
+    nx: usize,
+    ny: usize,
+    lat: &[f64],
+    lon: &[f64],
+) -> Option<usize> {
+    if nx == 0 || ny == 0 || lat.len() != nx * ny || lon.len() != nx * ny {
+        return None;
+    }
+    let coarse_step = 16usize;
+    let mut best_idx = None;
+    let mut best_dist = f64::INFINITY;
+    for y in (0..ny).step_by(coarse_step) {
+        for x in (0..nx).step_by(coarse_step) {
+            let idx = y * nx + x;
+            let dist = haversine_km(report_lat, report_lon, lat[idx], lon[idx]);
+            if dist.is_finite() && dist < best_dist {
+                best_dist = dist;
+                best_idx = Some(idx);
+            }
+        }
+    }
+    let coarse_idx = best_idx?;
+    let mut refined_idx = coarse_idx;
+    let best_x = coarse_idx % nx;
+    let best_y = coarse_idx / nx;
+    let refine_radius = coarse_step * 2;
+    let y0 = best_y.saturating_sub(refine_radius);
+    let y1 = (best_y + refine_radius).min(ny - 1);
+    let x0 = best_x.saturating_sub(refine_radius);
+    let x1 = (best_x + refine_radius).min(nx - 1);
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let idx = y * nx + x;
+            let dist = haversine_km(report_lat, report_lon, lat[idx], lon[idx]);
+            if dist.is_finite() && dist < best_dist {
+                best_dist = dist;
+                refined_idx = idx;
+            }
+        }
+    }
+    Some(refined_idx)
+}
+
+fn distance_to_mask_near_index(
+    mask_values: &[bool],
+    nx: usize,
+    ny: usize,
+    lat: &[f64],
+    lon: &[f64],
+    nearest_idx: usize,
+    report_lat: f64,
+    report_lon: f64,
+    radius_cells: usize,
+) -> Option<f64> {
+    if nx == 0
+        || ny == 0
+        || nearest_idx >= nx * ny
+        || mask_values.len() != nx * ny
+        || lat.len() != nx * ny
+        || lon.len() != nx * ny
+    {
+        return None;
+    }
+    if mask_values[nearest_idx] {
+        return Some(0.0);
+    }
+    let x = nearest_idx % nx;
+    let y = nearest_idx / nx;
+    let y0 = y.saturating_sub(radius_cells);
+    let y1 = (y + radius_cells).min(ny - 1);
+    let x0 = x.saturating_sub(radius_cells);
+    let x1 = (x + radius_cells).min(nx - 1);
+    let mut best = f64::INFINITY;
+    for yy in y0..=y1 {
+        for xx in x0..=x1 {
+            let idx = yy * nx + xx;
+            if !mask_values[idx] {
+                continue;
+            }
+            let dist = haversine_km(report_lat, report_lon, lat[idx], lon[idx]);
+            if dist.is_finite() && dist < best {
+                best = dist;
+            }
+        }
+    }
+    best.is_finite().then_some(best)
+}
+
+fn efficiency(captured: usize, total: usize, coverage_fraction: f64) -> Option<f64> {
+    if total == 0 || coverage_fraction <= 0.0 {
+        None
+    } else {
+        Some((captured as f64 / total as f64) / coverage_fraction)
+    }
+}
+
+fn split_simple_csv(line: &str) -> Vec<String> {
+    let mut cols = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' if in_quotes && chars.peek() == Some(&'"') => {
+                current.push('"');
+                chars.next();
+            }
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => {
+                cols.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    cols.push(current.trim().to_string());
+    cols
+}
+
+fn find_column(header: &[String], names: &[&str]) -> Result<usize, Box<dyn std::error::Error>> {
+    find_column_optional(header, names).ok_or_else(|| {
+        format!(
+            "missing required CSV column; expected one of: {}",
+            names.join(", ")
+        )
+        .into()
+    })
+}
+
+fn find_column_optional(header: &[String], names: &[&str]) -> Option<usize> {
+    header.iter().position(|column| {
+        names
+            .iter()
+            .any(|name| column.trim().eq_ignore_ascii_case(name))
+    })
+}
+
+fn csv_cell(value: &str) -> String {
+    if value.contains(',') || value.contains('"') || value.contains('\n') || value.contains('\r') {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+fn fmt_f64(value: Option<f64>) -> String {
+    value
+        .filter(|value| value.is_finite())
+        .map(|value| format!("{value:.6}"))
+        .unwrap_or_default()
+}
+
+fn opt_f64(value: Option<f64>) -> String {
+    fmt_f64(value)
 }
 
 fn estimate_cell_area_km2(nx: usize, ny: usize, lat: &[f64], lon: &[f64]) -> Option<f64> {

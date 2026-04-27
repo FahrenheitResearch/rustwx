@@ -18,6 +18,7 @@ With the `python` feature enabled, the module exposes:
 - standalone projected grid/layout metadata via `describe_projected_geometry`
 - standalone projected CONUS basemap overlay extraction via `build_projected_basemap_overlays`
 - future-facing cross-section request validation/normalization via `normalize_cross_section_request`
+- native sounding-column rendering via `render_sounding_column` and `render_sounding_column_json`
 
 Every new projected helper has both a Python-object entry point and a `_json` variant:
 
@@ -130,3 +131,5 @@ print(xsect["request"]["axis"])
 - projected rendering still expects caller-owned arrays
 - cross-section support is validation/normalization only in this crate
 - full fetch/download/render orchestration is still outside this binding layer
+- sounding rendering expects a caller-supplied validated column; model fetch and
+  lat/lon extraction live in the Rust CLI for now

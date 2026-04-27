@@ -45,7 +45,7 @@ pub use wx_math::thermo::galvez_davison_index;
 /// values.
 pub mod grid {
     use ecape_rs::{
-        calc_ecape_parcel, CapeType as EcapeCapeType, ParcelOptions,
+        calc_ecape_ncape, calc_ecape_parcel, CapeType as EcapeCapeType, ParcelOptions,
         StormMotionType as EcapeStormMotionType,
     };
     use rayon::prelude::*;
@@ -406,6 +406,44 @@ pub mod grid {
         v_ms.push(v);
     }
 
+    fn push_ecape_level_with_qv(
+        pressure_pa: &mut Vec<f64>,
+        height_m: &mut Vec<f64>,
+        temp_k: &mut Vec<f64>,
+        qv_kgkg: &mut Vec<f64>,
+        u_ms: &mut Vec<f64>,
+        v_ms: &mut Vec<f64>,
+        p: f64,
+        z: f64,
+        t: f64,
+        qv: f64,
+        u: f64,
+        v: f64,
+    ) {
+        if !p.is_finite()
+            || !z.is_finite()
+            || !t.is_finite()
+            || !qv.is_finite()
+            || !u.is_finite()
+            || !v.is_finite()
+        {
+            return;
+        }
+
+        if let (Some(&last_p), Some(&last_z)) = (pressure_pa.last(), height_m.last()) {
+            if p >= last_p || z <= last_z {
+                return;
+            }
+        }
+
+        pressure_pa.push(p);
+        height_m.push(z);
+        temp_k.push(t);
+        qv_kgkg.push(qv.max(0.0));
+        u_ms.push(u);
+        v_ms.push(v);
+    }
+
     fn build_surface_augmented_ecape_column(
         pressure_3d: &[f64],
         temperature_c_3d: &[f64],
@@ -593,6 +631,190 @@ pub mod grid {
         (pressure_pa, height_m, temp_k, dewpoint_k, u_ms, v_ms)
     }
 
+    fn build_surface_augmented_ecape_column_with_qv(
+        pressure_3d: &[f64],
+        temperature_c_3d: &[f64],
+        qvapor_3d: &[f64],
+        height_agl_3d: &[f64],
+        u_3d: &[f64],
+        v_3d: &[f64],
+        psfc_pa: f64,
+        t2_k: f64,
+        q2_kgkg: f64,
+        u10_ms: f64,
+        v10_ms: f64,
+        nz: usize,
+        nxy: usize,
+        ij: usize,
+        model_bottom_up: bool,
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+        let mut pressure_pa = Vec::with_capacity(nz + 1);
+        let mut height_m = Vec::with_capacity(nz + 1);
+        let mut temp_k = Vec::with_capacity(nz + 1);
+        let mut qv_kgkg = Vec::with_capacity(nz + 1);
+        let mut u_ms = Vec::with_capacity(nz + 1);
+        let mut v_ms = Vec::with_capacity(nz + 1);
+
+        push_ecape_level_with_qv(
+            &mut pressure_pa,
+            &mut height_m,
+            &mut temp_k,
+            &mut qv_kgkg,
+            &mut u_ms,
+            &mut v_ms,
+            psfc_pa,
+            0.0,
+            t2_k,
+            q2_kgkg,
+            u10_ms,
+            v10_ms,
+        );
+
+        let push_model_level = |k: usize,
+                                pressure_pa: &mut Vec<f64>,
+                                height_m: &mut Vec<f64>,
+                                temp_k: &mut Vec<f64>,
+                                qv_kgkg: &mut Vec<f64>,
+                                u_ms: &mut Vec<f64>,
+                                v_ms: &mut Vec<f64>| {
+            let idx = k * nxy + ij;
+            push_ecape_level_with_qv(
+                pressure_pa,
+                height_m,
+                temp_k,
+                qv_kgkg,
+                u_ms,
+                v_ms,
+                pressure_3d[idx],
+                height_agl_3d[idx],
+                temperature_c_3d[idx] + 273.15,
+                qvapor_3d[idx],
+                u_3d[idx],
+                v_3d[idx],
+            );
+        };
+
+        if model_bottom_up {
+            for k in 0..nz {
+                push_model_level(
+                    k,
+                    &mut pressure_pa,
+                    &mut height_m,
+                    &mut temp_k,
+                    &mut qv_kgkg,
+                    &mut u_ms,
+                    &mut v_ms,
+                );
+            }
+        } else {
+            for k in (0..nz).rev() {
+                push_model_level(
+                    k,
+                    &mut pressure_pa,
+                    &mut height_m,
+                    &mut temp_k,
+                    &mut qv_kgkg,
+                    &mut u_ms,
+                    &mut v_ms,
+                );
+            }
+        }
+
+        (pressure_pa, height_m, temp_k, qv_kgkg, u_ms, v_ms)
+    }
+
+    fn build_surface_augmented_ecape_column_levels_with_qv(
+        pressure_levels_pa: &[f64],
+        temperature_c_3d: &[f64],
+        qvapor_3d: &[f64],
+        height_agl_3d: &[f64],
+        u_3d: &[f64],
+        v_3d: &[f64],
+        psfc_pa: f64,
+        t2_k: f64,
+        q2_kgkg: f64,
+        u10_ms: f64,
+        v10_ms: f64,
+        nz: usize,
+        nxy: usize,
+        ij: usize,
+        model_bottom_up: bool,
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+        let mut pressure_pa = Vec::with_capacity(nz + 1);
+        let mut height_m = Vec::with_capacity(nz + 1);
+        let mut temp_k = Vec::with_capacity(nz + 1);
+        let mut qv_kgkg = Vec::with_capacity(nz + 1);
+        let mut u_ms = Vec::with_capacity(nz + 1);
+        let mut v_ms = Vec::with_capacity(nz + 1);
+
+        push_ecape_level_with_qv(
+            &mut pressure_pa,
+            &mut height_m,
+            &mut temp_k,
+            &mut qv_kgkg,
+            &mut u_ms,
+            &mut v_ms,
+            psfc_pa,
+            0.0,
+            t2_k,
+            q2_kgkg,
+            u10_ms,
+            v10_ms,
+        );
+
+        let push_model_level = |k: usize,
+                                pressure_pa: &mut Vec<f64>,
+                                height_m: &mut Vec<f64>,
+                                temp_k: &mut Vec<f64>,
+                                qv_kgkg: &mut Vec<f64>,
+                                u_ms: &mut Vec<f64>,
+                                v_ms: &mut Vec<f64>| {
+            let idx = k * nxy + ij;
+            push_ecape_level_with_qv(
+                pressure_pa,
+                height_m,
+                temp_k,
+                qv_kgkg,
+                u_ms,
+                v_ms,
+                pressure_levels_pa[k],
+                height_agl_3d[idx],
+                temperature_c_3d[idx] + 273.15,
+                qvapor_3d[idx],
+                u_3d[idx],
+                v_3d[idx],
+            );
+        };
+
+        if model_bottom_up {
+            for k in 0..nz {
+                push_model_level(
+                    k,
+                    &mut pressure_pa,
+                    &mut height_m,
+                    &mut temp_k,
+                    &mut qv_kgkg,
+                    &mut u_ms,
+                    &mut v_ms,
+                );
+            }
+        } else {
+            for k in (0..nz).rev() {
+                push_model_level(
+                    k,
+                    &mut pressure_pa,
+                    &mut height_m,
+                    &mut temp_k,
+                    &mut qv_kgkg,
+                    &mut u_ms,
+                    &mut v_ms,
+                );
+            }
+        }
+
+        (pressure_pa, height_m, temp_k, qv_kgkg, u_ms, v_ms)
+    }
+
     fn build_column_parcel_options(
         cape_type: EcapeCapeType,
         entrainment_rate: Option<f64>,
@@ -659,6 +881,34 @@ pub mod grid {
                     ncape: result.ncape_jkg,
                     cape: result.cape_jkg,
                     cin: result.cin_jkg,
+                    lfc: result.lfc_m.unwrap_or(0.0),
+                    el: result.el_m.unwrap_or(0.0),
+                },
+                failed: false,
+            },
+            Err(_) => EcapeColumnResult {
+                summary: EcapeSummary::default(),
+                failed: true,
+            },
+        }
+    }
+
+    fn compute_analytic_ecape_column_result(
+        pressure_pa: &[f64],
+        height_m: &[f64],
+        temp_k: &[f64],
+        qv_kgkg: &[f64],
+        u_ms: &[f64],
+        v_ms: &[f64],
+        options: &ParcelOptions,
+    ) -> EcapeColumnResult {
+        match calc_ecape_ncape(height_m, pressure_pa, temp_k, qv_kgkg, u_ms, v_ms, options) {
+            Ok(result) => EcapeColumnResult {
+                summary: EcapeSummary {
+                    ecape: result.ecape_jkg,
+                    ncape: result.ncape_jkg,
+                    cape: result.cape_jkg,
+                    cin: 0.0,
                     lfc: result.lfc_m.unwrap_or(0.0),
                     el: result.el_m.unwrap_or(0.0),
                 },
@@ -1243,6 +1493,357 @@ pub mod grid {
                         &height_m,
                         &temp_k,
                         &dewpoint_k,
+                        &u_ms,
+                        &v_ms,
+                        &mu_options,
+                    ),
+                }
+            })
+            .collect();
+
+        let mut sb_results = Vec::with_capacity(n2d);
+        let mut ml_results = Vec::with_capacity(n2d);
+        let mut mu_results = Vec::with_capacity(n2d);
+        for result in results {
+            sb_results.push(result.sb);
+            ml_results.push(result.ml);
+            mu_results.push(result.mu);
+        }
+
+        Ok(EcapeGridTripletWithFailureMask {
+            sb: pack_ecape_results(sb_results),
+            ml: pack_ecape_results(ml_results),
+            mu: pack_ecape_results(mu_results),
+        })
+    }
+
+    /// Compute Peters-style analytic ECAPE/NCAPE diagnostics for SB/ML/MU
+    /// parcels without following the entraining parcel path.
+    pub fn compute_analytic_ecape_triplet_with_failure_mask(
+        pressure_3d: &[f64],
+        temperature_c_3d: &[f64],
+        qvapor_3d: &[f64],
+        height_agl_3d: &[f64],
+        u_3d: &[f64],
+        v_3d: &[f64],
+        psfc: &[f64],
+        t2: &[f64],
+        q2: &[f64],
+        u10: &[f64],
+        v10: &[f64],
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        storm_motion_type: &str,
+        pseudoadiabatic: Option<bool>,
+        storm_u: Option<f64>,
+        storm_v: Option<f64>,
+    ) -> Result<EcapeGridTripletWithFailureMask, String> {
+        let n2d = nx * ny;
+        let expected_3d = n2d * nz;
+        if pressure_3d.len() != expected_3d
+            || temperature_c_3d.len() != expected_3d
+            || qvapor_3d.len() != expected_3d
+            || height_agl_3d.len() != expected_3d
+            || u_3d.len() != expected_3d
+            || v_3d.len() != expected_3d
+        {
+            return Err("analytic ECAPE 3-D inputs must all have length nx*ny*nz".into());
+        }
+        if psfc.len() != n2d
+            || t2.len() != n2d
+            || q2.len() != n2d
+            || u10.len() != n2d
+            || v10.len() != n2d
+        {
+            return Err("analytic ECAPE surface inputs must all have length nx*ny".into());
+        }
+        if storm_u.is_some() ^ storm_v.is_some() {
+            return Err(
+                "storm_u and storm_v must either both be provided or both be omitted".into(),
+            );
+        }
+
+        let motion_type = resolve_ecape_storm_motion_type(storm_motion_type)?;
+        let failed_triplet = EcapeTripletColumnResult {
+            sb: EcapeColumnResult {
+                summary: EcapeSummary::default(),
+                failed: true,
+            },
+            ml: EcapeColumnResult {
+                summary: EcapeSummary::default(),
+                failed: true,
+            },
+            mu: EcapeColumnResult {
+                summary: EcapeSummary::default(),
+                failed: true,
+            },
+        };
+
+        let results: Vec<EcapeTripletColumnResult> = (0..n2d)
+            .into_par_iter()
+            .map(|ij| {
+                let top_idx = ij;
+                let bottom_idx = (nz - 1) * n2d + ij;
+                let model_bottom_up = pressure_3d[top_idx] >= pressure_3d[bottom_idx]
+                    || height_agl_3d[top_idx] <= height_agl_3d[bottom_idx];
+
+                let (pressure_pa, height_m, temp_k, qv_kgkg, u_ms, v_ms) =
+                    build_surface_augmented_ecape_column_with_qv(
+                        pressure_3d,
+                        temperature_c_3d,
+                        qvapor_3d,
+                        height_agl_3d,
+                        u_3d,
+                        v_3d,
+                        psfc[ij],
+                        t2[ij],
+                        q2[ij],
+                        u10[ij],
+                        v10[ij],
+                        nz,
+                        n2d,
+                        ij,
+                        model_bottom_up,
+                    );
+
+                if pressure_pa.len() < 2 {
+                    return failed_triplet;
+                }
+
+                let (storm_motion_u_ms, storm_motion_v_ms) = resolve_grid_storm_motion(
+                    &pressure_pa,
+                    &height_m,
+                    &u_ms,
+                    &v_ms,
+                    motion_type,
+                    storm_u,
+                    storm_v,
+                );
+
+                let sb_options = build_column_parcel_options(
+                    EcapeCapeType::SurfaceBased,
+                    None,
+                    pseudoadiabatic,
+                    storm_motion_u_ms,
+                    storm_motion_v_ms,
+                );
+                let ml_options = build_column_parcel_options(
+                    EcapeCapeType::MixedLayer,
+                    None,
+                    pseudoadiabatic,
+                    storm_motion_u_ms,
+                    storm_motion_v_ms,
+                );
+                let mu_options = build_column_parcel_options(
+                    EcapeCapeType::MostUnstable,
+                    None,
+                    pseudoadiabatic,
+                    storm_motion_u_ms,
+                    storm_motion_v_ms,
+                );
+
+                EcapeTripletColumnResult {
+                    sb: compute_analytic_ecape_column_result(
+                        &pressure_pa,
+                        &height_m,
+                        &temp_k,
+                        &qv_kgkg,
+                        &u_ms,
+                        &v_ms,
+                        &sb_options,
+                    ),
+                    ml: compute_analytic_ecape_column_result(
+                        &pressure_pa,
+                        &height_m,
+                        &temp_k,
+                        &qv_kgkg,
+                        &u_ms,
+                        &v_ms,
+                        &ml_options,
+                    ),
+                    mu: compute_analytic_ecape_column_result(
+                        &pressure_pa,
+                        &height_m,
+                        &temp_k,
+                        &qv_kgkg,
+                        &u_ms,
+                        &v_ms,
+                        &mu_options,
+                    ),
+                }
+            })
+            .collect();
+
+        let mut sb_results = Vec::with_capacity(n2d);
+        let mut ml_results = Vec::with_capacity(n2d);
+        let mut mu_results = Vec::with_capacity(n2d);
+        for result in results {
+            sb_results.push(result.sb);
+            ml_results.push(result.ml);
+            mu_results.push(result.mu);
+        }
+
+        Ok(EcapeGridTripletWithFailureMask {
+            sb: pack_ecape_results(sb_results),
+            ml: pack_ecape_results(ml_results),
+            mu: pack_ecape_results(mu_results),
+        })
+    }
+
+    /// Compute Peters-style analytic ECAPE/NCAPE diagnostics when pressure is
+    /// supplied as one shared level vector for the whole grid.
+    pub fn compute_analytic_ecape_triplet_with_failure_mask_levels(
+        pressure_levels_pa: &[f64],
+        temperature_c_3d: &[f64],
+        qvapor_3d: &[f64],
+        height_agl_3d: &[f64],
+        u_3d: &[f64],
+        v_3d: &[f64],
+        psfc: &[f64],
+        t2: &[f64],
+        q2: &[f64],
+        u10: &[f64],
+        v10: &[f64],
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        storm_motion_type: &str,
+        pseudoadiabatic: Option<bool>,
+        storm_u: Option<f64>,
+        storm_v: Option<f64>,
+    ) -> Result<EcapeGridTripletWithFailureMask, String> {
+        let n2d = nx * ny;
+        let expected_3d = n2d * nz;
+        if pressure_levels_pa.len() != nz {
+            return Err("analytic ECAPE pressure levels input must have length nz".into());
+        }
+        if temperature_c_3d.len() != expected_3d
+            || qvapor_3d.len() != expected_3d
+            || height_agl_3d.len() != expected_3d
+            || u_3d.len() != expected_3d
+            || v_3d.len() != expected_3d
+        {
+            return Err("analytic ECAPE 3-D inputs must all have length nx*ny*nz".into());
+        }
+        if psfc.len() != n2d
+            || t2.len() != n2d
+            || q2.len() != n2d
+            || u10.len() != n2d
+            || v10.len() != n2d
+        {
+            return Err("analytic ECAPE surface inputs must all have length nx*ny".into());
+        }
+        if storm_u.is_some() ^ storm_v.is_some() {
+            return Err(
+                "storm_u and storm_v must either both be provided or both be omitted".into(),
+            );
+        }
+
+        let motion_type = resolve_ecape_storm_motion_type(storm_motion_type)?;
+        let failed_triplet = EcapeTripletColumnResult {
+            sb: EcapeColumnResult {
+                summary: EcapeSummary::default(),
+                failed: true,
+            },
+            ml: EcapeColumnResult {
+                summary: EcapeSummary::default(),
+                failed: true,
+            },
+            mu: EcapeColumnResult {
+                summary: EcapeSummary::default(),
+                failed: true,
+            },
+        };
+
+        let model_bottom_up = pressure_levels_pa[0] >= pressure_levels_pa[nz - 1];
+        let results: Vec<EcapeTripletColumnResult> = (0..n2d)
+            .into_par_iter()
+            .map(|ij| {
+                let top_idx = ij;
+                let bottom_idx = (nz - 1) * n2d + ij;
+                let column_bottom_up =
+                    model_bottom_up || height_agl_3d[top_idx] <= height_agl_3d[bottom_idx];
+
+                let (pressure_pa, height_m, temp_k, qv_kgkg, u_ms, v_ms) =
+                    build_surface_augmented_ecape_column_levels_with_qv(
+                        pressure_levels_pa,
+                        temperature_c_3d,
+                        qvapor_3d,
+                        height_agl_3d,
+                        u_3d,
+                        v_3d,
+                        psfc[ij],
+                        t2[ij],
+                        q2[ij],
+                        u10[ij],
+                        v10[ij],
+                        nz,
+                        n2d,
+                        ij,
+                        column_bottom_up,
+                    );
+
+                if pressure_pa.len() < 2 {
+                    return failed_triplet;
+                }
+
+                let (storm_motion_u_ms, storm_motion_v_ms) = resolve_grid_storm_motion(
+                    &pressure_pa,
+                    &height_m,
+                    &u_ms,
+                    &v_ms,
+                    motion_type,
+                    storm_u,
+                    storm_v,
+                );
+
+                let sb_options = build_column_parcel_options(
+                    EcapeCapeType::SurfaceBased,
+                    None,
+                    pseudoadiabatic,
+                    storm_motion_u_ms,
+                    storm_motion_v_ms,
+                );
+                let ml_options = build_column_parcel_options(
+                    EcapeCapeType::MixedLayer,
+                    None,
+                    pseudoadiabatic,
+                    storm_motion_u_ms,
+                    storm_motion_v_ms,
+                );
+                let mu_options = build_column_parcel_options(
+                    EcapeCapeType::MostUnstable,
+                    None,
+                    pseudoadiabatic,
+                    storm_motion_u_ms,
+                    storm_motion_v_ms,
+                );
+
+                EcapeTripletColumnResult {
+                    sb: compute_analytic_ecape_column_result(
+                        &pressure_pa,
+                        &height_m,
+                        &temp_k,
+                        &qv_kgkg,
+                        &u_ms,
+                        &v_ms,
+                        &sb_options,
+                    ),
+                    ml: compute_analytic_ecape_column_result(
+                        &pressure_pa,
+                        &height_m,
+                        &temp_k,
+                        &qv_kgkg,
+                        &u_ms,
+                        &v_ms,
+                        &ml_options,
+                    ),
+                    mu: compute_analytic_ecape_column_result(
+                        &pressure_pa,
+                        &height_m,
+                        &temp_k,
+                        &qv_kgkg,
                         &u_ms,
                         &v_ms,
                         &mu_options,

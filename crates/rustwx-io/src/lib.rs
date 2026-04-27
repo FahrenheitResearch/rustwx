@@ -1246,7 +1246,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
 }
 
 fn is_supported_upper_air_level(level_hpa: u16) -> bool {
-    matches!(level_hpa, 200 | 300 | 500 | 700 | 850)
+    matches!(level_hpa, 200 | 250 | 300 | 500 | 700 | 850)
 }
 
 impl LevelMatch {
@@ -1672,6 +1672,15 @@ mod tests {
         let height_200_message =
             ieee_f32_message(PARAMETER_HGT[0], 100, 20_000.0, &[12_040.0], -99.0, -99.0);
         assert!(height_200.matches(&height_200_message));
+
+        let height_250 = StructuredMessageSelector::try_from(FieldSelector::isobaric(
+            CanonicalField::GeopotentialHeight,
+            250,
+        ))
+        .unwrap();
+        let height_250_message =
+            ieee_f32_message(PARAMETER_HGT[0], 100, 25_000.0, &[10_540.0], -99.0, -99.0);
+        assert!(height_250.matches(&height_250_message));
 
         let wind_300 = StructuredMessageSelector::try_from(FieldSelector::isobaric(
             CanonicalField::VWind,
