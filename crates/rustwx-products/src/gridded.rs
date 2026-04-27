@@ -1283,6 +1283,16 @@ pub(crate) fn bundle_fetch_variable_patterns(
         .into_iter()
         .map(str::to_string)
         .collect(),
+        (CanonicalBundleDescriptor::NativeAnalysis, "sfc") if matches!(model, ModelId::Hrrr) => {
+            vec![
+                "APCP:surface",
+                "MXUPHL:5000-2000 m above ground",
+                "WIND:10 m above ground",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+        }
         _ => Vec::new(),
     }
 }

@@ -937,6 +937,22 @@ fn parse_windowed_product(value: &str) -> PyResult<HrrrWindowedProduct> {
         "uh_2to5km_run_max" | "uh25km_run_max" | "uh_run_max" => {
             Ok(HrrrWindowedProduct::Uh25kmRunMax)
         }
+        "10m_wind_1h_max" | "wind10m_1h_max" | "wind_10m_1h_max" | "10m_wind_1h" => {
+            Ok(HrrrWindowedProduct::Wind10m1hMax)
+        }
+        "10m_wind_run_max" | "wind10m_run_max" | "wind_10m_run_max" | "10m_wind_accum" => {
+            Ok(HrrrWindowedProduct::Wind10mRunMax)
+        }
+        "10m_wind_0_24h_max" | "10m_wind_0_24_max" | "wind10m_0_24h_max" | "wind10m_day1_max" => {
+            Ok(HrrrWindowedProduct::Wind10m0to24hMax)
+        }
+        "10m_wind_24_48h_max"
+        | "10m_wind_24_48_max"
+        | "wind10m_24_48h_max"
+        | "wind10m_day2_max" => Ok(HrrrWindowedProduct::Wind10m24to48hMax),
+        "10m_wind_0_48h_max" | "10m_wind_0_48_max" | "wind10m_0_48h_max" | "wind10m_2day_max" => {
+            Ok(HrrrWindowedProduct::Wind10m0to48hMax)
+        }
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
             "unsupported windowed product '{other}'"
         ))),
@@ -954,6 +970,11 @@ fn supported_windowed_product_slugs() -> Vec<String> {
         HrrrWindowedProduct::Uh25km1h,
         HrrrWindowedProduct::Uh25km3h,
         HrrrWindowedProduct::Uh25kmRunMax,
+        HrrrWindowedProduct::Wind10m1hMax,
+        HrrrWindowedProduct::Wind10mRunMax,
+        HrrrWindowedProduct::Wind10m0to24hMax,
+        HrrrWindowedProduct::Wind10m24to48hMax,
+        HrrrWindowedProduct::Wind10m0to48hMax,
     ]
     .into_iter()
     .map(|product| product.slug().to_string())

@@ -1,8 +1,8 @@
 //! Decode + compute kernel for windowed products.
 //!
-//! This module owns the GRIB2 message decode for APCP and native UH
-//! fields as well as the per-product window-compute kernels (QPF and
-//! UH). It is deliberately separated from the batch orchestration in
+//! This module owns the GRIB2 message decode for APCP, native UH, and
+//! native 10 m wind-max fields as well as the per-product window-compute
+//! kernels. It is deliberately separated from the batch orchestration in
 //! [`crate::windowed`] so non-HRRR windowed products can plug in later
 //! without dragging the HRRR-specific runner along.
 //!
@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 const MM_PER_INCH: f64 = 25.4;
+const MS_TO_KT: f64 = 1.943_844_5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct WindowedFieldRecord {
@@ -35,6 +36,11 @@ pub(crate) struct HrrrApcpDecode {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct HrrrUhDecode {
+    pub(crate) windows: Vec<WindowedFieldRecord>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct HrrrWind10mMaxDecode {
     pub(crate) windows: Vec<WindowedFieldRecord>,
 }
 
@@ -74,6 +80,23 @@ pub(crate) fn load_or_decode_uh25(
         }
     }
     let decoded = decode_uh25(bytes)?;
+    if use_cache {
+        store_bincode(path, &decoded)?;
+    }
+    Ok(decoded)
+}
+
+pub(crate) fn load_or_decode_wind10m_max(
+    path: &Path,
+    bytes: &[u8],
+    use_cache: bool,
+) -> Result<HrrrWind10mMaxDecode, Box<dyn std::error::Error>> {
+    if use_cache {
+        if let Some(cached) = load_bincode::<HrrrWind10mMaxDecode>(path)? {
+            return Ok(cached);
+        }
+    }
+    let decoded = decode_wind10m_max(bytes)?;
     if use_cache {
         store_bincode(path, &decoded)?;
     }
@@ -136,6 +159,34 @@ pub(crate) fn decode_uh25(bytes: &[u8]) -> Result<HrrrUhDecode, Box<dyn std::err
     Ok(HrrrUhDecode { windows })
 }
 
+pub(crate) fn decode_wind10m_max(
+    bytes: &[u8],
+) -> Result<HrrrWind10mMaxDecode, Box<dyn std::error::Error>> {
+    let grib = Grib2File::from_bytes(bytes)?;
+    let mut windows = Vec::new();
+    for message in &grib.messages {
+        if is_wind10m_max_message(message) {
+            let hours = time_range_hours(message)
+                .ok_or("native 10 m wind max message missing hourly max-window metadata")?;
+            if windows
+                .iter()
+                .any(|record: &WindowedFieldRecord| record.hours == hours)
+            {
+                continue;
+            }
+            windows.push(WindowedFieldRecord {
+                hours,
+                values: unpack_message_normalized(message)?,
+            });
+        }
+    }
+    if windows.is_empty() {
+        return Err("no native 10 m wind max fields were found in subset".into());
+    }
+    windows.sort_by_key(|record| record.hours);
+    Ok(HrrrWind10mMaxDecode { windows })
+}
+
 pub(crate) fn is_uh25_message(message: &Grib2Message) -> bool {
     matches!(
         (
@@ -145,6 +196,15 @@ pub(crate) fn is_uh25_message(message: &Grib2Message) -> bool {
         (7, 199) | (7, 15)
     ) && matches!(message.product.level_type, 103 | 118)
         && (message.product.level_value - 5000.0).abs() < 0.25
+}
+
+pub(crate) fn is_wind10m_max_message(message: &Grib2Message) -> bool {
+    message.discipline == 0
+        && message.product.parameter_category == 2
+        && message.product.parameter_number == 1
+        && message.product.level_type == 103
+        && (message.product.level_value - 10.0).abs() < 0.25
+        && time_range_hours(message).is_some()
 }
 
 pub(crate) fn time_range_hours(message: &Grib2Message) -> Option<u16> {
@@ -304,6 +364,106 @@ pub(crate) fn compute_uh_product(
     })
 }
 
+pub(crate) fn compute_wind10m_product(
+    product: HrrrWindowedProduct,
+    forecast_hour: u16,
+    grid: &rustwx_core::LatLonGrid,
+    wind_by_hour: &BTreeMap<u16, Result<HrrrWind10mMaxDecode, String>>,
+) -> Result<ComputedWindowedField, String> {
+    let (values_ms, strategy, contributing_hours, window_hours) = match product {
+        HrrrWindowedProduct::Wind10m1hMax => {
+            let decoded = wind_by_hour
+                .get(&forecast_hour)
+                .ok_or_else(|| {
+                    format!(
+                        "missing native 10 m wind max fetch for F{:03}",
+                        forecast_hour
+                    )
+                })?
+                .as_ref()
+                .map_err(Clone::clone)?;
+            let values = select_window(&decoded.windows, 1)
+                .ok_or_else(|| {
+                    format!(
+                        "native 10 m wind F{:03} missing 1-hour max field",
+                        forecast_hour
+                    )
+                })?
+                .to_vec();
+            (
+                values,
+                "direct native 1-hour 10 m wind max".to_string(),
+                vec![forecast_hour],
+                Some(1),
+            )
+        }
+        HrrrWindowedProduct::Wind10mRunMax => {
+            let hours = (1..=forecast_hour).collect::<Vec<_>>();
+            let windows = collect_wind10m_windows(wind_by_hour, &hours, 1)?;
+            (
+                max_window_fields(grid.shape, &windows).map_err(|err| err.to_string())?,
+                "run max of native hourly 10 m wind maxima".to_string(),
+                hours,
+                None,
+            )
+        }
+        HrrrWindowedProduct::Wind10m0to24hMax => {
+            let hours = (1..=24).collect::<Vec<_>>();
+            let windows = collect_wind10m_windows(wind_by_hour, &hours, 1)?;
+            (
+                max_window_fields(grid.shape, &windows).map_err(|err| err.to_string())?,
+                "max of native hourly 10 m wind maxima across F001-F024".to_string(),
+                hours,
+                Some(24),
+            )
+        }
+        HrrrWindowedProduct::Wind10m24to48hMax => {
+            let hours = (25..=48).collect::<Vec<_>>();
+            let windows = collect_wind10m_windows(wind_by_hour, &hours, 1)?;
+            (
+                max_window_fields(grid.shape, &windows).map_err(|err| err.to_string())?,
+                "max of native hourly 10 m wind maxima across F025-F048".to_string(),
+                hours,
+                Some(24),
+            )
+        }
+        HrrrWindowedProduct::Wind10m0to48hMax => {
+            let hours = (1..=48).collect::<Vec<_>>();
+            let windows = collect_wind10m_windows(wind_by_hour, &hours, 1)?;
+            (
+                max_window_fields(grid.shape, &windows).map_err(|err| err.to_string())?,
+                "max of native hourly 10 m wind maxima across F001-F048".to_string(),
+                hours,
+                Some(48),
+            )
+        }
+        _ => return Err(format!("{} is not a 10 m wind product", product.slug())),
+    };
+
+    let values_kt = values_ms
+        .into_iter()
+        .map(|value| value * MS_TO_KT)
+        .collect::<Vec<_>>();
+    let field = Field2D::new(
+        ProductKey::named(product.slug()),
+        "kt",
+        grid.clone(),
+        values_kt.iter().map(|&value| value as f32).collect(),
+    )
+    .map_err(|err| err.to_string())?;
+
+    Ok(ComputedWindowedField {
+        field,
+        title: product.title().to_string(),
+        metadata: HrrrWindowedProductMetadata {
+            strategy,
+            contributing_forecast_hours: contributing_hours,
+            window_hours,
+        },
+        scale: ColorScale::Discrete(wind10m_scale()),
+    })
+}
+
 pub(crate) fn collect_apcp_windows<'a>(
     apcp_by_hour: &'a BTreeMap<u16, Result<HrrrApcpDecode, String>>,
     hours: &[u16],
@@ -350,6 +510,29 @@ pub(crate) fn collect_uh_windows<'a>(
     Ok(out)
 }
 
+pub(crate) fn collect_wind10m_windows<'a>(
+    wind_by_hour: &'a BTreeMap<u16, Result<HrrrWind10mMaxDecode, String>>,
+    hours: &[u16],
+    window_hours: u16,
+) -> Result<Vec<&'a [f64]>, String> {
+    let mut out = Vec::with_capacity(hours.len());
+    for &hour in hours {
+        let decoded = wind_by_hour
+            .get(&hour)
+            .ok_or_else(|| format!("missing native 10 m wind max fetch for F{:03}", hour))?
+            .as_ref()
+            .map_err(Clone::clone)?;
+        let window = select_window(&decoded.windows, window_hours).ok_or_else(|| {
+            format!(
+                "native 10 m wind F{:03} missing {}-hour max field",
+                hour, window_hours
+            )
+        })?;
+        out.push(window);
+    }
+    Ok(out)
+}
+
 pub(crate) fn select_window(records: &[WindowedFieldRecord], hours: u16) -> Option<&[f64]> {
     records
         .iter()
@@ -365,6 +548,15 @@ pub(crate) fn qpf_scale() -> rustwx_render::DiscreteColorScale {
         ],
         ExtendMode::Max,
         Some(0.01),
+    )
+}
+
+pub(crate) fn wind10m_scale() -> rustwx_render::DiscreteColorScale {
+    palette_scale(
+        WeatherPalette::Winds,
+        (10..=70).map(|value| value as f64).collect(),
+        ExtendMode::Both,
+        None,
     )
 }
 
@@ -499,5 +691,40 @@ mod tests {
             computed.metadata.strategy,
             "run max of native hourly UH maxima"
         );
+    }
+
+    #[test]
+    fn compute_wind10m_run_max_takes_pointwise_maximum_and_converts_to_knots() {
+        let mut wind = BTreeMap::new();
+        wind.insert(
+            1,
+            Ok(HrrrWind10mMaxDecode {
+                windows: vec![WindowedFieldRecord {
+                    hours: 1,
+                    values: vec![10.0, 5.0],
+                }],
+            }),
+        );
+        wind.insert(
+            2,
+            Ok(HrrrWind10mMaxDecode {
+                windows: vec![WindowedFieldRecord {
+                    hours: 1,
+                    values: vec![8.0, 12.0],
+                }],
+            }),
+        );
+        let computed =
+            compute_wind10m_product(HrrrWindowedProduct::Wind10mRunMax, 2, &tiny_grid(), &wind)
+                .unwrap();
+        assert_eq!(
+            computed.field.values,
+            vec![(10.0 * MS_TO_KT) as f32, (12.0 * MS_TO_KT) as f32]
+        );
+        assert_eq!(
+            computed.metadata.strategy,
+            "run max of native hourly 10 m wind maxima"
+        );
+        assert_eq!(computed.field.units, "kt");
     }
 }

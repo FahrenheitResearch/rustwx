@@ -863,7 +863,7 @@ mod tests {
     #[test]
     fn windowed_catalog_marks_hr_rr_windowed_products_supported() {
         let catalog = build_supported_products_catalog();
-        assert_eq!(catalog.windowed.len(), 8);
+        assert_eq!(catalog.windowed.len(), 13);
         assert!(
             catalog
                 .windowed
@@ -884,6 +884,12 @@ mod tests {
                     .any(|runner| runner == "hrrr_non_ecape_hour")
                 && entry.support[0].blockers.is_empty()
         }));
+        assert!(
+            catalog
+                .windowed
+                .iter()
+                .any(|entry| entry.slug == "10m_wind_0_48h_max")
+        );
     }
 
     #[test]

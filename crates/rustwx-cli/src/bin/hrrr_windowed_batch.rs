@@ -29,6 +29,11 @@ enum ProductArg {
     Uh25km1h,
     Uh25km3h,
     Uh25kmRunMax,
+    Wind10m1hMax,
+    Wind10mRunMax,
+    Wind10m0to24hMax,
+    Wind10m24to48hMax,
+    Wind10m0to48hMax,
 }
 
 impl From<ProductArg> for HrrrWindowedProduct {
@@ -42,6 +47,11 @@ impl From<ProductArg> for HrrrWindowedProduct {
             ProductArg::Uh25km1h => HrrrWindowedProduct::Uh25km1h,
             ProductArg::Uh25km3h => HrrrWindowedProduct::Uh25km3h,
             ProductArg::Uh25kmRunMax => HrrrWindowedProduct::Uh25kmRunMax,
+            ProductArg::Wind10m1hMax => HrrrWindowedProduct::Wind10m1hMax,
+            ProductArg::Wind10mRunMax => HrrrWindowedProduct::Wind10mRunMax,
+            ProductArg::Wind10m0to24hMax => HrrrWindowedProduct::Wind10m0to24hMax,
+            ProductArg::Wind10m24to48hMax => HrrrWindowedProduct::Wind10m24to48hMax,
+            ProductArg::Wind10m0to48hMax => HrrrWindowedProduct::Wind10m0to48hMax,
         }
     }
 }
@@ -74,7 +84,7 @@ impl From<PlaceLabelDensityArg> for PlaceLabelDensityTier {
 #[derive(Debug, Parser)]
 #[command(
     name = "hrrr-windowed-batch",
-    about = "Generate conservative multi-hour HRRR QPF and UH window products"
+    about = "Generate conservative multi-hour HRRR QPF, UH, and 10 m wind window products"
 )]
 struct Args {
     #[arg(long, default_value = "20260414")]

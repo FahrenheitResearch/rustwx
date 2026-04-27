@@ -31,6 +31,11 @@ enum WindowedProductArg {
     Uh25km1h,
     Uh25km3h,
     Uh25kmRunMax,
+    Wind10m1hMax,
+    Wind10mRunMax,
+    Wind10m0to24hMax,
+    Wind10m24to48hMax,
+    Wind10m0to48hMax,
 }
 
 impl From<WindowedProductArg> for HrrrWindowedProduct {
@@ -44,6 +49,11 @@ impl From<WindowedProductArg> for HrrrWindowedProduct {
             WindowedProductArg::Uh25km1h => HrrrWindowedProduct::Uh25km1h,
             WindowedProductArg::Uh25km3h => HrrrWindowedProduct::Uh25km3h,
             WindowedProductArg::Uh25kmRunMax => HrrrWindowedProduct::Uh25kmRunMax,
+            WindowedProductArg::Wind10m1hMax => HrrrWindowedProduct::Wind10m1hMax,
+            WindowedProductArg::Wind10mRunMax => HrrrWindowedProduct::Wind10mRunMax,
+            WindowedProductArg::Wind10m0to24hMax => HrrrWindowedProduct::Wind10m0to24hMax,
+            WindowedProductArg::Wind10m24to48hMax => HrrrWindowedProduct::Wind10m24to48hMax,
+            WindowedProductArg::Wind10m0to48hMax => HrrrWindowedProduct::Wind10m0to48hMax,
         }
     }
 }

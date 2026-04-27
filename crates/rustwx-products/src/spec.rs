@@ -152,6 +152,31 @@ pub fn windowed_product_specs() -> Vec<ProductSpec> {
             "Run max of native hourly 2-5 km UH maxima from F001..Fend",
             "weather_uh",
         ),
+        (
+            HrrrWindowedProduct::Wind10m1hMax,
+            "Native 10 m wind-speed 1-hour maximum ending at the requested forecast hour",
+            "weather_winds",
+        ),
+        (
+            HrrrWindowedProduct::Wind10mRunMax,
+            "Run max of native hourly 10 m wind-speed maxima from F001..Fend",
+            "weather_winds",
+        ),
+        (
+            HrrrWindowedProduct::Wind10m0to24hMax,
+            "00Z-only fixed diurnal max of native hourly 10 m wind-speed maxima from F001..F024",
+            "weather_winds",
+        ),
+        (
+            HrrrWindowedProduct::Wind10m24to48hMax,
+            "00Z-only fixed diurnal max of native hourly 10 m wind-speed maxima from F025..F048",
+            "weather_winds",
+        ),
+        (
+            HrrrWindowedProduct::Wind10m0to48hMax,
+            "00Z-only fixed two-day max of native hourly 10 m wind-speed maxima from F001..F048",
+            "weather_winds",
+        ),
     ]
     .into_iter()
     .map(|(product, note, render_style)| windowed_product_spec(product, note, render_style))
@@ -292,6 +317,11 @@ fn windowed_product_spec(
                 HrrrWindowedProduct::Uh25km1h
                 | HrrrWindowedProduct::Uh25km3h
                 | HrrrWindowedProduct::Uh25kmRunMax => Some("m^2/s^2"),
+                HrrrWindowedProduct::Wind10m1hMax
+                | HrrrWindowedProduct::Wind10mRunMax
+                | HrrrWindowedProduct::Wind10m0to24hMax
+                | HrrrWindowedProduct::Wind10m24to48hMax
+                | HrrrWindowedProduct::Wind10m0to48hMax => Some("m/s"),
             },
             id,
             &aliases,
@@ -425,6 +455,24 @@ fn windowed_product_window(product: HrrrWindowedProduct) -> ProductWindowSpec {
         HrrrWindowedProduct::Uh25kmRunMax => ProductWindowSpec {
             process: StatisticalProcess::Maximum,
             duration_hours: None,
+        },
+        HrrrWindowedProduct::Wind10m1hMax => ProductWindowSpec {
+            process: StatisticalProcess::Maximum,
+            duration_hours: Some(1),
+        },
+        HrrrWindowedProduct::Wind10mRunMax => ProductWindowSpec {
+            process: StatisticalProcess::Maximum,
+            duration_hours: None,
+        },
+        HrrrWindowedProduct::Wind10m0to24hMax | HrrrWindowedProduct::Wind10m24to48hMax => {
+            ProductWindowSpec {
+                process: StatisticalProcess::Maximum,
+                duration_hours: Some(24),
+            }
+        }
+        HrrrWindowedProduct::Wind10m0to48hMax => ProductWindowSpec {
+            process: StatisticalProcess::Maximum,
+            duration_hours: Some(48),
         },
     }
 }
