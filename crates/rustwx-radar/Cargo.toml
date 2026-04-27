@@ -1,0 +1,23 @@
+[package]
+name = "rustwx-radar"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1"
+byteorder = "1"
+bzip2 = "0.5"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+flate2 = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+log = "0.4"
+rayon.workspace = true
+rustls.workspace = true
+rustls-rustcrypto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ureq.workspace = true

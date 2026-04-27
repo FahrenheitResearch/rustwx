@@ -12,6 +12,7 @@ default = []
 wrf = ["rustwx-io/wrf", "rustwx-products/wrf"]
 
 [dependencies]
+anyhow = "1"
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -26,5 +27,6 @@ rustwx-cross-section = { path = "../rustwx-cross-section" }
 rustwx-io = { path = "../rustwx-io" }
 rustwx-models = { path = "../rustwx-models" }
 rustwx-products = { path = "../rustwx-products" }
+rustwx-radar = { path = "../rustwx-radar" }
 rustwx-render = { path = "../rustwx-render" }
 rustwx-sounding = { path = "../rustwx-sounding" }

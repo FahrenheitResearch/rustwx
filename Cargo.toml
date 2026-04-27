@@ -10,6 +10,7 @@ members = [
     "crates/rustwx-products",
     "crates/rustwx-prep",
     "crates/rustwx-python",
+    "crates/rustwx-radar",
     "crates/rustwx-render",
     "crates/rustwx-sounding",
     "crates/rustwx-wrf",
