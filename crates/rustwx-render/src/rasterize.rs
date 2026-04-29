@@ -1,3 +1,4 @@
+use crate::color::Rgba;
 use crate::colormap::LeveledColormap;
 use image::RgbaImage;
 
@@ -96,6 +97,91 @@ pub fn rasterize_projected_grid(
     img
 }
 
+pub fn rasterize_rgba_grid(
+    pixels: &[Rgba],
+    ny: usize,
+    nx: usize,
+    img_w: u32,
+    img_h: u32,
+) -> RgbaImage {
+    let mut img = RgbaImage::new(img_w, img_h);
+
+    if ny == 0 || nx == 0 || pixels.len() != ny * nx {
+        return img;
+    }
+
+    let x_den = img_w.saturating_sub(1).max(1) as f64;
+    let y_den = img_h.saturating_sub(1).max(1) as f64;
+    let gx_den = nx.saturating_sub(1).max(1) as f64;
+    let gy_den = ny.saturating_sub(1).max(1) as f64;
+
+    for py in 0..img_h {
+        for px in 0..img_w {
+            let gx = px as f64 / x_den * gx_den;
+            let gy = (img_h.saturating_sub(1) - py) as f64 / y_den * gy_den;
+
+            let i0 = gx.floor() as usize;
+            let j0 = gy.floor() as usize;
+            let i1 = (i0 + 1).min(nx - 1);
+            let j1 = (j0 + 1).min(ny - 1);
+            let fx = gx - i0 as f64;
+            let fy = gy - j0 as f64;
+
+            let c00 = pixels[j0 * nx + i0];
+            let c10 = pixels[j0 * nx + i1];
+            let c01 = pixels[j1 * nx + i0];
+            let c11 = pixels[j1 * nx + i1];
+            let color = bilinear_rgba(c00, c10, c01, c11, fx, fy);
+            if color.a > 0 {
+                img.put_pixel(px, py, color.to_image_rgba());
+            }
+        }
+    }
+
+    img
+}
+
+pub fn rasterize_projected_rgba_grid(
+    pixels: &[Rgba],
+    ny: usize,
+    nx: usize,
+    pixel_points: &[Option<(f64, f64)>],
+    img_w: u32,
+    img_h: u32,
+) -> RgbaImage {
+    let mut img = RgbaImage::new(img_w, img_h);
+
+    if ny < 2 || nx < 2 || pixels.len() != ny * nx || pixel_points.len() != ny * nx {
+        return img;
+    }
+
+    for j in 0..(ny - 1) {
+        for i in 0..(nx - 1) {
+            let idx = |jj: usize, ii: usize| jj * nx + ii;
+            let p00 = pixel_points[idx(j, i)];
+            let p10 = pixel_points[idx(j, i + 1)];
+            let p01 = pixel_points[idx(j + 1, i)];
+            let p11 = pixel_points[idx(j + 1, i + 1)];
+
+            let (p00, p10, p01, p11) = match (p00, p10, p01, p11) {
+                (Some(a), Some(b), Some(c), Some(d)) => (a, b, c, d),
+                _ => continue,
+            };
+
+            let c00 = pixels[idx(j, i)];
+            let c10 = pixels[idx(j, i + 1)];
+            let c01 = pixels[idx(j + 1, i)];
+            let c11 = pixels[idx(j + 1, i + 1)];
+
+            rasterize_rgba_triangle(&mut img, p00, c00, p10, c10, p11, c11);
+            rasterize_rgba_triangle(&mut img, p00, c00, p11, c11, p01, c01);
+        }
+    }
+
+    feather_projected_raster_edges(&mut img);
+    img
+}
+
 /// Rasterize projected grid coverage independent of fill values or colormap
 /// alpha so frame calculations track the valid mesh footprint, not the weather
 /// blob currently painted into it.
@@ -146,6 +232,15 @@ fn bilinear(v00: f64, v10: f64, v01: f64, v11: f64, fx: f64, fy: f64) -> f64 {
         }
         f64::NAN
     }
+}
+
+fn bilinear_rgba(c00: Rgba, c10: Rgba, c01: Rgba, c11: Rgba, fx: f64, fy: f64) -> Rgba {
+    if c00.a == 0 && c10.a == 0 && c01.a == 0 && c11.a == 0 {
+        return Rgba::TRANSPARENT;
+    }
+    let south = lerp_rgba_pair(c00, c10, fx);
+    let north = lerp_rgba_pair(c01, c11, fx);
+    lerp_rgba_pair(south, north, fy)
 }
 
 fn rasterize_triangle(
@@ -204,6 +299,93 @@ fn rasterize_triangle(
             }
         }
     }
+}
+
+fn rasterize_rgba_triangle(
+    img: &mut RgbaImage,
+    p0: (f64, f64),
+    c0: Rgba,
+    p1: (f64, f64),
+    c1: Rgba,
+    p2: (f64, f64),
+    c2: Rgba,
+) {
+    if c0.a == 0 && c1.a == 0 && c2.a == 0 {
+        return;
+    }
+
+    let min_x = p0.0.min(p1.0).min(p2.0).floor().max(0.0) as i32;
+    let max_x =
+        p0.0.max(p1.0)
+            .max(p2.0)
+            .ceil()
+            .min(img.width() as f64 - 1.0) as i32;
+    let min_y = p0.1.min(p1.1).min(p2.1).floor().max(0.0) as i32;
+    let max_y =
+        p0.1.max(p1.1)
+            .max(p2.1)
+            .ceil()
+            .min(img.height() as f64 - 1.0) as i32;
+
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
+
+    let area = edge_fn(p0, p1, p2);
+    if area.abs() < 1e-9 {
+        return;
+    }
+
+    let inv_area = 1.0 / area;
+
+    for py in min_y..=max_y {
+        for px in min_x..=max_x {
+            let p = (px as f64 + 0.5, py as f64 + 0.5);
+            let w0 = edge_fn(p1, p2, p) * inv_area;
+            let w1 = edge_fn(p2, p0, p) * inv_area;
+            let w2 = edge_fn(p0, p1, p) * inv_area;
+
+            if w0 < -1e-6 || w1 < -1e-6 || w2 < -1e-6 {
+                continue;
+            }
+
+            let color = weighted_rgba(c0, w0, c1, w1, c2, w2);
+            if color.a > 0 {
+                img.put_pixel(px as u32, py as u32, color.to_image_rgba());
+            }
+        }
+    }
+}
+
+fn lerp_rgba_pair(left: Rgba, right: Rgba, t: f64) -> Rgba {
+    let t = t.clamp(0.0, 1.0);
+    Rgba::with_alpha(
+        lerp_u8(left.r, right.r, t),
+        lerp_u8(left.g, right.g, t),
+        lerp_u8(left.b, right.b, t),
+        lerp_u8(left.a, right.a, t),
+    )
+}
+
+fn weighted_rgba(c0: Rgba, w0: f64, c1: Rgba, w1: f64, c2: Rgba, w2: f64) -> Rgba {
+    Rgba::with_alpha(
+        weighted_u8(c0.r, w0, c1.r, w1, c2.r, w2),
+        weighted_u8(c0.g, w0, c1.g, w1, c2.g, w2),
+        weighted_u8(c0.b, w0, c1.b, w1, c2.b, w2),
+        weighted_u8(c0.a, w0, c1.a, w1, c2.a, w2),
+    )
+}
+
+fn lerp_u8(left: u8, right: u8, t: f64) -> u8 {
+    (left as f64 + (right as f64 - left as f64) * t)
+        .round()
+        .clamp(0.0, 255.0) as u8
+}
+
+fn weighted_u8(v0: u8, w0: f64, v1: u8, w1: f64, v2: u8, w2: f64) -> u8 {
+    (v0 as f64 * w0 + v1 as f64 * w1 + v2 as f64 * w2)
+        .round()
+        .clamp(0.0, 255.0) as u8
 }
 
 fn rasterize_mask_triangle(img: &mut RgbaImage, p0: (f64, f64), p1: (f64, f64), p2: (f64, f64)) {

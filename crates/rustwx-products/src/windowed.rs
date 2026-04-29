@@ -1,27 +1,27 @@
 use crate::gridded::{
-    decode_cache_path, decode_surface_grid, load_surface_geometry_from_latest, resolve_model_run,
-    FetchRuntimeInfo,
+    FetchRuntimeInfo, decode_cache_path, decode_surface_grid, load_surface_geometry_from_latest,
+    resolve_model_run,
 };
 use crate::hrrr::HrrrFetchRuntimeInfo;
 use crate::places::PlaceLabelOverlay;
 use crate::planner::ExecutionPlanBuilder;
-use crate::publication::{fetch_identity_from_cached_result, PublishedFetchIdentity};
+use crate::publication::{PublishedFetchIdentity, fetch_identity_from_cached_result};
 use crate::runtime::{
-    load_execution_plan, BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet,
+    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
 };
 use crate::shared_context::{DomainSpec, ProjectedMap};
 use crate::windowed_decoder::{
+    HrrrApcpDecode, HrrrSurfaceSnapshotDecode, HrrrUhDecode, HrrrWind10mMaxDecode,
     compute_qpf_product, compute_surface_snapshot_product, compute_uh_product,
     compute_wind10m_product, load_or_decode_apcp, load_or_decode_surface_snapshot,
-    load_or_decode_uh25, load_or_decode_wind10m_max, HrrrApcpDecode, HrrrSurfaceSnapshotDecode,
-    HrrrUhDecode, HrrrWind10mMaxDecode,
+    load_or_decode_uh25, load_or_decode_wind10m_max,
 };
 use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
 use rustwx_models::LatestRun;
 use rustwx_render::{
-    save_png_profile_with_options, ChromeScale, DomainFrame, LegendControls, LegendMode,
-    LevelDensity, MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode,
-    RenderDensity, WeatherProduct,
+    ChromeScale, DomainFrame, LegendControls, LegendMode, LevelDensity, MapRenderRequest,
+    PngCompressionMode, PngWriteOptions, ProductVisualMode, RenderDensity, WeatherProduct,
+    save_png_profile_with_options,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -234,13 +234,6 @@ impl HrrrWindowedProduct {
         )
     }
 
-    fn is_diurnal_wind10m(self) -> bool {
-        matches!(
-            self,
-            Self::Wind10m0to24hMax | Self::Wind10m24to48hMax | Self::Wind10m0to48hMax
-        )
-    }
-
     pub fn is_surface_snapshot(self) -> bool {
         matches!(
             self,
@@ -281,10 +274,6 @@ impl HrrrWindowedProduct {
                 | Self::Vpd2m24to48hRange
                 | Self::Vpd2m0to48hRange
         )
-    }
-
-    fn requires_00z_extended_cycle(self) -> bool {
-        self.is_diurnal_wind10m() || self.is_surface_snapshot()
     }
 }
 
@@ -1103,7 +1092,7 @@ fn windowed_display_hour_label(
 fn plan_windowed_products(
     products: &[HrrrWindowedProduct],
     forecast_hour: u16,
-    cycle_utc: Option<u8>,
+    _cycle_utc: Option<u8>,
 ) -> (
     Vec<HrrrWindowedProduct>,
     Vec<HrrrWindowedBlocker>,
@@ -1124,18 +1113,11 @@ fn plan_windowed_products(
         if !seen.insert(product.slug().to_string()) {
             continue;
         }
-        if product.requires_00z_extended_cycle() && cycle_utc.is_some_and(|cycle| cycle != 0) {
-            blockers.push(blocker(
-                product,
-                "fixed 24-48 h window products are limited to 00Z HRRR extended cycles",
-            ));
-            continue;
-        }
         if let Some((start_hour, end_hour, label)) = surface_snapshot_window_hours(product) {
             if forecast_hour < end_hour {
                 blockers.push(blocker(
                     product,
-                    format!("{label} requires forecast hour >= {end_hour}"),
+                    format!("{label} requires forecast hour >= {end_hour}; use a HRRR extended cycle for 24-48 h products"),
                 ));
                 continue;
             }
@@ -1667,7 +1649,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_windowed_products_adds_wind_max_hours_and_blocks_non_00z_diurnal() {
+    fn plan_windowed_products_adds_wind_max_hours_for_any_extended_cycle() {
         let (planned, blockers, surface_hours, nat_hours, wind_hours, temp_hours) =
             plan_windowed_products(
                 &[
@@ -1688,12 +1670,12 @@ mod tests {
         assert_eq!(wind_hours.last(), Some(&48));
 
         let (planned, blockers, _, _, wind_hours, temp_hours) =
-            plan_windowed_products(&[HrrrWindowedProduct::Wind10m0to24hMax], 24, Some(12));
-        assert!(planned.is_empty());
-        assert!(wind_hours.is_empty());
+            plan_windowed_products(&[HrrrWindowedProduct::Wind10m0to24hMax], 24, Some(18));
+        assert_eq!(planned, vec![HrrrWindowedProduct::Wind10m0to24hMax]);
+        assert!(blockers.is_empty());
+        assert_eq!(wind_hours.first(), Some(&1));
+        assert_eq!(wind_hours.last(), Some(&24));
         assert!(temp_hours.is_empty());
-        assert_eq!(blockers.len(), 1);
-        assert!(blockers[0].reason.contains("00Z"));
     }
 
     #[test]
@@ -1721,11 +1703,11 @@ mod tests {
         assert_eq!(temp_hours.last(), Some(&48));
 
         let (planned, blockers, _, _, _, temp_hours) =
-            plan_windowed_products(&[HrrrWindowedProduct::Temp2m0to24hMax], 24, Some(12));
-        assert!(planned.is_empty());
-        assert!(temp_hours.is_empty());
-        assert_eq!(blockers.len(), 1);
-        assert!(blockers[0].reason.contains("00Z"));
+            plan_windowed_products(&[HrrrWindowedProduct::Temp2m0to24hMax], 24, Some(18));
+        assert_eq!(planned, vec![HrrrWindowedProduct::Temp2m0to24hMax]);
+        assert!(blockers.is_empty());
+        assert_eq!(temp_hours.first(), Some(&1));
+        assert_eq!(temp_hours.last(), Some(&24));
     }
 
     #[test]

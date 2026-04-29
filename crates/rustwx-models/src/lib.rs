@@ -1382,7 +1382,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         slug: "2m_relative_humidity_10m_winds",
         title: "2m AGL Relative Humidity / 10m Winds",
         filled: FIELD_2M_RH,
-        contours: None,
+        contours: Some(FIELD_MSLP),
         barbs_u: Some(FIELD_10M_U),
         barbs_v: Some(FIELD_10M_V),
         style: RenderStyle::WeatherRh,
@@ -1400,7 +1400,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         slug: "2m_temperature_10m_winds",
         title: "2m AGL Temperature / 10m Winds",
         filled: FIELD_2M_TEMP,
-        contours: None,
+        contours: Some(FIELD_MSLP),
         barbs_u: Some(FIELD_10M_U),
         barbs_v: Some(FIELD_10M_V),
         style: RenderStyle::WeatherTemperature,
@@ -1418,7 +1418,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         slug: "2m_dewpoint_10m_winds",
         title: "2m AGL Dewpoint / 10m Winds",
         filled: FIELD_2M_DEWPOINT,
-        contours: None,
+        contours: Some(FIELD_MSLP),
         barbs_u: Some(FIELD_10M_U),
         barbs_v: Some(FIELD_10M_V),
         style: RenderStyle::WeatherDewpoint,
@@ -1427,7 +1427,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         slug: "mslp_10m_winds",
         title: "MSLP / 10m Winds",
         filled: FIELD_MSLP,
-        contours: None,
+        contours: Some(FIELD_MSLP),
         barbs_u: Some(FIELD_10M_U),
         barbs_v: Some(FIELD_10M_V),
         style: RenderStyle::WeatherPressure,
@@ -3253,6 +3253,32 @@ mod tests {
     }
 
     #[test]
+    fn surface_wind_recipes_include_mslp_contours() {
+        for slug in [
+            "2m_relative_humidity_10m_winds",
+            "2m_temperature_10m_winds",
+            "2m_dewpoint_10m_winds",
+            "mslp_10m_winds",
+        ] {
+            let recipe = plot_recipe(slug).unwrap();
+            assert_eq!(
+                recipe.contours.as_ref().unwrap().selector,
+                Some(FieldSelector::mean_sea_level(
+                    CanonicalField::PressureReducedToMeanSeaLevel,
+                ))
+            );
+            assert_eq!(
+                recipe.barbs_u.as_ref().unwrap().selector,
+                Some(FieldSelector::height_agl(CanonicalField::UWind, 10))
+            );
+            assert_eq!(
+                recipe.barbs_v.as_ref().unwrap().selector,
+                Some(FieldSelector::height_agl(CanonicalField::VWind, 10))
+            );
+        }
+    }
+
+    #[test]
     fn smoke_recipes_are_selector_backed_native_hrrr_products() {
         let smoke = plot_recipe("smoke_pm25_native").unwrap();
         assert_eq!(smoke.filled.family, ProductFamily::Native);
@@ -3967,6 +3993,15 @@ mod tests {
             PlotRecipeFetchMode::WholeFileStructuredExtract
         );
         assert!(plan.variable_patterns().is_empty());
+        assert_eq!(
+            plan.selectors(),
+            vec![
+                FieldSelector::height_agl(CanonicalField::Temperature, 2),
+                FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel),
+                FieldSelector::height_agl(CanonicalField::UWind, 10),
+                FieldSelector::height_agl(CanonicalField::VWind, 10),
+            ]
+        );
     }
 
     #[test]

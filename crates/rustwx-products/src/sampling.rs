@@ -567,32 +567,10 @@ fn direct_route_for(target: &ResolvedSamplingTarget) -> ProductSourceRoute {
 
 fn parse_windowed_product_slug(slug: &str) -> Option<HrrrWindowedProduct> {
     let wanted = normalize_sampling_slug(slug);
-    [
-        HrrrWindowedProduct::Qpf1h,
-        HrrrWindowedProduct::Qpf6h,
-        HrrrWindowedProduct::Qpf12h,
-        HrrrWindowedProduct::Qpf24h,
-        HrrrWindowedProduct::QpfTotal,
-        HrrrWindowedProduct::Uh25km1h,
-        HrrrWindowedProduct::Uh25km3h,
-        HrrrWindowedProduct::Uh25kmRunMax,
-        HrrrWindowedProduct::Wind10m1hMax,
-        HrrrWindowedProduct::Wind10mRunMax,
-        HrrrWindowedProduct::Wind10m0to24hMax,
-        HrrrWindowedProduct::Wind10m24to48hMax,
-        HrrrWindowedProduct::Wind10m0to48hMax,
-        HrrrWindowedProduct::Temp2m0to24hMax,
-        HrrrWindowedProduct::Temp2m24to48hMax,
-        HrrrWindowedProduct::Temp2m0to48hMax,
-        HrrrWindowedProduct::Temp2m0to24hMin,
-        HrrrWindowedProduct::Temp2m24to48hMin,
-        HrrrWindowedProduct::Temp2m0to48hMin,
-        HrrrWindowedProduct::Temp2m0to24hRange,
-        HrrrWindowedProduct::Temp2m24to48hRange,
-        HrrrWindowedProduct::Temp2m0to48hRange,
-    ]
-    .into_iter()
-    .find(|product| normalize_sampling_slug(product.slug()) == wanted)
+    HrrrWindowedProduct::supported_products()
+        .iter()
+        .copied()
+        .find(|product| normalize_sampling_slug(product.slug()) == wanted)
 }
 
 fn normalize_sampling_slug(value: &str) -> String {

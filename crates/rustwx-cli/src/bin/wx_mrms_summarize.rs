@@ -31,7 +31,7 @@ use grib_core::grib2::{Grib2File, unpack_message_normalized};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -57,6 +57,8 @@ struct Request {
     patches: Vec<PatchRequest>,
     #[serde(default)]
     thresholds: Vec<ThresholdRequest>,
+    #[serde(default)]
+    point_overlap: Option<PointOverlapRequest>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -81,6 +83,20 @@ struct ThresholdRequest {
     threshold_id: String,
     op: ThresholdOp,
     value_mm: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PointOverlapRequest {
+    points_csv: PathBuf,
+    masks: Vec<PointMaskRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PointMaskRequest {
+    mask_id: String,
+    field: String,
+    op: ThresholdOp,
+    value: f64,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -121,6 +137,8 @@ struct FileSample {
     bbox_deg: Option<[f64; 4]>,
     parameter: Option<MrmsParameter>,
     patches: Vec<PatchSample>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    point_overlap: Option<PointOverlapSample>,
     error: Option<String>,
 }
 
@@ -158,6 +176,37 @@ struct ThresholdResult {
     largest_component_cell_count: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     largest_component_fraction: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PointOverlapSample {
+    points_csv: String,
+    point_count: usize,
+    valid_mrms_point_count: usize,
+    masks: Vec<PointMaskResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PointMaskResult {
+    mask_id: String,
+    field: String,
+    op: String,
+    value: f64,
+    mask_point_count: usize,
+    mask_valid_mrms_point_count: usize,
+    thresholds: Vec<PointOverlapThresholdResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PointOverlapThresholdResult {
+    threshold_id: String,
+    value_mm: f64,
+    mrms_hit_total_point_count: usize,
+    mrms_hit_inside_mask_count: usize,
+    mrms_hit_outside_mask_count: usize,
+    mask_mrms_miss_count: usize,
+    fraction_mask_with_mrms_hit: Option<f64>,
+    fraction_mrms_hit_inside_mask: Option<f64>,
 }
 
 fn main() -> ExitCode {
@@ -203,6 +252,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 &req.patches,
                 &polygons,
                 &req.thresholds,
+                req.point_overlap.as_ref(),
                 &ref_dt,
             );
             match result {
@@ -221,6 +271,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         bbox_deg: None,
                         parameter: None,
                         patches: Vec::new(),
+                        point_overlap: None,
                         error: Some(format!("{err}")),
                     });
                 }
@@ -258,6 +309,7 @@ fn process_file(
     patch_reqs: &[PatchRequest],
     polygons: &[Polygon],
     thresholds: &[ThresholdRequest],
+    point_overlap_req: Option<&PointOverlapRequest>,
     ref_dt: &DateTimeParts,
 ) -> Result<FileSample, Box<dyn std::error::Error>> {
     let basename = path
@@ -414,6 +466,24 @@ fn process_file(
         });
     }
 
+    let point_overlap = if let Some(req) = point_overlap_req {
+        Some(compute_point_overlap(
+            req,
+            thresholds,
+            &values,
+            nx,
+            ny,
+            lat1,
+            west,
+            dx,
+            dy,
+            row_top_to_bottom,
+            scale,
+        )?)
+    } else {
+        None
+    };
+
     let valid_dt = compute_valid_time(msg);
     let valid_iso = valid_dt.as_ref().map(|dt| dt.to_iso());
     let valid_label = valid_dt
@@ -436,6 +506,7 @@ fn process_file(
             level_value: msg.product.level_value,
         }),
         patches: patch_samples,
+        point_overlap,
         error: None,
     })
 }
@@ -446,6 +517,229 @@ fn threshold_hit(value: f64, threshold: &ThresholdRequest) -> bool {
         ThresholdOp::Gt => value > threshold.value_mm,
         ThresholdOp::Lte => value <= threshold.value_mm,
         ThresholdOp::Lt => value < threshold.value_mm,
+    }
+}
+
+fn point_mask_hit(value: f64, mask: &PointMaskRequest) -> bool {
+    if !value.is_finite() {
+        return false;
+    }
+    match mask.op {
+        ThresholdOp::Gte => value >= mask.value,
+        ThresholdOp::Gt => value > mask.value,
+        ThresholdOp::Lte => value <= mask.value,
+        ThresholdOp::Lt => value < mask.value,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PointMaskAccum {
+    mask_point_count: usize,
+    mask_valid_mrms_point_count: usize,
+    mrms_hit_inside_mask_count: Vec<usize>,
+    mask_mrms_miss_count: Vec<usize>,
+}
+
+fn compute_point_overlap(
+    req: &PointOverlapRequest,
+    thresholds: &[ThresholdRequest],
+    values: &[f64],
+    nx: usize,
+    ny: usize,
+    lat1: f64,
+    west: f64,
+    dx: f64,
+    dy: f64,
+    row_top_to_bottom: bool,
+    scale: f64,
+) -> Result<PointOverlapSample, Box<dyn std::error::Error>> {
+    let file = File::open(&req.points_csv)?;
+    let mut reader = BufReader::new(file);
+    let mut header = String::new();
+    reader.read_line(&mut header)?;
+    let header_cols: Vec<String> = header
+        .trim_end_matches(['\r', '\n'])
+        .split(',')
+        .map(|s| s.to_string())
+        .collect();
+    let lat_idx = header_cols
+        .iter()
+        .position(|name| name == "lat")
+        .ok_or("point overlap CSV is missing lat column")?;
+    let lon_idx = header_cols
+        .iter()
+        .position(|name| name == "lon")
+        .ok_or("point overlap CSV is missing lon column")?;
+    let mut field_indices = Vec::with_capacity(req.masks.len());
+    for mask in &req.masks {
+        let idx = header_cols
+            .iter()
+            .position(|name| name == &mask.field)
+            .ok_or_else(|| format!("point overlap CSV is missing field {}", mask.field))?;
+        field_indices.push(idx);
+    }
+
+    let mut accums = vec![
+        PointMaskAccum {
+            mask_point_count: 0,
+            mask_valid_mrms_point_count: 0,
+            mrms_hit_inside_mask_count: vec![0; thresholds.len()],
+            mask_mrms_miss_count: vec![0; thresholds.len()],
+        };
+        req.masks.len()
+    ];
+    let mut point_count = 0usize;
+    let mut valid_mrms_point_count = 0usize;
+    let mut mrms_hit_total_point_count = vec![0usize; thresholds.len()];
+
+    let mut line = String::new();
+    while reader.read_line(&mut line)? > 0 {
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            line.clear();
+            continue;
+        }
+        let cols: Vec<&str> = trimmed.split(',').collect();
+        point_count += 1;
+        let lat = cols
+            .get(lat_idx)
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(f64::NAN);
+        let lon = cols
+            .get(lon_idx)
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(f64::NAN);
+        let mrms_value = sample_mrms_nearest(
+            values,
+            nx,
+            ny,
+            lat,
+            lon,
+            lat1,
+            west,
+            dx,
+            dy,
+            row_top_to_bottom,
+        )
+        .map(|v| v * scale);
+        let mut threshold_hits = vec![false; thresholds.len()];
+        if let Some(value) = mrms_value {
+            valid_mrms_point_count += 1;
+            for (ti, threshold) in thresholds.iter().enumerate() {
+                let hit = threshold_hit(value, threshold);
+                threshold_hits[ti] = hit;
+                if hit {
+                    mrms_hit_total_point_count[ti] += 1;
+                }
+            }
+        }
+
+        for (mi, mask) in req.masks.iter().enumerate() {
+            let field_value = cols
+                .get(field_indices[mi])
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(f64::NAN);
+            if !point_mask_hit(field_value, mask) {
+                continue;
+            }
+            let accum = &mut accums[mi];
+            accum.mask_point_count += 1;
+            if mrms_value.is_some() {
+                accum.mask_valid_mrms_point_count += 1;
+                for (ti, hit) in threshold_hits.iter().enumerate() {
+                    if *hit {
+                        accum.mrms_hit_inside_mask_count[ti] += 1;
+                    } else {
+                        accum.mask_mrms_miss_count[ti] += 1;
+                    }
+                }
+            }
+        }
+        line.clear();
+    }
+
+    let masks = req
+        .masks
+        .iter()
+        .zip(accums.iter())
+        .map(|(mask, accum)| {
+            let thresholds_out = thresholds
+                .iter()
+                .enumerate()
+                .map(|(ti, threshold)| {
+                    let inside = accum.mrms_hit_inside_mask_count[ti];
+                    let total_hit = mrms_hit_total_point_count[ti];
+                    PointOverlapThresholdResult {
+                        threshold_id: threshold.threshold_id.clone(),
+                        value_mm: threshold.value_mm,
+                        mrms_hit_total_point_count: total_hit,
+                        mrms_hit_inside_mask_count: inside,
+                        mrms_hit_outside_mask_count: total_hit.saturating_sub(inside),
+                        mask_mrms_miss_count: accum.mask_mrms_miss_count[ti],
+                        fraction_mask_with_mrms_hit: if accum.mask_valid_mrms_point_count > 0 {
+                            Some(inside as f64 / accum.mask_valid_mrms_point_count as f64)
+                        } else {
+                            None
+                        },
+                        fraction_mrms_hit_inside_mask: if total_hit > 0 {
+                            Some(inside as f64 / total_hit as f64)
+                        } else {
+                            None
+                        },
+                    }
+                })
+                .collect();
+            PointMaskResult {
+                mask_id: mask.mask_id.clone(),
+                field: mask.field.clone(),
+                op: format!("{:?}", mask.op).to_lowercase(),
+                value: mask.value,
+                mask_point_count: accum.mask_point_count,
+                mask_valid_mrms_point_count: accum.mask_valid_mrms_point_count,
+                thresholds: thresholds_out,
+            }
+        })
+        .collect();
+
+    Ok(PointOverlapSample {
+        points_csv: req.points_csv.to_string_lossy().to_string(),
+        point_count,
+        valid_mrms_point_count,
+        masks,
+    })
+}
+
+fn sample_mrms_nearest(
+    values: &[f64],
+    nx: usize,
+    ny: usize,
+    lat: f64,
+    lon: f64,
+    lat1: f64,
+    west: f64,
+    dx: f64,
+    dy: f64,
+    row_top_to_bottom: bool,
+) -> Option<f64> {
+    if !lat.is_finite() || !lon.is_finite() || dx <= 0.0 || dy <= 0.0 {
+        return None;
+    }
+    let row_f = if row_top_to_bottom {
+        (lat1 - lat) / dy
+    } else {
+        (lat - lat1) / dy
+    };
+    let col_f = (lon - west) / dx;
+    let row = row_f.round() as isize;
+    let col = col_f.round() as isize;
+    if row < 0 || col < 0 || row >= ny as isize || col >= nx as isize {
+        return None;
+    }
+    let value = values[row as usize * nx + col as usize];
+    if value.is_finite() && value > -990.0 && value < 1.0e6 {
+        Some(value)
+    } else {
+        None
     }
 }
 

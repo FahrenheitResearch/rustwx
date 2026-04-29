@@ -19,8 +19,9 @@ serde_json.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 ecape-rs = { path = "../../vendor/ecape-rs" }
 flate2 = "1"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "webp"] }
 grib-core = { path = "../../vendor/grib-core" }
+rayon.workspace = true
 rustwx-calc = { path = "../rustwx-calc" }
 rustwx-core = { path = "../rustwx-core" }
 rustwx-cross-section = { path = "../rustwx-cross-section" }

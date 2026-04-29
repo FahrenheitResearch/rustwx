@@ -1,15 +1,16 @@
 use chrono::{Duration, NaiveDate};
-use rustwx_calc::{compute_surface_thermo, GridShape as CalcGridShape, SurfaceInputs};
+use rustwx_calc::{GridShape as CalcGridShape, SurfaceInputs, compute_surface_thermo};
 use rustwx_core::{
-    CanonicalBundleDescriptor, CanonicalField, FieldPointSampleMethod, FieldSelector, GeoPoint,
-    GridShape, LatLonGrid, ModelId, ModelRunRequest, SourceId, VerticalSelector,
+    CanonicalBundleDescriptor, CanonicalField, FieldPointSampleMethod, FieldSelector, GeoBounds,
+    GeoPoint, GridShape, LatLonGrid, ModelId, ModelRunRequest, SelectedField2D, SourceId,
+    VerticalSelector,
 };
 use rustwx_io::{
-    extract_fields_partial_from_model_bytes, fetch_bytes_with_cache, load_cached_selected_field,
-    store_cached_selected_field, FetchRequest,
+    FetchRequest, extract_fields_partial_from_model_bytes, fetch_bytes_with_cache,
+    load_cached_selected_field, store_cached_selected_field,
 };
 use rustwx_models::{
-    latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product, LatestRun,
+    LatestRun, latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -107,6 +108,81 @@ pub struct PointTimeseriesReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blockers: Vec<PointTimeseriesBlocker>,
     pub total_ms: u128,
+}
+
+#[derive(Debug, Clone)]
+pub struct PointTimeseriesGridStoreRequest {
+    pub model: ModelId,
+    pub date_yyyymmdd: String,
+    pub cycle_override_utc: Option<u8>,
+    pub source: SourceId,
+    pub forecast_hours: Vec<u16>,
+    pub variables: Vec<String>,
+    pub bounds: GeoBounds,
+    pub cache_root: PathBuf,
+    pub use_cache: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PointTimeseriesGridStoreBuildReport {
+    pub schema_version: u32,
+    pub store_id: String,
+    pub run: PointTimeseriesRun,
+    pub bounds: GeoBounds,
+    pub variables: Vec<PointTimeseriesVariableDescriptor>,
+    pub requested_forecast_hours: Vec<u16>,
+    pub loaded_forecast_hours: Vec<u16>,
+    pub grid_points: usize,
+    pub fetches: Vec<PointTimeseriesFetchInfo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blockers: Vec<PointTimeseriesBlocker>,
+    pub memory_bytes_estimate: usize,
+    pub total_ms: u128,
+}
+
+#[derive(Debug, Clone)]
+pub struct PointTimeseriesGridStore {
+    store_id: String,
+    run: PointTimeseriesRun,
+    bounds: GeoBounds,
+    variables: Vec<PointVariable>,
+    requested_forecast_hours: Vec<u16>,
+    loaded_forecast_hours: Vec<u16>,
+    grid_nx: usize,
+    grid_indices: Vec<usize>,
+    grid_lat_deg: Vec<f32>,
+    grid_lon_deg: Vec<f32>,
+    hours: BTreeMap<u16, GridStoreHour>,
+    memory_bytes_estimate: usize,
+}
+
+#[derive(Debug, Clone)]
+struct GridStoreHour {
+    forecast_hour: u16,
+    valid_time_utc: String,
+    values: HashMap<FieldSelector, Vec<f32>>,
+}
+
+impl PointTimeseriesGridStore {
+    pub fn store_id(&self) -> &str {
+        &self.store_id
+    }
+
+    pub fn run(&self) -> &PointTimeseriesRun {
+        &self.run
+    }
+
+    pub fn requested_forecast_hours(&self) -> &[u16] {
+        &self.requested_forecast_hours
+    }
+
+    pub fn grid_points(&self) -> usize {
+        self.grid_indices.len()
+    }
+
+    pub fn memory_bytes_estimate(&self) -> usize {
+        self.memory_bytes_estimate
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -302,6 +378,224 @@ pub fn sample_point_timeseries(
     })
 }
 
+pub fn build_point_timeseries_grid_store(
+    request: &PointTimeseriesGridStoreRequest,
+) -> Result<
+    (
+        PointTimeseriesGridStore,
+        PointTimeseriesGridStoreBuildReport,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let total_start = Instant::now();
+    if request.forecast_hours.is_empty() {
+        return Err("point timeseries grid store requires at least one forecast hour".into());
+    }
+    let variables = resolve_variables(&request.variables)?;
+    let latest = resolve_grid_store_latest(request, &variables)?;
+    let surface_product = resolve_canonical_bundle_product(
+        request.model,
+        CanonicalBundleDescriptor::SurfaceAnalysis,
+        None,
+    )
+    .native_product;
+    let selectors = selectors_for_variables(&variables);
+    let fetch_hours = fetch_hours_for_variables(&request.forecast_hours, &variables);
+    let mut fetches = Vec::new();
+    let mut blockers = Vec::new();
+    let mut grid_indices: Vec<usize> = Vec::new();
+    let mut grid_nx = 0usize;
+    let mut grid_lat_deg: Vec<f32> = Vec::new();
+    let mut grid_lon_deg: Vec<f32> = Vec::new();
+    let mut hours = BTreeMap::<u16, GridStoreHour>::new();
+
+    for forecast_hour in fetch_hours {
+        match load_hour_fields(
+            &latest,
+            forecast_hour,
+            &surface_product,
+            &selectors,
+            &request.cache_root,
+            request.use_cache,
+        ) {
+            Ok((fields, fetch_info, hour_blockers)) => {
+                fetches.push(fetch_info);
+                blockers.extend(hour_blockers);
+                if fields.is_empty() {
+                    blockers.push(PointTimeseriesBlocker {
+                        forecast_hour: Some(forecast_hour),
+                        variable: None,
+                        reason: "no fields loaded for store hour".to_string(),
+                    });
+                    continue;
+                }
+                if grid_indices.is_empty() {
+                    grid_nx = fields[0].grid.shape.nx;
+                    grid_indices = indices_for_bounds(&fields[0].grid, request.bounds);
+                    if grid_indices.is_empty() {
+                        return Err(
+                            "point timeseries grid store bounds selected no grid points".into()
+                        );
+                    }
+                    grid_lat_deg = grid_indices
+                        .iter()
+                        .map(|&idx| fields[0].grid.lat_deg[idx])
+                        .collect();
+                    grid_lon_deg = grid_indices
+                        .iter()
+                        .map(|&idx| fields[0].grid.lon_deg[idx])
+                        .collect();
+                }
+
+                let mut values = HashMap::new();
+                for field in fields {
+                    if field.values.len() <= *grid_indices.iter().max().unwrap_or(&0) {
+                        blockers.push(PointTimeseriesBlocker {
+                            forecast_hour: Some(forecast_hour),
+                            variable: Some(field.selector.key()),
+                            reason: "field grid is smaller than the store grid".to_string(),
+                        });
+                        continue;
+                    }
+                    let cropped = grid_indices
+                        .iter()
+                        .map(|&idx| field.values[idx])
+                        .collect::<Vec<_>>();
+                    values.insert(field.selector, cropped);
+                }
+                hours.insert(
+                    forecast_hour,
+                    GridStoreHour {
+                        forecast_hour,
+                        valid_time_utc: valid_time_utc(&latest, forecast_hour)?,
+                        values,
+                    },
+                );
+            }
+            Err(err) => blockers.push(PointTimeseriesBlocker {
+                forecast_hour: Some(forecast_hour),
+                variable: None,
+                reason: err.to_string(),
+            }),
+        }
+    }
+
+    if hours.is_empty() {
+        return Err("point timeseries grid store loaded no hours".into());
+    }
+
+    let loaded_forecast_hours = hours.keys().copied().collect::<Vec<_>>();
+    let run = PointTimeseriesRun {
+        model: latest.model,
+        date_yyyymmdd: latest.cycle.date_yyyymmdd,
+        cycle_utc: latest.cycle.hour_utc,
+        source: latest.source,
+        surface_product,
+    };
+    let store_id = grid_store_id(&run, request.bounds, &request.forecast_hours, &variables);
+    let memory_bytes_estimate = grid_lat_deg.len() * std::mem::size_of::<f32>() * 2
+        + grid_indices.len() * std::mem::size_of::<usize>()
+        + hours
+            .values()
+            .flat_map(|hour| hour.values.values())
+            .map(|values| values.len() * std::mem::size_of::<f32>())
+            .sum::<usize>();
+    let store = PointTimeseriesGridStore {
+        store_id: store_id.clone(),
+        run: run.clone(),
+        bounds: request.bounds,
+        variables: variables.clone(),
+        requested_forecast_hours: request.forecast_hours.clone(),
+        loaded_forecast_hours: loaded_forecast_hours.clone(),
+        grid_nx,
+        grid_indices,
+        grid_lat_deg,
+        grid_lon_deg,
+        hours,
+        memory_bytes_estimate,
+    };
+    let report = PointTimeseriesGridStoreBuildReport {
+        schema_version: POINT_TIMESERIES_SCHEMA_VERSION,
+        store_id,
+        run,
+        bounds: request.bounds,
+        variables: variables
+            .iter()
+            .copied()
+            .map(PointVariable::descriptor)
+            .collect(),
+        requested_forecast_hours: request.forecast_hours.clone(),
+        loaded_forecast_hours,
+        grid_points: store.grid_points(),
+        fetches,
+        blockers,
+        memory_bytes_estimate,
+        total_ms: total_start.elapsed().as_millis(),
+    };
+    Ok((store, report))
+}
+
+pub fn sample_point_timeseries_grid_store(
+    store: &PointTimeseriesGridStore,
+    point: GeoPoint,
+    method: FieldPointSampleMethod,
+    forecast_hours: Option<&[u16]>,
+) -> Result<PointTimeseriesReport, Box<dyn std::error::Error>> {
+    let total_start = Instant::now();
+    if method != FieldPointSampleMethod::Nearest {
+        return Err("point timeseries grid store currently supports nearest sampling only".into());
+    }
+    let (cropped_index, grid_point) = nearest_grid_store_point(store, point)
+        .ok_or("point timeseries grid store contains no grid points")?;
+    let mut hours = Vec::new();
+    let requested_hours = forecast_hours.unwrap_or(&store.requested_forecast_hours);
+    for &forecast_hour in requested_hours {
+        if let Some(store_hour) = store.hours.get(&forecast_hour) {
+            let samples = hour_samples_from_store_hour(store_hour, &grid_point, cropped_index);
+            let previous = forecast_hour
+                .checked_sub(1)
+                .and_then(|previous_hour| store.hours.get(&previous_hour))
+                .map(|hour| hour_samples_from_store_hour(hour, &grid_point, cropped_index));
+            hours.push(build_report_hour(
+                &samples,
+                previous.as_ref(),
+                &store.variables,
+            ));
+        } else {
+            let mut values = BTreeMap::new();
+            let mut missing = Vec::new();
+            for variable in &store.variables {
+                values.insert(variable.slug().to_string(), None);
+                missing.push(variable.slug().to_string());
+            }
+            hours.push(PointTimeseriesHour {
+                forecast_hour,
+                valid_time_utc: valid_time_from_run(&store.run, forecast_hour)?,
+                grid_point: Some(grid_point.clone()),
+                values,
+                missing,
+            });
+        }
+    }
+
+    Ok(PointTimeseriesReport {
+        schema_version: POINT_TIMESERIES_SCHEMA_VERSION,
+        run: store.run.clone(),
+        point,
+        method,
+        variables: store
+            .variables
+            .iter()
+            .copied()
+            .map(PointVariable::descriptor)
+            .collect(),
+        hours,
+        fetches: Vec::new(),
+        blockers: Vec::new(),
+        total_ms: total_start.elapsed().as_millis(),
+    })
+}
+
 fn resolve_timeseries_latest(
     request: &PointTimeseriesRequest,
 ) -> Result<LatestRun, Box<dyn std::error::Error>> {
@@ -334,6 +628,136 @@ fn resolve_timeseries_latest(
     )?)
 }
 
+fn resolve_grid_store_latest(
+    request: &PointTimeseriesGridStoreRequest,
+    variables: &[PointVariable],
+) -> Result<LatestRun, Box<dyn std::error::Error>> {
+    if let Some(cycle_hour) = request.cycle_override_utc {
+        return Ok(LatestRun {
+            model: request.model,
+            cycle: rustwx_core::CycleSpec::new(&request.date_yyyymmdd, cycle_hour)?,
+            source: request.source,
+        });
+    }
+
+    let fetch_hours = fetch_hours_for_variables(&request.forecast_hours, variables);
+    let max_hour = fetch_hours
+        .iter()
+        .copied()
+        .max()
+        .ok_or("point timeseries grid store request has no forecast hours")?;
+    let surface_product = resolve_canonical_bundle_product(
+        request.model,
+        CanonicalBundleDescriptor::SurfaceAnalysis,
+        None,
+    )
+    .native_product;
+    Ok(latest_available_run_for_products_at_forecast_hour(
+        request.model,
+        Some(request.source),
+        &request.date_yyyymmdd,
+        &[surface_product.as_str()],
+        max_hour,
+    )?)
+}
+
+fn indices_for_bounds(grid: &LatLonGrid, bounds: GeoBounds) -> Vec<usize> {
+    (0..grid.shape.len())
+        .filter(|&idx| {
+            bounds.contains(GeoPoint::new(
+                f64::from(grid.lat_deg[idx]),
+                f64::from(grid.lon_deg[idx]),
+            ))
+        })
+        .collect()
+}
+
+fn grid_store_id(
+    run: &PointTimeseriesRun,
+    bounds: GeoBounds,
+    forecast_hours: &[u16],
+    variables: &[PointVariable],
+) -> String {
+    let first_hour = forecast_hours.iter().copied().min().unwrap_or(0);
+    let last_hour = forecast_hours.iter().copied().max().unwrap_or(0);
+    let vars = variables
+        .iter()
+        .map(|variable| variable.slug())
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{}:{}:{:02}:{}:{:.3}:{:.3}:{:.3}:{:.3}:f{:03}-f{:03}:{}",
+        run.model.as_str(),
+        run.date_yyyymmdd,
+        run.cycle_utc,
+        run.source.as_str(),
+        bounds.west_lon_deg,
+        bounds.east_lon_deg,
+        bounds.south_lat_deg,
+        bounds.north_lat_deg,
+        first_hour,
+        last_hour,
+        vars
+    )
+}
+
+fn nearest_grid_store_point(
+    store: &PointTimeseriesGridStore,
+    point: GeoPoint,
+) -> Option<(usize, PointTimeseriesGridPoint)> {
+    let mut best: Option<(usize, f64)> = None;
+    for idx in 0..store.grid_lat_deg.len() {
+        let distance = geographic_distance_score_for_lat_lon(
+            f64::from(store.grid_lat_deg[idx]),
+            f64::from(store.grid_lon_deg[idx]),
+            point,
+        );
+        match best {
+            Some((best_idx, best_distance))
+                if distance > best_distance
+                    || ((distance - best_distance).abs() <= 1.0e-12 && idx >= best_idx) => {}
+            _ => best = Some((idx, distance)),
+        }
+    }
+    let (cropped_index, distance_score) = best?;
+    let grid_index = store.grid_indices[cropped_index];
+    Some((
+        cropped_index,
+        PointTimeseriesGridPoint {
+            grid_index,
+            i: grid_index % store.grid_nx,
+            j: grid_index / store.grid_nx,
+            lat_deg: f64::from(store.grid_lat_deg[cropped_index]),
+            lon_deg: f64::from(store.grid_lon_deg[cropped_index]),
+            distance_score,
+        },
+    ))
+}
+
+fn hour_samples_from_store_hour(
+    hour: &GridStoreHour,
+    grid_point: &PointTimeseriesGridPoint,
+    cropped_index: usize,
+) -> HourSamples {
+    let values = hour
+        .values
+        .iter()
+        .filter_map(|(&selector, values)| {
+            values
+                .get(cropped_index)
+                .copied()
+                .filter(|value| value.is_finite())
+                .map(|value| (selector, f64::from(value)))
+        })
+        .collect::<HashMap<_, _>>();
+    HourSamples {
+        forecast_hour: hour.forecast_hour,
+        valid_time_utc: hour.valid_time_utc.clone(),
+        grid_point: Some(grid_point.clone()),
+        values,
+    }
+}
+
 fn load_hour_samples(
     latest: &LatestRun,
     forecast_hour: u16,
@@ -348,62 +772,14 @@ fn load_hour_samples(
     ),
     Box<dyn std::error::Error>,
 > {
-    let fetch_request = FetchRequest {
-        request: ModelRunRequest::new(
-            latest.model,
-            latest.cycle.clone(),
-            forecast_hour,
-            surface_product,
-        )?,
-        source_override: Some(latest.source),
-        variable_patterns: timeseries_fetch_patterns(latest.model, surface_product),
-    };
-    let fetch_start = Instant::now();
-    let fetched = fetch_bytes_with_cache(&fetch_request, &request.cache_root, request.use_cache)?;
-    let fetch_ms = fetch_start.elapsed().as_millis();
-    let extract_start = Instant::now();
-
-    let mut fields = Vec::new();
-    let mut missing_for_extract = Vec::new();
-    let mut cache_hits = 0usize;
-    if request.use_cache {
-        for selector in selectors {
-            if let Some(cached) =
-                load_cached_selected_field(&request.cache_root, &fetch_request, *selector)?
-            {
-                fields.push(cached.field);
-                cache_hits += 1;
-            } else {
-                missing_for_extract.push(*selector);
-            }
-        }
-    } else {
-        missing_for_extract.extend(selectors.iter().copied());
-    }
-
-    let mut blockers = Vec::new();
-    if !missing_for_extract.is_empty() {
-        let partial = extract_fields_partial_from_model_bytes(
-            latest.model,
-            &fetched.result.bytes,
-            Some(fetched.bytes_path.as_path()),
-            &missing_for_extract,
-        )?;
-        if request.use_cache {
-            for field in &partial.extracted {
-                store_cached_selected_field(&request.cache_root, &fetch_request, field)?;
-            }
-        }
-        fields.extend(partial.extracted);
-        for missing in partial.missing {
-            blockers.push(PointTimeseriesBlocker {
-                forecast_hour: Some(forecast_hour),
-                variable: None,
-                reason: format!("missing GRIB message for selector {}", missing.key()),
-            });
-        }
-    }
-    let extract_ms = extract_start.elapsed().as_millis();
+    let (fields, fetch_info, blockers) = load_hour_fields(
+        latest,
+        forecast_hour,
+        surface_product,
+        selectors,
+        &request.cache_root,
+        request.use_cache,
+    )?;
 
     let grid_point = fields
         .first()
@@ -435,6 +811,84 @@ fn load_hour_samples(
             grid_point,
             values,
         },
+        fetch_info,
+        blockers,
+    ))
+}
+
+fn load_hour_fields(
+    latest: &LatestRun,
+    forecast_hour: u16,
+    surface_product: &str,
+    selectors: &[FieldSelector],
+    cache_root: &std::path::Path,
+    use_cache: bool,
+) -> Result<
+    (
+        Vec<SelectedField2D>,
+        PointTimeseriesFetchInfo,
+        Vec<PointTimeseriesBlocker>,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let fetch_request = FetchRequest {
+        request: ModelRunRequest::new(
+            latest.model,
+            latest.cycle.clone(),
+            forecast_hour,
+            surface_product,
+        )?,
+        source_override: Some(latest.source),
+        variable_patterns: timeseries_fetch_patterns(latest.model, surface_product),
+    };
+    let fetch_start = Instant::now();
+    let fetched = fetch_bytes_with_cache(&fetch_request, cache_root, use_cache)?;
+    let fetch_ms = fetch_start.elapsed().as_millis();
+    let extract_start = Instant::now();
+
+    let mut fields = Vec::new();
+    let mut missing_for_extract = Vec::new();
+    let mut cache_hits = 0usize;
+    if use_cache {
+        for selector in selectors {
+            if let Some(cached) = load_cached_selected_field(cache_root, &fetch_request, *selector)?
+            {
+                fields.push(cached.field);
+                cache_hits += 1;
+            } else {
+                missing_for_extract.push(*selector);
+            }
+        }
+    } else {
+        missing_for_extract.extend(selectors.iter().copied());
+    }
+
+    let mut blockers = Vec::new();
+    if !missing_for_extract.is_empty() {
+        let partial = extract_fields_partial_from_model_bytes(
+            latest.model,
+            &fetched.result.bytes,
+            Some(fetched.bytes_path.as_path()),
+            &missing_for_extract,
+        )?;
+        if use_cache {
+            for field in &partial.extracted {
+                store_cached_selected_field(cache_root, &fetch_request, field)?;
+            }
+        }
+        fields.extend(partial.extracted);
+        for missing in partial.missing {
+            blockers.push(PointTimeseriesBlocker {
+                forecast_hour: Some(forecast_hour),
+                variable: None,
+                reason: format!("missing GRIB message for selector {}", missing.key()),
+            });
+        }
+    }
+    let extract_ms = extract_start.elapsed().as_millis();
+
+    Ok((
+        fields,
         PointTimeseriesFetchInfo {
             forecast_hour,
             product: surface_product.to_string(),
@@ -952,9 +1406,28 @@ fn valid_time_utc(
     latest: &LatestRun,
     forecast_hour: u16,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let date = NaiveDate::parse_from_str(&latest.cycle.date_yyyymmdd, "%Y%m%d")?;
+    valid_time_parts(
+        &latest.cycle.date_yyyymmdd,
+        latest.cycle.hour_utc,
+        forecast_hour,
+    )
+}
+
+fn valid_time_from_run(
+    run: &PointTimeseriesRun,
+    forecast_hour: u16,
+) -> Result<String, Box<dyn std::error::Error>> {
+    valid_time_parts(&run.date_yyyymmdd, run.cycle_utc, forecast_hour)
+}
+
+fn valid_time_parts(
+    date_yyyymmdd: &str,
+    cycle_utc: u8,
+    forecast_hour: u16,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let date = NaiveDate::parse_from_str(date_yyyymmdd, "%Y%m%d")?;
     let cycle_time = date
-        .and_hms_opt(u32::from(latest.cycle.hour_utc), 0, 0)
+        .and_hms_opt(u32::from(cycle_utc), 0, 0)
         .ok_or("invalid cycle hour")?;
     let valid_time = cycle_time + Duration::hours(i64::from(forecast_hour));
     Ok(valid_time.format("%Y-%m-%dT%H:%M:%SZ").to_string())
@@ -983,9 +1456,17 @@ fn nearest_grid_point(grid: &LatLonGrid, point: GeoPoint) -> Option<PointTimeser
 }
 
 fn geographic_distance_score(grid: &LatLonGrid, idx: usize, point: GeoPoint) -> f64 {
+    geographic_distance_score_for_lat_lon(
+        f64::from(grid.lat_deg[idx]),
+        f64::from(grid.lon_deg[idx]),
+        point,
+    )
+}
+
+fn geographic_distance_score_for_lat_lon(lat_deg: f64, lon_deg: f64, point: GeoPoint) -> f64 {
     let cos_lat = point.lat_deg.to_radians().cos().abs().max(0.2);
-    let dlat = f64::from(grid.lat_deg[idx]) - point.lat_deg;
-    let dlon = normalized_longitude_delta(f64::from(grid.lon_deg[idx]) - point.lon_deg) * cos_lat;
+    let dlat = lat_deg - point.lat_deg;
+    let dlon = normalized_longitude_delta(lon_deg - point.lon_deg) * cos_lat;
     dlat * dlat + dlon * dlon
 }
 

@@ -176,6 +176,32 @@ impl PressureFieldSet for GenericPressureFields {
     }
 }
 
+struct EmptyPressureFields;
+
+impl PressureFieldSet for EmptyPressureFields {
+    fn pressure_levels_hpa(&self) -> &[f64] {
+        &[]
+    }
+    fn pressure_3d_pa(&self) -> Option<&[f64]> {
+        None
+    }
+    fn temperature_c_3d(&self) -> &[f64] {
+        &[]
+    }
+    fn qvapor_kgkg_3d(&self) -> &[f64] {
+        &[]
+    }
+    fn u_ms_3d(&self) -> &[f64] {
+        &[]
+    }
+    fn v_ms_3d(&self) -> &[f64] {
+        &[]
+    }
+    fn gh_m_3d(&self) -> &[f64] {
+        &[]
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DerivedRecipeInventoryEntry {
     pub slug: &'static str,
@@ -1228,6 +1254,14 @@ impl DerivedRequirements {
     fn needs_grid_spacing(self) -> bool {
         self.temperature_advection_700mb || self.temperature_advection_850mb
     }
+
+    fn needs_pressure_fields(self) -> bool {
+        self.needs_volume() || self.needs_height_agl() || self.needs_grid_spacing()
+    }
+}
+
+pub(crate) fn derived_compute_recipes_need_pressure(recipes: &[DerivedRecipe]) -> bool {
+    DerivedRequirements::from_recipes(recipes).needs_pressure_fields()
 }
 
 impl DerivedBatchRequest {
@@ -1351,7 +1385,9 @@ pub fn run_derived_batch(
         request.forecast_hour,
         request.surface_product_override.as_deref(),
         request.pressure_product_override.as_deref(),
-        !planned_routes.compute_recipes.is_empty() || !planned_routes.heavy_recipes.is_empty(),
+        derived_compute_recipes_need_pressure(&planned_routes.compute_recipes)
+            || !planned_routes.heavy_recipes.is_empty(),
+        !planned_routes.compute_recipes.is_empty(),
         &planned_routes.native_routes,
     );
     let loaded = load_execution_plan(
@@ -1371,6 +1407,7 @@ fn maybe_load_rrfs_cropped_pair_for_derived(
 ) -> Result<Option<LoadedBundleSet>, Box<dyn std::error::Error>> {
     if request.model != ModelId::RrfsA
         || planned_routes.compute_recipes.is_empty()
+        || !derived_compute_recipes_need_pressure(&planned_routes.compute_recipes)
         || !planned_routes.native_routes.is_empty()
     {
         return Ok(None);
@@ -1381,6 +1418,7 @@ fn maybe_load_rrfs_cropped_pair_for_derived(
         request.forecast_hour,
         request.surface_product_override.as_deref(),
         request.pressure_product_override.as_deref(),
+        true,
         true,
         &[],
     );
@@ -1635,8 +1673,43 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
     let source = loaded.latest.source;
     let model = request.model;
     let mut rendered_by_recipe = HashMap::<DerivedRecipe, DerivedRenderedRecipe>::new();
-    let needs_pair =
-        !planned_routes.compute_recipes.is_empty() || !planned_routes.heavy_recipes.is_empty();
+    let compute_needs_pressure =
+        derived_compute_recipes_need_pressure(&planned_routes.compute_recipes);
+    let needs_pair = compute_needs_pressure || !planned_routes.heavy_recipes.is_empty();
+
+    if !planned_routes.compute_recipes.is_empty()
+        && !compute_needs_pressure
+        && planned_routes.heavy_recipes.is_empty()
+    {
+        let surface_planned = loaded
+            .plan
+            .bundle_for(
+                CanonicalBundleDescriptor::SurfaceAnalysis,
+                request.forecast_hour,
+            )
+            .ok_or("derived surface-only compute missing planned surface bundle")?;
+        let surface_decode = loaded
+            .surface_decodes
+            .get(&surface_planned.id)
+            .ok_or("derived surface-only compute missing decoded surface bundle")?;
+        let surface = &surface_decode.value;
+        let surface_grid = surface.core_grid()?;
+        let project_start = Instant::now();
+        let surface_projected = build_projected_map_with_projection(
+            &surface_grid.lat_deg,
+            &surface_grid.lon_deg,
+            surface.projection.as_ref(),
+            request.domain.bounds,
+            map_frame_aspect_ratio(request.output_width, request.output_height, true, true),
+        )?;
+        project_ms += project_start.elapsed().as_millis();
+        let compute_start = Instant::now();
+        computed = compute_surface_only_derived_fields(surface, &planned_routes.compute_recipes)?;
+        compute_ms += compute_start.elapsed().as_millis();
+        grid = Some(surface_grid);
+        grid_projection = surface.projection.clone();
+        projected = Some(surface_projected);
+    }
 
     if needs_pair {
         let (surface_planned, surface_decode, pressure_planned, pressure_decode) = loaded
@@ -2114,6 +2187,30 @@ pub(crate) fn prepare_shared_derived_fields(
     )?;
     if planned_routes.compute_recipes.is_empty() {
         return Ok(None);
+    }
+
+    if !derived_compute_recipes_need_pressure(&planned_routes.compute_recipes) {
+        let surface_planned = loaded
+            .plan
+            .bundle_for(
+                CanonicalBundleDescriptor::SurfaceAnalysis,
+                request.forecast_hour,
+            )
+            .ok_or("derived surface-only shared prepare missing planned surface bundle")?;
+        let surface_decode = loaded
+            .surface_decodes
+            .get(&surface_planned.id)
+            .ok_or("derived surface-only shared prepare missing decoded surface bundle")?;
+        let computed = compute_surface_only_derived_fields(
+            &surface_decode.value,
+            &planned_routes.compute_recipes,
+        )?;
+        return Ok(Some(PreparedSharedDerivedFields {
+            grid: surface_decode.value.core_grid()?,
+            projection: surface_decode.value.projection.clone(),
+            computed,
+            fetch_decode: None,
+        }));
     }
 
     let (surface_planned, surface_decode, pressure_planned, pressure_decode) = loaded
@@ -3014,7 +3111,8 @@ fn resolve_derived_run(
     heavy_recipes: &[DerivedRecipe],
     native_routes: &[PlannedNativeThermoRoute],
 ) -> Result<rustwx_models::LatestRun, Box<dyn std::error::Error>> {
-    let needs_pair = !derived_compute_recipes.is_empty() || !heavy_recipes.is_empty();
+    let needs_pair =
+        derived_compute_recipes_need_pressure(derived_compute_recipes) || !heavy_recipes.is_empty();
     if let Some(hour_utc) = request.cycle_override_utc {
         if !needs_pair {
             return Ok(rustwx_models::LatestRun {
@@ -3100,6 +3198,7 @@ fn build_derived_execution_plan(
     surface_product_override: Option<&str>,
     pressure_product_override: Option<&str>,
     include_pair: bool,
+    include_surface: bool,
     native_routes: &[PlannedNativeThermoRoute],
 ) -> crate::planner::ExecutionPlan {
     let mut builder = ExecutionPlanBuilder::new(latest, forecast_hour);
@@ -3119,6 +3218,17 @@ fn build_derived_execution_plan(
                 builder.require_with_logical_family(&requirement, alias.logical_family.as_deref());
             }
         }
+    } else if include_surface {
+        let native_product = resolve_canonical_bundle_product(
+            latest.model,
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+            surface_product_override,
+        )
+        .native_product;
+        let requirement =
+            BundleRequirement::new(CanonicalBundleDescriptor::SurfaceAnalysis, forecast_hour)
+                .with_native_override(native_product);
+        builder.require_with_logical_family(&requirement, Some("sfc"));
     }
     let mut seen_native_products = BTreeSet::<String>::new();
     for route in native_routes {
@@ -3468,6 +3578,19 @@ where
     Ok(computed)
 }
 
+fn compute_surface_only_derived_fields<S>(
+    surface: &S,
+    recipes: &[DerivedRecipe],
+) -> Result<DerivedComputedFields, Box<dyn std::error::Error>>
+where
+    S: SurfaceFieldSet,
+{
+    if derived_compute_recipes_need_pressure(recipes) {
+        return Err("surface-only derived compute received a pressure-dependent recipe".into());
+    }
+    compute_derived_fields_generic(surface, &EmptyPressureFields, recipes)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DerivedQueryField {
     pub recipe_slug: String,
@@ -3523,7 +3646,8 @@ pub(crate) fn load_derived_sampled_fields_from_latest(
         });
     }
 
-    let plan = build_derived_execution_plan(latest, forecast_hour, None, None, true, &Vec::new());
+    let plan =
+        build_derived_execution_plan(latest, forecast_hour, None, None, true, true, &Vec::new());
     let loaded = load_execution_plan(
         plan,
         &BundleLoaderConfig::new(cache_root.to_path_buf(), use_cache),
@@ -3877,10 +4001,10 @@ fn build_render_artifact_with_contour_mode(
             grid,
             "hPa",
             required_values(&computed.vpd_2m_hpa, recipe, "vpd_2m_hpa")?.clone(),
-            range_step(0.0, 11.0, 1.0),
+            range_step(0.0, 41.0, 2.0),
             vpd_scale_colors(),
             ExtendMode::Max,
-            Some(2.0),
+            Some(4.0),
         )?,
         DerivedRecipe::DewpointDepression2m => custom_scale_request(
             recipe,
@@ -5024,8 +5148,8 @@ fn surface_wind_barb_layer(
         projected_y,
         extent,
     );
-    let stride_x = ((visible_nx as f64 / 24.0).round() as usize).clamp(3, 128);
-    let stride_y = ((visible_ny as f64 / 14.0).round() as usize).clamp(3, 96);
+    let stride_x = ((visible_nx as f64 / 30.0).round() as usize).clamp(3, 128);
+    let stride_y = ((visible_ny as f64 / 18.0).round() as usize).clamp(3, 96);
     WindBarbLayer {
         u: u_kt.to_vec(),
         v: v_kt.to_vec(),
@@ -5201,16 +5325,21 @@ fn core_field(
 
 fn vpd_scale_colors() -> Vec<Color> {
     vec![
-        Color::rgba(26, 152, 80, 255),
-        Color::rgba(85, 180, 95, 255),
-        Color::rgba(120, 198, 102, 255),
-        Color::rgba(166, 217, 106, 255),
-        Color::rgba(217, 239, 139, 255),
-        Color::rgba(254, 224, 139, 255),
-        Color::rgba(253, 174, 97, 255),
-        Color::rgba(244, 109, 67, 255),
-        Color::rgba(215, 48, 39, 255),
-        Color::rgba(165, 0, 38, 255),
+        Color::rgba(24, 90, 145, 255),
+        Color::rgba(39, 129, 172, 255),
+        Color::rgba(67, 164, 184, 255),
+        Color::rgba(110, 190, 168, 255),
+        Color::rgba(154, 211, 142, 255),
+        Color::rgba(196, 226, 126, 255),
+        Color::rgba(229, 232, 126, 255),
+        Color::rgba(247, 219, 118, 255),
+        Color::rgba(248, 195, 102, 255),
+        Color::rgba(240, 163, 85, 255),
+        Color::rgba(226, 130, 72, 255),
+        Color::rgba(207, 100, 65, 255),
+        Color::rgba(184, 74, 61, 255),
+        Color::rgba(157, 53, 60, 255),
+        Color::rgba(128, 37, 63, 255),
     ]
 }
 

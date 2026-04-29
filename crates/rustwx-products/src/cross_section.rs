@@ -9,9 +9,10 @@ use rustwx_calc::{
 };
 use rustwx_core::{CycleSpec, ModelId, SourceId};
 use rustwx_cross_section::{
-    CrossSectionProduct, CrossSectionStyle, DecomposedWindGrid, GeoPoint, HorizontalInterpolation,
-    ScalarSection, SectionLayout, SectionMetadata, TerrainProfile, VerticalAxis, VerticalKind,
-    VerticalScale, VerticalUnits, WindOverlayBundle, WindOverlayStyle, decompose_wind_grid,
+    ALL_CROSS_SECTION_PRODUCTS, CrossSectionProduct, CrossSectionStyle, DecomposedWindGrid,
+    GeoPoint, HorizontalInterpolation, ScalarSection, SectionLayout, SectionMetadata,
+    TerrainProfile, VerticalAxis, VerticalKind, VerticalScale, VerticalUnits, WindOverlayBundle,
+    WindOverlayStyle, decompose_wind, decompose_wind_grid,
 };
 use serde::{Deserialize, Serialize};
 
@@ -22,18 +23,209 @@ const INTERPOLATED_NEIGHBOR_COUNT: usize = 4;
 const MS_TO_KT: f64 = 1.943_844_492_440_604_8;
 const PA_S_TO_HPA_HR: f64 = 36.0;
 
-pub const SUPPORTED_PRESSURE_CROSS_SECTION_PRODUCTS: [CrossSectionProduct; 10] = [
+pub const SUPPORTED_PRESSURE_CROSS_SECTION_PRODUCTS: [CrossSectionProduct; 19] = [
     CrossSectionProduct::Temperature,
     CrossSectionProduct::RelativeHumidity,
     CrossSectionProduct::SpecificHumidity,
     CrossSectionProduct::ThetaE,
     CrossSectionProduct::WindSpeed,
+    CrossSectionProduct::Omega,
+    CrossSectionProduct::Vorticity,
+    CrossSectionProduct::Shear,
+    CrossSectionProduct::LapseRate,
+    CrossSectionProduct::CloudWater,
+    CrossSectionProduct::TotalCondensate,
     CrossSectionProduct::WetBulb,
+    CrossSectionProduct::Icing,
+    CrossSectionProduct::Frontogenesis,
     CrossSectionProduct::VaporPressureDeficit,
     CrossSectionProduct::DewpointDepression,
     CrossSectionProduct::MoistureTransport,
+    CrossSectionProduct::PotentialVorticity,
     CrossSectionProduct::FireWeather,
 ];
+
+pub const WXSECTION_PARITY_CROSS_SECTION_PRODUCTS: [CrossSectionProduct; 20] =
+    ALL_CROSS_SECTION_PRODUCTS;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PressureCrossSectionRequirementGroup {
+    Pressure3d,
+    Planar2d,
+    Hybrid3d,
+    StaticTerrain,
+    PointTimeseries,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PressureCrossSectionFieldRequirement {
+    pub group: PressureCrossSectionRequirementGroup,
+    pub variable: &'static str,
+    pub note: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PressureCrossSectionProductSpec {
+    pub product: CrossSectionProduct,
+    pub current_pressure_volume_ready: bool,
+    pub requirements: &'static [PressureCrossSectionFieldRequirement],
+}
+
+const fn pressure_req(
+    variable: &'static str,
+    note: &'static str,
+) -> PressureCrossSectionFieldRequirement {
+    PressureCrossSectionFieldRequirement {
+        group: PressureCrossSectionRequirementGroup::Pressure3d,
+        variable,
+        note,
+    }
+}
+
+const fn hybrid_req(
+    variable: &'static str,
+    note: &'static str,
+) -> PressureCrossSectionFieldRequirement {
+    PressureCrossSectionFieldRequirement {
+        group: PressureCrossSectionRequirementGroup::Hybrid3d,
+        variable,
+        note,
+    }
+}
+
+const REQ_TMP: &[PressureCrossSectionFieldRequirement] = &[pressure_req("TMP", "temperature")];
+const REQ_RH: &[PressureCrossSectionFieldRequirement] = &[
+    pressure_req("TMP", "temperature"),
+    pressure_req("SPFH", "moisture"),
+];
+const REQ_WIND: &[PressureCrossSectionFieldRequirement] = &[
+    pressure_req("UGRD", "u wind"),
+    pressure_req("VGRD", "v wind"),
+];
+const REQ_THETAE: &[PressureCrossSectionFieldRequirement] = &[
+    pressure_req("TMP", "temperature"),
+    pressure_req("SPFH", "moisture"),
+];
+const REQ_Q: &[PressureCrossSectionFieldRequirement] = &[pressure_req("SPFH", "moisture")];
+const REQ_SHEAR: &[PressureCrossSectionFieldRequirement] = &[
+    pressure_req("UGRD", "u wind"),
+    pressure_req("VGRD", "v wind"),
+    pressure_req("HGT", "height coordinate"),
+];
+const REQ_LAPSE: &[PressureCrossSectionFieldRequirement] = &[
+    pressure_req("TMP", "temperature"),
+    pressure_req("HGT", "height coordinate"),
+];
+const REQ_FRONTO: &[PressureCrossSectionFieldRequirement] = &[
+    pressure_req("TMP", "temperature"),
+    pressure_req("UGRD", "u wind"),
+    pressure_req("VGRD", "v wind"),
+];
+const REQ_MOISTURE_TRANSPORT: &[PressureCrossSectionFieldRequirement] = &[
+    pressure_req("SPFH", "moisture"),
+    pressure_req("UGRD", "u wind"),
+    pressure_req("VGRD", "v wind"),
+];
+const REQ_FIRE: &[PressureCrossSectionFieldRequirement] = &[
+    pressure_req("TMP", "temperature"),
+    pressure_req("SPFH", "moisture"),
+    pressure_req("UGRD", "wind overlay"),
+    pressure_req("VGRD", "wind overlay"),
+];
+const REQ_OMEGA: &[PressureCrossSectionFieldRequirement] =
+    &[pressure_req("VVEL", "vertical motion")];
+const REQ_VORT: &[PressureCrossSectionFieldRequirement] =
+    &[pressure_req("ABSV", "absolute vorticity")];
+const REQ_CLOUD: &[PressureCrossSectionFieldRequirement] =
+    &[pressure_req("CLWMR", "cloud liquid water")];
+const REQ_TOTAL_CONDENSATE: &[PressureCrossSectionFieldRequirement] = &[
+    pressure_req("CLWMR", "cloud liquid water"),
+    pressure_req("ICMR", "cloud ice mixing ratio"),
+    pressure_req("RWMR", "rain mixing ratio"),
+    pressure_req("SNMR", "snow mixing ratio"),
+    pressure_req("GRLE", "graupel mixing ratio"),
+];
+const REQ_ICING: &[PressureCrossSectionFieldRequirement] = &[
+    pressure_req("TMP", "temperature"),
+    pressure_req("CLWMR", "supercooled liquid water proxy"),
+];
+const REQ_PV: &[PressureCrossSectionFieldRequirement] = &[
+    pressure_req("TMP", "temperature"),
+    pressure_req("ABSV", "absolute vorticity"),
+];
+const REQ_SMOKE: &[PressureCrossSectionFieldRequirement] = &[
+    hybrid_req("MASSDEN", "native smoke mass density"),
+    hybrid_req("PRES", "native hybrid pressure coordinate"),
+];
+
+pub fn pressure_cross_section_product_spec(
+    product: CrossSectionProduct,
+) -> PressureCrossSectionProductSpec {
+    let (current_pressure_volume_ready, requirements) = match product {
+        CrossSectionProduct::Temperature => (true, REQ_TMP),
+        CrossSectionProduct::RelativeHumidity
+        | CrossSectionProduct::WetBulb
+        | CrossSectionProduct::VaporPressureDeficit
+        | CrossSectionProduct::DewpointDepression => (true, REQ_RH),
+        CrossSectionProduct::SpecificHumidity => (true, REQ_Q),
+        CrossSectionProduct::ThetaE => (true, REQ_THETAE),
+        CrossSectionProduct::WindSpeed => (true, REQ_WIND),
+        CrossSectionProduct::Shear => (true, REQ_SHEAR),
+        CrossSectionProduct::LapseRate => (true, REQ_LAPSE),
+        CrossSectionProduct::Frontogenesis => (true, REQ_FRONTO),
+        CrossSectionProduct::MoistureTransport => (true, REQ_MOISTURE_TRANSPORT),
+        CrossSectionProduct::FireWeather => (true, REQ_FIRE),
+        CrossSectionProduct::Omega => (true, REQ_OMEGA),
+        CrossSectionProduct::Vorticity => (true, REQ_VORT),
+        CrossSectionProduct::CloudWater => (true, REQ_CLOUD),
+        CrossSectionProduct::TotalCondensate => (true, REQ_TOTAL_CONDENSATE),
+        CrossSectionProduct::Icing => (true, REQ_ICING),
+        CrossSectionProduct::PotentialVorticity => (true, REQ_PV),
+        CrossSectionProduct::Smoke => (false, REQ_SMOKE),
+    };
+    PressureCrossSectionProductSpec {
+        product,
+        current_pressure_volume_ready,
+        requirements,
+    }
+}
+
+pub fn missing_pressure_volume_requirements(
+    product: CrossSectionProduct,
+    available_variables: &[&str],
+) -> Vec<String> {
+    let spec = pressure_cross_section_product_spec(product);
+    let has_var = |required: &str| {
+        available_variables
+            .iter()
+            .any(|available| available.eq_ignore_ascii_case(required))
+    };
+    spec.requirements
+        .iter()
+        .filter(|requirement| match requirement.group {
+            PressureCrossSectionRequirementGroup::Pressure3d => !has_var(requirement.variable),
+            _ => true,
+        })
+        .map(|requirement| match requirement.group {
+            PressureCrossSectionRequirementGroup::Pressure3d => {
+                format!("pressure:{} ({})", requirement.variable, requirement.note)
+            }
+            PressureCrossSectionRequirementGroup::Planar2d => {
+                format!("planar2d:{} ({})", requirement.variable, requirement.note)
+            }
+            PressureCrossSectionRequirementGroup::Hybrid3d => {
+                format!("hybrid:{} ({})", requirement.variable, requirement.note)
+            }
+            PressureCrossSectionRequirementGroup::StaticTerrain => {
+                format!("static:{} ({})", requirement.variable, requirement.note)
+            }
+            PressureCrossSectionRequirementGroup::PointTimeseries => {
+                format!("timeseries:{} ({})", requirement.variable, requirement.note)
+            }
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone)]
 pub struct PressureCrossSectionArtifact {
@@ -263,8 +455,19 @@ impl PressureCrossSectionWindFacts {
 /// into the shared product-derivation lane without changing the product API.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PressureCrossSectionOptionalProductFields<'a> {
+    pub height_m: Option<&'a [f64]>,
+    pub distance_km: Option<&'a [f64]>,
+    pub section_wind_ms: Option<&'a [f64]>,
     pub omega_pa_s: Option<&'a [f64]>,
+    pub absolute_vorticity_s: Option<&'a [f64]>,
+    pub cloud_liquid_kgkg: Option<&'a [f64]>,
+    pub cloud_ice_kgkg: Option<&'a [f64]>,
+    pub rain_kgkg: Option<&'a [f64]>,
+    pub snow_kgkg: Option<&'a [f64]>,
+    pub graupel_kgkg: Option<&'a [f64]>,
     pub smoke_ugm3: Option<&'a [f64]>,
+    pub point_count: Option<usize>,
+    pub level_count: Option<usize>,
 }
 
 /// Shared sampled-path inputs for pressure/native cross-section products.
@@ -292,8 +495,49 @@ impl<'a> PressureCrossSectionProductInputs<'a> {
         if let Some(omega_pa_s) = self.optional.omega_pa_s {
             validate_product_input_length("omega_pa_s", omega_pa_s.len(), expected)?;
         }
+        if let Some(height_m) = self.optional.height_m {
+            validate_product_input_length("height_m", height_m.len(), expected)?;
+        }
+        if let Some(section_wind_ms) = self.optional.section_wind_ms {
+            validate_product_input_length("section_wind_ms", section_wind_ms.len(), expected)?;
+        }
+        if let Some(absolute_vorticity_s) = self.optional.absolute_vorticity_s {
+            validate_product_input_length(
+                "absolute_vorticity_s",
+                absolute_vorticity_s.len(),
+                expected,
+            )?;
+        }
+        if let Some(cloud_liquid_kgkg) = self.optional.cloud_liquid_kgkg {
+            validate_product_input_length("cloud_liquid_kgkg", cloud_liquid_kgkg.len(), expected)?;
+        }
+        if let Some(cloud_ice_kgkg) = self.optional.cloud_ice_kgkg {
+            validate_product_input_length("cloud_ice_kgkg", cloud_ice_kgkg.len(), expected)?;
+        }
+        if let Some(rain_kgkg) = self.optional.rain_kgkg {
+            validate_product_input_length("rain_kgkg", rain_kgkg.len(), expected)?;
+        }
+        if let Some(snow_kgkg) = self.optional.snow_kgkg {
+            validate_product_input_length("snow_kgkg", snow_kgkg.len(), expected)?;
+        }
+        if let Some(graupel_kgkg) = self.optional.graupel_kgkg {
+            validate_product_input_length("graupel_kgkg", graupel_kgkg.len(), expected)?;
+        }
         if let Some(smoke_ugm3) = self.optional.smoke_ugm3 {
             validate_product_input_length("smoke_ugm3", smoke_ugm3.len(), expected)?;
+        }
+        if let Some(distance_km) = self.optional.distance_km {
+            let expected_points = self.optional.point_count.unwrap_or(distance_km.len());
+            validate_product_input_length("distance_km", distance_km.len(), expected_points)?;
+        }
+        if let (Some(point_count), Some(level_count)) =
+            (self.optional.point_count, self.optional.level_count)
+        {
+            let expected = point_count.checked_mul(level_count).ok_or_else(|| {
+                "pressure cross-section product shape point_count * level_count overflow"
+                    .to_string()
+            })?;
+            validate_product_input_length("flattened product inputs", self.len(), expected)?;
         }
         Ok(())
     }
@@ -385,6 +629,35 @@ fn build_pressure_cross_section_from_parts_profiled(
     let mut mixing_ratio_kgkg = Vec::with_capacity(n_levels * n_points);
     let mut u_ms = Vec::with_capacity(n_levels * n_points);
     let mut v_ms = Vec::with_capacity(n_levels * n_points);
+    let mut height_m = Vec::with_capacity(n_levels * n_points);
+    let mut omega_pa_s = pressure
+        .omega_pa_s_3d
+        .as_ref()
+        .map(|_| Vec::with_capacity(n_levels * n_points));
+    let mut absolute_vorticity_s = pressure
+        .absolute_vorticity_s_3d
+        .as_ref()
+        .map(|_| Vec::with_capacity(n_levels * n_points));
+    let mut cloud_liquid_kgkg = pressure
+        .cloud_liquid_kgkg_3d
+        .as_ref()
+        .map(|_| Vec::with_capacity(n_levels * n_points));
+    let mut cloud_ice_kgkg = pressure
+        .cloud_ice_kgkg_3d
+        .as_ref()
+        .map(|_| Vec::with_capacity(n_levels * n_points));
+    let mut rain_kgkg = pressure
+        .rain_kgkg_3d
+        .as_ref()
+        .map(|_| Vec::with_capacity(n_levels * n_points));
+    let mut snow_kgkg = pressure
+        .snow_kgkg_3d
+        .as_ref()
+        .map(|_| Vec::with_capacity(n_levels * n_points));
+    let mut graupel_kgkg = pressure
+        .graupel_kgkg_3d
+        .as_ref()
+        .map(|_| Vec::with_capacity(n_levels * n_points));
     let mut pressure_hpa = Vec::with_capacity(n_levels * n_points);
     let pressure_sampling_start = Instant::now();
     for (level_index, level_hpa) in pressure.pressure_levels_hpa.iter().copied().enumerate() {
@@ -410,10 +683,59 @@ fn build_pressure_cross_section_from_parts_profiled(
                 level_offset,
                 stencil,
             ));
+            height_m.push(sample_weighted_level(
+                &pressure.gh_m_3d,
+                level_offset,
+                stencil,
+            ));
+            sample_optional_weighted_level(
+                pressure.omega_pa_s_3d.as_deref(),
+                &mut omega_pa_s,
+                level_offset,
+                stencil,
+            );
+            sample_optional_weighted_level(
+                pressure.absolute_vorticity_s_3d.as_deref(),
+                &mut absolute_vorticity_s,
+                level_offset,
+                stencil,
+            );
+            sample_optional_weighted_level(
+                pressure.cloud_liquid_kgkg_3d.as_deref(),
+                &mut cloud_liquid_kgkg,
+                level_offset,
+                stencil,
+            );
+            sample_optional_weighted_level(
+                pressure.cloud_ice_kgkg_3d.as_deref(),
+                &mut cloud_ice_kgkg,
+                level_offset,
+                stencil,
+            );
+            sample_optional_weighted_level(
+                pressure.rain_kgkg_3d.as_deref(),
+                &mut rain_kgkg,
+                level_offset,
+                stencil,
+            );
+            sample_optional_weighted_level(
+                pressure.snow_kgkg_3d.as_deref(),
+                &mut snow_kgkg,
+                level_offset,
+                stencil,
+            );
+            sample_optional_weighted_level(
+                pressure.graupel_kgkg_3d.as_deref(),
+                &mut graupel_kgkg,
+                level_offset,
+                stencil,
+            );
             pressure_hpa.push(level_hpa);
         }
     }
     let pressure_sampling_ms = pressure_sampling_start.elapsed().as_millis();
+    let section_wind_ms =
+        build_section_wind_ms(&u_ms, &v_ms, n_levels, n_points, &sampled_bearings)?;
 
     let product_compute_start = Instant::now();
     let section_values = build_pressure_cross_section_product_values(
@@ -424,7 +746,21 @@ fn build_pressure_cross_section_from_parts_profiled(
             mixing_ratio_kgkg: &mixing_ratio_kgkg,
             u_ms: &u_ms,
             v_ms: &v_ms,
-            optional: PressureCrossSectionOptionalProductFields::default(),
+            optional: PressureCrossSectionOptionalProductFields {
+                height_m: Some(&height_m),
+                distance_km: Some(&sampled_distances),
+                section_wind_ms: Some(&section_wind_ms),
+                omega_pa_s: omega_pa_s.as_deref(),
+                absolute_vorticity_s: absolute_vorticity_s.as_deref(),
+                cloud_liquid_kgkg: cloud_liquid_kgkg.as_deref(),
+                cloud_ice_kgkg: cloud_ice_kgkg.as_deref(),
+                rain_kgkg: rain_kgkg.as_deref(),
+                snow_kgkg: snow_kgkg.as_deref(),
+                graupel_kgkg: graupel_kgkg.as_deref(),
+                point_count: Some(n_points),
+                level_count: Some(n_levels),
+                ..PressureCrossSectionOptionalProductFields::default()
+            },
         },
     )?
     .into_iter()
@@ -511,6 +847,17 @@ pub fn build_pressure_cross_section_product_values(
             )?)
         }
         CrossSectionProduct::WindSpeed => Ok(compute_wind_speed_kt(inputs.u_ms, inputs.v_ms)?),
+        CrossSectionProduct::Shear => compute_vertical_wind_shear_per_km(
+            inputs.u_ms,
+            inputs.v_ms,
+            require_optional_field(inputs.optional.height_m, "height_m", "shear")?,
+            require_shape(inputs.optional.point_count, inputs.optional.level_count, inputs.len())?,
+        ),
+        CrossSectionProduct::LapseRate => compute_lapse_rate_c_per_km(
+            inputs.temperature_c,
+            require_optional_field(inputs.optional.height_m, "height_m", "lapse_rate")?,
+            require_shape(inputs.optional.point_count, inputs.optional.level_count, inputs.len())?,
+        ),
         CrossSectionProduct::WetBulb => {
             let relative_humidity_pct = compute_relative_humidity_from_pressure_temperature_and_mixing_ratio(
                 inputs.pressure_hpa,
@@ -555,6 +902,17 @@ pub fn build_pressure_cross_section_product_values(
                 inputs.mixing_ratio_kgkg,
             )?,
         ),
+        CrossSectionProduct::Frontogenesis => compute_frontogenesis_k_100km_3hr(
+            inputs.pressure_hpa,
+            inputs.temperature_c,
+            require_optional_field(
+                inputs.optional.section_wind_ms,
+                "section_wind_ms",
+                "frontogenesis",
+            )?,
+            require_optional_field(inputs.optional.distance_km, "distance_km", "frontogenesis")?,
+            require_shape(inputs.optional.point_count, inputs.optional.level_count, inputs.len())?,
+        ),
         CrossSectionProduct::Omega => inputs
             .optional
             .omega_pa_s
@@ -563,6 +921,34 @@ pub fn build_pressure_cross_section_product_values(
                 "cross-section product 'omega' requires sampled omega input from an upstream/native helper"
                     .into()
             }),
+        CrossSectionProduct::Vorticity => inputs
+            .optional
+            .absolute_vorticity_s
+            .map(|vorticity_s| vorticity_s.iter().map(|&value| value * 1.0e5).collect())
+            .ok_or_else(|| {
+                "cross-section product 'vorticity' requires sampled ABSV input from a pressure group"
+                    .into()
+            }),
+        CrossSectionProduct::CloudWater => inputs
+            .optional
+            .cloud_liquid_kgkg
+            .map(|cloud| cloud.iter().map(|&value| value * 1000.0).collect())
+            .ok_or_else(|| {
+                "cross-section product 'cloud' requires sampled CLWMR input from a pressure group"
+                    .into()
+            }),
+        CrossSectionProduct::TotalCondensate => compute_total_condensate_gkg(inputs.optional),
+        CrossSectionProduct::Icing => compute_icing_potential_gkg(inputs.temperature_c, inputs.optional),
+        CrossSectionProduct::PotentialVorticity => compute_potential_vorticity_pvu(
+            inputs.pressure_hpa,
+            inputs.temperature_c,
+            require_optional_field(
+                inputs.optional.absolute_vorticity_s,
+                "absolute_vorticity_s",
+                "pv",
+            )?,
+            require_shape(inputs.optional.point_count, inputs.optional.level_count, inputs.len())?,
+        ),
         CrossSectionProduct::Smoke => inputs
             .optional
             .smoke_ugm3
@@ -571,11 +957,6 @@ pub fn build_pressure_cross_section_product_values(
                 "cross-section product 'smoke' requires sampled smoke input from an upstream/native helper"
                     .into()
             }),
-        _ => Err(format!(
-            "cross-section product '{}' is not supported by the gridded pressure builder",
-            product.slug()
-        )
-        .into()),
     }
 }
 
@@ -624,6 +1005,260 @@ fn compute_wind_speed_kt(
         .into_iter()
         .map(|wind_speed_ms| wind_speed_ms * MS_TO_KT)
         .collect())
+}
+
+fn require_optional_field<'a>(
+    value: Option<&'a [f64]>,
+    field_name: &str,
+    product: &str,
+) -> Result<&'a [f64], Box<dyn std::error::Error>> {
+    value.ok_or_else(|| {
+        format!("cross-section product '{product}' requires sampled {field_name} input").into()
+    })
+}
+
+fn require_shape(
+    point_count: Option<usize>,
+    level_count: Option<usize>,
+    value_count: usize,
+) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    let point_count = point_count.ok_or_else(|| {
+        "pressure cross-section product requires point_count metadata".to_string()
+    })?;
+    let level_count = level_count.ok_or_else(|| {
+        "pressure cross-section product requires level_count metadata".to_string()
+    })?;
+    validate_product_input_length(
+        "flattened product inputs",
+        point_count
+            .checked_mul(level_count)
+            .ok_or_else(|| "point_count * level_count overflow".to_string())?,
+        value_count,
+    )?;
+    Ok((point_count, level_count))
+}
+
+fn compute_vertical_wind_shear_per_km(
+    u_ms: &[f64],
+    v_ms: &[f64],
+    height_m: &[f64],
+    shape: (usize, usize),
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    let (n_points, n_levels) = shape;
+    let mut shear = vec![f64::NAN; n_points * n_levels];
+    for level_index in 0..n_levels {
+        let next_level = (level_index + 1).min(n_levels - 1);
+        let prev_level = level_index.saturating_sub(1);
+        let other_level = if level_index + 1 < n_levels {
+            next_level
+        } else {
+            prev_level
+        };
+        for point_index in 0..n_points {
+            let a = level_index * n_points + point_index;
+            let b = other_level * n_points + point_index;
+            let dz = (height_m[a] - height_m[b]).abs();
+            let du = u_ms[a] - u_ms[b];
+            let dv = v_ms[a] - v_ms[b];
+            shear[a] = if dz >= 10.0 && dz.is_finite() {
+                (du.mul_add(du, dv * dv).sqrt() / dz) * 1000.0
+            } else {
+                f64::NAN
+            };
+        }
+    }
+    Ok(shear)
+}
+
+fn compute_lapse_rate_c_per_km(
+    temperature_c: &[f64],
+    height_m: &[f64],
+    shape: (usize, usize),
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    let (n_points, n_levels) = shape;
+    let mut lapse = vec![f64::NAN; n_points * n_levels];
+    for level_index in 0..n_levels {
+        let next_level = (level_index + 1).min(n_levels - 1);
+        let prev_level = level_index.saturating_sub(1);
+        let other_level = if level_index + 1 < n_levels {
+            next_level
+        } else {
+            prev_level
+        };
+        for point_index in 0..n_points {
+            let a = level_index * n_points + point_index;
+            let b = other_level * n_points + point_index;
+            let dz_km = (height_m[a] - height_m[b]) / 1000.0;
+            lapse[a] = if dz_km.abs() >= 0.01 && dz_km.is_finite() {
+                -(temperature_c[a] - temperature_c[b]) / dz_km
+            } else {
+                f64::NAN
+            };
+        }
+    }
+    Ok(lapse)
+}
+
+fn compute_frontogenesis_k_100km_3hr(
+    pressure_hpa: &[f64],
+    temperature_c: &[f64],
+    section_wind_ms: &[f64],
+    distance_km: &[f64],
+    shape: (usize, usize),
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    let (n_points, n_levels) = shape;
+    validate_product_input_length("distance_km", distance_km.len(), n_points)?;
+    let theta = compute_potential_temperature_k(pressure_hpa, temperature_c)?;
+    let mut frontogenesis = vec![f64::NAN; n_points * n_levels];
+    for level_index in 0..n_levels {
+        let level_offset = level_index * n_points;
+        for point_index in 0..n_points {
+            let dtheta_ds = finite_difference_route(
+                &theta[level_offset..level_offset + n_points],
+                distance_km,
+                point_index,
+            );
+            let du_ds = finite_difference_route(
+                &section_wind_ms[level_offset..level_offset + n_points],
+                distance_km,
+                point_index,
+            );
+            let flat = level_offset + point_index;
+            frontogenesis[flat] = if dtheta_ds.is_finite() && du_ds.is_finite() {
+                let grad_theta_mag = dtheta_ds.abs().max(1.0e-10);
+                (-dtheta_ds * du_ds / grad_theta_mag * 1.08e9).clamp(-5.0, 5.0)
+            } else {
+                f64::NAN
+            };
+        }
+    }
+    Ok(frontogenesis)
+}
+
+fn compute_total_condensate_gkg(
+    optional: PressureCrossSectionOptionalProductFields<'_>,
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    let mut total = optional
+        .cloud_liquid_kgkg
+        .map(|cloud| {
+            cloud
+                .iter()
+                .map(|&value| value * 1000.0)
+                .collect::<Vec<_>>()
+        })
+        .ok_or_else(|| {
+            "cross-section product 'cloud_total' requires sampled CLWMR input from a pressure group"
+                .to_string()
+        })?;
+    for field in [
+        optional.cloud_ice_kgkg,
+        optional.rain_kgkg,
+        optional.snow_kgkg,
+        optional.graupel_kgkg,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        for (accum, value) in total.iter_mut().zip(field.iter()) {
+            *accum += value * 1000.0;
+        }
+    }
+    Ok(total)
+}
+
+fn compute_icing_potential_gkg(
+    temperature_c: &[f64],
+    optional: PressureCrossSectionOptionalProductFields<'_>,
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    let cloud_liquid_kgkg = optional.cloud_liquid_kgkg.ok_or_else(|| {
+        "cross-section product 'icing' requires sampled CLWMR input from a pressure group"
+            .to_string()
+    })?;
+    Ok(temperature_c
+        .iter()
+        .zip(cloud_liquid_kgkg.iter())
+        .map(|(&temperature_c, &cloud_liquid_kgkg)| {
+            if (-20.0..=0.0).contains(&temperature_c) {
+                cloud_liquid_kgkg * 1000.0
+            } else {
+                0.0
+            }
+        })
+        .collect())
+}
+
+fn compute_potential_vorticity_pvu(
+    pressure_hpa: &[f64],
+    temperature_c: &[f64],
+    absolute_vorticity_s: &[f64],
+    shape: (usize, usize),
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    let (n_points, n_levels) = shape;
+    let theta = compute_potential_temperature_k(pressure_hpa, temperature_c)?;
+    let mut pv = vec![f64::NAN; n_points * n_levels];
+    for level_index in 0..n_levels {
+        let lower_level = level_index.saturating_sub(1);
+        let upper_level = (level_index + 1).min(n_levels - 1);
+        let a_level = if lower_level == upper_level {
+            level_index
+        } else {
+            lower_level
+        };
+        let b_level = if lower_level == upper_level {
+            level_index
+        } else {
+            upper_level
+        };
+        for point_index in 0..n_points {
+            let flat = level_index * n_points + point_index;
+            let a = a_level * n_points + point_index;
+            let b = b_level * n_points + point_index;
+            let dp_pa = (pressure_hpa[b] - pressure_hpa[a]) * 100.0;
+            if dp_pa.abs() <= f64::EPSILON || !dp_pa.is_finite() {
+                continue;
+            }
+            let dtheta_dp = (theta[b] - theta[a]) / dp_pa;
+            pv[flat] = -9.81 * absolute_vorticity_s[flat] * dtheta_dp * 1.0e6;
+        }
+    }
+    Ok(pv)
+}
+
+fn compute_potential_temperature_k(
+    pressure_hpa: &[f64],
+    temperature_c: &[f64],
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    validate_product_input_length("temperature_c", temperature_c.len(), pressure_hpa.len())?;
+    Ok(pressure_hpa
+        .iter()
+        .zip(temperature_c.iter())
+        .map(|(&pressure_hpa, &temperature_c)| {
+            if pressure_hpa > 0.0 {
+                (temperature_c + 273.15) * (1000.0 / pressure_hpa).powf(0.2854)
+            } else {
+                f64::NAN
+            }
+        })
+        .collect())
+}
+
+fn finite_difference_route(values: &[f64], distance_km: &[f64], index: usize) -> f64 {
+    if values.len() < 2 || distance_km.len() != values.len() || index >= values.len() {
+        return f64::NAN;
+    }
+    let (a, b) = if index == 0 {
+        (0, 1)
+    } else if index + 1 == values.len() {
+        (values.len() - 2, values.len() - 1)
+    } else {
+        (index - 1, index + 1)
+    };
+    let ds_m = (distance_km[b] - distance_km[a]) * 1000.0;
+    if ds_m.abs() <= f64::EPSILON || !ds_m.is_finite() {
+        f64::NAN
+    } else {
+        (values[b] - values[a]) / ds_m
+    }
 }
 
 fn compute_wet_bulb_temperature_c(
@@ -1087,6 +1722,26 @@ fn build_wind_grid(
     )?)
 }
 
+fn build_section_wind_ms(
+    u_ms: &[f64],
+    v_ms: &[f64],
+    n_levels: usize,
+    n_points: usize,
+    sampled_bearings: &[f64],
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    validate_product_input_length("v_ms", v_ms.len(), u_ms.len())?;
+    validate_product_input_length("sampled_bearings", sampled_bearings.len(), n_points)?;
+    validate_product_input_length("wind grid", u_ms.len(), n_levels * n_points)?;
+    let mut section_wind = Vec::with_capacity(u_ms.len());
+    for level_index in 0..n_levels {
+        for (point_index, bearing) in sampled_bearings.iter().copied().enumerate() {
+            let flat = level_index * n_points + point_index;
+            section_wind.push(decompose_wind(u_ms[flat], v_ms[flat], bearing).along_section_ms);
+        }
+    }
+    Ok(section_wind)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct SampleStencil {
     len: u8,
@@ -1208,6 +1863,17 @@ fn sample_weighted_level(values: &[f64], level_offset: usize, stencil: &SampleSt
     sample_weighted_indices(values, level_offset, stencil)
 }
 
+fn sample_optional_weighted_level(
+    source: Option<&[f64]>,
+    target: &mut Option<Vec<f64>>,
+    level_offset: usize,
+    stencil: &SampleStencil,
+) {
+    if let (Some(source), Some(target)) = (source, target.as_mut()) {
+        target.push(sample_weighted_level(source, level_offset, stencil));
+    }
+}
+
 fn sample_weighted_indices(values: &[f64], base_offset: usize, stencil: &SampleStencil) -> f64 {
     let mut weighted_sum = 0.0;
     let mut weight_sum = 0.0;
@@ -1301,6 +1967,7 @@ mod tests {
             native_sbcape_jkg: None,
             native_mlcape_jkg: None,
             native_mucape_jkg: None,
+            native_pblh_m: None,
         }
     }
 
@@ -1313,6 +1980,13 @@ mod tests {
             u_ms_3d: vec![12.0, 16.0, 14.0, 18.0, 20.0, 24.0, 22.0, 26.0],
             v_ms_3d: vec![2.0, 4.0, 3.0, 5.0, 6.0, 8.0, 7.0, 9.0],
             gh_m_3d: vec![100.0; 8],
+            omega_pa_s_3d: None,
+            absolute_vorticity_s_3d: None,
+            cloud_liquid_kgkg_3d: None,
+            cloud_ice_kgkg_3d: None,
+            rain_kgkg_3d: None,
+            snow_kgkg_3d: None,
+            graupel_kgkg_3d: None,
         }
     }
 
@@ -1388,42 +2062,17 @@ mod tests {
 
     #[test]
     fn supported_product_list_matches_current_pressure_section_lane() {
-        assert!(supports_pressure_cross_section_product(
-            CrossSectionProduct::Temperature
-        ));
-        assert!(supports_pressure_cross_section_product(
-            CrossSectionProduct::RelativeHumidity
-        ));
-        assert!(supports_pressure_cross_section_product(
-            CrossSectionProduct::SpecificHumidity
-        ));
-        assert!(supports_pressure_cross_section_product(
-            CrossSectionProduct::ThetaE
-        ));
-        assert!(supports_pressure_cross_section_product(
-            CrossSectionProduct::WindSpeed
-        ));
-        assert!(supports_pressure_cross_section_product(
-            CrossSectionProduct::WetBulb
-        ));
-        assert!(supports_pressure_cross_section_product(
-            CrossSectionProduct::VaporPressureDeficit
-        ));
-        assert!(supports_pressure_cross_section_product(
-            CrossSectionProduct::DewpointDepression
-        ));
-        assert!(supports_pressure_cross_section_product(
-            CrossSectionProduct::MoistureTransport
-        ));
-        assert!(supports_pressure_cross_section_product(
-            CrossSectionProduct::FireWeather
-        ));
-        assert!(!supports_pressure_cross_section_product(
-            CrossSectionProduct::Omega
-        ));
-        assert!(!supports_pressure_cross_section_product(
-            CrossSectionProduct::Smoke
-        ));
+        assert_eq!(
+            SUPPORTED_PRESSURE_CROSS_SECTION_PRODUCTS.len(),
+            ALL_CROSS_SECTION_PRODUCTS.len() - 1
+        );
+        for product in ALL_CROSS_SECTION_PRODUCTS {
+            assert_eq!(
+                supports_pressure_cross_section_product(product),
+                product != CrossSectionProduct::Smoke,
+                "{product:?}"
+            );
+        }
     }
 
     #[test]
@@ -1699,6 +2348,85 @@ mod tests {
     }
 
     #[test]
+    fn wxsection_parity_registry_marks_current_and_future_volume_products() {
+        assert_eq!(WXSECTION_PARITY_CROSS_SECTION_PRODUCTS.len(), 20);
+        assert!(supports_pressure_cross_section_product(
+            CrossSectionProduct::Frontogenesis
+        ));
+        assert!(supports_pressure_cross_section_product(
+            CrossSectionProduct::LapseRate
+        ));
+        assert!(supports_pressure_cross_section_product(
+            CrossSectionProduct::Shear
+        ));
+
+        let current_vars = ["TMP", "SPFH", "UGRD", "VGRD", "HGT"];
+        assert!(
+            missing_pressure_volume_requirements(CrossSectionProduct::Frontogenesis, &current_vars)
+                .is_empty()
+        );
+        assert!(
+            missing_pressure_volume_requirements(CrossSectionProduct::Shear, &current_vars)
+                .is_empty()
+        );
+
+        let omega_missing =
+            missing_pressure_volume_requirements(CrossSectionProduct::Omega, &current_vars);
+        assert!(omega_missing.iter().any(|item| item.contains("VVEL")));
+
+        let smoke_missing =
+            missing_pressure_volume_requirements(CrossSectionProduct::Smoke, &current_vars);
+        assert!(
+            smoke_missing
+                .iter()
+                .any(|item| item.contains("hybrid:MASSDEN"))
+        );
+    }
+
+    #[test]
+    fn current_pressure_inputs_compute_shear_lapse_rate_and_frontogenesis() {
+        let pressure_hpa = [1000.0, 1000.0, 850.0, 850.0];
+        let temperature_c = [20.0, 18.0, 10.0, 8.0];
+        let mixing_ratio_kgkg = [0.010; 4];
+        let u_ms = [5.0, 10.0, 15.0, 25.0];
+        let v_ms = [0.0; 4];
+        let height_m = [100.0, 100.0, 1500.0, 1500.0];
+        let distance_km = [0.0, 100.0];
+        let section_wind_ms = u_ms;
+        let inputs = PressureCrossSectionProductInputs {
+            pressure_hpa: &pressure_hpa,
+            temperature_c: &temperature_c,
+            mixing_ratio_kgkg: &mixing_ratio_kgkg,
+            u_ms: &u_ms,
+            v_ms: &v_ms,
+            optional: PressureCrossSectionOptionalProductFields {
+                height_m: Some(&height_m),
+                distance_km: Some(&distance_km),
+                section_wind_ms: Some(&section_wind_ms),
+                point_count: Some(2),
+                level_count: Some(2),
+                ..PressureCrossSectionOptionalProductFields::default()
+            },
+        };
+
+        let shear = build_pressure_cross_section_product_values(CrossSectionProduct::Shear, inputs)
+            .unwrap();
+        let lapse =
+            build_pressure_cross_section_product_values(CrossSectionProduct::LapseRate, inputs)
+                .unwrap();
+        let frontogenesis =
+            build_pressure_cross_section_product_values(CrossSectionProduct::Frontogenesis, inputs)
+                .unwrap();
+
+        assert_eq!(shear.len(), 4);
+        assert_eq!(lapse.len(), 4);
+        assert_eq!(frontogenesis.len(), 4);
+        assert!(shear.iter().all(|value| value.is_finite()));
+        assert!(lapse.iter().all(|value| value.is_finite()));
+        assert!(frontogenesis.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
     fn omega_and_smoke_products_require_optional_upstream_inputs() {
         let pressure_hpa = [1000.0];
         let temperature_c = [20.0];
@@ -1736,6 +2464,7 @@ mod tests {
             optional: PressureCrossSectionOptionalProductFields {
                 omega_pa_s: Some(&[0.5]),
                 smoke_ugm3: Some(&[12.0]),
+                ..PressureCrossSectionOptionalProductFields::default()
             },
             ..inputs
         };
@@ -1772,6 +2501,7 @@ mod tests {
             native_sbcape_jkg: None,
             native_mlcape_jkg: None,
             native_mucape_jkg: None,
+            native_pblh_m: None,
         };
         let point = GeoPoint::new(35.2, -100.1).unwrap();
         let stencil = sample_stencil_for_point(

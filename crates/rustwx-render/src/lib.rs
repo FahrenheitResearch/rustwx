@@ -39,7 +39,8 @@ pub use projected_map::{
 pub use projection::{LambertConformal, ProjectionSpec};
 pub use render::{
     PngCompressionMode, PngWriteOptions, RenderImageTiming, RenderPngTiming,
-    map_frame_aspect_ratio, map_frame_aspect_ratio_for_mode, render_to_image_profile,
+    map_frame_aspect_ratio, map_frame_aspect_ratio_for_mode,
+    map_frame_aspect_ratio_for_mode_with_domain_frame, render_to_image_profile,
     render_to_png_profile as profile_render_to_png,
 };
 pub use request::{
@@ -48,7 +49,7 @@ pub use request::{
     ProductSemanticFlag, ProductSemantics, ProjectedDomain, ProjectedExtent,
     ProjectedLabelPlacement, ProjectedLineOverlay, ProjectedMarkerShape, ProjectedPlaceLabel,
     ProjectedPlaceLabelPriority, ProjectedPlaceLabelStyle, ProjectedPointOverlay,
-    ProjectedPolygonFill, WindBarbLayer, WindBarbStyle,
+    ProjectedPolygonFill, RgbaGridField, WindBarbLayer, WindBarbStyle,
 };
 pub use rustwx_core::{
     Field2D as CoreField2D, GridProjection as CoreGridProjection, GridShape as CoreGridShape,
@@ -70,8 +71,8 @@ use crate::overlay::{
     ProjectedPointOverlay as RenderProjectedPointOverlay, ProjectedPolygon, ProjectedPolyline,
 };
 use crate::render::{
-    RenderOpts, encode_rgba_png_profile_with_options, render_to_image as native_render_to_image,
-    render_to_png, trim_vertical_canvas_whitespace,
+    RenderOpts, center_horizontal_canvas_content, encode_rgba_png_profile_with_options,
+    render_to_image as native_render_to_image, render_to_png, trim_vertical_canvas_whitespace,
 };
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -242,6 +243,11 @@ impl RustRenderer {
             with_render_state_profile(request, |data, ny, nx, opts| {
                 let (image, mut image_timing) = render_to_image_profile(data, ny, nx, opts);
                 let trim_start = Instant::now();
+                let image = if opts.domain_frame.is_some() {
+                    center_horizontal_canvas_content(&image, opts.presentation.canvas_background)
+                } else {
+                    image
+                };
                 let trimmed =
                     trim_vertical_canvas_whitespace(&image, opts.presentation.canvas_background);
                 let trim_ms = trim_start.elapsed().as_millis();
@@ -403,6 +409,19 @@ fn with_render_state_profile<T>(
         });
         let projected_grid_ms = projected_grid_start.elapsed().as_millis();
 
+        let rgba_grid = request.rgba_grid.as_ref().map(|field| {
+            field
+                .pixels
+                .iter()
+                .map(|pixel| Rgba {
+                    r: pixel.r,
+                    g: pixel.g,
+                    b: pixel.b,
+                    a: pixel.a,
+                })
+                .collect::<Vec<_>>()
+        });
+
         let projected_lines_start = Instant::now();
         let mut projected_lines = Vec::with_capacity(request.projected_lines.len());
         for line in &request.projected_lines {
@@ -537,6 +556,7 @@ fn with_render_state_profile<T>(
                 y_max: domain.extent.y_max,
             }),
             projected_grid,
+            rgba_grid,
             projected_polygons,
             projected_data_polygons,
             projected_place_labels,
@@ -597,6 +617,16 @@ fn default_title(field: &Field2D) -> Option<String> {
 
 fn validate_request(request: &MapRenderRequest) -> Result<(), RustwxRenderError> {
     let expected = request.field.grid.shape.len();
+
+    if let Some(rgba_grid) = &request.rgba_grid {
+        if rgba_grid.grid.shape != request.field.grid.shape || rgba_grid.pixels.len() != expected {
+            return Err(RustwxRenderError::LayerShapeMismatch {
+                layer: "rgba_grid",
+                expected,
+                actual: rgba_grid.pixels.len(),
+            });
+        }
+    }
 
     if let Some(domain) = &request.projected_domain {
         if request.field.grid.shape.nx < 2 || request.field.grid.shape.ny < 2 {
@@ -749,6 +779,7 @@ mod tests {
     fn render_png_emits_valid_nonempty_image() {
         let request = MapRenderRequest {
             field: sample_field("sbecape"),
+            rgba_grid: None,
             product_metadata: None,
             width: 320,
             height: 240,
@@ -811,6 +842,7 @@ mod tests {
     fn render_image_emits_rgba_canvas_without_png_decode_in_callers() {
         let request = MapRenderRequest {
             field: sample_field("mucape"),
+            rgba_grid: None,
             product_metadata: None,
             width: 320,
             height: 240,

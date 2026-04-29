@@ -779,6 +779,7 @@ mod tests {
             native_sbcape_jkg: None,
             native_mlcape_jkg: None,
             native_mucape_jkg: None,
+            native_pblh_m: None,
         }
     }
 
@@ -791,6 +792,13 @@ mod tests {
             u_ms_3d: vec![8.0, 9.0, 12.0, 15.0],
             v_ms_3d: vec![1.0, 2.0, 3.0, 4.0],
             gh_m_3d: vec![-60.0, 100.0, 520.0, 960.0],
+            omega_pa_s_3d: None,
+            absolute_vorticity_s_3d: None,
+            cloud_liquid_kgkg_3d: None,
+            cloud_ice_kgkg_3d: None,
+            rain_kgkg_3d: None,
+            snow_kgkg_3d: None,
+            graupel_kgkg_3d: None,
         }
     }
 

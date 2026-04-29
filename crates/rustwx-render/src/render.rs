@@ -49,6 +49,7 @@ pub struct RenderOpts {
     pub domain_frame: Option<DomainFrame>,
     pub map_extent: Option<MapExtent>,
     pub projected_grid: Option<ProjectedGrid>,
+    pub rgba_grid: Option<Vec<Rgba>>,
     /// Filled polygons (lat/lon-derived). Drawn BEFORE the data raster so the
     /// data overlays on top; ordering within the list is bottom-to-top.
     /// Typical stack: ocean → land → lakes.
@@ -144,6 +145,7 @@ impl Default for RenderOpts {
             domain_frame: None,
             map_extent: None,
             projected_grid: None,
+            rgba_grid: None,
             projected_polygons: vec![],
             projected_data_polygons: vec![],
             projected_place_labels: vec![],
@@ -281,6 +283,7 @@ fn compute_layout(
         TitleAnchor::Left => text::regular_line_height(text_scale),
     };
     let subtitle_line_h = text::regular_line_height(text_scale);
+    let label_gap = scale_u32(12, chrome_scale).max(subtitle_line_h.saturating_add(6));
     let header_top_pad = scale_u32(5, chrome_scale);
     let header_bottom_pad = scale_u32(5, chrome_scale);
     let map_x = metrics.margin_x.min(total_w.saturating_sub(1));
@@ -346,8 +349,46 @@ fn compute_layout(
         title_y: if has_title { header_top_pad } else { 0 },
         subtitle_y: if has_title { header_top_pad } else { 0 },
         text_scale,
-        label_gap: scale_u32(12, chrome_scale),
+        label_gap,
     }
+}
+
+fn compute_effective_layout(
+    total_w: u32,
+    total_h: u32,
+    has_cbar: bool,
+    has_title: bool,
+    presentation: RenderPresentation,
+    chrome_scale: ChromeScale,
+    has_domain_frame: bool,
+) -> Layout {
+    let mut layout = compute_layout(
+        total_w,
+        total_h,
+        has_cbar,
+        has_title,
+        presentation,
+        chrome_scale,
+    );
+    reserve_domain_frame_legend_space(&mut layout, has_cbar, has_domain_frame);
+    layout
+}
+
+fn reserve_domain_frame_legend_space(layout: &mut Layout, has_cbar: bool, has_domain_frame: bool) {
+    if !has_cbar || !has_domain_frame {
+        return;
+    }
+
+    let label_top = layout.cbar_y.saturating_sub(layout.label_gap);
+    let required_gap = 6u32.saturating_mul(layout.text_scale.max(1));
+    let max_map_bottom = label_top.saturating_sub(required_gap);
+    let current_map_bottom = layout.map_y.saturating_add(layout.map_h).saturating_sub(1);
+    if current_map_bottom <= max_map_bottom {
+        return;
+    }
+
+    let shrink_by = current_map_bottom.saturating_sub(max_map_bottom);
+    layout.map_h = layout.map_h.saturating_sub(shrink_by).max(1);
 }
 
 fn resolve_chrome_scale(total_w: u32, total_h: u32, chrome_scale: ChromeScale) -> f32 {
@@ -414,6 +455,26 @@ pub fn map_frame_aspect_ratio_for_mode(
         has_title,
         RenderPresentation::for_mode(mode),
         ChromeScale::default(),
+    );
+    layout.map_w as f64 / (layout.map_h.max(1) as f64)
+}
+
+pub fn map_frame_aspect_ratio_for_mode_with_domain_frame(
+    mode: ProductVisualMode,
+    total_w: u32,
+    total_h: u32,
+    has_cbar: bool,
+    has_title: bool,
+    has_domain_frame: bool,
+) -> f64 {
+    let layout = compute_effective_layout(
+        total_w,
+        total_h,
+        has_cbar,
+        has_title,
+        RenderPresentation::for_mode(mode),
+        ChromeScale::default(),
+        has_domain_frame,
     );
     layout.map_w as f64 / (layout.map_h.max(1) as f64)
 }
@@ -2390,8 +2451,19 @@ fn draw_variable_layers(
     }
 
     let rasterize_start = Instant::now();
-    let map_img = if let Some(pixel_points) = projected_pixels {
-        rasterize::rasterize_projected_grid(
+    let map_img = match (opts.rgba_grid.as_deref(), projected_pixels) {
+        (Some(rgba_grid), Some(pixel_points)) => rasterize::rasterize_projected_rgba_grid(
+            rgba_grid,
+            ny,
+            nx,
+            pixel_points,
+            layout.map_w,
+            layout.map_h,
+        ),
+        (Some(rgba_grid), None) => {
+            rasterize::rasterize_rgba_grid(rgba_grid, ny, nx, layout.map_w, layout.map_h)
+        }
+        (None, Some(pixel_points)) => rasterize::rasterize_projected_grid(
             data,
             ny,
             nx,
@@ -2399,9 +2471,10 @@ fn draw_variable_layers(
             &opts.cmap,
             layout.map_w,
             layout.map_h,
-        )
-    } else {
-        rasterize::rasterize_grid(data, ny, nx, &opts.cmap, layout.map_w, layout.map_h)
+        ),
+        (None, None) => {
+            rasterize::rasterize_grid(data, ny, nx, &opts.cmap, layout.map_w, layout.map_h)
+        }
     };
     let rasterize_ms = rasterize_start.elapsed().as_millis();
 
@@ -2740,13 +2813,14 @@ fn render_to_image_profile_inner(
         || opts.subtitle_left.is_some()
         || opts.subtitle_center.is_some()
         || opts.subtitle_right.is_some();
-    let layout = compute_layout(
+    let layout = compute_effective_layout(
         opts.width,
         opts.height,
         opts.colorbar,
         has_title,
         opts.presentation,
         opts.chrome_scale,
+        opts.domain_frame.is_some(),
     );
     let layout_ms = layout_start.elapsed().as_millis();
 
@@ -2925,6 +2999,64 @@ pub(crate) fn trim_vertical_canvas_whitespace(img: &RgbaImage, background: Rgba)
     crop_imm(img, 0, crop_top, img.width(), crop_h).to_image()
 }
 
+fn pixel_matches_background(px: image::Rgba<u8>, background: Rgba) -> bool {
+    if px.0[3] <= 6 {
+        return true;
+    }
+
+    let bg = background.to_image_rgba().0;
+    let diff = px.0[0].abs_diff(bg[0]) as u16
+        + px.0[1].abs_diff(bg[1]) as u16
+        + px.0[2].abs_diff(bg[2]) as u16
+        + px.0[3].abs_diff(bg[3]) as u16;
+    diff <= 6
+}
+
+pub(crate) fn center_horizontal_canvas_content(img: &RgbaImage, background: Rgba) -> RgbaImage {
+    if img.width() <= 2 {
+        return img.clone();
+    }
+
+    let mut min_x = img.width();
+    let mut max_x = 0;
+    for y in 0..img.height() {
+        for x in 0..img.width() {
+            if !pixel_matches_background(*img.get_pixel(x, y), background) {
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+            }
+        }
+    }
+
+    if min_x > max_x {
+        return img.clone();
+    }
+
+    let left_margin = min_x;
+    let right_margin = img.width().saturating_sub(max_x).saturating_sub(1);
+    let shift = (right_margin as i64 - left_margin as i64) / 2;
+    if shift == 0 {
+        return img.clone();
+    }
+
+    let mut centered = RgbaImage::from_pixel(img.width(), img.height(), background.to_image_rgba());
+    for y in 0..img.height() {
+        for x in 0..img.width() {
+            let pixel = *img.get_pixel(x, y);
+            if pixel_matches_background(pixel, background) {
+                continue;
+            }
+
+            let dest_x = x as i64 + shift;
+            if (0..img.width() as i64).contains(&dest_x) {
+                centered.put_pixel(dest_x as u32, y, pixel);
+            }
+        }
+    }
+
+    centered
+}
+
 pub fn encode_rgba_png_profile_with_options(
     image: &RgbaImage,
     options: &PngWriteOptions,
@@ -3050,6 +3182,7 @@ mod tests {
                 y_max: 1.0,
             }),
             projected_grid: Some(sample_projected_grid()),
+            rgba_grid: None,
             projected_polygons: Vec::new(),
             projected_data_polygons: Vec::new(),
             projected_place_labels: Vec::new(),
@@ -3509,6 +3642,24 @@ mod tests {
     }
 
     #[test]
+    fn domain_frame_layout_reserves_space_for_legend_labels() {
+        let layout = compute_effective_layout(
+            1400,
+            1100,
+            true,
+            true,
+            RenderPresentation::for_mode(ProductVisualMode::OverlayAnalysis),
+            ChromeScale::Fixed(1.0),
+            true,
+        );
+
+        let label_top = layout.cbar_y.saturating_sub(layout.label_gap);
+        let map_bottom = layout.map_y.saturating_add(layout.map_h).saturating_sub(1);
+        assert!(layout.label_gap > text::regular_line_height(layout.text_scale));
+        assert!(label_top > map_bottom);
+    }
+
+    #[test]
     fn domain_frame_text_anchors_to_rect() {
         let (layout, _, _, rect) = slanted_projected_fixture();
         let frame = sample_domain_frame(crate::request::Color::BLACK);
@@ -3561,6 +3712,32 @@ mod tests {
         assert_eq!(trimmed.width(), 6);
         assert!(trimmed.height() < 10);
         assert!(trimmed.height() >= 4);
+    }
+
+    #[test]
+    fn center_horizontal_canvas_content_balances_outer_margins() {
+        let bg =
+            RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology).canvas_background;
+        let mut img = RgbaImage::from_pixel(12, 4, bg.to_image_rgba());
+        for x in 1..7 {
+            img.put_pixel(x, 1, Rgba::BLACK.to_image_rgba());
+        }
+
+        let centered = center_horizontal_canvas_content(&img, bg);
+        let mut min_x = centered.width();
+        let mut max_x = 0;
+        for y in 0..centered.height() {
+            for x in 0..centered.width() {
+                if !pixel_matches_background(*centered.get_pixel(x, y), bg) {
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                }
+            }
+        }
+        let left_margin = min_x;
+        let right_margin = centered.width().saturating_sub(max_x).saturating_sub(1);
+
+        assert!(left_margin.abs_diff(right_margin) <= 1);
     }
 
     #[test]

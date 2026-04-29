@@ -1,10 +1,10 @@
 use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
 use rustwx_render::{
-    build_projected_map_with_options, save_png_profile_with_options, ChromeScale, Color,
-    ColorScale, DiscreteColorScale, ExtendMode, Field2D, GridShape, LambertConformal, LatLonGrid,
-    LegendControls, LegendMode, LevelDensity, MapRenderRequest, PngCompressionMode,
-    PngWriteOptions, ProductKey, ProductVisualMode, ProjectedDomain, ProjectedMapBuildOptions,
-    ProjectedMarkerShape, ProjectedPointOverlay, ProjectionSpec, RenderDensity,
+    ChromeScale, Color, ColorScale, DiscreteColorScale, ExtendMode, Field2D, GridShape,
+    LambertConformal, LatLonGrid, LegendControls, LegendMode, LevelDensity, MapRenderRequest,
+    PngCompressionMode, PngWriteOptions, ProductKey, ProductVisualMode, ProjectedDomain,
+    ProjectedMapBuildOptions, ProjectedMarkerShape, ProjectedPointOverlay, ProjectionSpec,
+    RenderDensity, build_projected_map_with_options, save_png_profile_with_options,
 };
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -88,6 +88,13 @@ pub struct GlmLightningRenderReport {
 pub struct GlmLightningTimeWindow {
     pub first: Option<DateTime<Utc>>,
     pub last: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlmFlashCollection {
+    pub flashes: Vec<GlmFlash>,
+    pub n_files: usize,
+    pub time_window: GlmLightningTimeWindow,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -217,6 +224,29 @@ pub fn render_glm_lightning_map(
             total_ms: total_start.elapsed().as_millis(),
         },
     })
+}
+
+pub fn collect_glm_lightning_flashes(
+    data_dir: impl AsRef<Path>,
+) -> Result<GlmFlashCollection, Box<dyn Error>> {
+    let collected = collect_glm_flashes(data_dir.as_ref())?;
+    Ok(GlmFlashCollection {
+        flashes: collected.flashes,
+        n_files: collected.n_files,
+        time_window: GlmLightningTimeWindow {
+            first: collected.first,
+            last: collected.last,
+        },
+    })
+}
+
+pub fn glm_lightning_point_overlays(
+    flashes: &[GlmFlash],
+    reference_time: DateTime<Utc>,
+    max_age_min: f64,
+    projector: LambertConformal,
+) -> Vec<ProjectedPointOverlay> {
+    lightning_point_overlays(flashes, reference_time, max_age_min, projector)
 }
 
 fn build_glm_render_request(

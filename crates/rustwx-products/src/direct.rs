@@ -2871,8 +2871,8 @@ fn cached_barb_strides(
 
     let (visible_nx, visible_ny) = visible_grid_span(grid, bounds);
     let strides = (
-        ((visible_nx as f64 / 24.0).round() as usize).clamp(3, 128),
-        ((visible_ny as f64 / 14.0).round() as usize).clamp(3, 96),
+        ((visible_nx as f64 / 30.0).round() as usize).clamp(3, 128),
+        ((visible_ny as f64 / 18.0).round() as usize).clamp(3, 96),
     );
 
     let mut cache = barb_stride_cache

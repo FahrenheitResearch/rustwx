@@ -10,7 +10,7 @@ Current scope is intentionally conservative:
 - shared HRRR derived plot batching from one fetched/decoded timestep using
   `rustwx-calc` wrappers
 - shared HRRR windowed batching for APCP-based QPF windows, native 2-5 km
-  UH run-max windows, native 10 m wind max swaths, and 00Z diurnal 2 m
+  UH run-max windows, native 10 m wind max swaths, and extended-cycle 2 m
   temperature snapshot max/min/range windows, with explicit blockers when GRIB
   time-window metadata is not available cleanly enough yet
 - supported-products inventory/reporting helpers that summarize current direct,

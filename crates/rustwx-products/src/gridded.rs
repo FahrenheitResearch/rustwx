@@ -2,8 +2,8 @@ use crate::cache::{load_bincode, store_bincode};
 use crate::direct::build_projected_map_with_projection;
 use crate::shared_context::PreparedProjectedContext;
 use grib_core::grib2::{
-    flip_rows, grid_latlon, unpack_message_normalized as unpack_message_scan_normalized, Grib2File,
-    Grib2Message,
+    Grib2File, Grib2Message, flip_rows, grid_latlon,
+    unpack_message_normalized as unpack_message_scan_normalized,
 };
 use rustwx_calc::{GridShape as CalcGridShape, VolumeShape};
 use rustwx_core::{
@@ -11,14 +11,14 @@ use rustwx_core::{
     LatLonGrid, ModelId, ModelRunRequest, RustwxError, SourceId,
 };
 use rustwx_io::{
-    artifact_cache_dir, fetch_bytes_with_cache, grid_projection_from_grib2_grid, CachedFetchResult,
-    FetchRequest,
+    CachedFetchResult, FetchRequest, artifact_cache_dir, fetch_bytes_with_cache,
+    grid_projection_from_grib2_grid,
 };
 use rustwx_models::{
-    latest_available_run_at_forecast_hour, latest_available_run_for_products_at_forecast_hour,
-    resolve_canonical_bundle_product, LatestRun, ResolvedCanonicalBundleProduct,
+    LatestRun, ResolvedCanonicalBundleProduct, latest_available_run_at_forecast_hour,
+    latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
 };
-use rustwx_render::{map_frame_aspect_ratio, ProjectedExtent};
+use rustwx_render::{ProjectedExtent, map_frame_aspect_ratio};
 #[cfg(feature = "wrf")]
 use rustwx_wrf as wrf;
 use serde::{Deserialize, Serialize};
@@ -45,6 +45,7 @@ pub struct SurfaceFields {
     pub native_sbcape_jkg: Option<Vec<f64>>,
     pub native_mlcape_jkg: Option<Vec<f64>>,
     pub native_mucape_jkg: Option<Vec<f64>>,
+    pub native_pblh_m: Option<Vec<f64>>,
 }
 
 impl SurfaceFields {
@@ -63,6 +64,7 @@ impl SurfaceFields {
             self.native_sbcape_jkg.as_ref(),
             self.native_mlcape_jkg.as_ref(),
             self.native_mucape_jkg.as_ref(),
+            self.native_pblh_m.as_ref(),
         ]
         .into_iter()
         .filter(|field| field.is_some())
@@ -90,6 +92,20 @@ pub struct PressureFields {
     pub u_ms_3d: Vec<f64>,
     pub v_ms_3d: Vec<f64>,
     pub gh_m_3d: Vec<f64>,
+    #[serde(default)]
+    pub omega_pa_s_3d: Option<Vec<f64>>,
+    #[serde(default)]
+    pub absolute_vorticity_s_3d: Option<Vec<f64>>,
+    #[serde(default)]
+    pub cloud_liquid_kgkg_3d: Option<Vec<f64>>,
+    #[serde(default)]
+    pub cloud_ice_kgkg_3d: Option<Vec<f64>>,
+    #[serde(default)]
+    pub rain_kgkg_3d: Option<Vec<f64>>,
+    #[serde(default)]
+    pub snow_kgkg_3d: Option<Vec<f64>>,
+    #[serde(default)]
+    pub graupel_kgkg_3d: Option<Vec<f64>>,
 }
 
 impl PressureFields {
@@ -101,8 +117,21 @@ impl PressureFields {
             .as_ref()
             .map(|values| values.len())
             .unwrap_or(0);
+        let optional_volume_len: usize = [
+            self.omega_pa_s_3d.as_ref(),
+            self.absolute_vorticity_s_3d.as_ref(),
+            self.cloud_liquid_kgkg_3d.as_ref(),
+            self.cloud_ice_kgkg_3d.as_ref(),
+            self.rain_kgkg_3d.as_ref(),
+            self.snow_kgkg_3d.as_ref(),
+            self.graupel_kgkg_3d.as_ref(),
+        ]
+        .into_iter()
+        .map(|values| values.map(Vec::len).unwrap_or(0))
+        .sum();
         level_count * std::mem::size_of::<f64>()
-            + (volume_len * 5usize + pressure_3d_len) * std::mem::size_of::<f64>()
+            + (volume_len * 5usize + pressure_3d_len + optional_volume_len)
+                * std::mem::size_of::<f64>()
     }
 }
 
@@ -1011,6 +1040,7 @@ fn crop_surface_fields(surface: &SurfaceFields, crop: GridCrop) -> SurfaceFields
         native_sbcape_jkg: crop_optional_2d_values(&surface.native_sbcape_jkg, surface.nx, crop),
         native_mlcape_jkg: crop_optional_2d_values(&surface.native_mlcape_jkg, surface.nx, crop),
         native_mucape_jkg: crop_optional_2d_values(&surface.native_mucape_jkg, surface.nx, crop),
+        native_pblh_m: crop_optional_2d_values(&surface.native_pblh_m, surface.nx, crop),
     }
 }
 
@@ -1049,6 +1079,31 @@ fn crop_pressure_fields(
             .into());
         }
     }
+    for (name, values) in [
+        ("omega_pa_s_3d", pressure.omega_pa_s_3d.as_ref()),
+        (
+            "absolute_vorticity_s_3d",
+            pressure.absolute_vorticity_s_3d.as_ref(),
+        ),
+        (
+            "cloud_liquid_kgkg_3d",
+            pressure.cloud_liquid_kgkg_3d.as_ref(),
+        ),
+        ("cloud_ice_kgkg_3d", pressure.cloud_ice_kgkg_3d.as_ref()),
+        ("rain_kgkg_3d", pressure.rain_kgkg_3d.as_ref()),
+        ("snow_kgkg_3d", pressure.snow_kgkg_3d.as_ref()),
+        ("graupel_kgkg_3d", pressure.graupel_kgkg_3d.as_ref()),
+    ] {
+        if let Some(values) = values {
+            if values.len() != expected_len {
+                return Err(format!(
+                    "pressure field {name} length {} did not match expected source volume length {expected_len}",
+                    values.len()
+                )
+                .into());
+            }
+        }
+    }
 
     Ok(PressureFields {
         pressure_levels_hpa: pressure.pressure_levels_hpa.clone(),
@@ -1073,6 +1128,34 @@ fn crop_pressure_fields(
         u_ms_3d: crop_3d_values(&pressure.u_ms_3d, source_nx, source_ny, level_count, crop),
         v_ms_3d: crop_3d_values(&pressure.v_ms_3d, source_nx, source_ny, level_count, crop),
         gh_m_3d: crop_3d_values(&pressure.gh_m_3d, source_nx, source_ny, level_count, crop),
+        omega_pa_s_3d: pressure
+            .omega_pa_s_3d
+            .as_ref()
+            .map(|values| crop_3d_values(values, source_nx, source_ny, level_count, crop)),
+        absolute_vorticity_s_3d: pressure
+            .absolute_vorticity_s_3d
+            .as_ref()
+            .map(|values| crop_3d_values(values, source_nx, source_ny, level_count, crop)),
+        cloud_liquid_kgkg_3d: pressure
+            .cloud_liquid_kgkg_3d
+            .as_ref()
+            .map(|values| crop_3d_values(values, source_nx, source_ny, level_count, crop)),
+        cloud_ice_kgkg_3d: pressure
+            .cloud_ice_kgkg_3d
+            .as_ref()
+            .map(|values| crop_3d_values(values, source_nx, source_ny, level_count, crop)),
+        rain_kgkg_3d: pressure
+            .rain_kgkg_3d
+            .as_ref()
+            .map(|values| crop_3d_values(values, source_nx, source_ny, level_count, crop)),
+        snow_kgkg_3d: pressure
+            .snow_kgkg_3d
+            .as_ref()
+            .map(|values| crop_3d_values(values, source_nx, source_ny, level_count, crop)),
+        graupel_kgkg_3d: pressure
+            .graupel_kgkg_3d
+            .as_ref()
+            .map(|values| crop_3d_values(values, source_nx, source_ny, level_count, crop)),
     })
 }
 
@@ -1302,6 +1385,7 @@ pub(crate) fn bundle_fetch_variable_patterns(
                 "HCDC:high cloud layer",
                 "MXUPHL:5000-2000 m above ground",
                 "WIND:10 m above ground",
+                "VIS:surface",
             ]
             .into_iter()
             .map(str::to_string)
@@ -1329,7 +1413,10 @@ fn surface_analysis_fetch_patterns(model: ModelId) -> Vec<String> {
 
 fn pressure_analysis_fetch_patterns(model: ModelId) -> Vec<String> {
     let patterns = match model {
-        ModelId::Hrrr => vec!["HGT", "TMP", "SPFH", "UGRD", "VGRD"],
+        ModelId::Hrrr => vec![
+            "HGT", "TMP", "SPFH", "VVEL", "UGRD", "VGRD", "ABSV", "CLWMR", "CIMIXR", "ICMR",
+            "RWMR", "SNMR", "GRLE",
+        ],
         ModelId::Gfs => vec!["HGT", "TMP", "RH", "UGRD", "VGRD"],
         ModelId::RrfsA => vec!["HGT", "GP", "TMP", "SPFH", "DPT", "RH", "UGRD", "VGRD"],
         _ => Vec::new(),
@@ -1500,6 +1587,7 @@ fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Err
             native_sbcape_jkg: None,
             native_mlcape_jkg: None,
             native_mucape_jkg: None,
+            native_pblh_m: None,
         });
     }
     let file = Grib2File::from_bytes(bytes)?;
@@ -1535,6 +1623,7 @@ fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Err
         decode_optional_native_cape(&file.messages, NativeCapeLayer::MixedLayer)?;
     let native_mucape_jkg =
         decode_optional_native_cape(&file.messages, NativeCapeLayer::MostUnstable)?;
+    let native_pblh_m = decode_optional_native_pblh(&file.messages)?;
 
     Ok(SurfaceFields {
         lat,
@@ -1552,6 +1641,7 @@ fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Err
         native_sbcape_jkg,
         native_mlcape_jkg,
         native_mucape_jkg,
+        native_pblh_m,
     })
 }
 
@@ -1619,6 +1709,8 @@ fn decode_surface_cropped(
         nx,
         crop,
     );
+    let native_pblh_m =
+        crop_optional_2d_values(&decode_optional_native_pblh(&file.messages)?, nx, crop);
 
     Ok(SurfaceFields {
         lat: crop_2d_values(&lat, nx, crop),
@@ -1636,6 +1728,7 @@ fn decode_surface_cropped(
         native_sbcape_jkg,
         native_mlcape_jkg,
         native_mucape_jkg,
+        native_pblh_m,
     })
 }
 
@@ -1654,6 +1747,13 @@ fn decode_pressure_with_shape(
                 u_ms_3d: decoded.u_ms_3d,
                 v_ms_3d: decoded.v_ms_3d,
                 gh_m_3d: decoded.gh_m_3d,
+                omega_pa_s_3d: None,
+                absolute_vorticity_s_3d: None,
+                cloud_liquid_kgkg_3d: None,
+                cloud_ice_kgkg_3d: None,
+                rain_kgkg_3d: None,
+                snow_kgkg_3d: None,
+                graupel_kgkg_3d: None,
             },
             decoded.nx,
             decoded.ny,
@@ -1666,6 +1766,13 @@ fn decode_pressure_with_shape(
     let v_wind = collect_levels(&file.messages, 0, 2, 3, 100)?;
     let gh = decode_height_levels(&file.messages)?;
     let moisture = decode_pressure_mixing_ratio_levels(&file.messages, &temperature)?;
+    let omega = collect_optional_levels(&file.messages, 0, 2, 8, 100)?;
+    let absolute_vorticity = collect_optional_levels(&file.messages, 0, 2, 10, 100)?;
+    let cloud_liquid = collect_optional_levels(&file.messages, 0, 1, 22, 100)?;
+    let cloud_ice = collect_optional_levels_any(&file.messages, &[(0, 1, 82), (0, 1, 23)], 100)?;
+    let rain = collect_optional_levels(&file.messages, 0, 1, 24, 100)?;
+    let snow = collect_optional_levels(&file.messages, 0, 1, 25, 100)?;
+    let graupel = collect_optional_levels_any(&file.messages, &[(0, 1, 32), (0, 1, 74)], 100)?;
 
     let levels = common_isobaric_levels(&temperature, &[&moisture, &u_wind, &v_wind, &gh]);
     if levels.is_empty() {
@@ -1686,6 +1793,13 @@ fn decode_pressure_with_shape(
         }
         Ok(out)
     };
+    let flatten_optional =
+        |records: &Option<Vec<(f64, Vec<f64>)>>| -> Result<Option<Vec<f64>>, Box<dyn std::error::Error>> {
+            records
+                .as_ref()
+                .map(|records| flatten(records))
+                .transpose()
+        };
 
     Ok((
         PressureFields {
@@ -1702,6 +1816,13 @@ fn decode_pressure_with_shape(
             u_ms_3d: flatten(&u_wind)?,
             v_ms_3d: flatten(&v_wind)?,
             gh_m_3d: flatten(&gh)?,
+            omega_pa_s_3d: flatten_optional(&omega)?,
+            absolute_vorticity_s_3d: flatten_optional(&absolute_vorticity)?,
+            cloud_liquid_kgkg_3d: flatten_optional(&cloud_liquid)?,
+            cloud_ice_kgkg_3d: flatten_optional(&cloud_ice)?,
+            rain_kgkg_3d: flatten_optional(&rain)?,
+            snow_kgkg_3d: flatten_optional(&snow)?,
+            graupel_kgkg_3d: flatten_optional(&graupel)?,
         },
         nx,
         ny,
@@ -1729,6 +1850,26 @@ fn decode_pressure_cropped_with_shape(
     let gh = decode_height_levels_cropped(&file.messages, nx, crop)?;
     let moisture =
         decode_pressure_mixing_ratio_levels_cropped(&file.messages, &temperature, nx, crop)?;
+    let omega = collect_optional_levels_cropped(&file.messages, 0, 2, 8, 100, nx, crop)?;
+    let absolute_vorticity =
+        collect_optional_levels_cropped(&file.messages, 0, 2, 10, 100, nx, crop)?;
+    let cloud_liquid = collect_optional_levels_cropped(&file.messages, 0, 1, 22, 100, nx, crop)?;
+    let cloud_ice = collect_optional_levels_any_cropped(
+        &file.messages,
+        &[(0, 1, 82), (0, 1, 23)],
+        100,
+        nx,
+        crop,
+    )?;
+    let rain = collect_optional_levels_cropped(&file.messages, 0, 1, 24, 100, nx, crop)?;
+    let snow = collect_optional_levels_cropped(&file.messages, 0, 1, 25, 100, nx, crop)?;
+    let graupel = collect_optional_levels_any_cropped(
+        &file.messages,
+        &[(0, 1, 32), (0, 1, 74)],
+        100,
+        nx,
+        crop,
+    )?;
 
     let levels = common_isobaric_levels(&temperature, &[&moisture, &u_wind, &v_wind, &gh]);
     if levels.is_empty() {
@@ -1748,6 +1889,13 @@ fn decode_pressure_cropped_with_shape(
         }
         Ok(out)
     };
+    let flatten_optional =
+        |records: &Option<Vec<(f64, Vec<f64>)>>| -> Result<Option<Vec<f64>>, Box<dyn std::error::Error>> {
+            records
+                .as_ref()
+                .map(|records| flatten(records))
+                .transpose()
+        };
 
     let pressure_levels_hpa = levels
         .iter()
@@ -1767,6 +1915,13 @@ fn decode_pressure_cropped_with_shape(
             u_ms_3d: flatten(&u_wind)?,
             v_ms_3d: flatten(&v_wind)?,
             gh_m_3d: flatten(&gh)?,
+            omega_pa_s_3d: flatten_optional(&omega)?,
+            absolute_vorticity_s_3d: flatten_optional(&absolute_vorticity)?,
+            cloud_liquid_kgkg_3d: flatten_optional(&cloud_liquid)?,
+            cloud_ice_kgkg_3d: flatten_optional(&cloud_ice)?,
+            rain_kgkg_3d: flatten_optional(&rain)?,
+            snow_kgkg_3d: flatten_optional(&snow)?,
+            graupel_kgkg_3d: flatten_optional(&graupel)?,
         },
         crop.width(),
         crop.height(),
@@ -2085,6 +2240,34 @@ fn collect_levels(
     Ok(records)
 }
 
+fn collect_optional_levels(
+    messages: &[Grib2Message],
+    discipline: u8,
+    category: u8,
+    number: u8,
+    level_type: u8,
+) -> Result<Option<Vec<(f64, Vec<f64>)>>, Box<dyn std::error::Error>> {
+    match collect_levels(messages, discipline, category, number, level_type) {
+        Ok(records) => Ok(Some(records)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn collect_optional_levels_any(
+    messages: &[Grib2Message],
+    candidates: &[(u8, u8, u8)],
+    level_type: u8,
+) -> Result<Option<Vec<(f64, Vec<f64>)>>, Box<dyn std::error::Error>> {
+    for &(discipline, category, number) in candidates {
+        if let Some(records) =
+            collect_optional_levels(messages, discipline, category, number, level_type)?
+        {
+            return Ok(Some(records));
+        }
+    }
+    Ok(None)
+}
+
 fn collect_levels_cropped(
     messages: &[Grib2Message],
     discipline: u8,
@@ -2118,6 +2301,40 @@ fn collect_levels_cropped(
     }
     records.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     Ok(records)
+}
+
+fn collect_optional_levels_cropped(
+    messages: &[Grib2Message],
+    discipline: u8,
+    category: u8,
+    number: u8,
+    level_type: u8,
+    source_nx: usize,
+    crop: GridCrop,
+) -> Result<Option<Vec<(f64, Vec<f64>)>>, Box<dyn std::error::Error>> {
+    match collect_levels_cropped(
+        messages, discipline, category, number, level_type, source_nx, crop,
+    ) {
+        Ok(records) => Ok(Some(records)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn collect_optional_levels_any_cropped(
+    messages: &[Grib2Message],
+    candidates: &[(u8, u8, u8)],
+    level_type: u8,
+    source_nx: usize,
+    crop: GridCrop,
+) -> Result<Option<Vec<(f64, Vec<f64>)>>, Box<dyn std::error::Error>> {
+    for &(discipline, category, number) in candidates {
+        if let Some(records) = collect_optional_levels_cropped(
+            messages, discipline, category, number, level_type, source_nx, crop,
+        )? {
+            return Ok(Some(records));
+        }
+    }
+    Ok(None)
 }
 
 fn common_isobaric_levels(
@@ -2182,6 +2399,21 @@ fn decode_optional_native_cape(
     layer: NativeCapeLayer,
 ) -> Result<Option<Vec<f64>>, Box<dyn std::error::Error>> {
     let Some(message) = find_optional_message(messages, layer.candidates()) else {
+        return Ok(None);
+    };
+    Ok(Some(unpack_message_normalized(message)?))
+}
+
+fn decode_optional_native_pblh(
+    messages: &[Grib2Message],
+) -> Result<Option<Vec<f64>>, Box<dyn std::error::Error>> {
+    let candidates = &[
+        (0, 3, 18, 1, Some(0.0)),
+        (0, 3, 18, 1, None),
+        (0, 3, 196, 1, Some(0.0)),
+        (0, 3, 196, 1, None),
+    ];
+    let Some(message) = find_optional_message(messages, candidates) else {
         return Ok(None);
     };
     Ok(Some(unpack_message_normalized(message)?))
@@ -2286,15 +2518,38 @@ pub(crate) fn validate_pressure_decode_against_surface(
     {
         return Err("pressure decode fields did not match the surface grid shape".into());
     }
+    for (name, values) in [
+        ("omega_pa_s_3d", decoded.value.omega_pa_s_3d.as_ref()),
+        (
+            "absolute_vorticity_s_3d",
+            decoded.value.absolute_vorticity_s_3d.as_ref(),
+        ),
+        (
+            "cloud_liquid_kgkg_3d",
+            decoded.value.cloud_liquid_kgkg_3d.as_ref(),
+        ),
+        (
+            "cloud_ice_kgkg_3d",
+            decoded.value.cloud_ice_kgkg_3d.as_ref(),
+        ),
+        ("rain_kgkg_3d", decoded.value.rain_kgkg_3d.as_ref()),
+        ("snow_kgkg_3d", decoded.value.snow_kgkg_3d.as_ref()),
+        ("graupel_kgkg_3d", decoded.value.graupel_kgkg_3d.as_ref()),
+    ] {
+        if let Some(values) = values {
+            if values.len() != expected {
+                return Err(format!(
+                    "pressure decode optional field {name} did not match the surface grid shape"
+                )
+                .into());
+            }
+        }
+    }
     Ok(())
 }
 
 fn normalize_longitude(lon: f64) -> f64 {
-    if lon > 180.0 {
-        lon - 360.0
-    } else {
-        lon
-    }
+    if lon > 180.0 { lon - 360.0 } else { lon }
 }
 
 fn point_in_geographic_bounds(lon: f64, lat: f64, bounds: (f64, f64, f64, f64)) -> bool {
@@ -2441,6 +2696,16 @@ mod tests {
     }
 
     #[test]
+    fn hrrr_native_surface_patterns_include_visibility() {
+        let patterns = bundle_fetch_variable_patterns(
+            ModelId::Hrrr,
+            CanonicalBundleDescriptor::NativeAnalysis,
+            "sfc",
+        );
+        assert!(patterns.contains(&"VIS:surface".to_string()));
+    }
+
+    #[test]
     fn product_overrides_replace_defaults() {
         let (surface, pressure) = thermo_bundles(ModelId::RrfsA, Some("prs-na"), Some("prs-na"));
         assert_eq!(surface.native_product, "prs-na");
@@ -2480,6 +2745,7 @@ mod tests {
             native_sbcape_jkg: None,
             native_mlcape_jkg: None,
             native_mucape_jkg: None,
+            native_pblh_m: None,
         };
         let pressure = PressureFields {
             pressure_levels_hpa: vec![1000.0],
@@ -2489,6 +2755,13 @@ mod tests {
             u_ms_3d: vec![10.0; len],
             v_ms_3d: vec![5.0; len],
             gh_m_3d: vec![1500.0; len],
+            omega_pa_s_3d: None,
+            absolute_vorticity_s_3d: None,
+            cloud_liquid_kgkg_3d: None,
+            cloud_ice_kgkg_3d: None,
+            rain_kgkg_3d: None,
+            snow_kgkg_3d: None,
+            graupel_kgkg_3d: None,
         };
         let projected_x = vec![
             0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 2.0, 3.0,

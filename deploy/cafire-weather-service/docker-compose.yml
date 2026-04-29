@@ -1,0 +1,165 @@
+services:
+  caddy:
+    image: caddy:2
+    env_file:
+      - .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      args:
+        RUSTWX_VERSION: ${RUSTWX_VERSION:-0.4.4}
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ${HOST_CACHE_DIR:-./data/cache}:/data/cache
+      - ${HOST_ARTIFACT_DIR:-./data/artifacts}:/data/artifacts
+      - ${HOST_GLM_DIR:-./data/glm}:/data/glm
+      - ${HOST_VOLUME_STORE_DIR:-./data/volume-stores}:/data/volume-stores
+      - ${HOST_RUSTWX_BIN_DIR:-./bin}:/app/bin:ro
+      - ./assets/basemap:/app/assets/basemap:ro
+    depends_on:
+      - pressure-volume
+    restart: unless-stopped
+
+  pressure-volume:
+    build:
+      context: .
+      args:
+        RUSTWX_VERSION: ${RUSTWX_VERSION:-0.4.4}
+    env_file:
+      - .env
+    volumes:
+      - ${HOST_VOLUME_STORE_DIR:-./data/volume-stores}:/data/volume-stores:ro
+      - ${HOST_RUSTWX_BIN_DIR:-./bin}:/app/bin:ro
+    restart: unless-stopped
+    entrypoint: ["/usr/bin/tini", "--"]
+    command:
+      [
+        "/bin/sh",
+        "-c",
+        "STORE='${PRESSURE_VOLUME_STORE_PATH:-/data/volume-stores/current}'; while true; do if [ ! -x /app/bin/volume_store_dashboard ]; then echo 'missing /app/bin/volume_store_dashboard'; sleep 60; elif [ ! -f \"$$STORE/manifest.json\" ]; then echo \"missing pressure VolumeStore at $$STORE\"; sleep 60; else exec /app/bin/volume_store_dashboard --store \"$$STORE\" --host 0.0.0.0 --port 8797; fi; done",
+      ]
+
+  pressure-volume-builder:
+    build:
+      context: .
+      args:
+        RUSTWX_VERSION: ${RUSTWX_VERSION:-0.4.4}
+    env_file:
+      - .env
+    volumes:
+      - ${HOST_CACHE_DIR:-./data/cache}:/data/cache
+      - ${HOST_ARTIFACT_DIR:-./data/artifacts}:/data/artifacts
+      - ${HOST_VOLUME_STORE_DIR:-./data/volume-stores}:/data/volume-stores
+      - ${HOST_RUSTWX_BIN_DIR:-./bin}:/app/bin:ro
+    restart: unless-stopped
+    entrypoint: ["/usr/bin/tini", "--"]
+    command: ["python", "-m", "app.pressure_volume_build_service"]
+
+  batch:
+    build:
+      context: .
+      args:
+        RUSTWX_VERSION: ${RUSTWX_VERSION:-0.4.4}
+    env_file:
+      - .env
+    volumes:
+      - ${HOST_CACHE_DIR:-./data/cache}:/data/cache
+      - ${HOST_ARTIFACT_DIR:-./data/artifacts}:/data/artifacts
+      - ${HOST_GLM_DIR:-./data/glm}:/data/glm
+      - ${HOST_VOLUME_STORE_DIR:-./data/volume-stores}:/data/volume-stores
+      - ${HOST_RUSTWX_BIN_DIR:-./bin}:/app/bin:ro
+      - ./assets/basemap:/app/assets/basemap:ro
+    profiles:
+      - batch
+    entrypoint: ["/usr/bin/tini", "--"]
+    command: ["python", "-m", "app.batch", "render-latest"]
+
+  warmer:
+    build:
+      context: .
+      args:
+        RUSTWX_VERSION: ${RUSTWX_VERSION:-0.4.4}
+    env_file:
+      - .env
+    volumes:
+      - ${HOST_CACHE_DIR:-./data/cache}:/data/cache
+      - ${HOST_ARTIFACT_DIR:-./data/artifacts}:/data/artifacts
+      - ${HOST_GLM_DIR:-./data/glm}:/data/glm
+      - ${HOST_VOLUME_STORE_DIR:-./data/volume-stores}:/data/volume-stores
+      - ${HOST_RUSTWX_BIN_DIR:-./bin}:/app/bin:ro
+      - ./assets/basemap:/app/assets/basemap:ro
+    restart: unless-stopped
+    entrypoint: ["/usr/bin/tini", "--"]
+    command: ["python", "-m", "app.warm_service"]
+
+  static-worker:
+    build:
+      context: .
+      args:
+        RUSTWX_VERSION: ${RUSTWX_VERSION:-0.4.4}
+    env_file:
+      - .env
+    volumes:
+      - ${HOST_CACHE_DIR:-./data/cache}:/data/cache
+      - ${HOST_ARTIFACT_DIR:-./data/artifacts}:/data/artifacts
+      - ${HOST_GLM_DIR:-./data/glm}:/data/glm
+      - ${HOST_VOLUME_STORE_DIR:-./data/volume-stores}:/data/volume-stores
+      - ${HOST_RUSTWX_BIN_DIR:-./bin}:/app/bin:ro
+      - ./assets/basemap:/app/assets/basemap:ro
+    restart: unless-stopped
+    entrypoint: ["/usr/bin/tini", "--"]
+    command: ["python", "-m", "app.batch_service"]
+
+  lightning-worker:
+    build:
+      context: .
+      args:
+        RUSTWX_VERSION: ${RUSTWX_VERSION:-0.4.4}
+    env_file:
+      - .env
+    volumes:
+      - ${HOST_CACHE_DIR:-./data/cache}:/data/cache
+      - ${HOST_ARTIFACT_DIR:-./data/artifacts}:/data/artifacts
+      - ${HOST_GLM_DIR:-./data/glm}:/data/glm
+      - ${HOST_VOLUME_STORE_DIR:-./data/volume-stores}:/data/volume-stores
+      - ${HOST_RUSTWX_BIN_DIR:-./bin}:/app/bin:ro
+      - ./assets/basemap:/app/assets/basemap:ro
+    restart: unless-stopped
+    entrypoint: ["/usr/bin/tini", "--"]
+    command: ["python", "-m", "app.lightning_service", "--loop"]
+
+  satellite-worker:
+    build:
+      context: .
+      args:
+        RUSTWX_VERSION: ${RUSTWX_VERSION:-0.4.4}
+    env_file:
+      - .env
+    volumes:
+      - ${HOST_CACHE_DIR:-./data/cache}:/data/cache
+      - ${HOST_ARTIFACT_DIR:-./data/artifacts}:/data/artifacts
+      - ${HOST_GLM_DIR:-./data/glm}:/data/glm
+      - ${HOST_VOLUME_STORE_DIR:-./data/volume-stores}:/data/volume-stores
+      - ${HOST_RUSTWX_BIN_DIR:-./bin}:/app/bin:ro
+      - ./assets/basemap:/app/assets/basemap:ro
+    restart: unless-stopped
+    entrypoint: ["/usr/bin/tini", "--"]
+    command: ["python", "-m", "app.satellite_service", "--loop"]
+
+volumes:
+  caddy_data:
+  caddy_config:

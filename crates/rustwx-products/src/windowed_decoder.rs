@@ -12,13 +12,13 @@
 //! does no I/O of its own beyond the optional bincode cache.
 use crate::cache::{load_bincode, store_bincode};
 use crate::windowed::{HrrrWindowedProduct, HrrrWindowedProductMetadata};
-use grib_core::grib2::{unpack_message_normalized, Grib2File, Grib2Message};
+use grib_core::grib2::{Grib2File, Grib2Message, unpack_message_normalized};
 use rustwx_calc::{max_window_fields, sum_window_fields};
 use rustwx_core::{Field2D, ProductKey};
 use rustwx_render::{
+    Color, ColorScale, DiscreteColorScale, ExtendMode, WeatherPalette, WeatherProduct,
     palette_scale,
     weather::{dewpoint_palette_params, temperature_palette_cropped_f},
-    Color, ColorScale, DiscreteColorScale, ExtendMode, WeatherPalette, WeatherProduct,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -1241,21 +1241,26 @@ pub(crate) fn dewpoint2m_scale() -> DiscreteColorScale {
 pub(crate) fn vpd2m_scale(range: bool) -> DiscreteColorScale {
     DiscreteColorScale {
         levels: if range {
-            range_step(0.0, 16.0, 1.0)
+            range_step(0.0, 31.0, 2.0)
         } else {
-            range_step(0.0, 11.0, 1.0)
+            range_step(0.0, 41.0, 2.0)
         },
         colors: vec![
-            Color::rgba(26, 152, 80, 255),
-            Color::rgba(85, 180, 95, 255),
-            Color::rgba(120, 198, 102, 255),
-            Color::rgba(166, 217, 106, 255),
-            Color::rgba(217, 239, 139, 255),
-            Color::rgba(254, 224, 139, 255),
-            Color::rgba(253, 174, 97, 255),
-            Color::rgba(244, 109, 67, 255),
-            Color::rgba(215, 48, 39, 255),
-            Color::rgba(165, 0, 38, 255),
+            Color::rgba(24, 90, 145, 255),
+            Color::rgba(39, 129, 172, 255),
+            Color::rgba(67, 164, 184, 255),
+            Color::rgba(110, 190, 168, 255),
+            Color::rgba(154, 211, 142, 255),
+            Color::rgba(196, 226, 126, 255),
+            Color::rgba(229, 232, 126, 255),
+            Color::rgba(247, 219, 118, 255),
+            Color::rgba(248, 195, 102, 255),
+            Color::rgba(240, 163, 85, 255),
+            Color::rgba(226, 130, 72, 255),
+            Color::rgba(207, 100, 65, 255),
+            Color::rgba(184, 74, 61, 255),
+            Color::rgba(157, 53, 60, 255),
+            Color::rgba(128, 37, 63, 255),
         ],
         extend: ExtendMode::Max,
         mask_below: None,

@@ -5,18 +5,18 @@ use clap::ValueEnum;
 use image::RgbaImage;
 use rustwx_core::{ModelId, SourceId};
 use rustwx_cross_section::{
+    render_scalar_section, representative_route_for_bounds, representative_route_for_cluster,
     CrossSectionPalette, CrossSectionProduct, CrossSectionRenderRequest, CrossSectionRequest,
     CrossSectionStyle, GeoBounds, GeoPoint, Insets, RenderedCrossSection,
     RepresentativeRouteStrategy, SamplingStrategy, SectionMetadata, SectionPath, WindOverlayBundle,
-    WindOverlayStyle, render_scalar_section, representative_route_for_bounds,
-    representative_route_for_cluster,
+    WindOverlayStyle,
 };
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::cross_section::{
-    PressureCrossSectionArtifact, PressureCrossSectionFacts, build_pressure_cross_section_profiled,
-    summarize_pressure_cross_section_artifact,
+    build_pressure_cross_section_profiled, summarize_pressure_cross_section_artifact,
+    PressureCrossSectionArtifact, PressureCrossSectionFacts,
 };
-use rustwx_products::gridded::{LoadedModelTimestep, load_model_timestep_from_parts};
+use rustwx_products::gridded::{load_model_timestep_from_parts, LoadedModelTimestep};
 use rustwx_products::shared_context::DomainSpec;
 use serde::Serialize;
 
@@ -678,10 +678,10 @@ fn render_request_for_request(
         .to_render_request()
         .with_dimensions(1400, 820)
         .with_margins(Insets {
-            left: 90,
-            right: 126,
+            left: 96,
+            right: 130,
             top: 78,
-            bottom: 82,
+            bottom: 112,
         });
     if request.show_wind_overlay {
         render_request = render_request.with_wind_overlay(artifact.wind_overlay.clone());
@@ -693,13 +693,12 @@ fn tuned_wind_overlay(overlay: &WindOverlayBundle) -> WindOverlayBundle {
     WindOverlayBundle::new(
         overlay.grid.clone(),
         WindOverlayStyle {
-            stride_points: 10,
-            stride_levels: 3,
+            stride_points: 6,
+            stride_levels: 2,
             min_speed_ms: 8.0,
             max_speed_ms: 40.0,
-            base_length_px: 8.0,
-            max_length_px: 24.0,
-            arrow_head_px: 4.5,
+            base_length_px: 18.0,
+            max_length_px: 18.0,
             cross_tick_px: 6.0,
             ..overlay.style
         },

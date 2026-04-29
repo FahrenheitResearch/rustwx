@@ -98,6 +98,24 @@ impl Field2D {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RgbaGridField {
+    pub grid: LatLonGrid,
+    pub pixels: Vec<Color>,
+}
+
+impl RgbaGridField {
+    pub fn new(grid: LatLonGrid, pixels: Vec<Color>) -> Result<Self, RustwxRenderError> {
+        if pixels.len() != grid.shape.len() {
+            return Err(RustwxRenderError::InvalidGridShape {
+                nx: grid.shape.nx,
+                ny: grid.shape.ny,
+            });
+        }
+        Ok(Self { grid, pixels })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Color {
     pub r: u8,
@@ -581,6 +599,8 @@ impl WindBarbLayer {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MapRenderRequest {
     pub field: Field2D,
+    #[serde(default)]
+    pub rgba_grid: Option<RgbaGridField>,
     pub product_metadata: Option<core::ProductKeyMetadata>,
     pub width: u32,
     pub height: u32,
@@ -630,6 +650,7 @@ impl MapRenderRequest {
     pub fn new(field: Field2D, scale: ColorScale) -> Self {
         Self {
             field,
+            rgba_grid: None,
             product_metadata: None,
             width: 1100,
             height: 850,
@@ -758,6 +779,16 @@ impl MapRenderRequest {
         self
     }
 
+    pub fn set_rgba_grid(&mut self, rgba_grid: RgbaGridField) -> &mut Self {
+        self.rgba_grid = Some(rgba_grid);
+        self
+    }
+
+    pub fn with_rgba_grid(mut self, rgba_grid: RgbaGridField) -> Self {
+        self.rgba_grid = Some(rgba_grid);
+        self
+    }
+
     pub fn set_projected_domain(&mut self, domain: ProjectedDomain) -> &mut Self {
         self.projected_domain = Some(domain);
         self
@@ -817,7 +848,7 @@ impl MapRenderRequest {
     }
 
     pub(crate) fn is_overlay_only(&self) -> bool {
-        !self.colorbar && is_blank_fill_scale(&self.scale)
+        self.rgba_grid.is_none() && !self.colorbar && is_blank_fill_scale(&self.scale)
     }
 
     pub fn add_contour_field(

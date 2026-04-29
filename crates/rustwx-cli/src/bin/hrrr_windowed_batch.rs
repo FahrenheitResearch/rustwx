@@ -43,6 +43,33 @@ enum ProductArg {
     Temp2m0to24hRange,
     Temp2m24to48hRange,
     Temp2m0to48hRange,
+    Rh2m0to24hMax,
+    Rh2m24to48hMax,
+    Rh2m0to48hMax,
+    Rh2m0to24hMin,
+    Rh2m24to48hMin,
+    Rh2m0to48hMin,
+    Rh2m0to24hRange,
+    Rh2m24to48hRange,
+    Rh2m0to48hRange,
+    Dewpoint2m0to24hMax,
+    Dewpoint2m24to48hMax,
+    Dewpoint2m0to48hMax,
+    Dewpoint2m0to24hMin,
+    Dewpoint2m24to48hMin,
+    Dewpoint2m0to48hMin,
+    Dewpoint2m0to24hRange,
+    Dewpoint2m24to48hRange,
+    Dewpoint2m0to48hRange,
+    Vpd2m0to24hMax,
+    Vpd2m24to48hMax,
+    Vpd2m0to48hMax,
+    Vpd2m0to24hMin,
+    Vpd2m24to48hMin,
+    Vpd2m0to48hMin,
+    Vpd2m0to24hRange,
+    Vpd2m24to48hRange,
+    Vpd2m0to48hRange,
 }
 
 impl From<ProductArg> for HrrrWindowedProduct {
@@ -70,6 +97,33 @@ impl From<ProductArg> for HrrrWindowedProduct {
             ProductArg::Temp2m0to24hRange => HrrrWindowedProduct::Temp2m0to24hRange,
             ProductArg::Temp2m24to48hRange => HrrrWindowedProduct::Temp2m24to48hRange,
             ProductArg::Temp2m0to48hRange => HrrrWindowedProduct::Temp2m0to48hRange,
+            ProductArg::Rh2m0to24hMax => HrrrWindowedProduct::Rh2m0to24hMax,
+            ProductArg::Rh2m24to48hMax => HrrrWindowedProduct::Rh2m24to48hMax,
+            ProductArg::Rh2m0to48hMax => HrrrWindowedProduct::Rh2m0to48hMax,
+            ProductArg::Rh2m0to24hMin => HrrrWindowedProduct::Rh2m0to24hMin,
+            ProductArg::Rh2m24to48hMin => HrrrWindowedProduct::Rh2m24to48hMin,
+            ProductArg::Rh2m0to48hMin => HrrrWindowedProduct::Rh2m0to48hMin,
+            ProductArg::Rh2m0to24hRange => HrrrWindowedProduct::Rh2m0to24hRange,
+            ProductArg::Rh2m24to48hRange => HrrrWindowedProduct::Rh2m24to48hRange,
+            ProductArg::Rh2m0to48hRange => HrrrWindowedProduct::Rh2m0to48hRange,
+            ProductArg::Dewpoint2m0to24hMax => HrrrWindowedProduct::Dewpoint2m0to24hMax,
+            ProductArg::Dewpoint2m24to48hMax => HrrrWindowedProduct::Dewpoint2m24to48hMax,
+            ProductArg::Dewpoint2m0to48hMax => HrrrWindowedProduct::Dewpoint2m0to48hMax,
+            ProductArg::Dewpoint2m0to24hMin => HrrrWindowedProduct::Dewpoint2m0to24hMin,
+            ProductArg::Dewpoint2m24to48hMin => HrrrWindowedProduct::Dewpoint2m24to48hMin,
+            ProductArg::Dewpoint2m0to48hMin => HrrrWindowedProduct::Dewpoint2m0to48hMin,
+            ProductArg::Dewpoint2m0to24hRange => HrrrWindowedProduct::Dewpoint2m0to24hRange,
+            ProductArg::Dewpoint2m24to48hRange => HrrrWindowedProduct::Dewpoint2m24to48hRange,
+            ProductArg::Dewpoint2m0to48hRange => HrrrWindowedProduct::Dewpoint2m0to48hRange,
+            ProductArg::Vpd2m0to24hMax => HrrrWindowedProduct::Vpd2m0to24hMax,
+            ProductArg::Vpd2m24to48hMax => HrrrWindowedProduct::Vpd2m24to48hMax,
+            ProductArg::Vpd2m0to48hMax => HrrrWindowedProduct::Vpd2m0to48hMax,
+            ProductArg::Vpd2m0to24hMin => HrrrWindowedProduct::Vpd2m0to24hMin,
+            ProductArg::Vpd2m24to48hMin => HrrrWindowedProduct::Vpd2m24to48hMin,
+            ProductArg::Vpd2m0to48hMin => HrrrWindowedProduct::Vpd2m0to48hMin,
+            ProductArg::Vpd2m0to24hRange => HrrrWindowedProduct::Vpd2m0to24hRange,
+            ProductArg::Vpd2m24to48hRange => HrrrWindowedProduct::Vpd2m24to48hRange,
+            ProductArg::Vpd2m0to48hRange => HrrrWindowedProduct::Vpd2m0to48hRange,
         }
     }
 }
@@ -102,7 +156,7 @@ impl From<PlaceLabelDensityArg> for PlaceLabelDensityTier {
 #[derive(Debug, Parser)]
 #[command(
     name = "hrrr-windowed-batch",
-    about = "Generate conservative multi-hour HRRR QPF, UH, 10 m wind, and 2 m temperature window products"
+    about = "Generate conservative multi-hour HRRR QPF, UH, 10 m wind, and 2 m surface window products"
 )]
 struct Args {
     #[arg(long, default_value = "20260414")]

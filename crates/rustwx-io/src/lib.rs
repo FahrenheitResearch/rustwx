@@ -1,13 +1,13 @@
 mod cache;
 
 pub use cache::{
-    artifact_cache_dir, fetch_cache_paths, field_cache_path, load_cached_fetch,
-    load_cached_selected_field, store_cached_fetch, store_cached_selected_field,
-    CachedFetchMetadata, CachedFetchResult, CachedFieldResult,
+    CachedFetchMetadata, CachedFetchResult, CachedFieldResult, artifact_cache_dir,
+    fetch_cache_paths, field_cache_path, load_cached_fetch, load_cached_selected_field,
+    store_cached_fetch, store_cached_selected_field,
 };
 
 use grib_core::grib2::{
-    flip_rows, grid_latlon, unpack_message, Grib2File, Grib2Message, GridDefinition,
+    Grib2File, Grib2Message, GridDefinition, flip_rows, grid_latlon, unpack_message,
 };
 use rayon::prelude::*;
 use rustwx_core::{
@@ -22,7 +22,7 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
 use thiserror::Error;
-use wx_core::download::{byte_ranges, find_entries, parse_idx, DownloadClient};
+use wx_core::download::{DownloadClient, byte_ranges, find_entries, parse_idx};
 
 #[derive(Debug, Error)]
 pub enum IoError {
@@ -1345,11 +1345,7 @@ fn longitude_midpoint(west_deg: f64, east_deg: f64) -> f64 {
 }
 
 fn normalize_longitude(lon: f64) -> f64 {
-    if lon > 180.0 {
-        lon - 360.0
-    } else {
-        lon
-    }
+    if lon > 180.0 { lon - 360.0 } else { lon }
 }
 
 fn normalize_and_rotate_longitude_rows(

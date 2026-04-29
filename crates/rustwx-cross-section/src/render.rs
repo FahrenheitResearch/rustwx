@@ -1,4 +1,4 @@
-use rusttype::{Font, Scale, point};
+use rusttype::{point, Font, Scale};
 use rustwx_contour::{ContourEngine, ContourLevels, RectilinearGrid, ScalarField2D};
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -14,6 +14,7 @@ const SOURCE_SANS_3_REGULAR: &[u8] =
     include_bytes!("../../rustwx-render/assets/fonts/SourceSans3-Regular.ttf");
 const SOURCE_SANS_3_SEMIBOLD: &[u8] =
     include_bytes!("../../rustwx-render/assets/fonts/SourceSans3-Semibold.ttf");
+const MS_TO_KT_F32: f32 = 1.943_844_5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CrossSectionFontKind {
@@ -54,14 +55,6 @@ impl Color {
         Self { a: alpha, ..self }
     }
 
-    fn lighten(self, fraction: f32) -> Self {
-        self.lerp(Self::WHITE, fraction)
-    }
-
-    fn darken(self, fraction: f32) -> Self {
-        self.lerp(Self::BLACK, fraction)
-    }
-
     fn luminance(self) -> f32 {
         (0.2126 * self.r as f32 + 0.7152 * self.g as f32 + 0.0722 * self.b as f32) / 255.0
     }
@@ -94,10 +87,10 @@ pub struct Insets {
 impl Default for Insets {
     fn default() -> Self {
         Self {
-            left: 84,
-            right: 112,
-            top: 72,
-            bottom: 76,
+            left: 82,
+            right: 128,
+            top: 64,
+            bottom: 86,
         }
     }
 }
@@ -133,6 +126,7 @@ pub struct CrossSectionRenderRequest {
     pub isotherm_color: Color,
     pub highlight_isotherm_color: Color,
     pub wind_overlay: Option<WindOverlayBundle>,
+    pub contour_overlays: Vec<ScalarContourOverlayBundle>,
 }
 
 impl CrossSectionRenderRequest {
@@ -177,6 +171,16 @@ impl CrossSectionRenderRequest {
         self.wind_overlay = Some(overlay);
         self
     }
+
+    pub fn with_contour_overlay(mut self, overlay: ScalarContourOverlayBundle) -> Self {
+        self.contour_overlays.push(overlay);
+        self
+    }
+
+    pub fn with_contour_overlays(mut self, overlays: Vec<ScalarContourOverlayBundle>) -> Self {
+        self.contour_overlays = overlays;
+        self
+    }
 }
 
 impl Default for CrossSectionRenderRequest {
@@ -185,19 +189,19 @@ impl Default for CrossSectionRenderRequest {
             width: 960,
             height: 560,
             margins: Insets::default(),
-            page_background_top: Color::rgb(231, 236, 241),
-            page_background_bottom: Color::rgb(246, 240, 231),
-            plot_background_top: Color::rgb(25, 38, 58),
-            plot_background_bottom: Color::rgb(204, 214, 222),
-            frame_color: Color::rgb(42, 53, 66),
-            axis_color: Color::rgb(66, 78, 92),
-            text_color: Color::rgb(24, 32, 41),
-            grid_major_color: Color::rgba(255, 255, 255, 88),
-            grid_minor_color: Color::rgba(255, 255, 255, 38),
-            terrain_fill_top: Color::rgb(188, 150, 94),
-            terrain_fill_bottom: Color::rgb(74, 53, 30),
-            terrain_stroke: Color::rgb(46, 34, 18),
-            terrain_highlight: Color::rgba(245, 224, 179, 180),
+            page_background_top: Color::WHITE,
+            page_background_bottom: Color::WHITE,
+            plot_background_top: Color::rgb(248, 250, 252),
+            plot_background_bottom: Color::rgb(248, 250, 252),
+            frame_color: Color::rgb(18, 22, 27),
+            axis_color: Color::rgb(38, 45, 53),
+            text_color: Color::rgb(20, 24, 29),
+            grid_major_color: Color::rgba(0, 0, 0, 50),
+            grid_minor_color: Color::rgba(0, 0, 0, 22),
+            terrain_fill_top: Color::rgb(151, 96, 48),
+            terrain_fill_bottom: Color::rgb(151, 96, 48),
+            terrain_stroke: Color::rgb(18, 14, 10),
+            terrain_highlight: Color::TRANSPARENT,
             palette: CrossSectionPalette::default().build(),
             value_range: None,
             value_ticks: Vec::new(),
@@ -207,10 +211,61 @@ impl Default for CrossSectionRenderRequest {
             show_colorbar: true,
             isotherms_c: CrossSectionStyle::default().isotherms_c().to_vec(),
             highlight_isotherm_c: CrossSectionStyle::default().highlight_isotherm_c(),
-            isotherm_color: Color::rgba(233, 247, 255, 200),
-            highlight_isotherm_color: Color::rgb(223, 46, 107),
+            isotherm_color: Color::rgba(20, 24, 29, 205),
+            highlight_isotherm_color: Color::rgb(214, 34, 190),
             wind_overlay: None,
+            contour_overlays: Vec::new(),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScalarContourOverlayBundle {
+    pub section: ScalarSection,
+    pub levels: Vec<f32>,
+    pub highlight_level: Option<f32>,
+    pub label: Option<String>,
+    pub units: Option<String>,
+    pub color: Color,
+    pub highlight_color: Color,
+}
+
+impl ScalarContourOverlayBundle {
+    pub fn new(section: ScalarSection, levels: Vec<f32>) -> Self {
+        Self {
+            section,
+            levels,
+            highlight_level: None,
+            label: None,
+            units: None,
+            color: Color::rgba(20, 24, 29, 205),
+            highlight_color: Color::rgb(214, 34, 190),
+        }
+    }
+
+    pub fn with_highlight(mut self, level: f32) -> Self {
+        self.highlight_level = Some(level);
+        self
+    }
+
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn with_units(mut self, units: impl Into<String>) -> Self {
+        self.units = Some(units.into());
+        self
+    }
+
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = color;
+        self
+    }
+
+    pub fn with_highlight_color(mut self, color: Color) -> Self {
+        self.highlight_color = color;
+        self
     }
 }
 
@@ -240,6 +295,7 @@ impl WindOverlayBundle {
 pub struct WindOverlayStyle {
     pub stride_points: usize,
     pub stride_levels: usize,
+    pub target_columns: usize,
     pub min_speed_ms: f32,
     pub max_speed_ms: f32,
     pub base_length_px: f32,
@@ -253,16 +309,17 @@ pub struct WindOverlayStyle {
 impl Default for WindOverlayStyle {
     fn default() -> Self {
         Self {
-            stride_points: 8,
-            stride_levels: 3,
+            stride_points: 6,
+            stride_levels: 2,
+            target_columns: 10,
             min_speed_ms: 6.0,
             max_speed_ms: 35.0,
-            base_length_px: 8.0,
-            max_length_px: 24.0,
+            base_length_px: 18.0,
+            max_length_px: 18.0,
             arrow_head_px: 4.0,
             cross_tick_px: 5.0,
             line_width: 1,
-            color: Color::rgba(28, 34, 43, 220),
+            color: Color::rgba(0, 0, 0, 220),
         }
     }
 }
@@ -314,6 +371,7 @@ struct OverlayContourTiming {
     draw_ms: u128,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct WindVectorGeometry {
     start: (f64, f64),
@@ -438,46 +496,6 @@ impl ResolvedRenderScene {
             field_label,
             field_units,
         })
-    }
-
-    fn value_range_label(&self) -> String {
-        let units = self.field_units.as_deref().unwrap_or("");
-        let units_suffix = if units.is_empty() {
-            String::new()
-        } else {
-            format!(" {units}")
-        };
-        format!(
-            "RANGE {} TO {}{}",
-            format_scalar_value(self.min_value),
-            format_scalar_value(self.max_value),
-            units_suffix
-        )
-    }
-
-    fn min_max_footer_label(&self) -> String {
-        let units = self.field_units.as_deref().unwrap_or("");
-        let units_suffix = if units.is_empty() {
-            String::new()
-        } else {
-            format!(" {units}")
-        };
-        format!(
-            "MIN {}{}  MAX {}{}",
-            format_scalar_value(self.min_value),
-            units_suffix,
-            format_scalar_value(self.max_value),
-            units_suffix
-        )
-    }
-
-    fn overlay_level_label(&self, value: f32) -> String {
-        let suffix = self.field_units.as_deref().unwrap_or("");
-        if suffix.is_empty() {
-            format_scalar_value(value)
-        } else {
-            format!("{}{}", format_scalar_value(value), suffix)
-        }
     }
 }
 
@@ -970,9 +988,63 @@ fn draw_overlay_contours_profile(
     request: &CrossSectionRenderRequest,
     scene: &ResolvedRenderScene,
 ) -> OverlayContourTiming {
+    let mut timing = OverlayContourTiming::default();
+    if !scene.overlay_levels.is_empty() {
+        let fallback = draw_single_contour_overlay(
+            canvas,
+            plot,
+            section,
+            section,
+            &scene.overlay_levels,
+            scene.highlight_overlay,
+            request.isotherm_color,
+            request.highlight_isotherm_color,
+            scene.field_units.as_deref(),
+        );
+        timing.topology_ms += fallback.topology_ms;
+        timing.draw_ms += fallback.draw_ms;
+    }
+
+    for overlay in &request.contour_overlays {
+        let masked_overlay = overlay.section.masked_with_terrain();
+        let overlay_timing = draw_single_contour_overlay(
+            canvas,
+            plot,
+            section,
+            &masked_overlay,
+            &overlay.levels,
+            overlay.highlight_level,
+            overlay.color,
+            overlay.highlight_color,
+            overlay.units.as_deref(),
+        );
+        timing.topology_ms += overlay_timing.topology_ms;
+        timing.draw_ms += overlay_timing.draw_ms;
+    }
+
+    timing
+}
+
+fn draw_single_contour_overlay(
+    canvas: &mut Canvas,
+    plot: &PlotRect,
+    plot_section: &ScalarSection,
+    contour_section: &ScalarSection,
+    levels: &[f32],
+    highlight_overlay: Option<f32>,
+    contour_color: Color,
+    highlight_color: Color,
+    label_units: Option<&str>,
+) -> OverlayContourTiming {
     let topology_start = Instant::now();
-    let mut levels = scene.overlay_levels.clone();
-    if let Some(highlight) = scene.highlight_overlay {
+    if contour_section.n_points() != plot_section.n_points()
+        || contour_section.n_levels() != plot_section.n_levels()
+    {
+        return OverlayContourTiming::default();
+    }
+
+    let mut levels = levels.to_vec();
+    if let Some(highlight) = highlight_overlay {
         levels.push(highlight);
     }
     normalize_levels(&mut levels);
@@ -981,12 +1053,12 @@ fn draw_overlay_contours_profile(
     }
 
     let Ok(grid) = RectilinearGrid::new(
-        section.distances_km().to_vec(),
-        section.vertical_axis().levels().to_vec(),
+        contour_section.distances_km().to_vec(),
+        contour_section.vertical_axis().levels().to_vec(),
     ) else {
         return OverlayContourTiming::default();
     };
-    let values = section
+    let values = contour_section
         .values()
         .iter()
         .map(|value| *value as f64)
@@ -1005,20 +1077,19 @@ fn draw_overlay_contours_profile(
 
     for layer in &topology.layers {
         let level = layer.level as f32;
-        let highlighted = scene
-            .highlight_overlay
-            .is_some_and(|candidate| (candidate - level).abs() <= f32::EPSILON);
+        let highlighted =
+            highlight_overlay.is_some_and(|candidate| (candidate - level).abs() <= 0.001);
         let color = if highlighted {
-            request.highlight_isotherm_color
+            highlight_color
         } else {
-            request.isotherm_color
+            contour_color
         };
         let thickness = if highlighted { 3 } else { 1 };
-        let halo = contour_halo_color(color).with_alpha(if highlighted { 128 } else { 92 });
+        let halo = contour_halo_color(color).with_alpha(if highlighted { 126 } else { 58 });
 
         for segment in &layer.segments {
             let Some(start) = data_point_to_pixel(
-                section,
+                plot_section,
                 plot,
                 segment.geometry.start.x,
                 segment.geometry.start.y,
@@ -1026,7 +1097,7 @@ fn draw_overlay_contours_profile(
                 continue;
             };
             let Some(end) = data_point_to_pixel(
-                section,
+                plot_section,
                 plot,
                 segment.geometry.end.x,
                 segment.geometry.end.y,
@@ -1037,8 +1108,9 @@ fn draw_overlay_contours_profile(
             canvas.draw_line(start, end, color, thickness, Some(plot));
         }
 
-        if highlighted {
-            draw_highlight_label(canvas, plot, section, layer, color, scene);
+        if !highlighted {
+            let label = contour_label_for_level(level, label_units);
+            draw_contour_label(canvas, plot, plot_section, layer, color, &label);
         }
     }
     OverlayContourTiming {
@@ -1067,13 +1139,17 @@ fn draw_wind_overlay(
         });
     }
 
-    let stride_points = overlay.style.stride_points.max(1);
     let stride_levels = overlay.style.stride_levels.max(1);
+    let point_indices = wind_barb_point_indices(
+        section.n_points(),
+        overlay.style.target_columns,
+        overlay.style.stride_points.max(1),
+    );
     let axis_levels = section.vertical_axis().levels();
     let terrain = section.terrain();
 
     for level_index in (0..section.n_levels()).step_by(stride_levels) {
-        for point_index in (0..section.n_points()).step_by(stride_points) {
+        for &point_index in &point_indices {
             let Some(speed_ms) = overlay.grid.speed_value(level_index, point_index) else {
                 continue;
             };
@@ -1106,7 +1182,7 @@ fn draw_wind_overlay(
                 continue;
             };
 
-            draw_section_wind_vector(
+            draw_section_wind_barb(
                 canvas,
                 (center_x, center_y),
                 along_ms,
@@ -1121,6 +1197,27 @@ fn draw_wind_overlay(
     Ok(())
 }
 
+fn wind_barb_point_indices(
+    n_points: usize,
+    target_columns: usize,
+    fallback_stride: usize,
+) -> Vec<usize> {
+    if n_points == 0 {
+        return Vec::new();
+    }
+    if target_columns == 0 {
+        return (0..n_points).step_by(fallback_stride.max(1)).collect();
+    }
+    let count = target_columns.min(n_points);
+    if count <= 1 {
+        return vec![0];
+    }
+    (0..count)
+        .map(|index| ((index * (n_points - 1) + (count - 1) / 2) / (count - 1)).min(n_points - 1))
+        .collect()
+}
+
+#[cfg(test)]
 fn draw_section_wind_vector(
     canvas: &mut Canvas,
     center: (f64, f64),
@@ -1180,6 +1277,88 @@ fn draw_section_wind_vector(
     );
 }
 
+fn draw_section_wind_barb(
+    canvas: &mut Canvas,
+    center: (f64, f64),
+    along_ms: f32,
+    left_ms: f32,
+    speed_ms: f32,
+    style: WindOverlayStyle,
+    plot: &PlotRect,
+) {
+    if !(along_ms.is_finite() && left_ms.is_finite() && speed_ms.is_finite()) {
+        return;
+    }
+
+    let vector_norm = f64::from(along_ms).hypot(f64::from(left_ms));
+    if vector_norm < 0.001 {
+        return;
+    }
+
+    let shaft_length = style.max_length_px.max(style.base_length_px + 4.0) as f64;
+    let unit_x = f64::from(along_ms) / vector_norm;
+    let unit_y = -f64::from(left_ms) / vector_norm;
+    let half_length = shaft_length * 0.5;
+    let start = (
+        center.0 - unit_x * half_length,
+        center.1 - unit_y * half_length,
+    );
+    let end = (
+        center.0 + unit_x * half_length,
+        center.1 + unit_y * half_length,
+    );
+    draw_wind_line(canvas, start, end, style.color, style.line_width, plot);
+
+    let barb_len = style.cross_tick_px.max(5.0) as f64;
+    let spacing = (style.cross_tick_px.max(5.0) * 0.82) as f64;
+    let perp_x = -unit_y;
+    let perp_y = unit_x;
+    let mut speed_kt = (speed_ms * MS_TO_KT_F32 / 5.0).round() * 5.0;
+    let mut offset = 1.5f64;
+
+    while speed_kt >= 47.5 {
+        let base = (end.0 - unit_x * offset, end.1 - unit_y * offset);
+        let next = (
+            end.0 - unit_x * (offset + spacing),
+            end.1 - unit_y * (offset + spacing),
+        );
+        let tip = (base.0 + perp_x * barb_len, base.1 + perp_y * barb_len);
+        draw_wind_line(canvas, base, tip, style.color, style.line_width, plot);
+        draw_wind_line(canvas, next, tip, style.color, style.line_width, plot);
+        speed_kt -= 50.0;
+        offset += spacing * 1.35;
+    }
+
+    while speed_kt >= 7.5 {
+        let base = (end.0 - unit_x * offset, end.1 - unit_y * offset);
+        let tip = (base.0 + perp_x * barb_len, base.1 + perp_y * barb_len);
+        draw_wind_line(canvas, base, tip, style.color, style.line_width, plot);
+        speed_kt -= 10.0;
+        offset += spacing;
+    }
+
+    if speed_kt >= 2.5 {
+        let base = (end.0 - unit_x * offset, end.1 - unit_y * offset);
+        let tip = (
+            base.0 + perp_x * barb_len * 0.55,
+            base.1 + perp_y * barb_len * 0.55,
+        );
+        draw_wind_line(canvas, base, tip, style.color, style.line_width, plot);
+    }
+}
+
+fn draw_wind_line(
+    canvas: &mut Canvas,
+    start: (f64, f64),
+    end: (f64, f64),
+    color: Color,
+    thickness: u32,
+    plot: &PlotRect,
+) {
+    canvas.draw_line(start, end, color, thickness, Some(plot));
+}
+
+#[cfg(test)]
 fn resolve_section_wind_vector_geometry(
     center: (f64, f64),
     along_ms: f32,
@@ -1235,13 +1414,13 @@ fn resolve_section_wind_vector_geometry(
     })
 }
 
-fn draw_highlight_label(
+fn draw_contour_label(
     canvas: &mut Canvas,
     plot: &PlotRect,
     section: &ScalarSection,
     layer: &rustwx_contour::ContourLayer,
     color: Color,
-    scene: &ResolvedRenderScene,
+    label: &str,
 ) {
     let Some(segment) = layer.segments.iter().max_by(|left, right| {
         left.geometry
@@ -1268,32 +1447,22 @@ fn draw_highlight_label(
     ) else {
         return;
     };
-    let label = scene.overlay_level_label(layer.level as f32);
     let text_width = measure_text_width(&label, 1) as i32;
     let mid_x = ((start.0 + end.0) * 0.5).round() as i32;
     let mid_y = ((start.1 + end.1) * 0.5).round() as i32;
-    let box_x = (mid_x - text_width / 2 - 4)
-        .clamp(plot.x as i32 + 4, plot.right() as i32 - text_width - 10);
-    let box_y = (mid_y - 6).clamp(plot.y as i32 + 2, plot.bottom() as i32 - 12);
+    let label_x =
+        (mid_x - text_width / 2).clamp(plot.x as i32 + 4, plot.right() as i32 - text_width - 4);
+    let label_y = (mid_y - 6).clamp(plot.y as i32 + 2, plot.bottom() as i32 - 14);
 
-    canvas.fill_rect(
-        box_x as u32,
-        box_y as u32,
-        (text_width + 8) as u32,
-        11,
-        Color::rgba(18, 24, 30, 220),
-    );
-    canvas.draw_rect(
-        PlotRect {
-            x: box_x as u32,
-            y: box_y as u32,
-            width: (text_width + 8) as u32,
-            height: 11,
-        },
-        color,
+    canvas.draw_text(
+        label_x + 1,
+        label_y + 1,
+        label,
+        Color::WHITE.with_alpha(210),
         1,
+        None,
     );
-    canvas.draw_text(box_x + 4, box_y + 2, &label, Color::WHITE, 1, None);
+    canvas.draw_text(label_x, label_y, label, color, 1, None);
 }
 
 fn draw_terrain(
@@ -1335,42 +1504,13 @@ fn draw_terrain(
             continue;
         };
         let column_height = plot.bottom().saturating_sub(surface_y) + 1;
-        let prev_y = surface_ys
-            .get(plot_x.saturating_sub(1) as usize)
-            .and_then(|value| *value)
-            .unwrap_or(surface_y);
-        let next_y = surface_ys
-            .get((plot_x + 1).min(plot.width.saturating_sub(1)) as usize)
-            .and_then(|value| *value)
-            .unwrap_or(surface_y);
-        let slope = prev_y as f32 - next_y as f32;
-        let slope_blend = (slope.abs() / 8.0).clamp(0.0, 1.0);
 
         for offset in 0..column_height {
-            let blend = if column_height <= 1 {
-                0.0
-            } else {
-                offset as f32 / (column_height - 1) as f32
-            };
-            let color = request
-                .terrain_fill_top
-                .lerp(request.terrain_fill_bottom, blend);
-            let color = if slope > 0.0 {
-                color.lighten(0.10 * slope_blend * (1.0 - blend))
-            } else {
-                color.darken(0.10 * slope_blend * (1.0 - blend))
-            };
-            canvas.blend_pixel((plot.x + plot_x) as i32, (surface_y + offset) as i32, color);
-        }
-        for shadow in 1..=3u32 {
-            if surface_y > plot.y + shadow - 1 {
-                let shadow_alpha = (80u8).saturating_sub((shadow as u8 - 1) * 20);
-                canvas.blend_pixel(
-                    (plot.x + plot_x) as i32,
-                    surface_y as i32 - shadow as i32,
-                    request.terrain_stroke.with_alpha(shadow_alpha),
-                );
-            }
+            canvas.blend_pixel(
+                (plot.x + plot_x) as i32,
+                (surface_y + offset) as i32,
+                request.terrain_fill_top,
+            );
         }
         canvas.blend_pixel(
             (plot.x + plot_x) as i32,
@@ -1381,7 +1521,7 @@ fn draw_terrain(
             canvas.blend_pixel(
                 (plot.x + plot_x) as i32,
                 surface_y as i32 - 1,
-                request.terrain_highlight,
+                request.terrain_stroke.with_alpha(155),
             );
         }
     }
@@ -1393,14 +1533,7 @@ fn draw_axes(
     section: &ScalarSection,
     request: &CrossSectionRenderRequest,
 ) {
-    canvas.draw_rect(*plot, request.frame_color, 1);
-    canvas.draw_line(
-        (plot.x as f64, plot.y as f64),
-        (plot.right() as f64, plot.y as f64),
-        request.frame_color.lighten(0.18),
-        1,
-        None,
-    );
+    canvas.draw_rect(*plot, request.frame_color, 2);
 
     for tick in vertical_ticks(section.vertical_axis()) {
         let Some(y) = axis_value_to_pixel(section.vertical_axis(), plot, tick) else {
@@ -1421,7 +1554,7 @@ fn draw_axes(
             &label,
             request.text_color,
             1,
-            Some(Color::rgba(255, 255, 255, 120)),
+            Some(Color::rgba(255, 255, 255, 175)),
         );
     }
 
@@ -1447,18 +1580,18 @@ fn draw_axes(
             &label,
             request.text_color,
             1,
-            Some(Color::rgba(255, 255, 255, 120)),
+            Some(Color::rgba(255, 255, 255, 175)),
         );
     }
 
     let axis_title = axis_label(section.vertical_axis());
     canvas.draw_text(
-        plot.x as i32 - measure_text_width(&axis_title, 1) as i32 - 10,
-        plot.y as i32 + 4,
+        plot.x as i32 - measure_text_width(&axis_title, 1) as i32 - 12,
+        plot.y as i32 - 22,
         &axis_title,
         request.text_color,
         1,
-        Some(Color::rgba(255, 255, 255, 110)),
+        Some(Color::rgba(255, 255, 255, 175)),
     );
 }
 
@@ -1473,132 +1606,43 @@ fn draw_header(
         .metadata()
         .title
         .as_deref()
-        .unwrap_or("Cross Section")
-        .to_uppercase();
-    let source = section
-        .metadata()
-        .source
-        .as_deref()
-        .unwrap_or("UNKNOWN")
-        .to_uppercase();
-    let valid = section
-        .metadata()
-        .valid_label
-        .as_deref()
-        .unwrap_or("")
-        .to_uppercase();
-    let title_scale = if measure_text_width(&title, 2) + 36 <= canvas.width {
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            format!(
+                "Cross-Section: {}",
+                compose_label_with_units(&scene.field_label, scene.field_units.as_deref())
+            )
+        });
+    let title_scale = if measure_text_width(&title, 2) + plot.x + 28 <= canvas.width {
         2
     } else {
         1
     };
+    let title_y = plot.y as i32 - 52;
 
     canvas.draw_text(
-        18,
-        14,
+        plot.x as i32,
+        title_y.max(8),
         &title,
         request.text_color,
         title_scale,
-        Some(Color::rgba(255, 255, 255, 120)),
-    );
-
-    let mut subtitle = format!(
-        "{}  SOURCE {}",
-        compose_label_with_units(&scene.field_label, scene.field_units.as_deref()),
-        source
-    );
-    if !valid.is_empty() {
-        subtitle.push_str("  VALID ");
-        subtitle.push_str(&valid);
-    }
-    if let Some(overlay) = request.wind_overlay.as_ref() {
-        let overlay_label = overlay
-            .label
-            .as_deref()
-            .unwrap_or("SECTION RELATIVE WIND")
-            .to_uppercase();
-        let overlay_subtitle = format!("{subtitle}  {}", overlay_label);
-        if measure_badge_width(&overlay_subtitle, 1) + 140 <= canvas.width {
-            subtitle = overlay_subtitle;
-        }
-    }
-    draw_badge(
-        canvas,
-        18,
-        38,
-        &subtitle,
-        Color::rgba(250, 247, 242, 176),
-        request.frame_color.with_alpha(110),
-        request.text_color,
-    );
-
-    let start_label = section
-        .metadata()
-        .attribute("start_label")
-        .unwrap_or("START")
-        .to_uppercase();
-    let end_label = section.metadata().attribute("end_label").unwrap_or("END");
-    let route_label = section.metadata().attribute("route_label").unwrap_or("");
-    let end_upper = end_label.to_uppercase();
-    let context_y = plot.y as i32 - 20;
-    let context_fill = request.plot_background_top.lighten(0.10).with_alpha(212);
-    let context_stroke = request.frame_color.with_alpha(180);
-    let context_text = Color::WHITE;
-    let start_width = measure_badge_width(&start_label, 1);
-    draw_badge(
-        canvas,
-        plot.x as i32,
-        context_y,
-        &start_label,
-        context_fill,
-        context_stroke,
-        context_text,
-    );
-    let end_width = measure_badge_width(&end_upper, 1);
-    draw_badge(
-        canvas,
-        plot.right() as i32 - end_width as i32 + 1,
-        context_y,
-        &end_upper,
-        context_fill,
-        context_stroke,
-        context_text,
-    );
-    if !route_label.is_empty() {
-        let route = route_label.to_uppercase();
-        let route_width = measure_badge_width(&route, 1);
-        if route_width + start_width + end_width + 24 <= plot.width {
-            draw_badge(
-                canvas,
-                plot.x as i32 + (plot.width as i32 - route_width as i32) / 2,
-                context_y,
-                &route,
-                context_fill,
-                context_stroke,
-                context_text,
-            );
-        }
-    }
-
-    let stat = scene.value_range_label();
-    let stat_width = measure_badge_width(&stat, 1);
-    draw_badge(
-        canvas,
-        canvas.width as i32 - stat_width as i32 - 18,
-        38,
-        &stat,
-        Color::rgba(250, 247, 242, 176),
-        request.frame_color.with_alpha(110),
-        request.text_color,
-    );
-    let divider_y = plot.y.saturating_sub(6) as f64;
-    canvas.draw_line(
-        (18.0, divider_y),
-        ((canvas.width.saturating_sub(18)) as f64, divider_y),
-        request.frame_color.with_alpha(96),
-        1,
         None,
     );
+
+    let timing = format_header_timing(section.metadata());
+    if !timing.is_empty() {
+        let timing_width = measure_text_width(&timing, 1) as i32;
+        canvas.draw_text(
+            plot.right() as i32 - timing_width,
+            (title_y + 7).max(10),
+            &timing,
+            Color::rgb(82, 88, 96),
+            1,
+            None,
+        );
+    }
+
+    draw_reference_legend(canvas, plot, request, scene);
 }
 
 fn draw_footer(
@@ -1606,55 +1650,60 @@ fn draw_footer(
     plot: &PlotRect,
     section: &ScalarSection,
     request: &CrossSectionRenderRequest,
-    scene: &ResolvedRenderScene,
+    _scene: &ResolvedRenderScene,
 ) {
-    let center_label = "DISTANCE ALONG SECTION KM";
+    let center_label = "Distance (km)";
     let center_x =
         plot.x as i32 + (plot.width as i32 - measure_text_width(center_label, 1) as i32) / 2;
-    let divider_y = (plot.bottom() + 20).min(canvas.height.saturating_sub(1));
-    canvas.draw_line(
-        (18.0, divider_y as f64),
-        ((canvas.width.saturating_sub(18)) as f64, divider_y as f64),
-        request.frame_color.with_alpha(90),
-        1,
-        None,
-    );
     canvas.draw_text(
         center_x,
-        plot.bottom() as i32 + 28,
+        plot.bottom() as i32 + 36,
         center_label,
         request.text_color,
         1,
-        Some(Color::rgba(255, 255, 255, 110)),
+        None,
     );
 
-    let distance_text = format!(
-        "{:.0} KM  {} POINTS  {} LEVELS",
-        section.distances_km()[section.n_points() - 1] - section.distances_km()[0],
-        section.n_points(),
-        section.n_levels()
-    );
-    draw_badge(
-        canvas,
+    let start_label = section
+        .metadata()
+        .attribute("start_label")
+        .unwrap_or("Start");
+    let end_label = section.metadata().attribute("end_label").unwrap_or("End");
+    let route_label = section.metadata().attribute("route_label").unwrap_or("");
+    let route_y = plot.bottom() as i32 + 62;
+    let start_text = format!("A  {start_label}");
+    let end_text = format!("B  {end_label}");
+    canvas.draw_text(
         plot.x as i32,
-        canvas.height as i32 - 22,
-        &distance_text,
-        Color::rgba(250, 247, 242, 170),
-        request.frame_color.with_alpha(110),
+        route_y,
+        &start_text,
         request.text_color,
+        1,
+        None,
+    );
+    let end_width = measure_text_width(&end_text, 1) as i32;
+    canvas.draw_text(
+        plot.right() as i32 - end_width,
+        route_y,
+        &end_text,
+        request.text_color,
+        1,
+        None,
     );
 
-    let footer_right = scene.min_max_footer_label();
-    let footer_width = measure_badge_width(&footer_right, 1);
-    draw_badge(
-        canvas,
-        canvas.width as i32 - footer_width as i32 - 18,
-        canvas.height as i32 - 22,
-        &footer_right,
-        Color::rgba(250, 247, 242, 170),
-        request.frame_color.with_alpha(110),
-        request.text_color,
-    );
+    if !route_label.is_empty() {
+        let route_width = measure_text_width(route_label, 1) as i32;
+        if route_width + 40 < plot.width as i32 {
+            canvas.draw_text(
+                plot.x as i32 + (plot.width as i32 - route_width) / 2,
+                route_y,
+                route_label,
+                Color::rgb(82, 88, 96),
+                1,
+                None,
+            );
+        }
+    }
 }
 
 fn draw_colorbar(
@@ -1663,36 +1712,14 @@ fn draw_colorbar(
     request: &CrossSectionRenderRequest,
     scene: &ResolvedRenderScene,
 ) {
-    let card_x = plot.right() + 12;
-    let card_right = canvas.width.saturating_sub(12);
-    if card_right <= card_x + 44 {
+    let bar_x = plot.right() + 28;
+    let bar_width = 20u32;
+    let label_x = bar_x + bar_width + 9;
+    if label_x + 20 >= canvas.width {
         return;
     }
-    let card_width = card_right - card_x;
-    let card_y = plot.y + 10;
-    let card_height = plot.height.saturating_sub(20).max(72);
-    canvas.fill_rect(
-        card_x,
-        card_y,
-        card_width,
-        card_height,
-        Color::rgba(250, 247, 242, 212),
-    );
-    canvas.draw_rect(
-        PlotRect {
-            x: card_x,
-            y: card_y,
-            width: card_width,
-            height: card_height,
-        },
-        request.frame_color.with_alpha(110),
-        1,
-    );
-
-    let bar_width = 18u32.min(card_width.saturating_sub(32));
-    let bar_height = card_height.saturating_sub(42).max(40);
-    let bar_x = card_x + 10;
-    let bar_y = card_y + 24;
+    let bar_y = plot.y;
+    let bar_height = plot.height.max(40);
 
     for offset in 0..bar_height {
         let fraction = if bar_height == 1 {
@@ -1718,16 +1745,20 @@ fn draw_colorbar(
         1,
     );
 
+    let label = scene.colorbar_label.as_str();
+    let label_width = measure_text_width(label, 1) as i32;
+    let label_left = (canvas.width as i32 - label_width - 4)
+        .max(4)
+        .min(bar_x as i32);
     canvas.draw_text(
-        card_x as i32 + 8,
-        card_y as i32 + 8,
-        &scene.colorbar_label.to_uppercase(),
+        label_left,
+        plot.y as i32 - 23,
+        label,
         request.text_color,
         1,
         None,
     );
 
-    let tick_end_x = card_x + card_width - 8;
     for &tick in &scene.value_ticks {
         if tick < scene.min_value || tick > scene.max_value {
             continue;
@@ -1740,14 +1771,14 @@ fn draw_colorbar(
         let y = bar_y as f32 + fraction * (bar_height.saturating_sub(1) as f32);
         canvas.draw_line(
             (bar_x as f64 + bar_width as f64 + 1.0, y as f64),
-            (tick_end_x as f64, y as f64),
-            request.axis_color.with_alpha(70),
+            (label_x as f64 - 3.0, y as f64),
+            request.axis_color.with_alpha(110),
             1,
             None,
         );
         let tick_label = format_scalar_value(tick);
         canvas.draw_text(
-            tick_end_x as i32 - measure_text_width(&tick_label, 1) as i32,
+            label_x as i32,
             y.round() as i32 - 3,
             &tick_label,
             request.text_color,
@@ -1767,20 +1798,208 @@ fn draw_colorbar(
             let y = bar_y as f32 + fraction * (bar_height.saturating_sub(1) as f32);
             canvas.draw_line(
                 (bar_x as f64 - 2.0, y as f64),
-                (tick_end_x as f64, y as f64),
+                (label_x as f64 + 20.0, y as f64),
                 contour_halo_color(request.highlight_isotherm_color).with_alpha(86),
                 4,
                 None,
             );
             canvas.draw_line(
                 (bar_x as f64 - 2.0, y as f64),
-                (tick_end_x as f64, y as f64),
+                (label_x as f64 + 20.0, y as f64),
                 request.highlight_isotherm_color,
                 2,
                 None,
             );
         }
     }
+}
+
+enum LegendSymbol {
+    Line(Color),
+    Barb(Color),
+}
+
+struct LegendEntry {
+    label: String,
+    symbol: LegendSymbol,
+}
+
+fn draw_reference_legend(
+    canvas: &mut Canvas,
+    plot: &PlotRect,
+    request: &CrossSectionRenderRequest,
+    scene: &ResolvedRenderScene,
+) {
+    let mut entries = Vec::new();
+    if request.contour_overlays.is_empty() && !scene.overlay_levels.is_empty() {
+        entries.push(LegendEntry {
+            label: "Contours".to_string(),
+            symbol: LegendSymbol::Line(request.isotherm_color),
+        });
+        if scene.highlight_overlay.is_some() {
+            entries.push(LegendEntry {
+                label: "0 C Isotherm".to_string(),
+                symbol: LegendSymbol::Line(request.highlight_isotherm_color),
+            });
+        }
+    }
+
+    for overlay in &request.contour_overlays {
+        if !overlay.levels.is_empty() {
+            entries.push(LegendEntry {
+                label: overlay
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| "Contours".to_string()),
+                symbol: LegendSymbol::Line(overlay.color),
+            });
+        }
+        if overlay.highlight_level.is_some() {
+            entries.push(LegendEntry {
+                label: overlay
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| "Highlighted Contour".to_string()),
+                symbol: LegendSymbol::Line(overlay.highlight_color),
+            });
+        }
+    }
+
+    if let Some(overlay) = request.wind_overlay.as_ref() {
+        entries.push(LegendEntry {
+            label: "Wind Barbs (kt)".to_string(),
+            symbol: LegendSymbol::Barb(overlay.style.color),
+        });
+    }
+    if entries.is_empty() {
+        return;
+    }
+
+    let max_label_width = entries
+        .iter()
+        .map(|entry| measure_text_width(&entry.label, 1))
+        .max()
+        .unwrap_or(0);
+    let desired_width = (max_label_width + 64).max(160);
+    let max_width = plot.width.saturating_sub(16).max(96);
+    let width = desired_width.min(max_width);
+    let height = 10 + entries.len() as u32 * 21;
+    if height + 16 >= plot.height {
+        return;
+    }
+
+    let x = plot.x + 10;
+    let y = plot.y + 10;
+    let rect = PlotRect {
+        x,
+        y,
+        width,
+        height,
+    };
+    canvas.fill_rect(x, y, width, height, Color::rgba(255, 255, 255, 232));
+    canvas.draw_rect(rect, request.frame_color.with_alpha(145), 1);
+
+    let legend_clip = PlotRect {
+        x,
+        y,
+        width,
+        height,
+    };
+    for (index, entry) in entries.iter().enumerate() {
+        let row_y = y as i32 + 9 + index as i32 * 21;
+        match entry.symbol {
+            LegendSymbol::Line(color) => {
+                canvas.draw_line(
+                    (x as f64 + 11.0, row_y as f64 + 5.0),
+                    (x as f64 + 34.0, row_y as f64 + 5.0),
+                    Color::WHITE.with_alpha(180),
+                    3,
+                    None,
+                );
+                canvas.draw_line(
+                    (x as f64 + 11.0, row_y as f64 + 5.0),
+                    (x as f64 + 34.0, row_y as f64 + 5.0),
+                    color,
+                    2,
+                    None,
+                );
+            }
+            LegendSymbol::Barb(color) => {
+                draw_section_wind_barb(
+                    canvas,
+                    (x as f64 + 22.0, row_y as f64 + 6.0),
+                    12.0,
+                    0.0,
+                    12.0,
+                    WindOverlayStyle {
+                        min_speed_ms: 0.0,
+                        max_speed_ms: 24.0,
+                        base_length_px: 18.0,
+                        max_length_px: 18.0,
+                        cross_tick_px: 6.0,
+                        color,
+                        ..WindOverlayStyle::default()
+                    },
+                    &legend_clip,
+                );
+            }
+        }
+        canvas.draw_text(
+            x as i32 + 44,
+            row_y,
+            &entry.label,
+            request.text_color,
+            1,
+            None,
+        );
+    }
+}
+
+fn format_header_timing(metadata: &SectionMetadata) -> String {
+    let mut parts = Vec::new();
+    if let Some(init) = metadata
+        .attribute("init_label")
+        .or_else(|| metadata.attribute("store_cycle"))
+    {
+        parts.push(format!("Init: {}", compact_datetime_label(init)));
+    }
+    if let Some(forecast_hour) = metadata.attribute("forecast_hour") {
+        parts.push(forecast_hour.to_string());
+    }
+    if let Some(valid) = metadata
+        .attribute("valid_time")
+        .or(metadata.valid_label.as_deref())
+    {
+        parts.push(format!("Valid: {}", compact_datetime_label(valid)));
+    }
+    parts.join("   ")
+}
+
+fn compact_datetime_label(value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(compact_datetime_token)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn compact_datetime_token(value: &str) -> String {
+    let trimmed = value.trim();
+    let bytes = trimmed.as_bytes();
+    if bytes.len() >= 13
+        && bytes[0..8].iter().all(u8::is_ascii_digit)
+        && bytes[8] == b'T'
+        && bytes[9..11].iter().all(u8::is_ascii_digit)
+    {
+        return format!(
+            "{}-{}-{} {}Z",
+            &trimmed[0..4],
+            &trimmed[4..6],
+            &trimmed[6..8],
+            &trimmed[9..11]
+        );
+    }
+    trimmed.to_string()
 }
 
 fn terrain_surface_y(axis: &VerticalAxis, plot: &PlotRect, surface_value: f64) -> Option<u32> {
@@ -1848,10 +2067,10 @@ fn data_point_to_pixel(
 
 fn axis_label(axis: &VerticalAxis) -> String {
     match (axis.kind(), axis.units()) {
-        (VerticalKind::Pressure, _) => "PRESSURE HPA".to_string(),
-        (VerticalKind::Height, VerticalUnits::Meters) => "HEIGHT M".to_string(),
-        (VerticalKind::Height, VerticalUnits::Kilometers) => "HEIGHT KM".to_string(),
-        (VerticalKind::Height, VerticalUnits::Hectopascals) => "HEIGHT".to_string(),
+        (VerticalKind::Pressure, _) => "Pressure (hPa)".to_string(),
+        (VerticalKind::Height, VerticalUnits::Meters) => "Height (m)".to_string(),
+        (VerticalKind::Height, VerticalUnits::Kilometers) => "Height (km)".to_string(),
+        (VerticalKind::Height, VerticalUnits::Hectopascals) => "Height".to_string(),
     }
 }
 
@@ -2105,6 +2324,16 @@ fn format_scalar_value(value: f32) -> String {
     }
 }
 
+fn contour_label_for_level(value: f32, units: Option<&str>) -> String {
+    match units.map(str::trim).filter(|units| !units.is_empty()) {
+        Some(units) if units.eq_ignore_ascii_case("c") => {
+            format!("{}C", format_scalar_value(value))
+        }
+        _ => format_scalar_value(value),
+    }
+}
+
+#[cfg(test)]
 fn badge_rect(x: i32, y: i32, text: &str, scale: u32) -> (u32, u32, u32, u32) {
     let pad_x = 4 * scale.max(1);
     let width = measure_text_width(text, scale) + pad_x * 2;
@@ -2112,32 +2341,9 @@ fn badge_rect(x: i32, y: i32, text: &str, scale: u32) -> (u32, u32, u32, u32) {
     (x.max(0) as u32, y.max(0) as u32, width, height)
 }
 
+#[cfg(test)]
 fn measure_badge_width(text: &str, scale: u32) -> u32 {
     badge_rect(0, 0, text, scale).2
-}
-
-fn draw_badge(
-    canvas: &mut Canvas,
-    x: i32,
-    y: i32,
-    text: &str,
-    fill: Color,
-    stroke: Color,
-    text_color: Color,
-) {
-    let (x, y, width, height) = badge_rect(x, y, text, 1);
-    canvas.fill_rect(x, y, width, height, fill);
-    canvas.draw_rect(
-        PlotRect {
-            x,
-            y,
-            width,
-            height,
-        },
-        stroke,
-        1,
-    );
-    canvas.draw_text(x as i32 + 4, y as i32 + 2, text, text_color, 1, None);
 }
 
 fn measure_text_width(text: &str, scale: u32) -> u32 {
@@ -2171,6 +2377,7 @@ fn measure_text_width(text: &str, scale: u32) -> u32 {
     text.chars().count() as u32 * 6 * scale.max(1)
 }
 
+#[cfg(test)]
 fn text_line_height(scale: u32) -> u32 {
     if let Some(font) = cross_section_font(scale) {
         let font_kind = font_kind_for_scale(scale);
@@ -2383,7 +2590,7 @@ mod tests {
             .rgba()
             .chunks_exact(4)
             .take((360 * 50) as usize)
-            .filter(|px| px[0..3] == [24, 32, 41])
+            .filter(|px| px[0] < 80 && px[1] < 90 && px[2] < 100)
             .count();
         assert!(header_pixels > 40);
 
@@ -2423,7 +2630,7 @@ mod tests {
         let highlight_pixels = image
             .rgba()
             .chunks_exact(4)
-            .filter(|px| px[0] == 223 && px[1] == 46 && px[2] == 107)
+            .filter(|px| px[0] == 214 && px[1] == 34 && px[2] == 190)
             .count();
         assert!(highlight_pixels > 20);
     }
@@ -2510,6 +2717,17 @@ mod tests {
             .filter(|px| px[0] == 28 && px[1] == 34 && px[2] == 43)
             .count();
         assert!(vector_pixels > 30);
+    }
+
+    #[test]
+    fn wind_barb_point_selection_keeps_target_columns_across_route_lengths() {
+        assert_eq!(
+            wind_barb_point_indices(51, 10, 6),
+            vec![0, 6, 11, 17, 22, 28, 33, 39, 44, 50]
+        );
+        assert_eq!(wind_barb_point_indices(101, 10, 6).len(), 10);
+        assert_eq!(wind_barb_point_indices(6, 10, 6), vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(wind_barb_point_indices(10, 0, 4), vec![0, 4, 8]);
     }
 
     #[test]

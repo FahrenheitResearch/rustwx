@@ -5,6 +5,11 @@ Cargo.lock
 .DS_Store
 *.pyc
 __pycache__/
+.env
+deploy/cafire-weather-service/wheels/*.whl
+deploy/cafire-weather-service/data/
+deploy/cafire-weather-service/ops/health_checks/
+deploy/cafire-weather-service/local_proof_demo/*.log
 proof/cache/
 proof/wrf_polish_sample_cache/
 proof/cache_reuse_demo/

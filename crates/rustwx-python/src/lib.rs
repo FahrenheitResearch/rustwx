@@ -8,26 +8,31 @@ mod wrf_render;
 use pyo3::prelude::*;
 #[cfg(feature = "python")]
 use rustwx_core::{
-    CycleSpec, FieldPointSampleMethod, GeoPoint, ModelId, ModelRunRequest, SourceId,
+    CycleSpec, FieldPointSampleMethod, GeoBounds, GeoPoint, ModelId, ModelRunRequest, SourceId,
 };
 #[cfg(feature = "python")]
-use rustwx_io::{available_forecast_hours, probe_sources, FetchRequest};
+use rustwx_io::{FetchRequest, available_forecast_hours, probe_sources};
 #[cfg(feature = "python")]
 use rustwx_products::{
     derived::{
+        DerivedBatchReport, DerivedBatchRequest, NativeContourRenderMode,
         is_heavy_derived_recipe_slug, run_derived_batch, supported_derived_recipe_inventory,
-        supported_derived_recipe_slugs, DerivedBatchReport, DerivedBatchRequest,
-        NativeContourRenderMode,
+        supported_derived_recipe_slugs,
     },
     direct::supported_direct_recipe_slugs,
-    lightning::{default_glm_data_dir, render_glm_lightning_map, GlmLightningRenderRequest},
+    lightning::{GlmLightningRenderRequest, default_glm_data_dir, render_glm_lightning_map},
     named_geometry::{
-        find_built_in_country_domain, find_built_in_named_geometry, NamedGeometryCatalog,
-        NamedGeometryKind,
+        NamedGeometryCatalog, NamedGeometryKind, find_built_in_country_domain,
+        find_built_in_named_geometry,
     },
-    non_ecape::{run_model_non_ecape_hour_multi_domain, NonEcapeMultiDomainRequest},
-    places::{default_place_label_overlay_for_domain, PlaceLabelDensityTier},
-    point_timeseries::{sample_point_timeseries, PointTimeseriesRequest},
+    non_ecape::{NonEcapeMultiDomainRequest, run_model_non_ecape_hour_multi_domain},
+    places::{PlaceLabelDensityTier, default_place_label_overlay_for_domain},
+    point_timeseries::{
+        PointTimeseriesGridStore, PointTimeseriesGridStoreRequest, PointTimeseriesRequest,
+        build_point_timeseries_grid_store, sample_point_timeseries,
+        sample_point_timeseries_grid_store,
+    },
+    satellite::{GoesSatelliteBatchRequest, run_goes_satellite_batch},
     shared_context::DomainSpec,
     source::ProductSourceMode,
     windowed::HrrrWindowedProduct,
@@ -35,7 +40,7 @@ use rustwx_products::{
 #[cfg(feature = "python")]
 use rustwx_render::PngCompressionMode;
 #[cfg(feature = "python")]
-use rustwx_sounding::{write_full_sounding_png, SoundingColumn};
+use rustwx_sounding::{SoundingColumn, write_full_sounding_png};
 #[cfg(feature = "python")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "python")]
@@ -44,6 +49,8 @@ use std::collections::HashMap;
 use std::fs;
 #[cfg(feature = "python")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "python")]
+use std::sync::{Arc, LazyLock, Mutex};
 #[cfg(feature = "python")]
 use std::time::Instant;
 #[cfg(feature = "python")]
@@ -170,6 +177,11 @@ const BUILT_IN_MODELS: &[ModelId] = &[
 ];
 
 #[cfg(feature = "python")]
+static POINT_TIMESERIES_GRID_STORES: LazyLock<
+    Mutex<HashMap<String, Arc<PointTimeseriesGridStore>>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(feature = "python")]
 #[pyfunction]
 fn agent_capabilities_json() -> PyResult<String> {
     agent_capabilities_json_impl()
@@ -201,6 +213,19 @@ fn render_glm_lightning_json(request_json: &str) -> PyResult<String> {
 #[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (request_json))]
+fn render_goes_satellite_json(request_json: &str) -> PyResult<String> {
+    let request: RenderGoesSatelliteRequestJson =
+        serde_json::from_str(request_json).map_err(|err| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "Invalid render-goes-satellite request: {err}"
+            ))
+        })?;
+    render_goes_satellite_json_impl(request)
+}
+
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (request_json))]
 fn sample_point_timeseries_json(request_json: &str) -> PyResult<String> {
     let request: SamplePointTimeseriesRequestJson =
         serde_json::from_str(request_json).map_err(|err| {
@@ -209,6 +234,32 @@ fn sample_point_timeseries_json(request_json: &str) -> PyResult<String> {
             ))
         })?;
     sample_point_timeseries_json_impl(request)
+}
+
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (request_json))]
+fn warm_point_timeseries_store_json(py: Python<'_>, request_json: &str) -> PyResult<String> {
+    let request: WarmPointTimeseriesStoreRequestJson =
+        serde_json::from_str(request_json).map_err(|err| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "Invalid warm-point-timeseries-store request: {err}"
+            ))
+        })?;
+    warm_point_timeseries_store_json_impl(py, request)
+}
+
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (request_json))]
+fn sample_point_timeseries_store_json(request_json: &str) -> PyResult<String> {
+    let request: SamplePointTimeseriesStoreRequestJson = serde_json::from_str(request_json)
+        .map_err(|err| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "Invalid sample-point-timeseries-store request: {err}"
+            ))
+        })?;
+    sample_point_timeseries_store_json_impl(request)
 }
 
 #[cfg(feature = "python")]
@@ -345,6 +396,57 @@ struct RenderGlmLightningRequestJson {
 
 #[cfg(feature = "python")]
 #[derive(Debug, Clone, Default, Deserialize)]
+struct RenderGoesSatelliteRequestJson {
+    #[serde(default)]
+    satellite: Option<String>,
+    #[serde(default)]
+    abi_product: Option<String>,
+    #[serde(default)]
+    domain: Option<String>,
+    #[serde(default)]
+    bounds: Option<Vec<f64>>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default, alias = "out")]
+    out_dir: Option<PathBuf>,
+    #[serde(default)]
+    cache_dir: Option<PathBuf>,
+    #[serde(default)]
+    products: Option<Vec<String>>,
+    #[serde(default)]
+    width: Option<u32>,
+    #[serde(default)]
+    height: Option<u32>,
+    #[serde(default)]
+    scan_lookback_hours: Option<u32>,
+    #[serde(default)]
+    discovery_retries: Option<u32>,
+    #[serde(default)]
+    retry_sleep_ms: Option<u64>,
+    #[serde(default)]
+    use_cache: Option<bool>,
+    #[serde(default)]
+    no_cache: Option<bool>,
+    #[serde(default)]
+    download_glm: Option<bool>,
+    #[serde(default)]
+    no_glm: Option<bool>,
+    #[serde(default)]
+    glm_fetch_count: Option<usize>,
+    #[serde(default)]
+    glm_lookback_hours: Option<u32>,
+    #[serde(default)]
+    glm_max_age_min: Option<f64>,
+    #[serde(default)]
+    high_speed_png: Option<bool>,
+    #[serde(default)]
+    png_compression: Option<PngCompressionMode>,
+    #[serde(default)]
+    skip_scan_id: Option<String>,
+}
+
+#[cfg(feature = "python")]
+#[derive(Debug, Clone, Default, Deserialize)]
 struct SamplePointTimeseriesRequestJson {
     #[serde(default)]
     model: Option<String>,
@@ -376,6 +478,56 @@ struct SamplePointTimeseriesRequestJson {
     no_cache: Option<bool>,
     #[serde(default)]
     method: Option<String>,
+}
+
+#[cfg(feature = "python")]
+#[derive(Debug, Clone, Default, Deserialize)]
+struct WarmPointTimeseriesStoreRequestJson {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default, alias = "date")]
+    date_yyyymmdd: Option<String>,
+    #[serde(default, alias = "cycle")]
+    cycle_utc: Option<u8>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default, alias = "forecastHourStart", alias = "fhour_start")]
+    forecast_hour_start: Option<u16>,
+    #[serde(default, alias = "forecastHourEnd", alias = "fhour_end")]
+    forecast_hour_end: Option<u16>,
+    #[serde(default)]
+    forecast_hours: Option<Vec<u16>>,
+    #[serde(default)]
+    variables: Option<Vec<String>>,
+    #[serde(default)]
+    bounds: Option<Vec<f64>>,
+    #[serde(default)]
+    cache_dir: Option<PathBuf>,
+    #[serde(default)]
+    use_cache: Option<bool>,
+    #[serde(default)]
+    no_cache: Option<bool>,
+}
+
+#[cfg(feature = "python")]
+#[derive(Debug, Clone, Default, Deserialize)]
+struct SamplePointTimeseriesStoreRequestJson {
+    #[serde(default)]
+    store_id: Option<String>,
+    #[serde(default)]
+    lat: Option<f64>,
+    #[serde(default)]
+    lon: Option<f64>,
+    #[serde(default)]
+    point: Option<GeoPoint>,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default, alias = "forecastHourStart", alias = "fhour_start")]
+    forecast_hour_start: Option<u16>,
+    #[serde(default, alias = "forecastHourEnd", alias = "fhour_end")]
+    forecast_hour_end: Option<u16>,
+    #[serde(default)]
+    forecast_hours: Option<Vec<u16>>,
 }
 
 #[cfg(feature = "python")]
@@ -437,12 +589,13 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
                 "rustwx.list_domains_json(kind=None, limit=None)",
                 "rustwx.render_maps_json(request_json)",
                 "rustwx.render_glm_lightning_json(request_json)",
+                "rustwx.render_goes_satellite_json(request_json)",
                 "rustwx.sample_point_timeseries_json(request_json)"
             ],
             "console_scripts": [
                 {
                     "name": "rustwx",
-                    "commands": ["capabilities", "list-domains", "render-maps", "render-lightning", "sample-point-timeseries"]
+                    "commands": ["capabilities", "list-domains", "render-maps", "render-lightning", "render-satellite", "sample-point-timeseries"]
                 }
             ]
         },
@@ -478,6 +631,17 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
             "width": "optional PNG width; default 1500",
             "height": "optional PNG height; default 1300",
             "max_age_min": "recency color-ramp upper bound; default 30"
+        },
+        "render_goes_satellite_request_schema": {
+            "satellite": "GOES satellite id; default goes18",
+            "abi_product": "NOAA ABI S3 product prefix; default ABI-L2-CMIPC",
+            "domain": "optional built-in domain slug; default pacific_southwest",
+            "bounds": "optional [west,east,south,north] custom domain override",
+            "products": "optional list such as goes_geocolor, goes_glm_fed_geocolor, goes_fire_temperature_rgb, goes_abi_band_13",
+            "cache_dir": "shared raw NetCDF cache; default rustwx_outputs/cache, or RUSTWX_CACHE_DIR",
+            "out_dir": "optional artifact output directory",
+            "scan_lookback_hours": "latest scan discovery lookback; default 6",
+            "glm_fetch_count": "recent GLM files for overlay products; default 90"
         },
         "sample_point_timeseries_request_schema": {
             "model": "optional model id; default hrrr",
@@ -534,6 +698,75 @@ fn render_glm_lightning_json_impl(request: RenderGlmLightningRequestJson) -> PyR
     }
 
     let report = render_glm_lightning_map(&render_request)
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+    serde_json::to_string_pretty(&report)
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
+}
+
+#[cfg(feature = "python")]
+fn render_goes_satellite_json_impl(request: RenderGoesSatelliteRequestJson) -> PyResult<String> {
+    let domain = render_goes_satellite_domain(&request)?;
+    let mut batch_request = GoesSatelliteBatchRequest::pacific_southwest(
+        request
+            .out_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("rustwx_outputs")),
+        request
+            .cache_dir
+            .clone()
+            .unwrap_or_else(default_render_maps_cache_dir),
+    );
+    if let Some(satellite) = request.satellite {
+        batch_request.satellite = satellite;
+    }
+    if let Some(abi_product) = request.abi_product {
+        batch_request.abi_product = abi_product;
+    }
+    batch_request.domain_slug = domain.slug;
+    batch_request.domain_label = request
+        .label
+        .unwrap_or_else(|| domain_label_for_slug(&batch_request.domain_slug));
+    batch_request.bounds = domain.bounds;
+    if let Some(products) = request.products {
+        batch_request.products = products;
+    }
+    if let Some(width) = request.width {
+        batch_request.width = width;
+    }
+    if let Some(height) = request.height {
+        batch_request.height = height;
+    }
+    if let Some(lookback) = request.scan_lookback_hours {
+        batch_request.scan_lookback_hours = lookback;
+    }
+    if let Some(retries) = request.discovery_retries {
+        batch_request.discovery_retries = retries;
+    }
+    if let Some(retry_sleep_ms) = request.retry_sleep_ms {
+        batch_request.retry_sleep_ms = retry_sleep_ms;
+    }
+    batch_request.use_cache =
+        request.use_cache.unwrap_or(true) && !request.no_cache.unwrap_or(false);
+    batch_request.download_glm =
+        request.download_glm.unwrap_or(true) && !request.no_glm.unwrap_or(false);
+    if let Some(count) = request.glm_fetch_count {
+        batch_request.glm_fetch_count = count;
+    }
+    if let Some(lookback) = request.glm_lookback_hours {
+        batch_request.glm_lookback_hours = lookback;
+    }
+    if let Some(max_age_min) = request.glm_max_age_min {
+        batch_request.glm_max_age_min = max_age_min;
+    }
+    if let Some(compression) = request.png_compression {
+        batch_request.png_compression = compression;
+    }
+    if request.high_speed_png.unwrap_or(false) {
+        batch_request.png_compression = PngCompressionMode::Fast;
+    }
+    batch_request.skip_scan_id = request.skip_scan_id;
+
+    let report = run_goes_satellite_batch(&batch_request)
         .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
     serde_json::to_string_pretty(&report)
         .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
@@ -604,6 +837,102 @@ fn sample_point_timeseries_json_impl(
         method,
     };
     let report = sample_point_timeseries(&point_request)
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+    serde_json::to_string_pretty(&report)
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
+}
+
+#[cfg(feature = "python")]
+fn warm_point_timeseries_store_json_impl(
+    py: Python<'_>,
+    request: WarmPointTimeseriesStoreRequestJson,
+) -> PyResult<String> {
+    let model = request.model.as_deref().unwrap_or("hrrr").parse().map_err(
+        |err: rustwx_core::RustwxError| pyo3::exceptions::PyValueError::new_err(err.to_string()),
+    )?;
+    let date_yyyymmdd = request.date_yyyymmdd.clone().ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(
+            "warm-point-timeseries-store request requires date_yyyymmdd",
+        )
+    })?;
+    let source = request
+        .source
+        .as_deref()
+        .unwrap_or("nomads")
+        .parse()
+        .map_err(|err: rustwx_core::RustwxError| {
+            pyo3::exceptions::PyValueError::new_err(err.to_string())
+        })?;
+    let forecast_hours = forecast_hours_from_parts(
+        request.forecast_hours.clone(),
+        request.forecast_hour_start,
+        request.forecast_hour_end,
+    )?;
+    let bounds = parse_bounds(request.bounds.as_deref())?;
+    let use_cache = request.use_cache.unwrap_or(true) && !request.no_cache.unwrap_or(false);
+    let store_request = PointTimeseriesGridStoreRequest {
+        model,
+        date_yyyymmdd,
+        cycle_override_utc: request.cycle_utc,
+        source,
+        forecast_hours,
+        variables: request.variables.unwrap_or_default(),
+        bounds,
+        cache_root: request
+            .cache_dir
+            .clone()
+            .unwrap_or_else(default_render_maps_cache_dir),
+        use_cache,
+    };
+    let (store, report) = py
+        .allow_threads(|| {
+            build_point_timeseries_grid_store(&store_request).map_err(|err| err.to_string())
+        })
+        .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+    let store_id = store.store_id().to_string();
+    POINT_TIMESERIES_GRID_STORES
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("point store lock poisoned"))?
+        .insert(store_id, Arc::new(store));
+    serde_json::to_string_pretty(&report)
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
+}
+
+#[cfg(feature = "python")]
+fn sample_point_timeseries_store_json_impl(
+    request: SamplePointTimeseriesStoreRequestJson,
+) -> PyResult<String> {
+    let point = match (request.point, request.lat, request.lon) {
+        (Some(point), _, _) => point,
+        (None, Some(lat), Some(lon)) => GeoPoint::new(lat, lon),
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "sample-point-timeseries-store request requires point={lat_deg,lon_deg} or lat/lon",
+            ));
+        }
+    };
+    let method = parse_point_sample_method(request.method.as_deref())?;
+    let forecast_hours = forecast_hours_from_parts(
+        request.forecast_hours.clone(),
+        request.forecast_hour_start,
+        request.forecast_hour_end,
+    )?;
+    let stores = POINT_TIMESERIES_GRID_STORES
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("point store lock poisoned"))?;
+    let store = if let Some(store_id) = request.store_id.as_deref() {
+        stores.get(store_id).cloned().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "point timeseries store '{store_id}' is not warmed"
+            ))
+        })?
+    } else {
+        stores.values().last().cloned().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("no point timeseries store is warmed")
+        })?
+    };
+    drop(stores);
+    let report = sample_point_timeseries_grid_store(&store, point, method, Some(&forecast_hours))
         .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
     serde_json::to_string_pretty(&report)
         .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
@@ -973,6 +1302,19 @@ fn render_glm_lightning_domain(request: &RenderGlmLightningRequestJson) -> PyRes
 }
 
 #[cfg(feature = "python")]
+fn render_goes_satellite_domain(request: &RenderGoesSatelliteRequestJson) -> PyResult<DomainSpec> {
+    if let Some(bounds) = &request.bounds {
+        let slug = request.domain.as_deref().unwrap_or("custom");
+        return bounds_domain(slug, bounds.as_slice());
+    }
+    let slug = request.domain.as_deref().unwrap_or("pacific_southwest");
+    if normalize_slug(slug) == "pacific_southwest" {
+        return Ok(DomainSpec::new(slug, (-127.0, -111.0, 30.0, 44.5)));
+    }
+    resolve_named_domain(slug)
+}
+
+#[cfg(feature = "python")]
 fn resolve_named_domain(value: &str) -> PyResult<DomainSpec> {
     let slug = normalize_slug(value);
     if let Some(asset) = find_built_in_named_geometry(&slug) {
@@ -1170,6 +1512,46 @@ fn parse_point_sample_method(value: Option<&str>) -> PyResult<FieldPointSampleMe
             "unsupported point sample method '{other}'; expected nearest or inverse-distance-4"
         ))),
     }
+}
+
+#[cfg(feature = "python")]
+fn forecast_hours_from_parts(
+    explicit: Option<Vec<u16>>,
+    start: Option<u16>,
+    end: Option<u16>,
+) -> PyResult<Vec<u16>> {
+    match explicit {
+        Some(mut hours) if !hours.is_empty() => {
+            hours.sort_unstable();
+            hours.dedup();
+            Ok(hours)
+        }
+        _ => {
+            let start = start.unwrap_or(0);
+            let end = end.unwrap_or(48);
+            if start > end {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "forecast_hour_start must be <= forecast_hour_end",
+                ));
+            }
+            Ok((start..=end).collect())
+        }
+    }
+}
+
+#[cfg(feature = "python")]
+fn parse_bounds(bounds: Option<&[f64]>) -> PyResult<GeoBounds> {
+    let values = bounds.ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(
+            "warm-point-timeseries-store request requires bounds=[west,east,south,north]",
+        )
+    })?;
+    if values.len() != 4 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "bounds must be [west,east,south,north]",
+        ));
+    }
+    Ok(GeoBounds::new(values[0], values[1], values[2], values[3]))
 }
 
 #[cfg(feature = "python")]
@@ -1456,6 +1838,21 @@ fn run_agent_cli(argv: &[String]) -> Result<i32, String> {
             );
             Ok(0)
         }
+        "render-satellite" | "render-goes-satellite" | "satellite" => {
+            if args[1..]
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+            {
+                print_render_satellite_help();
+                return Ok(0);
+            }
+            let request = render_goes_satellite_request_from_cli(&args[1..])?;
+            println!(
+                "{}",
+                render_goes_satellite_json_impl(request).map_err(|err| err.to_string())?
+            );
+            Ok(0)
+        }
         "sample-point-timeseries" | "point-timeseries" | "meteogram-data" => {
             if args[1..]
                 .iter()
@@ -1478,7 +1875,7 @@ fn run_agent_cli(argv: &[String]) -> Result<i32, String> {
 #[cfg(feature = "python")]
 fn print_agent_help() {
     println!(
-        "rustwx {}\n\nUSAGE:\n  rustwx capabilities\n  rustwx list-domains [--kind country|region|metro|watch-area] [--limit N]\n  rustwx render-maps --date YYYYMMDD [--model hrrr] [--cycle H] [--forecast-hour H] [--domain conus] [--product PRODUCT] [--out-dir DIR]\n  rustwx render-maps --request request.json\n  rustwx render-lightning [--domain california] [--data-dir DIR] [--out-dir DIR]\n  rustwx sample-point-timeseries --date YYYYMMDD --lat LAT --lon LON [--forecast-hour-end 48]\n\nPython API: rustwx.agent_capabilities_json(), rustwx.list_domains_json(), rustwx.render_maps_json(request_json), rustwx.render_glm_lightning_json(request_json), rustwx.sample_point_timeseries_json(request_json).",
+        "rustwx {}\n\nUSAGE:\n  rustwx capabilities\n  rustwx list-domains [--kind country|region|metro|watch-area] [--limit N]\n  rustwx render-maps --date YYYYMMDD [--model hrrr] [--cycle H] [--forecast-hour H] [--domain conus] [--product PRODUCT] [--out-dir DIR]\n  rustwx render-maps --request request.json\n  rustwx render-lightning [--domain california] [--data-dir DIR] [--out-dir DIR]\n  rustwx render-satellite [--domain pacific_southwest] [--cache-dir DIR] [--out-dir DIR]\n  rustwx sample-point-timeseries --date YYYYMMDD --lat LAT --lon LON [--forecast-hour-end 48]\n\nPython API: rustwx.agent_capabilities_json(), rustwx.list_domains_json(), rustwx.render_maps_json(request_json), rustwx.render_glm_lightning_json(request_json), rustwx.render_goes_satellite_json(request_json), rustwx.sample_point_timeseries_json(request_json).",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -1499,6 +1896,13 @@ fn print_render_maps_help() {
 fn print_render_lightning_help() {
     println!(
         "USAGE:\n  rustwx render-lightning [--domain california] [--data-dir DIR] [--out-dir DIR]\n  rustwx render-lightning --bounds west,east,south,north [--label NAME]\n  rustwx render-lightning --request request.json\n\nOptions include --width, --height, --max-age-min, and --high-speed-png.\n\nDefault GLM data dir: RUSTWX_GLM_DIR, CWT_GLM_DIR, or ~/lightning-test/data/glm."
+    );
+}
+
+#[cfg(feature = "python")]
+fn print_render_satellite_help() {
+    println!(
+        "USAGE:\n  rustwx render-satellite [--satellite goes18] [--domain pacific_southwest] [--cache-dir DIR] [--out-dir DIR]\n  rustwx render-satellite --bounds west,east,south,north [--label NAME]\n  rustwx render-satellite --request request.json\n\nOptions include --product comma-list, --width, --height, --scan-lookback-hours, --glm-fetch-count, --no-glm, --no-cache, and --high-speed-png.\n\nDefault ABI source: NOAA noaa-goes18 / ABI-L2-CMIPC. Raw NetCDF cache defaults to rustwx_outputs/cache or RUSTWX_CACHE_DIR."
     );
 }
 
@@ -1580,6 +1984,89 @@ fn render_glm_lightning_request_from_cli(
             other => return Err(format!("unknown render-lightning option '{other}'")),
         }
         index += 1;
+    }
+    Ok(request)
+}
+
+#[cfg(feature = "python")]
+fn render_goes_satellite_request_from_cli(
+    args: &[String],
+) -> Result<RenderGoesSatelliteRequestJson, String> {
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
+        print_render_satellite_help();
+        return Err("help requested".to_string());
+    }
+
+    let mut request = RenderGoesSatelliteRequestJson::default();
+    let mut products = Vec::<String>::new();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        match arg {
+            "--request" => {
+                let path = next_cli_value(args, &mut index, arg)?;
+                let payload = fs::read_to_string(&path)
+                    .map_err(|err| format!("failed to read request file '{path}': {err}"))?;
+                return serde_json::from_str(&payload)
+                    .map_err(|err| format!("invalid request JSON in '{path}': {err}"));
+            }
+            "--request-json" => {
+                let payload = next_cli_value(args, &mut index, arg)?;
+                return serde_json::from_str(&payload)
+                    .map_err(|err| format!("invalid request JSON: {err}"));
+            }
+            "--satellite" => request.satellite = Some(next_cli_value(args, &mut index, arg)?),
+            "--abi-product" => request.abi_product = Some(next_cli_value(args, &mut index, arg)?),
+            "--domain" | "--region" => {
+                request.domain = Some(next_cli_value(args, &mut index, arg)?)
+            }
+            "--bounds" => {
+                let raw = next_cli_value(args, &mut index, arg)?;
+                request.bounds = Some(parse_comma_f64s(&raw, "--bounds")?);
+            }
+            "--label" => request.label = Some(next_cli_value(args, &mut index, arg)?),
+            "--out-dir" | "--out" => {
+                request.out_dir = Some(PathBuf::from(next_cli_value(args, &mut index, arg)?));
+            }
+            "--cache-dir" => {
+                request.cache_dir = Some(PathBuf::from(next_cli_value(args, &mut index, arg)?));
+            }
+            "--product" | "--products" => {
+                extend_comma_values(&mut products, &next_cli_value(args, &mut index, arg)?);
+            }
+            "--width" => request.width = Some(parse_cli_value(args, &mut index, arg)?),
+            "--height" => request.height = Some(parse_cli_value(args, &mut index, arg)?),
+            "--scan-lookback-hours" => {
+                request.scan_lookback_hours = Some(parse_cli_value(args, &mut index, arg)?);
+            }
+            "--discovery-retries" => {
+                request.discovery_retries = Some(parse_cli_value(args, &mut index, arg)?);
+            }
+            "--retry-sleep-ms" => {
+                request.retry_sleep_ms = Some(parse_cli_value(args, &mut index, arg)?);
+            }
+            "--glm-fetch-count" => {
+                request.glm_fetch_count = Some(parse_cli_value(args, &mut index, arg)?);
+            }
+            "--glm-lookback-hours" => {
+                request.glm_lookback_hours = Some(parse_cli_value(args, &mut index, arg)?);
+            }
+            "--glm-max-age-min" => {
+                request.glm_max_age_min = Some(parse_cli_value(args, &mut index, arg)?);
+            }
+            "--skip-scan-id" => request.skip_scan_id = Some(next_cli_value(args, &mut index, arg)?),
+            "--high-speed-png" => request.high_speed_png = Some(true),
+            "--no-cache" => request.no_cache = Some(true),
+            "--no-glm" => request.no_glm = Some(true),
+            other => return Err(format!("unknown render-satellite option '{other}'")),
+        }
+        index += 1;
+    }
+    if !products.is_empty() {
+        request.products = Some(products);
     }
     Ok(request)
 }
@@ -2090,7 +2577,13 @@ fn rustwx(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(list_domains_json, module)?)?;
     module.add_function(wrap_pyfunction!(render_maps_json, module)?)?;
     module.add_function(wrap_pyfunction!(render_glm_lightning_json, module)?)?;
+    module.add_function(wrap_pyfunction!(render_goes_satellite_json, module)?)?;
     module.add_function(wrap_pyfunction!(sample_point_timeseries_json, module)?)?;
+    module.add_function(wrap_pyfunction!(warm_point_timeseries_store_json, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        sample_point_timeseries_store_json,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(cli_main, module)?)?;
     module.add_function(wrap_pyfunction!(
         describe_projected_projection_json,

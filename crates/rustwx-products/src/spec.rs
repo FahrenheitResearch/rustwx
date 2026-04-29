@@ -2,12 +2,12 @@ use rustwx_core::{
     CanonicalProductIdentity, ProductId, ProductKeyMetadata, ProductKind, ProductLineage,
     ProductProvenance, ProductWindowSpec, StatisticalProcess,
 };
-use rustwx_models::{built_in_plot_recipes, PlotRecipe, RenderStyle};
+use rustwx_models::{PlotRecipe, RenderStyle, built_in_plot_recipes};
 use rustwx_render::{ProductMaturity, ProductSemanticFlag};
 
 use crate::derived::{
-    blocked_derived_recipe_inventory, supported_derived_recipe_inventory,
     BlockedDerivedRecipeInventoryEntry, DerivedRecipeInventoryEntry,
+    blocked_derived_recipe_inventory, supported_derived_recipe_inventory,
 };
 use crate::hrrr::HrrrBatchProduct;
 use crate::windowed::HrrrWindowedProduct;
@@ -164,197 +164,197 @@ pub fn windowed_product_specs() -> Vec<ProductSpec> {
         ),
         (
             HrrrWindowedProduct::Wind10m0to24hMax,
-            "00Z-only fixed diurnal max of native hourly 10 m wind-speed maxima from F001..F024",
+            "Extended-cycle fixed 24 h max of native hourly 10 m wind-speed maxima from F001..F024",
             "weather_winds",
         ),
         (
             HrrrWindowedProduct::Wind10m24to48hMax,
-            "00Z-only fixed diurnal max of native hourly 10 m wind-speed maxima from F025..F048",
+            "Extended-cycle fixed 24 h max of native hourly 10 m wind-speed maxima from F025..F048",
             "weather_winds",
         ),
         (
             HrrrWindowedProduct::Wind10m0to48hMax,
-            "00Z-only fixed two-day max of native hourly 10 m wind-speed maxima from F001..F048",
+            "Extended-cycle fixed 48 h max of native hourly 10 m wind-speed maxima from F001..F048",
             "weather_winds",
         ),
         (
             HrrrWindowedProduct::Temp2m0to24hMax,
-            "00Z-only fixed diurnal max of hourly 2 m temperature snapshots from F001..F024",
+            "Extended-cycle fixed 24 h max of hourly 2 m temperature snapshots from F001..F024",
             "weather_temperature",
         ),
         (
             HrrrWindowedProduct::Temp2m24to48hMax,
-            "00Z-only fixed diurnal max of hourly 2 m temperature snapshots from F025..F048",
+            "Extended-cycle fixed 24 h max of hourly 2 m temperature snapshots from F025..F048",
             "weather_temperature",
         ),
         (
             HrrrWindowedProduct::Temp2m0to48hMax,
-            "00Z-only fixed two-day max of hourly 2 m temperature snapshots from F001..F048",
+            "Extended-cycle fixed 48 h max of hourly 2 m temperature snapshots from F001..F048",
             "weather_temperature",
         ),
         (
             HrrrWindowedProduct::Temp2m0to24hMin,
-            "00Z-only fixed diurnal min of hourly 2 m temperature snapshots from F001..F024",
+            "Extended-cycle fixed 24 h min of hourly 2 m temperature snapshots from F001..F024",
             "weather_temperature",
         ),
         (
             HrrrWindowedProduct::Temp2m24to48hMin,
-            "00Z-only fixed diurnal min of hourly 2 m temperature snapshots from F025..F048",
+            "Extended-cycle fixed 24 h min of hourly 2 m temperature snapshots from F025..F048",
             "weather_temperature",
         ),
         (
             HrrrWindowedProduct::Temp2m0to48hMin,
-            "00Z-only fixed two-day min of hourly 2 m temperature snapshots from F001..F048",
+            "Extended-cycle fixed 48 h min of hourly 2 m temperature snapshots from F001..F048",
             "weather_temperature",
         ),
         (
             HrrrWindowedProduct::Temp2m0to24hRange,
-            "00Z-only fixed diurnal max-minus-min range of hourly 2 m temperature snapshots from F001..F024",
+            "Extended-cycle fixed 24 h max-minus-min range of hourly 2 m temperature snapshots from F001..F024",
             "weather_temperature",
         ),
         (
             HrrrWindowedProduct::Temp2m24to48hRange,
-            "00Z-only fixed diurnal max-minus-min range of hourly 2 m temperature snapshots from F025..F048",
+            "Extended-cycle fixed 24 h max-minus-min range of hourly 2 m temperature snapshots from F025..F048",
             "weather_temperature",
         ),
         (
             HrrrWindowedProduct::Temp2m0to48hRange,
-            "00Z-only fixed two-day max-minus-min range of hourly 2 m temperature snapshots from F001..F048",
+            "Extended-cycle fixed 48 h max-minus-min range of hourly 2 m temperature snapshots from F001..F048",
             "weather_temperature",
         ),
         (
             HrrrWindowedProduct::Rh2m0to24hMax,
-            "00Z-only fixed diurnal max of hourly 2 m relative humidity snapshots from F001..F024",
+            "Extended-cycle fixed 24 h max of hourly 2 m relative humidity snapshots from F001..F024",
             "weather_rh",
         ),
         (
             HrrrWindowedProduct::Rh2m24to48hMax,
-            "00Z-only fixed diurnal max of hourly 2 m relative humidity snapshots from F025..F048",
+            "Extended-cycle fixed 24 h max of hourly 2 m relative humidity snapshots from F025..F048",
             "weather_rh",
         ),
         (
             HrrrWindowedProduct::Rh2m0to48hMax,
-            "00Z-only fixed two-day max of hourly 2 m relative humidity snapshots from F001..F048",
+            "Extended-cycle fixed 48 h max of hourly 2 m relative humidity snapshots from F001..F048",
             "weather_rh",
         ),
         (
             HrrrWindowedProduct::Rh2m0to24hMin,
-            "00Z-only fixed diurnal min of hourly 2 m relative humidity snapshots from F001..F024",
+            "Extended-cycle fixed 24 h min of hourly 2 m relative humidity snapshots from F001..F024",
             "weather_rh",
         ),
         (
             HrrrWindowedProduct::Rh2m24to48hMin,
-            "00Z-only fixed diurnal min of hourly 2 m relative humidity snapshots from F025..F048",
+            "Extended-cycle fixed 24 h min of hourly 2 m relative humidity snapshots from F025..F048",
             "weather_rh",
         ),
         (
             HrrrWindowedProduct::Rh2m0to48hMin,
-            "00Z-only fixed two-day min of hourly 2 m relative humidity snapshots from F001..F048",
+            "Extended-cycle fixed 48 h min of hourly 2 m relative humidity snapshots from F001..F048",
             "weather_rh",
         ),
         (
             HrrrWindowedProduct::Rh2m0to24hRange,
-            "00Z-only fixed diurnal max-minus-min range of hourly 2 m relative humidity snapshots from F001..F024",
+            "Extended-cycle fixed 24 h max-minus-min range of hourly 2 m relative humidity snapshots from F001..F024",
             "weather_rh",
         ),
         (
             HrrrWindowedProduct::Rh2m24to48hRange,
-            "00Z-only fixed diurnal max-minus-min range of hourly 2 m relative humidity snapshots from F025..F048",
+            "Extended-cycle fixed 24 h max-minus-min range of hourly 2 m relative humidity snapshots from F025..F048",
             "weather_rh",
         ),
         (
             HrrrWindowedProduct::Rh2m0to48hRange,
-            "00Z-only fixed two-day max-minus-min range of hourly 2 m relative humidity snapshots from F001..F048",
+            "Extended-cycle fixed 48 h max-minus-min range of hourly 2 m relative humidity snapshots from F001..F048",
             "weather_rh",
         ),
         (
             HrrrWindowedProduct::Dewpoint2m0to24hMax,
-            "00Z-only fixed diurnal max of hourly 2 m dewpoint snapshots from F001..F024",
+            "Extended-cycle fixed 24 h max of hourly 2 m dewpoint snapshots from F001..F024",
             "weather_dewpoint",
         ),
         (
             HrrrWindowedProduct::Dewpoint2m24to48hMax,
-            "00Z-only fixed diurnal max of hourly 2 m dewpoint snapshots from F025..F048",
+            "Extended-cycle fixed 24 h max of hourly 2 m dewpoint snapshots from F025..F048",
             "weather_dewpoint",
         ),
         (
             HrrrWindowedProduct::Dewpoint2m0to48hMax,
-            "00Z-only fixed two-day max of hourly 2 m dewpoint snapshots from F001..F048",
+            "Extended-cycle fixed 48 h max of hourly 2 m dewpoint snapshots from F001..F048",
             "weather_dewpoint",
         ),
         (
             HrrrWindowedProduct::Dewpoint2m0to24hMin,
-            "00Z-only fixed diurnal min of hourly 2 m dewpoint snapshots from F001..F024",
+            "Extended-cycle fixed 24 h min of hourly 2 m dewpoint snapshots from F001..F024",
             "weather_dewpoint",
         ),
         (
             HrrrWindowedProduct::Dewpoint2m24to48hMin,
-            "00Z-only fixed diurnal min of hourly 2 m dewpoint snapshots from F025..F048",
+            "Extended-cycle fixed 24 h min of hourly 2 m dewpoint snapshots from F025..F048",
             "weather_dewpoint",
         ),
         (
             HrrrWindowedProduct::Dewpoint2m0to48hMin,
-            "00Z-only fixed two-day min of hourly 2 m dewpoint snapshots from F001..F048",
+            "Extended-cycle fixed 48 h min of hourly 2 m dewpoint snapshots from F001..F048",
             "weather_dewpoint",
         ),
         (
             HrrrWindowedProduct::Dewpoint2m0to24hRange,
-            "00Z-only fixed diurnal max-minus-min range of hourly 2 m dewpoint snapshots from F001..F024",
+            "Extended-cycle fixed 24 h max-minus-min range of hourly 2 m dewpoint snapshots from F001..F024",
             "weather_dewpoint",
         ),
         (
             HrrrWindowedProduct::Dewpoint2m24to48hRange,
-            "00Z-only fixed diurnal max-minus-min range of hourly 2 m dewpoint snapshots from F025..F048",
+            "Extended-cycle fixed 24 h max-minus-min range of hourly 2 m dewpoint snapshots from F025..F048",
             "weather_dewpoint",
         ),
         (
             HrrrWindowedProduct::Dewpoint2m0to48hRange,
-            "00Z-only fixed two-day max-minus-min range of hourly 2 m dewpoint snapshots from F001..F048",
+            "Extended-cycle fixed 48 h max-minus-min range of hourly 2 m dewpoint snapshots from F001..F048",
             "weather_dewpoint",
         ),
         (
             HrrrWindowedProduct::Vpd2m0to24hMax,
-            "00Z-only fixed diurnal max of hourly 2 m vapor pressure deficit snapshots from F001..F024",
+            "Extended-cycle fixed 24 h max of hourly 2 m vapor pressure deficit snapshots from F001..F024",
             "weather_vpd",
         ),
         (
             HrrrWindowedProduct::Vpd2m24to48hMax,
-            "00Z-only fixed diurnal max of hourly 2 m vapor pressure deficit snapshots from F025..F048",
+            "Extended-cycle fixed 24 h max of hourly 2 m vapor pressure deficit snapshots from F025..F048",
             "weather_vpd",
         ),
         (
             HrrrWindowedProduct::Vpd2m0to48hMax,
-            "00Z-only fixed two-day max of hourly 2 m vapor pressure deficit snapshots from F001..F048",
+            "Extended-cycle fixed 48 h max of hourly 2 m vapor pressure deficit snapshots from F001..F048",
             "weather_vpd",
         ),
         (
             HrrrWindowedProduct::Vpd2m0to24hMin,
-            "00Z-only fixed diurnal min of hourly 2 m vapor pressure deficit snapshots from F001..F024",
+            "Extended-cycle fixed 24 h min of hourly 2 m vapor pressure deficit snapshots from F001..F024",
             "weather_vpd",
         ),
         (
             HrrrWindowedProduct::Vpd2m24to48hMin,
-            "00Z-only fixed diurnal min of hourly 2 m vapor pressure deficit snapshots from F025..F048",
+            "Extended-cycle fixed 24 h min of hourly 2 m vapor pressure deficit snapshots from F025..F048",
             "weather_vpd",
         ),
         (
             HrrrWindowedProduct::Vpd2m0to48hMin,
-            "00Z-only fixed two-day min of hourly 2 m vapor pressure deficit snapshots from F001..F048",
+            "Extended-cycle fixed 48 h min of hourly 2 m vapor pressure deficit snapshots from F001..F048",
             "weather_vpd",
         ),
         (
             HrrrWindowedProduct::Vpd2m0to24hRange,
-            "00Z-only fixed diurnal max-minus-min range of hourly 2 m vapor pressure deficit snapshots from F001..F024",
+            "Extended-cycle fixed 24 h max-minus-min range of hourly 2 m vapor pressure deficit snapshots from F001..F024",
             "weather_vpd",
         ),
         (
             HrrrWindowedProduct::Vpd2m24to48hRange,
-            "00Z-only fixed diurnal max-minus-min range of hourly 2 m vapor pressure deficit snapshots from F025..F048",
+            "Extended-cycle fixed 24 h max-minus-min range of hourly 2 m vapor pressure deficit snapshots from F025..F048",
             "weather_vpd",
         ),
         (
             HrrrWindowedProduct::Vpd2m0to48hRange,
-            "00Z-only fixed two-day max-minus-min range of hourly 2 m vapor pressure deficit snapshots from F001..F048",
+            "Extended-cycle fixed 48 h max-minus-min range of hourly 2 m vapor pressure deficit snapshots from F001..F048",
             "weather_vpd",
         ),
     ]
@@ -892,23 +892,30 @@ mod tests {
             theta_e.id,
             ProductId::new(ProductKind::Derived, "theta_e_2m_10m_winds")
         );
-        assert!(theta_e
-            .aliases
-            .iter()
-            .any(|alias| alias.slug == "2m_theta_e_10m_winds"));
-        assert!(theta_e
-            .aliases
-            .iter()
-            .any(|alias| alias.id == ProductId::new(ProductKind::Derived, "2m_theta_e_10m_winds")));
+        assert!(
+            theta_e
+                .aliases
+                .iter()
+                .any(|alias| alias.slug == "2m_theta_e_10m_winds")
+        );
+        assert!(
+            theta_e
+                .aliases
+                .iter()
+                .any(|alias| alias.id
+                    == ProductId::new(ProductKind::Derived, "2m_theta_e_10m_winds"))
+        );
         let identity = theta_e
             .product_metadata
             .as_ref()
             .and_then(|metadata| metadata.identity.as_ref())
             .expect("derived spec should expose canonical identity");
         assert_eq!(identity.canonical, theta_e.id);
-        assert!(identity
-            .alias_slugs
-            .contains(&"2m_theta_e_10m_winds".to_string()));
+        assert!(
+            identity
+                .alias_slugs
+                .contains(&"2m_theta_e_10m_winds".to_string())
+        );
         assert_eq!(
             theta_e
                 .product_metadata

@@ -1,0 +1,9 @@
+cafire.wxsection.com {
+  encode zstd gzip
+  reverse_proxy api:8000
+}
+
+:80 {
+  encode zstd gzip
+  reverse_proxy api:8000
+}

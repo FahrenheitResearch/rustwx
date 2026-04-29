@@ -70,6 +70,19 @@ pub fn checked_in_us_counties_5m_root() -> Option<PathBuf> {
 }
 
 fn workspace_basemap_subdir(name: &str) -> Option<PathBuf> {
+    for env_name in ["RUSTWX_BASEMAP_DIR", "RUSTWX_ASSETS_DIR"] {
+        if let Some(root) = std::env::var_os(env_name).map(PathBuf::from) {
+            let candidate = if env_name == "RUSTWX_ASSETS_DIR" {
+                root.join("basemap").join(name)
+            } else {
+                root.join(name)
+            };
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|path| path.parent())?
