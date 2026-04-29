@@ -146,7 +146,7 @@ logic in `rustwx-wrf` instead of forking the runner.
 ```bash
 cd /root/runs/apr27_2080_future
 tar -czf /root/apr27_2080_future.tar.gz rustwx_wrf_gdex_20800427_0z_f021_conus_*
-scp -P 10094 root@HOST:/root/apr27_2080_future.tar.gz .
+scp -P 10094 user@HOST:/path/to/apr27_2080_future.tar.gz .
 ```
 
 ## Current caveats

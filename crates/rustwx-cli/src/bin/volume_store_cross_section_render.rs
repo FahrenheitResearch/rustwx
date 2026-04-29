@@ -33,7 +33,7 @@ struct Args {
     store: PathBuf,
     #[arg(
         long,
-        default_value = "proof/cafire_local_artifacts/proof_wall_8800/volume_cross_sections"
+        default_value = "proof/local_volume_artifacts/proof_wall_8800/volume_cross_sections"
     )]
     out_dir: PathBuf,
     #[arg(long, default_value = DEFAULT_PRODUCTS)]
