@@ -6,6 +6,8 @@ Cargo.lock
 *.pyc
 __pycache__/
 .env
+.env.*
+proof/
 proof/cache/
 proof/wrf_polish_sample_cache/
 proof/cache_reuse_demo/
@@ -32,4 +34,10 @@ proof/*.bin
 proof/tmp_*
 proof/CONFIRMED_*
 proof/*decode_stats.json
+*.bundle
+*_review_flat*/
+*_gpt*_review*/
+*_node_backup*/
+*.local.md
+INTERNAL_*
 _tmp_check.rs
