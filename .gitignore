@@ -6,6 +6,10 @@ Cargo.lock
 *.pyc
 __pycache__/
 .env
+deploy/cafire-weather-service/
+docs/cafire_claude_code_integration_guide.md
+docs/cafire_hosting_ops_handoff.md
+docs/cafire_volume_store_production_handoff.md
 deploy/cafire-weather-service/wheels/*.whl
 deploy/cafire-weather-service/data/
 deploy/cafire-weather-service/ops/health_checks/
