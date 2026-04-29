@@ -32,7 +32,7 @@ Current top-level commands:
 - `weather_native_bench`
   - Release-mode benchmark/profiling runner for the native contour map lane.
   - Compares Rust native contour render timings against forced legacy raster renders and Python `matplotlib/cartopy` equivalents on the same cached HRRR fields.
-  - Current default benchmark set is `stp_fixed`, `sbcape`, and `srh_0_1km`; writes PNGs plus summary JSON/Markdown under `proof/bench/`.
+  - Current default benchmark set is `stp_fixed`, `sbcape`, and `srh_0_1km`; writes PNGs plus summary JSON/Markdown under the selected output directory.
 - `hrrr_derived_batch` / `derived_batch`
   - Best lane for iterating derived weather-native maps.
   - Native projected contour-filled derived products are currently `stp_fixed`, `sbcape`, `mlcape`, `srh_0_1km`, `srh_0_3km`, `ehi_0_1km`, and `ehi_0_3km`.
@@ -40,7 +40,7 @@ Current top-level commands:
   - Direct field proof lane.
   - Useful for contour-sensitive projected products such as `mslp_10m_winds` that still use the standard `rustwx-render` contour/overlay path.
 - `product_catalog` and `proof_gallery`
-  - Small inspection helpers for published proof output.
+  - Small inspection helpers for generated validation output.
 
 ## Current limits
 
@@ -55,34 +55,34 @@ cargo run -p rustwx-cli -- list
 ```
 
 ```powershell
-cargo run -p rustwx-cli --release --bin hrrr_native_proof -- --date 20260414 --cycle 23 --forecast-hour 0 --out-dir proof
+cargo run -p rustwx-cli --release --bin hrrr_native_proof -- --date 20260414 --cycle 23 --forecast-hour 0 --out-dir target/artifacts/hrrr_native
 ```
 
 ```powershell
-cargo run -p rustwx-cli --release --bin hrrr_native_proof -- --case conus-contour,southern-plains-severe --date 20260414 --cycle 23 --forecast-hour 0 --out-dir proof
+cargo run -p rustwx-cli --release --bin hrrr_native_proof -- --case conus-contour,southern-plains-severe --date 20260414 --cycle 23 --forecast-hour 0 --out-dir target/artifacts/hrrr_native
 ```
 
 ```powershell
-cargo run -p rustwx-cli --release --bin hrrr_native_proof -- --mode custom --date 20260414 --cycle 23 --forecast-hour 0 --region southern-plains --direct-recipe 500mb_temperature_height_winds --derived-recipe stp_fixed,sbcape --out-dir proof
+cargo run -p rustwx-cli --release --bin hrrr_native_proof -- --mode custom --date 20260414 --cycle 23 --forecast-hour 0 --region southern-plains --direct-recipe 500mb_temperature_height_winds --derived-recipe stp_fixed,sbcape --out-dir target/artifacts/hrrr_native
 ```
 
 ```powershell
-cargo run -p rustwx-cli --release --bin hrrr_temperature_xsection -- --date 20260414 --cycle 23 --forecast-hour 0 --out-dir proof
+cargo run -p rustwx-cli --release --bin hrrr_temperature_xsection -- --date 20260414 --cycle 23 --forecast-hour 0 --out-dir target/artifacts/hrrr_temperature_xsection
 ```
 
 ```powershell
-cargo run -p rustwx-cli --release --bin hrrr_temperature_xsection -- --product wind-speed --date 20260414 --cycle 23 --forecast-hour 0 --out-dir proof
+cargo run -p rustwx-cli --release --bin hrrr_temperature_xsection -- --product wind-speed --date 20260414 --cycle 23 --forecast-hour 0 --out-dir target/artifacts/hrrr_temperature_xsection
 ```
 
 ```powershell
-cargo run -p rustwx-cli --release --bin sounding_plot -- --model hrrr --date 20260424 --cycle 22 --forecast-hour 1 --source aws --lat 35.222 --lon -97.439 --station-id "Norman OK" --out-dir proof/soundings
+cargo run -p rustwx-cli --release --bin sounding_plot -- --model hrrr --date 20260424 --cycle 22 --forecast-hour 1 --source aws --lat 35.222 --lon -97.439 --station-id "Norman OK" --out-dir target/artifacts/soundings
 ```
 
 Use `--sample-method box-mean --box-radius-km 25` for a box-averaged model
 sounding around the target point instead of a single nearest grid point.
 
 ```powershell
-cargo run -p rustwx-cli --release --bin weather_native_bench -- --date 20260414 --cycle 23 --forecast-hour 0 --region southern-plains --product stp_fixed,sbcape,srh_0_1km --rust-runs 5 --python-runs 3 --out-dir proof
+cargo run -p rustwx-cli --release --bin weather_native_bench -- --date 20260414 --cycle 23 --forecast-hour 0 --region southern-plains --product stp_fixed,sbcape,srh_0_1km --rust-runs 5 --python-runs 3 --out-dir target/artifacts/weather_native_bench
 ```
 
 ```powershell
@@ -94,9 +94,9 @@ cargo run -p rustwx-cli --bin hrrr_direct_batch -- --recipe mslp_10m_winds,500mb
 ```
 
 ```powershell
-cargo run -p rustwx-cli --bin product_catalog -- --out C:\Users\drew\rustwx\proof\product_catalog.json
+cargo run -p rustwx-cli --bin product_catalog -- --out target/artifacts/product_catalog.json
 ```
 
 ```powershell
-cargo run -p rustwx-cli --bin proof_gallery -- --proof-root C:\Users\drew\rustwx\proof --out-dir C:\Users\drew\rustwx\proof\viewer
+cargo run -p rustwx-cli --bin proof_gallery -- --proof-root target/artifacts --out-dir target/artifacts/viewer
 ```

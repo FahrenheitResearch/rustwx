@@ -15,11 +15,11 @@ This workspace is split along stable engine boundaries instead of one-off plotti
 - Native projection metadata is preserved from decode through projected rendering instead of being collapsed into a generic map frame.
 - The standard overlay story is unchanged: shared map labels, basemap overlays, colorbars, and composition still come from `rustwx-render`.
 - A separate native projected contour-fill path, built on `rustwx-contour`, is now live in the derived-product lane for `stp_fixed`, `sbcape`, `mlcape`, `srh_0_1km`, `srh_0_3km`, `ehi_0_1km`, and `ehi_0_3km`.
-- That native contour-fill path is not yet the shared live map contour backend for every contour-sensitive product. Direct synoptic products such as `mslp_10m_winds` still ride the existing projected render/overlay path and stay in the proof suite as comparison targets.
+- That native contour-fill path is not yet the shared live map contour backend for every contour-sensitive product. The current plotted map contours still come from `rustwx-render` for direct synoptic products such as `mslp_10m_winds`, which remain comparison targets.
 - `rustwx-cross-section` now exposes a public palette/style surface informed by `wxsection_ref` through `CrossSectionPalette`, `CrossSectionProduct`, and `CrossSectionStyle`.
-- `rustwx-products::cross_section` now builds real gridded pressure sections from decoded model data instead of leaving section science inside a proof script. The first supported family is `temperature`, `relative_humidity`, `theta_e`, and `wind_speed`.
-- The current real-data HRRR section lane now renders a small multi-product family with terrain, product-aware palettes, product-aware colorbars, and section-relative wind overlay. The temperature proof uses the `temperature_white_zero` palette as the current hero section.
-- `hrrr_native_proof` still defaults to a tight `conus_contour` suite case for maps, but its cross-section hook lane now emits a bounded multi-proof section set instead of a single temperature-only artifact.
+- `rustwx-products::cross_section` now builds real gridded pressure sections from decoded model data instead of leaving section science inside a standalone script. The first supported family is `temperature`, `relative_humidity`, `theta_e`, and `wind_speed`.
+- The current real-data HRRR section lane now renders a small multi-product family with terrain, product-aware palettes, product-aware colorbars, and section-relative wind overlay. The temperature validation path uses the `temperature_white_zero` palette as the current hero section.
+- `hrrr_native_proof` still defaults to a tight `conus_contour` suite case for maps, but its cross-section hook lane now emits a bounded multi-section set instead of a single temperature-only artifact.
 
 ## Near-term gaps
 
