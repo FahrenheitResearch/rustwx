@@ -76,6 +76,11 @@ cargo run -p rustwx-cli --bin direct_batch -- `
   --out-dir target\aifs-smoke --cache-dir target\aifs-smoke-cache --no-cache
 ```
 
+If `--cycle` is omitted, rustwx scans
+`$RUSTWX_EARTH2_ARCHIVE\aifs\*\lead{forecast_hour}.nc` and picks the newest
+cycle at or before the requested date. Passing `--cycle` is still preferred for
+reproducible research runs.
+
 Pressure product:
 
 ```powershell
@@ -102,6 +107,10 @@ cargo run -p rustwx-cli --bin derived_batch -- `
 - The current archive reader supports AIFS-Single-style deterministic 2D
   fields. Ensembles or model-native levels should use the same archive source
   but need explicit schema additions.
+- If a variable is shaped with a leading `member` dimension today, the low-level
+  NetCDF reader selects the first record. Explicit member/stat/probability
+  selection still needs render request plumbing before ensemble output should be
+  treated as a supported product.
 - The sample AIFS file used for smoke tests does not include orography. Derived
   products therefore use a zero-terrain proxy until an orography field is added
   to the archive.

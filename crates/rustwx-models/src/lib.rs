@@ -5,7 +5,7 @@ use rustwx_core::{
     StatisticalProcess, VerticalSelector,
 };
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use std::{fmt, path::Path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProductFamily {
@@ -330,6 +330,7 @@ const GFS_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
 const ECMWF_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
 
 const AIFS_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
+const EARTH2_ARCHIVE_ENV: &str = "RUSTWX_EARTH2_ARCHIVE";
 
 const RRFS_A_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
@@ -2218,6 +2219,13 @@ fn latest_available_run_for_products_with_probe_at_forecast_hour<F>(
 where
     F: FnMut(&ResolvedUrl) -> bool,
 {
+    if model == ModelId::Aifs {
+        if let Some(latest) = latest_earth2_archive_run(model, source, date_yyyymmdd, forecast_hour)
+        {
+            return Ok(latest);
+        }
+    }
+
     let summary = model_summary(model);
     let allowed_sources = summary
         .sources
@@ -2283,6 +2291,73 @@ where
     }
 
     Err(ModelError::NoAvailableRun { model })
+}
+
+fn latest_earth2_archive_run(
+    model: ModelId,
+    source: Option<SourceId>,
+    date_yyyymmdd: &str,
+    forecast_hour: u16,
+) -> Option<LatestRun> {
+    if source.is_some_and(|source| source != SourceId::Earth2Archive) {
+        return None;
+    }
+    let root = std::env::var_os(EARTH2_ARCHIVE_ENV)?;
+    latest_earth2_archive_run_with_root(Path::new(&root), model, date_yyyymmdd, forecast_hour)
+}
+
+fn latest_earth2_archive_run_with_root(
+    root: &Path,
+    model: ModelId,
+    date_yyyymmdd: &str,
+    forecast_hour: u16,
+) -> Option<LatestRun> {
+    let model_dir = root.join(model.as_str());
+    let candidate_dates = cycle_date_rollback_candidates(date_yyyymmdd);
+    let mut candidates = Vec::<CycleSpec>::new();
+    let entries = std::fs::read_dir(model_dir).ok()?;
+    for entry in entries {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        if !entry
+            .file_type()
+            .map(|file_type| file_type.is_dir())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(cycle) = parse_earth2_archive_cycle_dir(&name) else {
+            continue;
+        };
+        if !candidate_dates
+            .iter()
+            .any(|candidate| candidate == &cycle.date_yyyymmdd)
+        {
+            continue;
+        }
+        let lead_path = entry.path().join(format!("lead{forecast_hour:03}.nc"));
+        if lead_path.is_file() {
+            candidates.push(cycle);
+        }
+    }
+    candidates.sort();
+    candidates.pop().map(|cycle| LatestRun {
+        model,
+        cycle,
+        source: SourceId::Earth2Archive,
+    })
+}
+
+fn parse_earth2_archive_cycle_dir(name: &str) -> Option<CycleSpec> {
+    if name.len() != 12 || !name.ends_with('Z') || &name[8..9] != "T" {
+        return None;
+    }
+    let date = &name[..8];
+    let hour = name[9..11].parse::<u8>().ok()?;
+    CycleSpec::new(date.to_string(), hour).ok()
 }
 
 fn cycle_date_rollback_candidates(date_yyyymmdd: &str) -> Vec<String> {
@@ -3112,6 +3187,34 @@ mod tests {
             WRF_GDEX_DEFAULT_SURFACE_PRODUCT
         );
         assert_eq!(model_summary(ModelId::Aifs).default_product, "oper");
+    }
+
+    #[test]
+    fn earth2_archive_latest_run_scans_local_layout() {
+        let root =
+            std::env::temp_dir().join(format!("rustwx-earth2-latest-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("aifs/20160821T18Z")).unwrap();
+        std::fs::create_dir_all(root.join("aifs/20160822T00Z")).unwrap();
+        std::fs::create_dir_all(root.join("aifs/20160822T06Z")).unwrap();
+        std::fs::create_dir_all(root.join("aifs/20160823T00Z")).unwrap();
+        std::fs::write(root.join("aifs/20160821T18Z/lead024.nc"), b"").unwrap();
+        std::fs::write(root.join("aifs/20160822T00Z/lead024.nc"), b"").unwrap();
+        std::fs::write(root.join("aifs/20160822T06Z/lead006.nc"), b"").unwrap();
+        std::fs::write(root.join("aifs/20160823T00Z/lead024.nc"), b"").unwrap();
+
+        let latest_24 =
+            latest_earth2_archive_run_with_root(&root, ModelId::Aifs, "20160822", 24).unwrap();
+        assert_eq!(latest_24.cycle.date_yyyymmdd, "20160822");
+        assert_eq!(latest_24.cycle.hour_utc, 0);
+        assert_eq!(latest_24.source, SourceId::Earth2Archive);
+
+        let latest_6 =
+            latest_earth2_archive_run_with_root(&root, ModelId::Aifs, "20160822", 6).unwrap();
+        assert_eq!(latest_6.cycle.date_yyyymmdd, "20160822");
+        assert_eq!(latest_6.cycle.hour_utc, 6);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
