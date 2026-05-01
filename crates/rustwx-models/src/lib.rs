@@ -319,6 +319,8 @@ pub enum ModelError {
     },
     #[error("no working source found for model '{model}' while probing latest availability")]
     NoAvailableRun { model: ModelId },
+    #[error("model '{model}' is served from a local archive only; URL fetch is not applicable")]
+    LocalArchiveOnly { model: ModelId },
 }
 
 const HRRR_CYCLE_HOURS: &[u8] = &[
@@ -326,6 +328,9 @@ const HRRR_CYCLE_HOURS: &[u8] = &[
 ];
 const GFS_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
 const ECMWF_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
+
+const AIFS_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
+
 const RRFS_A_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 ];
@@ -428,6 +433,14 @@ const WRF_GDEX_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
     notes: "UCAR GDEX THREDDS fileServer",
 }];
 
+const AIFS_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
+    id: SourceId::Earth2Archive,
+    idx_available: false,
+    priority: 1,
+    max_age_hours: None,
+    notes: "Local archive populated by Earth2Studio inference",
+}];
+
 const MODELS: &[ModelSummary] = &[
     ModelSummary {
         id: ModelId::Hrrr,
@@ -468,6 +481,14 @@ const MODELS: &[ModelSummary] = &[
         cycle_hours_utc: WRF_GDEX_CYCLE_HOURS,
         max_forecast_hour: 0,
         sources: WRF_GDEX_SOURCES,
+    },
+    ModelSummary {
+        id: ModelId::Aifs,
+        description: "AIFS-Single 1.1 ECMWF data-driven 0.25 deg global forecast (Earth2 archive)",
+        default_product: "oper",
+        cycle_hours_utc: AIFS_CYCLE_HOURS,
+        max_forecast_hour: 240,
+        sources: AIFS_SOURCES,
     },
 ];
 
@@ -1812,6 +1833,9 @@ pub fn plot_recipe_fetch_blockers(
 }
 
 pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> bool {
+    if model == ModelId::Aifs {
+        return selector_supported_for_aifs(selector);
+    }
     match (selector.field, selector.vertical) {
         (
             CanonicalField::GeopotentialHeight
@@ -1891,6 +1915,45 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
     }
 }
 
+fn selector_supported_for_aifs(selector: FieldSelector) -> bool {
+    match (selector.field, selector.vertical) {
+        (
+            CanonicalField::GeopotentialHeight
+            | CanonicalField::Temperature
+            | CanonicalField::RelativeHumidity
+            | CanonicalField::Dewpoint
+            | CanonicalField::UWind
+            | CanonicalField::VWind,
+            VerticalSelector::IsobaricHpa(level_hpa),
+        ) => matches!(
+            level_hpa,
+            50 | 100 | 150 | 200 | 250 | 300 | 400 | 500 | 600 | 700 | 850 | 925 | 1000
+        ),
+        (
+            CanonicalField::Temperature
+            | CanonicalField::Dewpoint
+            | CanonicalField::RelativeHumidity,
+            VerticalSelector::HeightAboveGroundMeters(2),
+        ) => true,
+        (
+            CanonicalField::UWind | CanonicalField::VWind,
+            VerticalSelector::HeightAboveGroundMeters(10),
+        ) => true,
+        (CanonicalField::Pressure, VerticalSelector::Surface) => true,
+        (CanonicalField::PressureReducedToMeanSeaLevel, VerticalSelector::MeanSeaLevel) => true,
+        (
+            CanonicalField::PrecipitableWater
+            | CanonicalField::TotalCloudCover
+            | CanonicalField::LowCloudCover
+            | CanonicalField::MiddleCloudCover
+            | CanonicalField::HighCloudCover,
+            VerticalSelector::EntireAtmosphere,
+        ) => true,
+        (CanonicalField::TotalPrecipitation, VerticalSelector::Surface) => true,
+        _ => false,
+    }
+}
+
 pub fn model_summary(model: ModelId) -> &'static ModelSummary {
     MODELS
         .iter()
@@ -1916,6 +1979,11 @@ pub fn supported_forecast_hours(model: ModelId, cycle_hour_utc: u8) -> Vec<u16> 
         // deterministic/ensemble open-data stream carries 3-hourly steps to
         // 144h and then 6-hourly steps to 360h; 06/18z carries 3-hourly steps
         // to 144h only.
+        // AIFS-Single advances 6 h per step; we cache up to 240 h via Earth2Studio.
+        ModelId::Aifs => match cycle_hour_utc {
+            0 | 6 | 12 | 18 => (0..=240).step_by(6).map(|h| h as u16).collect(),
+            _ => Vec::new(),
+        },
         ModelId::EcmwfOpenData => match cycle_hour_utc {
             0 | 12 => {
                 let mut hours = (0..=144).step_by(3).collect::<Vec<u16>>();
@@ -1964,6 +2032,7 @@ fn default_canonical_bundle_product(
         // canonical native bundle still maps to `nat` here.
         (ModelId::Hrrr, CanonicalBundleDescriptor::NativeAnalysis) => "nat",
         (ModelId::Gfs, _) => "pgrb2.0p25",
+        (ModelId::Aifs, _) => "oper",
         (ModelId::EcmwfOpenData, _) => "oper",
         // RRFS-A keeps the faster CONUS direct lane on `prs-conus`, but the
         // shared thermo/severe kernels need the NA-domain pair that actually
@@ -2341,6 +2410,11 @@ fn build_grib_url(source: SourceId, request: &ModelRunRequest) -> Result<String,
     Ok(match request.model {
         ModelId::Hrrr => build_hrrr_url(source, request),
         ModelId::Gfs => build_gfs_url(source, request),
+        ModelId::Aifs => {
+            return Err(ModelError::LocalArchiveOnly {
+                model: ModelId::Aifs,
+            });
+        }
         ModelId::EcmwfOpenData => build_ecmwf_url(source, request)?,
         ModelId::RrfsA => build_rrfs_a_url(source, request)?,
         ModelId::WrfGdex => build_wrf_gdex_url(source, request)?,
@@ -2779,6 +2853,7 @@ fn plot_recipe_fetch_defaults(
         (ModelId::Hrrr, false, false) => ("prs", PlotRecipeFetchPolicy::WholeFile),
         (ModelId::Gfs, _, _) => ("pgrb2.0p25", PlotRecipeFetchPolicy::WholeFile),
         (ModelId::RrfsA, _, _) => ("prs-conus", PlotRecipeFetchPolicy::WholeFile),
+        (ModelId::Aifs, _, _) => ("oper", PlotRecipeFetchPolicy::WholeFile),
         (ModelId::EcmwfOpenData, _, _) => ("oper", PlotRecipeFetchPolicy::WholeFile),
         (ModelId::WrfGdex, true, _) => (
             WRF_GDEX_DEFAULT_PRESSURE_PRODUCT,
@@ -3030,12 +3105,13 @@ mod tests {
 
     #[test]
     fn built_in_models_are_real() {
-        assert_eq!(built_in_models().len(), 5);
+        assert_eq!(built_in_models().len(), 6);
         assert_eq!(model_summary(ModelId::RrfsA).default_product, "prs-conus");
         assert_eq!(
             model_summary(ModelId::WrfGdex).default_product,
             WRF_GDEX_DEFAULT_SURFACE_PRODUCT
         );
+        assert_eq!(model_summary(ModelId::Aifs).default_product, "oper");
     }
 
     #[test]
@@ -3440,7 +3516,7 @@ mod tests {
                 let reason = &blockers[0].reason;
                 assert!(reason.contains("700 hPa temperature/height/wind selectors"));
                 match model {
-                    ModelId::EcmwfOpenData | ModelId::WrfGdex => {
+                    ModelId::EcmwfOpenData | ModelId::WrfGdex | ModelId::Aifs => {
                         assert!(reason.contains("whole-file structured extraction"));
                     }
                     ModelId::Hrrr | ModelId::Gfs | ModelId::RrfsA => {

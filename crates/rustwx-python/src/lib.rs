@@ -8,7 +8,8 @@ mod wrf_render;
 use pyo3::prelude::*;
 #[cfg(feature = "python")]
 use rustwx_core::{
-    CycleSpec, FieldPointSampleMethod, GeoBounds, GeoPoint, ModelId, ModelRunRequest, SourceId,
+    CycleSpec, FieldPointSampleMethod, GeoBounds, GeoPoint, ModelId, ModelRunRequest, ResolvedUrl,
+    SourceId,
 };
 #[cfg(feature = "python")]
 use rustwx_io::{FetchRequest, available_forecast_hours, probe_sources};
@@ -98,6 +99,25 @@ fn resolve_urls_json(
         product.unwrap_or(default_product),
     )
     .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))?;
+    if model == ModelId::Aifs {
+        let fetch_request = FetchRequest {
+            request,
+            source_override: Some(SourceId::Earth2Archive),
+            variable_patterns: Vec::new(),
+        };
+        let probes = probe_sources(&fetch_request)
+            .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+        let urls = probes
+            .into_iter()
+            .map(|probe| ResolvedUrl {
+                source: probe.source,
+                grib_url: probe.grib_url,
+                idx_url: probe.idx_url,
+            })
+            .collect::<Vec<_>>();
+        return serde_json::to_string_pretty(&urls)
+            .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()));
+    }
     let urls = rustwx_models::resolve_urls(&request)
         .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
     serde_json::to_string_pretty(&urls)
@@ -174,6 +194,7 @@ const BUILT_IN_MODELS: &[ModelId] = &[
     ModelId::EcmwfOpenData,
     ModelId::RrfsA,
     ModelId::WrfGdex,
+    ModelId::Aifs,
 ];
 
 #[cfg(feature = "python")]
@@ -992,10 +1013,14 @@ fn build_render_maps_plan(request: RenderMapsRequestJson) -> PyResult<RenderMaps
     let date_yyyymmdd = request.date_yyyymmdd.clone().ok_or_else(|| {
         pyo3::exceptions::PyValueError::new_err("render-maps request requires date_yyyymmdd")
     })?;
+    let default_source = match model {
+        ModelId::Aifs => "earth2-archive",
+        _ => "nomads",
+    };
     let source = request
         .source
         .as_deref()
-        .unwrap_or("nomads")
+        .unwrap_or(default_source)
         .parse()
         .map_err(|err: rustwx_core::RustwxError| {
             pyo3::exceptions::PyValueError::new_err(err.to_string())

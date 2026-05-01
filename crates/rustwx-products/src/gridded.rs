@@ -11,7 +11,7 @@ use rustwx_core::{
     LatLonGrid, ModelId, ModelRunRequest, RustwxError, SourceId,
 };
 use rustwx_io::{
-    CachedFetchResult, FetchRequest, artifact_cache_dir, fetch_bytes_with_cache,
+    CachedFetchResult, FetchRequest, artifact_cache_dir, earth2_archive, fetch_bytes_with_cache,
     grid_projection_from_grib2_grid,
 };
 use rustwx_models::{
@@ -1590,6 +1590,27 @@ fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Err
             native_pblh_m: None,
         });
     }
+    if earth2_archive::looks_like_earth2_archive(bytes) {
+        let decoded = earth2_archive::decode_surface_from_bytes(bytes)?;
+        return Ok(SurfaceFields {
+            lat: decoded.lat,
+            lon: decoded.lon,
+            nx: decoded.nx,
+            ny: decoded.ny,
+            projection: Some(GridProjection::Geographic),
+            psfc_pa: decoded.psfc_pa,
+            orog_m: decoded.orog_m,
+            orog_is_proxy: true,
+            t2_k: decoded.t2_k,
+            q2_kgkg: decoded.q2_kgkg,
+            u10_ms: decoded.u10_ms,
+            v10_ms: decoded.v10_ms,
+            native_sbcape_jkg: None,
+            native_mlcape_jkg: None,
+            native_mucape_jkg: None,
+            native_pblh_m: None,
+        });
+    }
     let file = Grib2File::from_bytes(bytes)?;
     let sample = file
         .messages
@@ -1748,6 +1769,29 @@ fn decode_pressure_with_shape(
                 v_ms_3d: decoded.v_ms_3d,
                 gh_m_3d: decoded.gh_m_3d,
                 omega_pa_s_3d: None,
+                absolute_vorticity_s_3d: None,
+                cloud_liquid_kgkg_3d: None,
+                cloud_ice_kgkg_3d: None,
+                rain_kgkg_3d: None,
+                snow_kgkg_3d: None,
+                graupel_kgkg_3d: None,
+            },
+            decoded.nx,
+            decoded.ny,
+        ));
+    }
+    if earth2_archive::looks_like_earth2_archive(bytes) {
+        let decoded = earth2_archive::decode_pressure_from_bytes(bytes)?;
+        return Ok((
+            PressureFields {
+                pressure_levels_hpa: decoded.pressure_levels_hpa,
+                pressure_3d_pa: None,
+                temperature_c_3d: decoded.temperature_c_3d,
+                qvapor_kgkg_3d: decoded.qvapor_kgkg_3d,
+                u_ms_3d: decoded.u_ms_3d,
+                v_ms_3d: decoded.v_ms_3d,
+                gh_m_3d: decoded.gh_m_3d,
+                omega_pa_s_3d: decoded.omega_pa_s_3d,
                 absolute_vorticity_s_3d: None,
                 cloud_liquid_kgkg_3d: None,
                 cloud_ice_kgkg_3d: None,

@@ -1345,11 +1345,28 @@ pub fn supported_derived_recipe_slugs(model: ModelId) -> Vec<String> {
         | ModelId::Gfs
         | ModelId::EcmwfOpenData
         | ModelId::RrfsA
-        | ModelId::WrfGdex => supported_derived_recipe_inventory()
+        | ModelId::WrfGdex
+        | ModelId::Aifs => supported_derived_recipe_inventory()
             .iter()
+            .filter(|recipe| derived_recipe_supported_for_model(recipe, model))
             .map(|recipe| recipe.slug.to_string())
             .collect(),
     }
+}
+
+fn derived_recipe_supported_for_model(
+    recipe: &DerivedRecipeInventoryEntry,
+    model: ModelId,
+) -> bool {
+    if model == ModelId::Aifs {
+        return !matches!(
+            recipe.slug,
+            "sb_ecape_native_cape_ratio"
+                | "ml_ecape_native_cape_ratio"
+                | "mu_ecape_native_cape_ratio"
+        );
+    }
+    true
 }
 
 pub fn run_derived_batch(

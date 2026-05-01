@@ -1,4 +1,5 @@
 mod cache;
+pub mod earth2_archive;
 
 pub use cache::{
     CachedFetchMetadata, CachedFetchResult, CachedFieldResult, artifact_cache_dir,
@@ -36,6 +37,8 @@ pub enum IoError {
     Cache(String),
     #[error("grib error: {0}")]
     Grib(String),
+    #[error("earth2 archive error: {0}")]
+    Earth2Archive(String),
     #[error("field '{selector}' was not found in GRIB data")]
     FieldNotFound { selector: FieldSelector },
     #[error("selector '{selector}' is not supported by structured GRIB extraction")]
@@ -133,6 +136,9 @@ pub fn latest_run(
 }
 
 pub fn probe_sources(fetch: &FetchRequest) -> Result<Vec<ProbeResult>, IoError> {
+    if earth2_archive::is_earth2_archive_fetch(fetch) {
+        return earth2_archive::probe_archive(fetch).map(|probe| vec![probe]);
+    }
     let client = client()?;
     let urls = filtered_urls(fetch)?;
     Ok(urls
@@ -202,6 +208,9 @@ pub fn available_forecast_hours(
 }
 
 pub fn fetch_bytes(fetch: &FetchRequest) -> Result<FetchResult, IoError> {
+    if earth2_archive::is_earth2_archive_fetch(fetch) {
+        return earth2_archive::fetch_archive_bytes(fetch);
+    }
     let client = client()?;
     let urls = filtered_urls(fetch)?;
     let patterns = fetch
@@ -237,6 +246,17 @@ pub fn fetch_bytes_with_cache(
     cache_root: &std::path::Path,
     use_cache: bool,
 ) -> Result<CachedFetchResult, IoError> {
+    if earth2_archive::is_earth2_archive_fetch(fetch) {
+        let archive_path = earth2_archive::archive_path_for_request(&fetch.request)?;
+        let result = earth2_archive::fetch_archive_bytes(fetch)?;
+        let (_, metadata_path) = fetch_cache_paths(cache_root, fetch);
+        return Ok(CachedFetchResult {
+            result,
+            cache_hit: false,
+            bytes_path: archive_path,
+            metadata_path,
+        });
+    }
     if use_cache {
         if let Some(cached) = load_cached_fetch(cache_root, fetch)? {
             return Ok(cached);
@@ -397,6 +417,9 @@ pub fn extract_fields_partial_from_model_bytes(
     selectors: &[FieldSelector],
 ) -> Result<PartialExtraction, IoError> {
     match model {
+        ModelId::Aifs => {
+            earth2_archive::extract_fields_partial_from_bytes(bytes, preferred_path, selectors)
+        }
         ModelId::WrfGdex => extract_wrf_gdex_fields_partial(bytes, preferred_path, selectors),
         _ => {
             let grib =
@@ -585,6 +608,9 @@ fn fetch_request_is_available(
     client: &DownloadClient,
     fetch: &FetchRequest,
 ) -> Result<bool, IoError> {
+    if earth2_archive::is_earth2_archive_fetch(fetch) {
+        return Ok(earth2_archive::archive_fetch_available(fetch));
+    }
     let urls = filtered_urls(fetch)?;
     Ok(any_source_available(&urls, |resolved| {
         probe_availability(client, resolved)

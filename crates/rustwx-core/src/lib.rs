@@ -1409,6 +1409,7 @@ pub enum ModelId {
     EcmwfOpenData,
     RrfsA,
     WrfGdex,
+    Aifs,
 }
 
 impl ModelId {
@@ -1419,6 +1420,7 @@ impl ModelId {
             Self::EcmwfOpenData => "ecmwf-open-data",
             Self::RrfsA => "rrfs-a",
             Self::WrfGdex => "wrf-gdex",
+            Self::Aifs => "aifs",
         }
     }
 }
@@ -1439,6 +1441,7 @@ impl std::str::FromStr for ModelId {
             "ecmwf" | "ifs" | "ecmwf-open-data" | "ecmwf_open_data" => Ok(Self::EcmwfOpenData),
             "rrfs-a" | "rrfsa" | "rrfs_a" => Ok(Self::RrfsA),
             "wrf-gdex" | "wrf_gdex" | "wrfgdex" | "wrf" => Ok(Self::WrfGdex),
+            "aifs" | "aifs-single" | "aifs_single" | "aifs-single-1.1" => Ok(Self::Aifs),
             other => Err(RustwxError::UnknownModel(other.to_string())),
         }
     }
@@ -1587,6 +1590,10 @@ pub enum SourceId {
     Ecmwf,
     Ncei,
     Gdex,
+    /// Local archive of fields produced by NVIDIA Earth2 Studio inference
+    /// (AIFS, AIFSENS, Pangu, GraphCast, FCN, ...). Layout convention is
+    /// `$RUSTWX_EARTH2_ARCHIVE/{model}/{init_yyyymmdd}T{cycle:02}Z/lead{HHH}.nc`.
+    Earth2Archive,
 }
 
 impl SourceId {
@@ -1599,6 +1606,7 @@ impl SourceId {
             Self::Ecmwf => "ecmwf",
             Self::Ncei => "ncei",
             Self::Gdex => "gdex",
+            Self::Earth2Archive => "earth2-archive",
         }
     }
 }
@@ -1621,6 +1629,9 @@ impl std::str::FromStr for SourceId {
             "ecmwf" => Ok(Self::Ecmwf),
             "ncei" => Ok(Self::Ncei),
             "gdex" => Ok(Self::Gdex),
+            "earth2-archive" | "earth2_archive" | "earth2archive" | "earth2" => {
+                Ok(Self::Earth2Archive)
+            }
             other => Err(RustwxError::UnknownSource(other.to_string())),
         }
     }
