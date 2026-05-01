@@ -170,6 +170,7 @@ pub fn run_hrrr_batch(
         &BundleLoaderConfig {
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
+            earth2_ensemble: None,
         },
     )?;
     run_hrrr_batch_from_loaded(request, &loaded)

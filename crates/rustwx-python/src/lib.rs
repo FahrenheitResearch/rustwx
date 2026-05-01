@@ -12,6 +12,8 @@ use rustwx_core::{
     SourceId,
 };
 #[cfg(feature = "python")]
+use rustwx_io::earth2_archive::{Earth2EnsembleSelector, Earth2EnsembleStat};
+#[cfg(feature = "python")]
 use rustwx_io::{FetchRequest, available_forecast_hours, probe_sources};
 #[cfg(feature = "python")]
 use rustwx_products::{
@@ -104,6 +106,7 @@ fn resolve_urls_json(
             request,
             source_override: Some(SourceId::Earth2Archive),
             variable_patterns: Vec::new(),
+            earth2_ensemble: None,
         };
         let probes = probe_sources(&fetch_request)
             .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
@@ -178,6 +181,7 @@ fn probe_sources_json(
         request,
         source_override: source,
         variable_patterns: variable_patterns.unwrap_or_default(),
+        earth2_ensemble: None,
     };
     let probe = probe_sources(&fetch_request)
         .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
@@ -390,6 +394,19 @@ struct RenderMapsRequestJson {
     windowed_products: Option<Vec<String>>,
     #[serde(default)]
     domain_jobs: Option<usize>,
+    #[serde(default)]
+    ensemble: Option<RenderMapsEnsembleRequestJson>,
+}
+
+#[cfg(feature = "python")]
+#[derive(Debug, Clone, Default, Deserialize)]
+struct RenderMapsEnsembleRequestJson {
+    #[serde(default)]
+    selector: Option<String>,
+    #[serde(default)]
+    member_index: Option<u16>,
+    #[serde(default)]
+    stat: Option<String>,
 }
 
 #[cfg(feature = "python")]
@@ -639,6 +656,7 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
             "direct_recipes": "optional explicit direct product slugs",
             "derived_recipes": "optional explicit derived product slugs; heavy ECAPE recipes route through the canonical derived_batch ECAPE path",
             "windowed_products": "optional explicit HRRR windowed product slugs",
+            "ensemble": "optional AIFS/Earth2 direct-map selector: {selector:'member', member_index:N} or {selector:'stat', stat:'mean|std|min|max|p10|p50|p90'}; derived/windowed/probability products are not supported yet",
             "out_dir": "optional output directory",
             "cache_dir": "optional shared fetch/decode cache; default rustwx_outputs/cache, or RUSTWX_CACHE_DIR when set",
             "place_label_density": "none, major, major-and-aux, or dense"
@@ -1038,6 +1056,7 @@ fn build_render_maps_plan(request: RenderMapsRequestJson) -> PyResult<RenderMaps
     let source_mode = parse_product_source_mode(request.source_mode.as_deref())?;
     let place_density = parse_place_label_density(request.place_label_density.as_deref())?;
     let routed = route_requested_products(model, &request)?;
+    let earth2_ensemble = parse_render_maps_ensemble_selector(model, &request, &routed)?;
     let place_label_overlay = domains
         .first()
         .and_then(|domain| default_place_label_overlay_for_domain(domain, place_density));
@@ -1068,6 +1087,7 @@ fn build_render_maps_plan(request: RenderMapsRequestJson) -> PyResult<RenderMaps
             png_compression: PngCompressionMode::Fast,
             custom_poi_overlay: None,
             place_label_overlay,
+            earth2_ensemble,
             domain_jobs: request.domain_jobs,
         },
     })
@@ -1424,6 +1444,78 @@ fn route_requested_products(
         heavy_derived_recipe_slugs: heavy_derived,
         windowed_products: windowed,
     })
+}
+
+#[cfg(feature = "python")]
+fn parse_render_maps_ensemble_selector(
+    model: ModelId,
+    request: &RenderMapsRequestJson,
+    routed: &RoutedRenderProducts,
+) -> PyResult<Option<Earth2EnsembleSelector>> {
+    let Some(ensemble) = request.ensemble.as_ref() else {
+        return Ok(None);
+    };
+    if model != ModelId::Aifs {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "ensemble selectors currently apply only to model=aifs",
+        ));
+    }
+    if !routed.derived_recipe_slugs.is_empty()
+        || !routed.heavy_derived_recipe_slugs.is_empty()
+        || !routed.windowed_products.is_empty()
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "AIFS ensemble selectors are currently supported only for direct map products",
+        ));
+    }
+    let selector = ensemble
+        .selector
+        .as_deref()
+        .map(normalize_slug)
+        .unwrap_or_else(|| {
+            if ensemble.member_index.is_some() {
+                "member".to_string()
+            } else {
+                "stat".to_string()
+            }
+        });
+    match selector.as_str() {
+        "member" => {
+            let member = ensemble.member_index.ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "ensemble selector=member requires member_index",
+                )
+            })?;
+            Ok(Some(Earth2EnsembleSelector::Member(member)))
+        }
+        "stat" | "statistic" => {
+            let stat = ensemble.stat.as_deref().ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("ensemble selector=stat requires stat")
+            })?;
+            Ok(Some(Earth2EnsembleSelector::Statistic(parse_earth2_stat(
+                stat,
+            )?)))
+        }
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown ensemble selector '{other}', expected member or stat"
+        ))),
+    }
+}
+
+#[cfg(feature = "python")]
+fn parse_earth2_stat(raw: &str) -> PyResult<Earth2EnsembleStat> {
+    match normalize_slug(raw).as_str() {
+        "mean" => Ok(Earth2EnsembleStat::Mean),
+        "std" | "stdev" | "standard_deviation" => Ok(Earth2EnsembleStat::Std),
+        "min" => Ok(Earth2EnsembleStat::Min),
+        "max" => Ok(Earth2EnsembleStat::Max),
+        "p10" => Ok(Earth2EnsembleStat::P10),
+        "p50" | "median" => Ok(Earth2EnsembleStat::P50),
+        "p90" => Ok(Earth2EnsembleStat::P90),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown Earth2 ensemble stat '{other}'"
+        ))),
+    }
 }
 
 #[cfg(feature = "python")]
@@ -1913,7 +2005,7 @@ fn print_list_domains_help() {
 #[cfg(feature = "python")]
 fn print_render_maps_help() {
     println!(
-        "USAGE:\n  rustwx render-maps --date YYYYMMDD [--model hrrr] [--cycle H] [--forecast-hour H] [--domain conus] [--product PRODUCT] [--out-dir DIR]\n  rustwx render-maps --request request.json\n\nOptions include --source, --bounds west,east,south,north, --direct-recipe, --derived-recipe, --windowed-product, --place-label-density, --width, --height, --cache-dir, --no-cache.\n\nDefault cache: rustwx_outputs/cache, or RUSTWX_CACHE_DIR when set."
+        "USAGE:\n  rustwx render-maps --date YYYYMMDD [--model hrrr] [--cycle H] [--forecast-hour H] [--domain conus] [--product PRODUCT] [--out-dir DIR]\n  rustwx render-maps --request request.json\n\nOptions include --source, --bounds west,east,south,north, --direct-recipe, --derived-recipe, --windowed-product, --member N, --stat mean|std|min|max|p10|p50|p90, --place-label-density, --width, --height, --cache-dir, --no-cache.\n\nDefault cache: rustwx_outputs/cache, or RUSTWX_CACHE_DIR when set."
     );
 }
 
@@ -2249,6 +2341,16 @@ fn render_maps_request_from_cli(args: &[String]) -> Result<RenderMapsRequestJson
             "--place-label-density" => {
                 request.place_label_density = Some(next_cli_value(args, &mut index, arg)?);
             }
+            "--member" => {
+                ensure_render_maps_ensemble(&mut request).member_index =
+                    Some(parse_cli_value(args, &mut index, arg)?);
+                ensure_render_maps_ensemble(&mut request).selector = Some("member".to_string());
+            }
+            "--stat" => {
+                ensure_render_maps_ensemble(&mut request).stat =
+                    Some(next_cli_value(args, &mut index, arg)?);
+                ensure_render_maps_ensemble(&mut request).selector = Some("stat".to_string());
+            }
             "--allow-large-heavy-domain" => request.allow_large_heavy_domain = Some(true),
             "--domain-jobs" => request.domain_jobs = Some(parse_cli_value(args, &mut index, arg)?),
             other => return Err(format!("unknown render-maps option '{other}'")),
@@ -2274,6 +2376,15 @@ fn render_maps_request_from_cli(args: &[String]) -> Result<RenderMapsRequestJson
         request.windowed_products = Some(windowed_products);
     }
     Ok(request)
+}
+
+#[cfg(feature = "python")]
+fn ensure_render_maps_ensemble(
+    request: &mut RenderMapsRequestJson,
+) -> &mut RenderMapsEnsembleRequestJson {
+    request
+        .ensemble
+        .get_or_insert_with(RenderMapsEnsembleRequestJson::default)
 }
 
 #[cfg(feature = "python")]

@@ -40,6 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         request,
         source_override: Some(latest.source),
         variable_patterns: Vec::new(),
+        earth2_ensemble: None,
     };
     let fetched = fetch_bytes(&fetch)?;
     let grib = Grib2File::from_bytes(&fetched.bytes)?;

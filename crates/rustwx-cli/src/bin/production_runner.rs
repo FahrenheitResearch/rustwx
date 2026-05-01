@@ -1130,6 +1130,7 @@ fn execute_non_hrrr_non_ecape(
         png_compression: config.png_compression,
         custom_poi_overlay: None,
         place_label_overlay: None,
+        earth2_ensemble: None,
     };
     match run_model_non_ecape_hour(&request) {
         Ok(report) => JobExecutionResult {
@@ -1278,6 +1279,7 @@ fn execute_direct(
         png_compression: config.png_compression,
         custom_poi_overlay: None,
         place_label_overlay: None,
+        earth2_ensemble: None,
     };
     match run_direct_batch(&request) {
         Ok(report) => JobExecutionResult {

@@ -317,6 +317,7 @@ pub fn run_heavy_panel_hour(
         &BundleLoaderConfig {
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
+            earth2_ensemble: None,
         },
     )?;
 

@@ -1275,6 +1275,7 @@ fn run_non_hrrr_non_ecape_hour(
         png_compression: rustwx_render::PngCompressionMode::Default,
         custom_poi_overlay: None,
         place_label_overlay: None,
+        earth2_ensemble: None,
     };
 
     match run_model_non_ecape_hour(&request) {
@@ -1379,6 +1380,7 @@ fn run_direct_lane(
         png_compression: rustwx_render::PngCompressionMode::Default,
         custom_poi_overlay: None,
         place_label_overlay: None,
+        earth2_ensemble: None,
     };
     let slug = Lane::Direct.slug();
     match rustwx_products::direct::run_direct_batch(&request) {

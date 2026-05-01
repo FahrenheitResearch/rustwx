@@ -91,6 +91,31 @@ cargo run -p rustwx-cli --bin direct_batch -- `
   --out-dir target\aifs-smoke-pressure --cache-dir target\aifs-smoke-cache --no-cache
 ```
 
+Explicit member/stat direct products:
+
+```powershell
+cargo run -p rustwx-cli --bin direct_batch -- `
+  --model aifs --date 20160822 --cycle 0 --forecast-hour 24 `
+  --source earth2-archive --country usa `
+  --recipe 2m_temperature_10m_winds `
+  --member 1 `
+  --out-dir target\aifs-smoke-member --cache-dir target\aifs-smoke-cache --no-cache
+
+cargo run -p rustwx-cli --bin direct_batch -- `
+  --model aifs --date 20160822 --cycle 0 --forecast-hour 24 `
+  --source earth2-archive --country usa `
+  --recipe 2m_temperature_10m_winds `
+  --stat mean `
+  --out-dir target\aifs-smoke-mean --cache-dir target\aifs-smoke-cache --no-cache
+```
+
+The Python/agent CLI accepts the same direct-map selector:
+
+```powershell
+rustwx render-maps --model aifs --date 20160822 --cycle 0 --forecast-hour 24 `
+  --product 2m_temperature_10m_winds --domain conus --stat mean
+```
+
 Derived product:
 
 ```powershell
@@ -104,13 +129,16 @@ cargo run -p rustwx-cli --bin derived_batch -- `
 ## Caveats
 
 - AIFS is local-archive only; rustwx does not fetch it from NOMADS/AWS.
-- The current archive reader supports AIFS-Single-style deterministic 2D
-  fields. Ensembles or model-native levels should use the same archive source
-  but need explicit schema additions.
-- If a variable is shaped with a leading `member` dimension today, the low-level
-  NetCDF reader selects the first record. Explicit member/stat/probability
-  selection still needs render request plumbing before ensemble output should be
-  treated as a supported product.
+- The archive reader supports AIFS-Single-style deterministic 2D fields and
+  direct-map member/stat selection for files shaped `(member, lat, lon)`.
+  Deterministic requests against a member-shaped field intentionally select
+  member 0 for backward compatibility.
+- `--member N` selects a specific member. `--stat mean|std|min|max|p10|p50|p90`
+  first looks for a precomputed sibling such as `t2m_mean`; if it is absent, it
+  computes the statistic from the member axis on demand for direct maps.
+- Ensemble selection is currently direct-product only. Derived/heavy/windowed
+  products and probability-of-exceedance recipes remain future work because they
+  need validated ensemble NetCDF fixtures and product semantics.
 - The sample AIFS file used for smoke tests does not include orography. Derived
   products therefore use a zero-terrain proxy until an orography field is added
   to the archive.

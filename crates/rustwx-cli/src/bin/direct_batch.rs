@@ -9,11 +9,12 @@ mod domain;
 #[path = "../region.rs"]
 mod region;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use contour_mode::ContourModeArg;
 use domain::{domain_from_region_or_country, requested_domain_slug};
 use region::RegionPreset;
 use rustwx_core::{ModelId, SourceId};
+use rustwx_io::earth2_archive::{Earth2EnsembleSelector, Earth2EnsembleStat};
 use rustwx_models::model_summary;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::direct::{
@@ -24,6 +25,31 @@ use rustwx_products::publication::{
     ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
     canonical_run_slug, finalize_and_publish_run_manifest, publish_failure_manifest,
 };
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum Earth2StatArg {
+    Mean,
+    Std,
+    Min,
+    Max,
+    P10,
+    P50,
+    P90,
+}
+
+impl From<Earth2StatArg> for Earth2EnsembleStat {
+    fn from(value: Earth2StatArg) -> Self {
+        match value {
+            Earth2StatArg::Mean => Self::Mean,
+            Earth2StatArg::Std => Self::Std,
+            Earth2StatArg::Min => Self::Min,
+            Earth2StatArg::Max => Self::Max,
+            Earth2StatArg::P10 => Self::P10,
+            Earth2StatArg::P50 => Self::P50,
+            Earth2StatArg::P90 => Self::P90,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -62,6 +88,19 @@ struct Args {
     no_cache: bool,
     #[arg(long, value_enum, default_value_t = ContourModeArg::Automatic)]
     contour_mode: ContourModeArg,
+    #[arg(
+        long,
+        conflicts_with = "stat",
+        help = "AIFS/Earth2 member index to render from a member-shaped local archive file"
+    )]
+    member: Option<u16>,
+    #[arg(
+        long,
+        value_enum,
+        conflicts_with = "member",
+        help = "AIFS/Earth2 ensemble statistic to render from precomputed *_stat variables or member-shaped fields"
+    )]
+    stat: Option<Earth2StatArg>,
     #[arg(long, default_value_t = 1)]
     native_fill_level_multiplier: usize,
     #[arg(long = "place-label-density", default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=3))]
@@ -109,6 +148,15 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let source = args
         .source
         .unwrap_or(model_summary(args.model).sources[0].id);
+    let earth2_ensemble = match (args.member, args.stat) {
+        (Some(member), None) => Some(Earth2EnsembleSelector::Member(member)),
+        (None, Some(stat)) => Some(Earth2EnsembleSelector::Statistic(stat.into())),
+        (None, None) => None,
+        (Some(_), Some(_)) => return Err("--member and --stat are mutually exclusive".into()),
+    };
+    if earth2_ensemble.is_some() && args.model != ModelId::Aifs {
+        return Err("--member/--stat currently apply only to --model aifs".into());
+    }
     let recipes = if args.all_supported {
         let supported = supported_direct_recipe_slugs(args.model);
         if supported.is_empty() {
@@ -147,6 +195,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             &domain,
             PlaceLabelDensityTier::from_numeric(args.place_label_density),
         ),
+        earth2_ensemble,
     };
     let report = run_direct_batch(&request)?;
 

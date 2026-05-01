@@ -250,5 +250,6 @@ fn build_fetch_request(
         request,
         source_override: source,
         variable_patterns,
+        earth2_ensemble: None,
     })
 }

@@ -16,6 +16,8 @@ pub struct CachedFetchMetadata {
     pub request: rustwx_core::ModelRunRequest,
     pub source_override: Option<rustwx_core::SourceId>,
     pub variable_patterns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub earth2_ensemble: Option<crate::earth2_archive::Earth2EnsembleSelector>,
     pub resolved_source: rustwx_core::SourceId,
     pub resolved_url: String,
     pub resolved_family: String,
@@ -100,14 +102,17 @@ pub fn artifact_cache_dir(cache_root: &Path, fetch: &FetchRequest) -> PathBuf {
             .unwrap_or("auto"),
     );
     let variable_slug = variable_patterns_slug(&fetch.variable_patterns);
-    cache_root
+    let mut root = cache_root
         .join(sanitize_component(fetch.request.model.as_str()))
         .join(&fetch.request.cycle.date_yyyymmdd)
         .join(format!("{:02}z", fetch.request.cycle.hour_utc))
         .join(format!("f{:03}", fetch.request.forecast_hour))
         .join(product)
-        .join(source)
-        .join(variable_slug)
+        .join(source);
+    if let Some(selector) = fetch.earth2_ensemble {
+        root = root.join(sanitize_component(&selector.cache_slug()));
+    }
+    root.join(variable_slug)
 }
 
 pub fn fetch_cache_paths(cache_root: &Path, fetch: &FetchRequest) -> (PathBuf, PathBuf) {
@@ -170,6 +175,7 @@ pub fn load_cached_fetch(
         || metadata.request != fetch.request
         || metadata.source_override != fetch.source_override
         || metadata.variable_patterns != fetch.variable_patterns
+        || metadata.earth2_ensemble != fetch.earth2_ensemble
         || metadata.resolved_family != fetch.request.product
         || metadata.bytes_sha256 != sha256_hex(&bytes)
     {
@@ -202,6 +208,7 @@ pub fn store_cached_fetch(
         request: fetch.request.clone(),
         source_override: fetch.source_override,
         variable_patterns: fetch.variable_patterns.clone(),
+        earth2_ensemble: fetch.earth2_ensemble,
         resolved_source: result.source,
         resolved_url: result.url.clone(),
         resolved_family: fetch.request.product.clone(),
@@ -442,6 +449,7 @@ fn load_cached_fetch_metadata(
             request: wrapper.payload.request,
             source_override: wrapper.payload.source_override,
             variable_patterns: wrapper.payload.variable_patterns,
+            earth2_ensemble: None,
             resolved_source: wrapper.payload.resolved_source,
             resolved_url: wrapper.payload.resolved_url,
             resolved_family: expected_family.to_string(),
@@ -455,6 +463,7 @@ fn load_cached_fetch_metadata(
             request: legacy.request,
             source_override: legacy.source_override,
             variable_patterns: legacy.variable_patterns,
+            earth2_ensemble: None,
             resolved_source: legacy.resolved_source,
             resolved_url: legacy.resolved_url,
             resolved_family: expected_family.to_string(),
@@ -728,6 +737,7 @@ mod tests {
             .unwrap(),
             source_override: Some(SourceId::Aws),
             variable_patterns: vec!["TMP:500 mb".to_string(), "UGRD:500 mb".to_string()],
+            earth2_ensemble: None,
         }
     }
 

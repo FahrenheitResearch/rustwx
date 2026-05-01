@@ -106,6 +106,7 @@ pub struct FetchedBundleBytes {
 pub struct BundleLoaderConfig {
     pub cache_root: PathBuf,
     pub use_cache: bool,
+    pub earth2_ensemble: Option<rustwx_io::earth2_archive::Earth2EnsembleSelector>,
 }
 
 impl BundleLoaderConfig {
@@ -113,7 +114,16 @@ impl BundleLoaderConfig {
         Self {
             cache_root,
             use_cache,
+            earth2_ensemble: None,
         }
+    }
+
+    pub fn with_earth2_ensemble(
+        mut self,
+        selector: Option<rustwx_io::earth2_archive::Earth2EnsembleSelector>,
+    ) -> Self {
+        self.earth2_ensemble = selector;
+        self
     }
 }
 
@@ -296,8 +306,15 @@ fn fetch_execution_plan_into(
                     let use_cache = use_cache;
                     let key_for_worker = key.clone();
                     let plan = &loaded.plan;
-                    let handle = scope
-                        .spawn(move || fetch_one(plan, key_for_worker, &cache_root, use_cache));
+                    let handle = scope.spawn(move || {
+                        fetch_one(
+                            plan,
+                            key_for_worker,
+                            &cache_root,
+                            use_cache,
+                            config.earth2_ensemble,
+                        )
+                    });
                     (key, handle)
                 })
                 .collect();
@@ -318,7 +335,13 @@ fn fetch_execution_plan_into(
             .iter()
             .cloned()
             .map(|key| {
-                let result = fetch_one(&loaded.plan, key.clone(), &cache_root, use_cache);
+                let result = fetch_one(
+                    &loaded.plan,
+                    key.clone(),
+                    &cache_root,
+                    use_cache,
+                    config.earth2_ensemble,
+                );
                 (key, result)
             })
             .collect()
@@ -502,6 +525,7 @@ pub fn load_execution_plan(
 fn build_fetch_request(
     plan: &ExecutionPlan,
     key: &BundleFetchKey,
+    earth2_ensemble: Option<rustwx_io::earth2_archive::Earth2EnsembleSelector>,
 ) -> Result<FetchRequest, RustwxError> {
     let sharing_bundles: Vec<_> = plan
         .bundles
@@ -542,6 +566,7 @@ fn build_fetch_request(
         )?,
         source_override: Some(key.source),
         variable_patterns,
+        earth2_ensemble,
     })
 }
 
@@ -553,8 +578,9 @@ fn fetch_one(
     key: BundleFetchKey,
     cache_root: &Path,
     use_cache: bool,
+    earth2_ensemble: Option<rustwx_io::earth2_archive::Earth2EnsembleSelector>,
 ) -> Result<FetchedBundleBytes, Box<dyn std::error::Error + Send + Sync>> {
-    let request = build_fetch_request(plan, &key)
+    let request = build_fetch_request(plan, &key, earth2_ensemble)
         .map_err(|err| Box::<dyn std::error::Error + Send + Sync>::from(err.to_string()))?;
     let start = Instant::now();
     let cached = fetch_bytes_with_cache(&request, cache_root, use_cache)
@@ -771,8 +797,10 @@ mod tests {
             .into_iter()
             .find(|key| key.native_product == "prs-na")
             .expect("rrfs plan includes prs-na");
-        let nat_request = build_fetch_request(&plan, &nat_key).expect("nat-na request builds");
-        let prs_request = build_fetch_request(&plan, &prs_key).expect("prs-na request builds");
+        let nat_request =
+            build_fetch_request(&plan, &nat_key, None).expect("nat-na request builds");
+        let prs_request =
+            build_fetch_request(&plan, &prs_key, None).expect("prs-na request builds");
         assert!(
             nat_request
                 .variable_patterns
@@ -822,7 +850,7 @@ mod tests {
             .into_iter()
             .find(|key| key.native_product == "prs-na")
             .expect("rrfs plan includes prs-na");
-        let request = build_fetch_request(&plan, &prs_key).expect("request builds");
+        let request = build_fetch_request(&plan, &prs_key, None).expect("request builds");
         assert!(
             request.variable_patterns.is_empty(),
             "shared fetch should keep whole-file bytes when any consumer lacks an explicit subset contract"

@@ -62,6 +62,8 @@ pub struct FetchRequest {
     pub request: ModelRunRequest,
     pub source_override: Option<SourceId>,
     pub variable_patterns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub earth2_ensemble: Option<earth2_archive::Earth2EnsembleSelector>,
 }
 
 impl FetchRequest {
@@ -80,6 +82,7 @@ impl FetchRequest {
             request: timestep.request(product)?,
             source_override,
             variable_patterns: variable_patterns.into_iter().map(Into::into).collect(),
+            earth2_ensemble: None,
         })
     }
 }
@@ -175,6 +178,7 @@ pub fn available_forecast_hours(
                     request: ModelRunRequest::new(model, cycle, forecast_hour, product).ok()?,
                     source_override,
                     variable_patterns: Vec::new(),
+                    earth2_ensemble: None,
                 };
                 if fetch_request_is_available(&client, &fetch).ok()? {
                     Some(forecast_hour)
@@ -192,6 +196,7 @@ pub fn available_forecast_hours(
                     request: ModelRunRequest::new(model, cycle, forecast_hour, product).ok()?,
                     source_override,
                     variable_patterns: Vec::new(),
+                    earth2_ensemble: None,
                 };
                 if fetch_request_is_available(&client, &fetch).ok()? {
                     Some(forecast_hour)
@@ -416,10 +421,29 @@ pub fn extract_fields_partial_from_model_bytes(
     preferred_path: Option<&Path>,
     selectors: &[FieldSelector],
 ) -> Result<PartialExtraction, IoError> {
+    extract_fields_partial_from_model_bytes_with_earth2_selector(
+        model,
+        bytes,
+        preferred_path,
+        selectors,
+        None,
+    )
+}
+
+pub fn extract_fields_partial_from_model_bytes_with_earth2_selector(
+    model: ModelId,
+    bytes: &[u8],
+    preferred_path: Option<&Path>,
+    selectors: &[FieldSelector],
+    earth2_ensemble: Option<earth2_archive::Earth2EnsembleSelector>,
+) -> Result<PartialExtraction, IoError> {
     match model {
-        ModelId::Aifs => {
-            earth2_archive::extract_fields_partial_from_bytes(bytes, preferred_path, selectors)
-        }
+        ModelId::Aifs => earth2_archive::extract_fields_partial_from_bytes_with_selector(
+            bytes,
+            preferred_path,
+            selectors,
+            earth2_ensemble.unwrap_or_default(),
+        ),
         ModelId::WrfGdex => extract_wrf_gdex_fields_partial(bytes, preferred_path, selectors),
         _ => {
             let grib =
@@ -1661,6 +1685,7 @@ mod tests {
             request,
             source_override: None,
             variable_patterns: Vec::new(),
+            earth2_ensemble: None,
         };
         let urls = filtered_urls(&fetch).unwrap();
         assert_eq!(urls.len(), 1);

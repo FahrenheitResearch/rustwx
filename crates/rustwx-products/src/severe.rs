@@ -87,6 +87,7 @@ pub fn run_severe_batch(
         &BundleLoaderConfig {
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
+            earth2_ensemble: None,
         },
     )?;
 
@@ -395,6 +396,7 @@ mod planned_input_fetches_tests {
             .unwrap(),
             source_override: Some(key.source),
             variable_patterns: Vec::new(),
+            earth2_ensemble: None,
         };
         let bytes = b"synthetic-grib".to_vec();
         let fetched = CachedFetchResult {

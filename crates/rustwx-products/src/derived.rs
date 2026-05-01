@@ -1412,6 +1412,7 @@ pub fn run_derived_batch(
         &BundleLoaderConfig {
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
+            earth2_ensemble: None,
         },
     )?;
     run_derived_batch_from_loaded_bundles(request, &recipes, &loaded)

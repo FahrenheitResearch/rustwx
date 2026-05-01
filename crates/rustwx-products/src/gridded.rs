@@ -1323,6 +1323,7 @@ pub(crate) fn fetch_family_file_with_patterns(
         request: ModelRunRequest::new(model, cycle, forecast_hour, &bundle.native_product)?,
         source_override: Some(source),
         variable_patterns,
+        earth2_ensemble: None,
     };
     let fetched = fetch_bytes_with_cache(&request, cache_root, use_cache)?;
     Ok(FetchedModelFile {

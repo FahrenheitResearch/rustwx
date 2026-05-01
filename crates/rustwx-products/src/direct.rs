@@ -4,7 +4,7 @@ use rustwx_core::{
     ModelId, SelectedField2D, SourceId, VerticalSelector,
 };
 use rustwx_io::{
-    extract_fields_partial_from_model_bytes, load_cached_selected_field,
+    extract_fields_partial_from_model_bytes_with_earth2_selector, load_cached_selected_field,
     store_cached_selected_field,
 };
 use rustwx_models::{
@@ -100,6 +100,8 @@ pub struct DirectBatchRequest {
     pub custom_poi_overlay: Option<CustomPoiOverlay>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub place_label_overlay: Option<PlaceLabelOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub earth2_ensemble: Option<rustwx_io::earth2_archive::Earth2EnsembleSelector>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,6 +153,8 @@ pub struct DirectFetchRuntimeInfo {
     pub requested_source: SourceId,
     pub resolved_source: SourceId,
     pub resolved_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub earth2_ensemble: Option<rustwx_io::earth2_archive::Earth2EnsembleSelector>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -362,6 +366,7 @@ impl DirectBatchRequest {
             png_compression: request.png_compression,
             custom_poi_overlay: request.custom_poi_overlay.clone(),
             place_label_overlay: request.place_label_overlay.clone(),
+            earth2_ensemble: None,
         }
     }
 
@@ -408,6 +413,7 @@ fn sampling_direct_request(
         png_compression: PngCompressionMode::Default,
         custom_poi_overlay: None,
         place_label_overlay: None,
+        earth2_ensemble: None,
     }
 }
 
@@ -502,7 +508,8 @@ pub(crate) fn load_direct_sampled_fields_from_latest(
     let plan = build_direct_execution_plan(latest, forecast_hour, &groups);
     let loaded = load_execution_plan(
         plan,
-        &BundleLoaderConfig::new(cache_root.to_path_buf(), use_cache),
+        &BundleLoaderConfig::new(cache_root.to_path_buf(), use_cache)
+            .with_earth2_ensemble(request.earth2_ensemble),
     )?;
 
     let mut extracted = HashMap::<FieldSelector, SelectedField2D>::new();
@@ -620,7 +627,8 @@ pub(crate) fn load_single_direct_sampled_field_from_latest(
     let plan = build_direct_execution_plan(latest, forecast_hour, &groups);
     let loaded = load_execution_plan(
         plan,
-        &BundleLoaderConfig::new(cache_root.to_path_buf(), use_cache),
+        &BundleLoaderConfig::new(cache_root.to_path_buf(), use_cache)
+            .with_earth2_ensemble(request.earth2_ensemble),
     )?;
 
     let mut extracted = HashMap::<FieldSelector, SelectedField2D>::new();
@@ -836,6 +844,7 @@ fn run_direct_batch_with_context(
         &BundleLoaderConfig {
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
+            earth2_ensemble: request.earth2_ensemble,
         },
     )?;
 
@@ -1191,8 +1200,14 @@ fn direct_title_for_request(
     planned_product: Option<&str>,
     base_title: &str,
 ) -> String {
+    let mut title = base_title.to_string();
+    if request.model == ModelId::Aifs {
+        if let Some(selector) = request.earth2_ensemble {
+            title = format!("{title} ({})", selector.label());
+        }
+    }
     if request.model != ModelId::WrfGdex {
-        return base_title.to_string();
+        return title;
     }
 
     let dataset = planned_product
@@ -1210,7 +1225,7 @@ fn direct_title_for_request(
                 .find_map(|product| dataset_token_from_product(product))
         })
         .unwrap_or("d612005");
-    format!("{base_title} ({dataset})")
+    format!("{title} ({dataset})")
 }
 
 fn direct_title_for_planned_product(
@@ -1279,11 +1294,12 @@ fn extract_direct_fetch_group_from_loaded(
     let mut unmatched = Vec::<FieldSelector>::new();
     let parse_start = Instant::now();
     if !missing.is_empty() {
-        let partial = extract_fields_partial_from_model_bytes(
+        let partial = extract_fields_partial_from_model_bytes_with_earth2_selector(
             fetch_request.request.model,
             &fetched.file.bytes,
             Some(cached_result.bytes_path.as_path()),
             &missing,
+            fetch_request.earth2_ensemble,
         )?;
         if use_cache {
             for field in &partial.extracted {
@@ -1329,6 +1345,7 @@ fn extract_direct_fetch_group_from_loaded(
                     .unwrap_or(cached_result.result.source),
                 resolved_source: cached_result.result.source,
                 resolved_url: cached_result.result.url.clone(),
+                earth2_ensemble: fetch_request.earth2_ensemble,
             },
             input_fetch: fetch_identity_from_cached_result_with_aliases(
                 group.product.as_str(),
@@ -1840,7 +1857,11 @@ fn render_direct_recipe(
 
     Ok(DirectRenderedRecipe {
         recipe_slug: item.recipe.slug.to_string(),
-        title: item.recipe.title.to_string(),
+        title: direct_title_for_planned_product(
+            request,
+            item.plan.product.as_ref(),
+            item.recipe.title,
+        ),
         source_route: direct_route_for_recipe_slug(item.recipe.slug),
         grib_product: item.plan.product.to_string(),
         fetched_grib_product: runtime_fetch.fetched_product.clone(),
@@ -3008,6 +3029,7 @@ mod tests {
             png_compression: PngCompressionMode::Default,
             custom_poi_overlay: None,
             place_label_overlay: None,
+            earth2_ensemble: None,
         }
     }
 
@@ -3038,6 +3060,7 @@ mod tests {
             )?,
             source_override: Some(latest.source),
             variable_patterns: Vec::new(),
+            earth2_ensemble: request.earth2_ensemble,
         })
     }
 
@@ -3211,6 +3234,7 @@ mod tests {
             requested_source: fetch.source_override.unwrap(),
             resolved_source: SourceId::Nomads,
             resolved_url: "https://example.test/hrrr.t23z.wrfsfcf06.grib2".into(),
+            earth2_ensemble: None,
         };
         assert_eq!(runtime.planned_product, "nat");
         assert_eq!(runtime.fetched_product, "sfc");

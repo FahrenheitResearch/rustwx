@@ -840,6 +840,7 @@ fn load_hour_fields(
         )?,
         source_override: Some(latest.source),
         variable_patterns: timeseries_fetch_patterns(latest.model, surface_product),
+        earth2_ensemble: None,
     };
     let fetch_start = Instant::now();
     let fetched = fetch_bytes_with_cache(&fetch_request, cache_root, use_cache)?;
