@@ -351,7 +351,7 @@ const GEFS_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
 const AI_MODEL_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
 const ECMWF_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
 const AIFS_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
-const AIFS_LOCAL_MAX_FORECAST_HOUR: u16 = 43_824;
+const AIFS_LOCAL_MAX_FORECAST_HOUR: u16 = 43_848;
 const RAP_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 ];
@@ -4031,7 +4031,7 @@ mod tests {
         );
         assert_eq!(model_summary(ModelId::Aigfs).default_product, "sfc");
         assert_eq!(model_summary(ModelId::Aigefs).default_product, "sfc/avg");
-        assert_eq!(model_summary(ModelId::Aifs).max_forecast_hour, 43_824);
+        assert_eq!(model_summary(ModelId::Aifs).max_forecast_hour, 43_848);
         assert_eq!(model_summary(ModelId::Rtma).max_forecast_hour, 0);
         assert_eq!(model_summary(ModelId::Nbm).default_product, "core/co");
         assert_eq!(model_summary(ModelId::RrfsA).default_product, "prs-conus");
@@ -4755,13 +4755,13 @@ mod tests {
         let local = ModelRunRequest::new(
             ModelId::Aifs,
             rustwx_core::CycleSpec::new("20260502", 0).unwrap(),
-            43_824,
+            43_848,
             "oper",
         )
         .unwrap();
         assert_eq!(
             build_grib_url(SourceId::Earth2Archive, &local).unwrap(),
-            "earth2-archive://aifs/20260502T00Z/lead43824.nc"
+            "earth2-archive://aifs/20260502T00Z/lead43848.nc"
         );
 
         let open_data = ModelRunRequest::new(
@@ -4780,7 +4780,7 @@ mod tests {
             build_grib_url(SourceId::Ecmwf, &local),
             Err(ModelError::UnsupportedForecastHour {
                 model: ModelId::Aifs,
-                forecast_hour: 43_824,
+                forecast_hour: 43_848,
                 ..
             })
         ));

@@ -1,4 +1,4 @@
-# rustwx Model Compatibility v0.5
+﻿# rustwx Model Compatibility v0.5
 
 This document is the handoff for adding model support without inventing a one-off path per model.
 
@@ -69,7 +69,7 @@ C:\Users\drew\aifs-vast\earth2_archive\aifs\20160822T00Z\lead024.nc
 Long inference runs can use more than three lead digits:
 
 ```text
-earth2-archive://aifs/20260502T00Z/lead43824.nc
+earth2-archive://aifs/20260502T00Z/lead43848.nc
 ```
 
 The current AIFS NetCDF adapter maps these variables:

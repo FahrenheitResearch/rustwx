@@ -138,6 +138,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         place_label_overlay: Some(
             PlaceLabelOverlay::major_us_cities().with_density(args.place_label_density.into()),
         ),
+        earth2_ensemble: None,
         domain_jobs: Some(4),
     };
 

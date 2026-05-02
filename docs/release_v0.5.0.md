@@ -1,4 +1,4 @@
-# rustwx v0.5.0 Release Notes
+﻿# rustwx v0.5.0 Release Notes
 
 ## Summary
 

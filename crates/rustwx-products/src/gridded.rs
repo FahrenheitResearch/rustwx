@@ -11,7 +11,7 @@ use rustwx_core::{
     LatLonGrid, ModelId, ModelRunRequest, RustwxError, SourceId,
 };
 use rustwx_io::{
-    CachedFetchResult, FetchRequest, artifact_cache_dir, fetch_bytes_with_cache,
+    CachedFetchResult, FetchRequest, artifact_cache_dir, earth2_archive, fetch_bytes_with_cache,
     grid_projection_from_grib2_grid,
 };
 use rustwx_models::{
@@ -1323,6 +1323,7 @@ pub(crate) fn fetch_family_file_with_patterns(
         request: ModelRunRequest::new(model, cycle, forecast_hour, &bundle.native_product)?,
         source_override: Some(source),
         variable_patterns,
+        earth2_ensemble: None,
     };
     let fetched = fetch_bytes_with_cache(&request, cache_root, use_cache)?;
     Ok(FetchedModelFile {
@@ -1523,6 +1524,34 @@ pub(crate) fn load_or_decode_surface(
     })
 }
 
+pub(crate) fn load_or_decode_surface_from_file(
+    path: &Path,
+    file: &FetchedModelFile,
+    use_cache: bool,
+) -> Result<CachedDecode<SurfaceFields>, Box<dyn std::error::Error>> {
+    if !earth2_archive::is_earth2_archive_fetch(&file.request) {
+        return load_or_decode_surface(path, file.bytes.as_slice(), use_cache);
+    }
+    if use_cache {
+        if let Some(cached) = load_bincode::<SurfaceFields>(path)? {
+            return Ok(CachedDecode {
+                value: cached,
+                cache_hit: true,
+                path: path.to_path_buf(),
+            });
+        }
+    }
+    let decoded = decode_surface_from_earth2_file(file)?;
+    if use_cache && decoded.decoded_bytes_estimate() <= MAX_DECODE_CACHE_WRITE_BYTES {
+        store_bincode(path, &decoded)?;
+    }
+    Ok(CachedDecode {
+        value: decoded,
+        cache_hit: false,
+        path: path.to_path_buf(),
+    })
+}
+
 pub(crate) fn load_or_decode_pressure_with_shape(
     path: &Path,
     bytes: &[u8],
@@ -1541,6 +1570,40 @@ pub(crate) fn load_or_decode_pressure_with_shape(
         }
     }
     let (decoded, nx, ny) = decode_pressure_with_shape(bytes)?;
+    if use_cache && decoded.decoded_bytes_estimate() <= MAX_DECODE_CACHE_WRITE_BYTES {
+        store_bincode(path, &decoded)?;
+    }
+    Ok((
+        CachedDecode {
+            value: decoded,
+            cache_hit: false,
+            path: path.to_path_buf(),
+        },
+        Some((nx, ny)),
+    ))
+}
+
+pub(crate) fn load_or_decode_pressure_from_file_with_shape(
+    path: &Path,
+    file: &FetchedModelFile,
+    use_cache: bool,
+) -> Result<(CachedDecode<PressureFields>, Option<(usize, usize)>), Box<dyn std::error::Error>> {
+    if !earth2_archive::is_earth2_archive_fetch(&file.request) {
+        return load_or_decode_pressure_with_shape(path, file.bytes.as_slice(), use_cache);
+    }
+    if use_cache {
+        if let Some(cached) = load_bincode::<PressureFields>(path)? {
+            return Ok((
+                CachedDecode {
+                    value: cached,
+                    cache_hit: true,
+                    path: path.to_path_buf(),
+                },
+                None,
+            ));
+        }
+    }
+    let (decoded, nx, ny) = decode_pressure_from_earth2_file(file)?;
     if use_cache && decoded.decoded_bytes_estimate() <= MAX_DECODE_CACHE_WRITE_BYTES {
         store_bincode(path, &decoded)?;
     }
@@ -1623,6 +1686,74 @@ pub(crate) fn load_or_decode_pressure_cropped_with_shape(
     ))
 }
 
+fn decode_surface_from_earth2_file(
+    file: &FetchedModelFile,
+) -> Result<SurfaceFields, Box<dyn std::error::Error>> {
+    let decoded = if file.fetched.bytes_path.is_file() {
+        earth2_archive::decode_surface_from_path(&file.fetched.bytes_path)?
+    } else {
+        earth2_archive::decode_surface_from_bytes(&file.bytes)?
+    };
+    Ok(surface_fields_from_earth2(decoded))
+}
+
+fn surface_fields_from_earth2(decoded: earth2_archive::Earth2SurfaceFields) -> SurfaceFields {
+    SurfaceFields {
+        lat: decoded.lat,
+        lon: decoded.lon,
+        nx: decoded.nx,
+        ny: decoded.ny,
+        projection: Some(GridProjection::Geographic),
+        psfc_pa: decoded.psfc_pa,
+        orog_m: decoded.orog_m,
+        orog_is_proxy: true,
+        t2_k: decoded.t2_k,
+        q2_kgkg: decoded.q2_kgkg,
+        u10_ms: decoded.u10_ms,
+        v10_ms: decoded.v10_ms,
+        native_sbcape_jkg: None,
+        native_mlcape_jkg: None,
+        native_mucape_jkg: None,
+        native_pblh_m: None,
+    }
+}
+
+fn decode_pressure_from_earth2_file(
+    file: &FetchedModelFile,
+) -> Result<(PressureFields, usize, usize), Box<dyn std::error::Error>> {
+    let decoded = if file.fetched.bytes_path.is_file() {
+        earth2_archive::decode_pressure_from_path(&file.fetched.bytes_path)?
+    } else {
+        earth2_archive::decode_pressure_from_bytes(&file.bytes)?
+    };
+    Ok(pressure_fields_from_earth2(decoded))
+}
+
+fn pressure_fields_from_earth2(
+    decoded: earth2_archive::Earth2PressureFields,
+) -> (PressureFields, usize, usize) {
+    (
+        PressureFields {
+            pressure_levels_hpa: decoded.pressure_levels_hpa,
+            pressure_3d_pa: None,
+            temperature_c_3d: decoded.temperature_c_3d,
+            qvapor_kgkg_3d: decoded.qvapor_kgkg_3d,
+            u_ms_3d: decoded.u_ms_3d,
+            v_ms_3d: decoded.v_ms_3d,
+            gh_m_3d: decoded.gh_m_3d,
+            omega_pa_s_3d: decoded.omega_pa_s_3d,
+            absolute_vorticity_s_3d: None,
+            cloud_liquid_kgkg_3d: None,
+            cloud_ice_kgkg_3d: None,
+            rain_kgkg_3d: None,
+            snow_kgkg_3d: None,
+            graupel_kgkg_3d: None,
+        },
+        decoded.nx,
+        decoded.ny,
+    )
+}
+
 fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Error>> {
     #[cfg(feature = "wrf")]
     if wrf::looks_like_wrf(bytes) {
@@ -1645,6 +1776,10 @@ fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Err
             native_mucape_jkg: None,
             native_pblh_m: None,
         });
+    }
+    if earth2_archive::looks_like_earth2_archive(bytes) {
+        let decoded = earth2_archive::decode_surface_from_bytes(bytes)?;
+        return Ok(surface_fields_from_earth2(decoded));
     }
     let file = Grib2File::from_bytes(bytes)?;
     let sample = file
@@ -1814,6 +1949,10 @@ fn decode_pressure_with_shape(
             decoded.nx,
             decoded.ny,
         ));
+    }
+    if earth2_archive::looks_like_earth2_archive(bytes) {
+        let decoded = earth2_archive::decode_pressure_from_bytes(bytes)?;
+        return Ok(pressure_fields_from_earth2(decoded));
     }
     let file = Grib2File::from_bytes(bytes)?;
     let (nx, ny) = pressure_grid_shape_from_messages(&file.messages)?;

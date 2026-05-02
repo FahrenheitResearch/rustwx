@@ -99,6 +99,7 @@ pub fn run_ecape_batch(
         &BundleLoaderConfig {
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
+            earth2_ensemble: None,
         },
     )?;
 
@@ -249,6 +250,7 @@ pub fn run_ecape_ratio_display_batch(
         &BundleLoaderConfig {
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
+            earth2_ensemble: None,
         },
     )?;
 

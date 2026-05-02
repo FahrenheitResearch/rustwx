@@ -327,6 +327,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         png_compression: args.png_compression.into(),
         custom_poi_overlay: None,
         place_label_overlay,
+        earth2_ensemble: None,
         domain_jobs: Some(args.domain_jobs),
     };
 

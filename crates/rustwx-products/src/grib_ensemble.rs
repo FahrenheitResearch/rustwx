@@ -200,6 +200,7 @@ pub fn run_grib_ensemble_render(
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
+            earth2_ensemble: None,
         };
         let fetched = fetch_bytes_with_cache(&fetch, &request.cache_root, request.use_cache)?;
         let partial = extract_fields_partial_from_model_bytes(
@@ -288,6 +289,7 @@ pub fn run_grib_ensemble_render(
             custom_poi_overlay: None,
             place_label_overlay: request.place_label_overlay.clone(),
             output_suffix: Some(suffix.clone()),
+            earth2_ensemble: None,
         };
         render_direct_recipe_from_selected_fields(
             &direct_request,

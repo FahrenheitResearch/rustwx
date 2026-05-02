@@ -172,6 +172,73 @@ impl ResolvedSelection {
     }
 }
 
+fn dim_selects_full_extent(dim: &ResolvedSelectionDim, extent: u64) -> bool {
+    dim.start == 0 && dim.step == 1 && dim.end == extent && dim.count == extent as usize
+}
+
+fn contiguous_unit_stride_byte_range(
+    shape: &[u64],
+    dataset_strides: &[usize],
+    resolved: &ResolvedSelection,
+    elem_size: usize,
+    storage_len: usize,
+) -> Result<Option<(usize, usize)>> {
+    if !resolved.is_unit_stride() || shape.len() != resolved.dims.len() {
+        return Ok(None);
+    }
+
+    let ndim = shape.len();
+    let mut dim = 0usize;
+
+    // A row-major selection is a single contiguous byte span when it has:
+    // fixed leading indices, then at most one contiguous slice, then full
+    // trailing dimensions. This covers common hyperslabs like member[n, :, :].
+    while dim < ndim
+        && resolved.dims[dim].count == 1
+        && !dim_selects_full_extent(&resolved.dims[dim], shape[dim])
+    {
+        dim += 1;
+    }
+
+    if dim < ndim && !dim_selects_full_extent(&resolved.dims[dim], shape[dim]) {
+        dim += 1;
+    }
+
+    for d in dim..ndim {
+        if !dim_selects_full_extent(&resolved.dims[d], shape[d]) {
+            return Ok(None);
+        }
+    }
+
+    let mut start_element = 0usize;
+    for (d, selected_dim) in resolved.dims.iter().enumerate() {
+        let start = checked_usize(selected_dim.start, "contiguous selection start")?;
+        let offset = checked_mul_usize(
+            start,
+            dataset_strides[d],
+            "contiguous selection start offset",
+        )?;
+        start_element =
+            checked_add_usize(start_element, offset, "contiguous selection start offset")?;
+    }
+
+    let byte_offset =
+        checked_mul_usize(start_element, elem_size, "contiguous selection byte offset")?;
+    let byte_len = checked_mul_usize(
+        resolved.result_elements,
+        elem_size,
+        "contiguous selection byte length",
+    )?;
+    let byte_end = checked_add_usize(byte_offset, byte_len, "contiguous selection byte end")?;
+    if byte_end > storage_len {
+        return Err(Error::InvalidData(format!(
+            "contiguous selection byte range {byte_offset}..{byte_end} exceeds dataset storage length {storage_len}"
+        )));
+    }
+
+    Ok(Some((byte_offset, byte_len)))
+}
+
 impl SliceInfo {
     /// Create a selection that reads everything.
     pub fn all(ndim: usize) -> Self {
@@ -1903,8 +1970,33 @@ impl Dataset {
             "contiguous slice result size in bytes",
         )?;
         let storage_len = checked_usize(size, "contiguous dataset size")?;
-        let raw = self.context.read_range(address, storage_len)?;
         let dataset_strides = row_major_strides(shape, "contiguous dataset stride")?;
+        if let Some((byte_offset, byte_len)) = contiguous_unit_stride_byte_range(
+            shape,
+            &dataset_strides,
+            resolved,
+            elem_size,
+            storage_len,
+        )? {
+            let address_offset = u64::try_from(byte_offset).map_err(|_| {
+                Error::InvalidData(format!(
+                    "contiguous selection byte offset {byte_offset} exceeds u64 capacity"
+                ))
+            })?;
+            let selected_address = address.checked_add(address_offset).ok_or_else(|| {
+                Error::InvalidData(format!(
+                    "contiguous selection address {address} + {address_offset} overflows"
+                ))
+            })?;
+            let raw = self.context.read_range(selected_address, byte_len)?;
+            return self.decode_buffer_with_shape::<T>(
+                raw.as_ref(),
+                resolved.result_elements,
+                &resolved.result_shape,
+            );
+        }
+
+        let raw = self.context.read_range(address, storage_len)?;
         let result_dims = resolved.result_dims_with_collapsed();
         let zero_offsets = vec![0u64; ndim];
         let mut result_strides = vec![1usize; ndim];

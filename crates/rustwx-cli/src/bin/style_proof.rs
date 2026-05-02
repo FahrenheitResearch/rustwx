@@ -208,6 +208,7 @@ fn build_request(
         request,
         source_override: Some(latest.source),
         variable_patterns: variable_patterns.into_iter().map(str::to_string).collect(),
+        earth2_ensemble: None,
     };
 
     let fetched = if args.no_cache {

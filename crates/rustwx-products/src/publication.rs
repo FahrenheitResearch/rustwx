@@ -567,6 +567,7 @@ pub fn fetch_identity_from_cached_result_with_aliases(
     planned_family_aliases.retain(|alias| alias != planned_family);
     planned_family_aliases.sort();
     planned_family_aliases.dedup();
+    let (bytes_len, bytes_sha256) = fetch_payload_identity(fetched);
     PublishedFetchIdentity {
         fetch_key: fetch_key(planned_family, &fetch.request),
         planned_family: planned_family.to_string(),
@@ -576,9 +577,26 @@ pub fn fetch_identity_from_cached_result_with_aliases(
         resolved_source: fetched.result.source,
         resolved_url: fetched.result.url.clone(),
         resolved_family: fetch.request.product.clone(),
-        bytes_len: fetched.result.bytes.len(),
-        bytes_sha256: sha256_hex(&fetched.result.bytes),
+        bytes_len,
+        bytes_sha256,
     }
+}
+
+fn fetch_payload_identity(fetched: &CachedFetchResult) -> (usize, String) {
+    if !fetched.result.bytes.is_empty() {
+        return (
+            fetched.result.bytes.len(),
+            sha256_hex(&fetched.result.bytes),
+        );
+    }
+    if fetched.bytes_path.is_file() {
+        let len = fs::metadata(&fetched.bytes_path)
+            .ok()
+            .and_then(|metadata| usize::try_from(metadata.len()).ok())
+            .unwrap_or(0);
+        return (len, "path_backed_not_hashed".to_string());
+    }
+    (0, sha256_hex(&[]))
 }
 
 fn temp_path_for(path: &Path) -> PathBuf {

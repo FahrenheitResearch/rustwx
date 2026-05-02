@@ -359,6 +359,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             &domain,
             args.place_label_density.into(),
         ),
+        earth2_ensemble: None,
     };
     let report = run_hrrr_non_ecape_hour(&request)?;
     let report_path = args.out_dir.join(format!(

@@ -13,6 +13,9 @@ wrf = ["dep:rustwx-wrf"]
 [dependencies]
 bincode = "1.3"
 grib-core = { path = "../../vendor/grib-core" }
+hdf5-reader = "0.3"
+memmap2 = "0.9"
+netcrust = { path = "../../vendor/netcrust" }
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -20,7 +23,6 @@ thiserror.workspace = true
 rustwx-core = { path = "../rustwx-core" }
 rustwx-models = { path = "../rustwx-models" }
 rustwx-wrf = { path = "../rustwx-wrf", optional = true }
-netcrust = { path = "../../vendor/netcrust" }
 wx-core = { path = "../../vendor/wx-core", default-features = false, features = ["network"] }
 
 [dev-dependencies]

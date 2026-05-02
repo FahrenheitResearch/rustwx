@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+const AIFS_MAX_FORECAST_HOUR: u16 = 43_848;
+
 #[derive(Debug, Error)]
 pub enum RustwxError {
     #[error("invalid grid shape: nx={nx}, ny={ny}")]
@@ -945,6 +947,9 @@ impl ModelTimestep {
         valid_time: TimeStamp,
         source: Option<SourceId>,
     ) -> Result<Self, RustwxError> {
+        if !forecast_hour_allowed_for_model(model, forecast_hour) {
+            return Err(RustwxError::InvalidForecastHour(forecast_hour));
+        }
         Ok(Self {
             model,
             cycle,
@@ -1715,12 +1720,22 @@ impl ModelRunRequest {
         forecast_hour: u16,
         product: S,
     ) -> Result<Self, RustwxError> {
+        if !forecast_hour_allowed_for_model(model, forecast_hour) {
+            return Err(RustwxError::InvalidForecastHour(forecast_hour));
+        }
         Ok(Self {
             model,
             cycle,
             forecast_hour,
             product: product.into(),
         })
+    }
+}
+
+fn forecast_hour_allowed_for_model(model: ModelId, forecast_hour: u16) -> bool {
+    match model {
+        ModelId::Aifs => forecast_hour <= AIFS_MAX_FORECAST_HOUR,
+        _ => forecast_hour <= 999,
     }
 }
 

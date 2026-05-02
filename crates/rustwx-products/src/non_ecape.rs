@@ -29,6 +29,7 @@ use crate::windowed::{
     run_hrrr_windowed_batch_with_context, windowed_product_input_fetch_keys,
 };
 use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
+use rustwx_io::earth2_archive::Earth2EnsembleSelector;
 use rustwx_models::{LatestRun, latest_available_run_at_forecast_hour, plot_recipe};
 use rustwx_render::PngCompressionMode;
 use serde::{Deserialize, Serialize};
@@ -76,6 +77,8 @@ pub struct HrrrNonEcapeHourRequest {
     pub custom_poi_overlay: Option<CustomPoiOverlay>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub place_label_overlay: Option<PlaceLabelOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub earth2_ensemble: Option<Earth2EnsembleSelector>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +106,8 @@ pub struct HrrrNonEcapeMultiDomainRequest {
     pub custom_poi_overlay: Option<CustomPoiOverlay>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub place_label_overlay: Option<PlaceLabelOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub earth2_ensemble: Option<Earth2EnsembleSelector>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain_jobs: Option<usize>,
 }
@@ -247,6 +252,8 @@ pub struct NonEcapeHourRequest {
     pub custom_poi_overlay: Option<CustomPoiOverlay>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub place_label_overlay: Option<PlaceLabelOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub earth2_ensemble: Option<Earth2EnsembleSelector>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -284,6 +291,8 @@ pub struct NonEcapeMultiDomainRequest {
     pub custom_poi_overlay: Option<CustomPoiOverlay>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub place_label_overlay: Option<PlaceLabelOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub earth2_ensemble: Option<Earth2EnsembleSelector>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain_jobs: Option<usize>,
 }
@@ -382,6 +391,7 @@ fn non_ecape_request_from_hrrr(request: &HrrrNonEcapeHourRequest) -> NonEcapeHou
         png_compression: request.png_compression,
         custom_poi_overlay: request.custom_poi_overlay.clone(),
         place_label_overlay: request.place_label_overlay.clone(),
+        earth2_ensemble: request.earth2_ensemble,
     }
 }
 
@@ -411,6 +421,7 @@ fn non_ecape_multi_request_from_hrrr(
         png_compression: request.png_compression,
         custom_poi_overlay: request.custom_poi_overlay.clone(),
         place_label_overlay: request.place_label_overlay.clone(),
+        earth2_ensemble: request.earth2_ensemble,
         domain_jobs: request.domain_jobs,
     }
 }
@@ -497,6 +508,7 @@ pub fn run_model_non_ecape_hour(
         png_compression: request.png_compression,
         custom_poi_overlay: request.custom_poi_overlay.clone(),
         place_label_overlay: request.place_label_overlay.clone(),
+        earth2_ensemble: request.earth2_ensemble,
         domain_jobs: None,
     };
     let report = run_model_non_ecape_hour_multi_domain(&multi_request)?;
@@ -738,6 +750,7 @@ fn prepare_non_ecape_hour(
             custom_poi_overlay: request.custom_poi_overlay.clone(),
             place_label_overlay: request.place_label_overlay.clone(),
             output_suffix: None,
+            earth2_ensemble: request.earth2_ensemble,
         };
         crate::direct::plan_direct_fetch_groups(&direct_request)?
     };
@@ -817,6 +830,7 @@ fn prepare_non_ecape_hour(
                 &BundleLoaderConfig {
                     cache_root: request.cache_root.clone(),
                     use_cache: request.use_cache,
+                    earth2_ensemble: request.earth2_ensemble,
                 },
             )?))
         };
@@ -845,6 +859,7 @@ fn prepare_non_ecape_hour(
                     &BundleLoaderConfig {
                         cache_root: request.cache_root.clone(),
                         use_cache: request.use_cache,
+                        earth2_ensemble: request.earth2_ensemble,
                     },
                 )?))
             };
@@ -1064,6 +1079,7 @@ fn run_prepared_non_ecape_domain(
             custom_poi_overlay: request.custom_poi_overlay.clone(),
             place_label_overlay: request.place_label_overlay.clone(),
             output_suffix: None,
+            earth2_ensemble: request.earth2_ensemble,
         });
 
     let derived_request = (!prepared.normalized.derived_recipe_slugs.is_empty()).then(|| {
@@ -1778,6 +1794,7 @@ mod tests {
             png_compression: PngCompressionMode::Default,
             custom_poi_overlay: None,
             place_label_overlay: None,
+            earth2_ensemble: None,
         }
     }
 
@@ -1920,6 +1937,7 @@ mod tests {
             custom_poi_overlay: None,
             place_label_overlay: None,
             output_suffix: None,
+            earth2_ensemble: None,
         };
         let direct_groups = plan_direct_fetch_groups(&direct_request).unwrap();
         let derived_recipes = plan_derived_recipes(&["sbcape".to_string()]).unwrap();
@@ -1968,6 +1986,7 @@ mod tests {
             custom_poi_overlay: None,
             place_label_overlay: None,
             output_suffix: None,
+            earth2_ensemble: None,
         };
         let direct_groups = plan_direct_fetch_groups(&direct_request).unwrap();
         let derived_recipes = plan_derived_recipes(&["sbcape".to_string()]).unwrap();

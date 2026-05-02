@@ -353,6 +353,7 @@ fn run_tier_reports(
                 PlaceLabelOverlay::major_us_cities()
                     .with_density(PlaceLabelDensityTier::from_numeric(*tier)),
             ),
+            earth2_ensemble: None,
             domain_jobs: Some(args.domain_jobs.max(1)),
         };
         let report = run_hrrr_non_ecape_hour_multi_domain(&request)?;

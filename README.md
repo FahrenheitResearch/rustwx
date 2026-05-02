@@ -1,4 +1,4 @@
-# rustwx
+﻿# rustwx
 
 `rustwx` is a Rust-first weather workspace for model ingest, diagnostics, map rendering, sounding rendering, and thin optional Python bindings.
 

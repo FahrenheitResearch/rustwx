@@ -1357,10 +1357,26 @@ pub fn supported_derived_recipe_slugs(model: ModelId) -> Vec<String> {
         | ModelId::RrfsA
         | ModelId::WrfGdex => supported_derived_recipe_inventory()
             .iter()
+            .filter(|recipe| derived_recipe_supported_for_model(recipe, model))
             .map(|recipe| recipe.slug.to_string())
             .collect(),
         ModelId::Rtma | ModelId::Urma | ModelId::Nbm => Vec::new(),
     }
+}
+
+fn derived_recipe_supported_for_model(
+    recipe: &DerivedRecipeInventoryEntry,
+    model: ModelId,
+) -> bool {
+    if model == ModelId::Aifs {
+        return !matches!(
+            recipe.slug,
+            "sb_ecape_native_cape_ratio"
+                | "ml_ecape_native_cape_ratio"
+                | "mu_ecape_native_cape_ratio"
+        );
+    }
+    true
 }
 
 pub fn run_derived_batch(
@@ -1406,6 +1422,7 @@ pub fn run_derived_batch(
         &BundleLoaderConfig {
             cache_root: request.cache_root.clone(),
             use_cache: request.use_cache,
+            earth2_ensemble: None,
         },
     )?;
     run_derived_batch_from_loaded_bundles(request, &recipes, &loaded)

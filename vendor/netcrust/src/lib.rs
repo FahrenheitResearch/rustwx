@@ -11,11 +11,9 @@ use std::sync::Arc;
 
 use hdf5_reader::{Hdf5File, SliceInfo as H5SliceInfo, SliceInfoElem as H5SliceInfoElem};
 use ndarray::ArrayD;
-pub use netcdf_reader::{NcFormat, NcMetadataMode, NcOpenOptions};
+pub use netcdf_reader::{NcFormat, NcMetadataMode, NcOpenOptions, NcSliceInfo, NcSliceInfoElem};
 
-use netcdf_reader::{
-    NcAttrValue, NcDimension, NcFile, NcSliceInfo, NcSliceInfoElem, NcType, NcVariable,
-};
+use netcdf_reader::{NcAttrValue, NcDimension, NcFile, NcType, NcVariable};
 
 /// HDF5/NetCDF4 signature bytes.
 pub const HDF5_SIGNATURE: [u8; 8] = [0x89, b'H', b'D', b'F', 0x0D, 0x0A, 0x1A, 0x0A];
@@ -186,6 +184,12 @@ impl File {
         }
     }
 
+    /// Read a hyperslab selection as promoted `f64` values with shape metadata.
+    pub fn read_array_f64_slice(&self, name: &str, selection: &NcSliceInfo) -> Result<DataArray> {
+        let array = self.inner.read_variable_slice_as_f64(name, selection)?;
+        Ok(DataArray::from_ndarray(array))
+    }
+
     /// Read a variable as promoted flat `f64` values.
     pub fn read_f64(&self, name: &str) -> Result<Vec<f64>> {
         Ok(self.read_array_f64(name)?.into_values())
@@ -307,7 +311,11 @@ impl Variable {
                 .map(|dim| Dimension::try_from(dim, &dimension_overrides))
                 .collect::<Result<_>>()?,
             dtype: DataType::from(var.dtype()),
-            attributes: var.attributes().iter().map(Attribute::from_reader).collect(),
+            attributes: var
+                .attributes()
+                .iter()
+                .map(Attribute::from_reader)
+                .collect(),
         })
     }
 
@@ -342,6 +350,14 @@ impl Variable {
     /// Read this variable as promoted `f64` values with shape metadata.
     pub fn array_f64(&self) -> Result<DataArray> {
         let array = self.file.read_variable_as_f64(&self.name)?;
+        Ok(DataArray::from_ndarray(array))
+    }
+
+    /// Read a hyperslab selection as promoted `f64` values with shape metadata.
+    pub fn array_f64_slice(&self, selection: &NcSliceInfo) -> Result<DataArray> {
+        let array = self
+            .file
+            .read_variable_slice_as_f64(&self.name, selection)?;
         Ok(DataArray::from_ndarray(array))
     }
 
@@ -647,6 +663,22 @@ fn infer_dimension_overrides(file: &NcFile) -> HashMap<String, usize> {
 
     let mut overrides = HashMap::new();
     for dim_name in zero_dims {
+        if let Some(coord_var) = variables.iter().find(|var| {
+            var.name() == dim_name
+                && !matches!(var.dtype(), NcType::Char | NcType::String)
+                && var.dimensions().len() == 1
+                && var.dimensions()[0].name == dim_name
+        }) {
+            if let Ok(array) = file.read_variable_as_f64(coord_var.name()) {
+                if let Some(&len) = array.shape().first() {
+                    if len > 0 {
+                        overrides.insert(dim_name.clone(), len);
+                        continue;
+                    }
+                }
+            }
+        }
+
         let mut candidates = variables
             .iter()
             .filter_map(|var| {

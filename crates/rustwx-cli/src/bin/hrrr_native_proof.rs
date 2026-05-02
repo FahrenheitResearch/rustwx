@@ -663,6 +663,7 @@ fn run_case(
             &domain,
             PlaceLabelDensityTier::from_numeric(args.place_label_density),
         ),
+        earth2_ensemble: None,
     };
     let report = run_hrrr_non_ecape_hour(&request)?;
 

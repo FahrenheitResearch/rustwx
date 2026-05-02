@@ -333,6 +333,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             &domain,
             PlaceLabelDensityTier::from_numeric(args.place_label_density),
         ),
+        earth2_ensemble: None,
     };
     let report = run_model_non_ecape_hour(&request)?;
     let model_slug = report.model.as_str().replace('-', "_");
