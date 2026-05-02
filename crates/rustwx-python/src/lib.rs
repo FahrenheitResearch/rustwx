@@ -613,6 +613,8 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
                 "id": model.as_str(),
                 "default_product": summary.default_product,
                 "default_render_product": default_render_product(model),
+                "cycle_hours_utc": summary.cycle_hours_utc,
+                "max_forecast_hour": summary.max_forecast_hour,
                 "runtime_family": summary.runtime_family,
                 "ensemble_mode": summary.ensemble_mode,
                 "direct_recipes": supported_direct_recipe_slugs(model),
