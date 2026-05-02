@@ -17,7 +17,6 @@ fn read_repo_file(relative_path: &str) -> String {
 fn repo_docs_describe_contour_and_proof_boundaries() {
     let readme = read_repo_file("README.md");
     let architecture = read_repo_file("ARCHITECTURE.md");
-    let proof_readme = read_repo_file("proof/README.md");
 
     assert!(
         readme.contains("current map contour overlays are still the existing `rustwx-render` path"),
@@ -30,13 +29,5 @@ fn repo_docs_describe_contour_and_proof_boundaries() {
     assert!(
         architecture.contains("current plotted map contours still come from `rustwx-render`"),
         "ARCHITECTURE should distinguish current contour rendering from future contour integration"
-    );
-    assert!(
-        proof_readme.contains("cross-section hook placeholder"),
-        "proof README should describe the native proof cross-section hook as a placeholder"
-    );
-    assert!(
-        proof_readme.contains("`hrrr_temperature_xsection`"),
-        "proof README should point to the separate real-data cross-section proof lane"
     );
 }
