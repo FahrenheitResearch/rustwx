@@ -4,25 +4,27 @@ use rustwx_core::{
     ModelId, SelectedField2D, SourceId, VerticalSelector,
 };
 use rustwx_io::{
+    earth2_archive::{Earth2EnsembleSelector, Earth2EnsembleStat},
     extract_fields_partial_from_model_bytes_with_earth2_selector, load_cached_selected_field,
     store_cached_selected_field,
 };
 use rustwx_models::{
-    LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
-    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan,
+    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan, LatestRun,
+    ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
 };
 use rustwx_render::{
+    build_projected_contour_geometry_profile, densify_discrete_scale, draw_centered_text_line,
+    map_frame_aspect_ratio_for_mode, render_panel_grid, save_png_profile_with_options,
+    save_rgba_png_profile_with_options,
+    weather::{
+        dewpoint_palette_params, temperature_palette_cropped_f, weather_palette,
+        winds_palette_segments, WeatherPalette,
+    },
     ChromeScale, Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode,
     LegendControls, LegendMode, LevelDensity, MapRenderRequest, PanelGridLayout, PanelPadding,
     PngCompressionMode, PngWriteOptions, ProductVisualMode, ProjectedContourLineStyle,
     ProjectedDomain, ProjectedMap, RenderDensity, RenderImageTiming, RenderStateTiming,
-    WindBarbLayer, build_projected_contour_geometry_profile, densify_discrete_scale,
-    draw_centered_text_line, map_frame_aspect_ratio_for_mode, render_panel_grid,
-    save_png_profile_with_options, save_rgba_png_profile_with_options,
-    weather::{
-        WeatherPalette, dewpoint_palette_params, temperature_palette_cropped_f, weather_palette,
-        winds_palette_segments,
-    },
+    WindBarbLayer,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -32,18 +34,18 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
-use crate::custom_poi::{CustomPoiOverlay, apply_custom_poi_overlay};
+use crate::custom_poi::{apply_custom_poi_overlay, CustomPoiOverlay};
 use crate::places::PlaceLabelOverlay;
 use crate::planner::{ExecutionPlan, ExecutionPlanBuilder};
 use crate::publication::{
-    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
-    fetch_identity_from_cached_result_with_aliases,
+    artifact_identity_from_path, fetch_identity_from_cached_result_with_aliases,
+    ArtifactContentIdentity, PublishedFetchIdentity,
 };
 use crate::runtime::{
-    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
+    load_execution_plan, BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet,
 };
 use crate::shared_context::{DomainSpec, ProjectedMapProvider};
-use crate::source::{ProductSourceRoute, direct_route_for_recipe_slug};
+use crate::source::{direct_route_for_recipe_slug, ProductSourceRoute};
 use crate::spec::direct_product_specs;
 
 const OUTPUT_WIDTH: u32 = 1200;
@@ -1677,14 +1679,16 @@ fn render_direct_recipe(
     prepared_projected_maps: &PreparedProjectedMaps,
 ) -> Result<DirectRenderedRecipe, Box<dyn std::error::Error>> {
     let render_start = Instant::now();
+    let earth2_suffix = earth2_filename_suffix(request.earth2_ensemble);
     let output_path = request.out_dir.join(format!(
-        "rustwx_{}_{}_{}z_f{:03}_{}_{}.png",
+        "rustwx_{}_{}_{}z_f{:03}_{}_{}{}.png",
         request.model.as_str().replace('-', "_"),
         request.date_yyyymmdd,
         latest.cycle.hour_utc,
         request.forecast_hour,
         request.domain.slug,
-        item.recipe.slug
+        item.recipe.slug,
+        earth2_suffix
     ));
     let canonical_product = canonical_fetch_product_for_selectors(
         request,
@@ -1736,11 +1740,9 @@ fn render_direct_recipe(
             .ok_or_else(|| format!("missing filled selector {:?}", filled_selector))?;
 
         let project_start = Instant::now();
-        let visual_mode = visual_mode_for_direct_recipe(
-            item.recipe,
-            filled_selector,
-            should_render_overlay_only(filled_selector, item.recipe.contours.is_some()),
-        );
+        let overlay_only = !earth2_suppresses_companion_overlays(request.earth2_ensemble)
+            && should_render_overlay_only(filled_selector, item.recipe.contours.is_some());
+        let visual_mode = visual_mode_for_direct_recipe(item.recipe, filled_selector, overlay_only);
         let cache_key = (
             request.output_width,
             request.output_height,
@@ -1796,6 +1798,7 @@ fn render_direct_recipe(
             barb_stride_cache,
             request.contour_mode,
             request.native_fill_level_multiplier,
+            request.earth2_ensemble,
         )?;
         let request_build_ms = request_build_start.elapsed().as_millis();
         render_request.title = Some(direct_title_for_planned_product(
@@ -1997,6 +2000,7 @@ fn render_direct_composite_panel(
             barb_stride_cache,
             request.contour_mode,
             request.native_fill_level_multiplier,
+            request.earth2_ensemble,
         )?;
         build_timing.field_prepare_ms += panel_timing.field_prepare_ms;
         build_timing.contour_prepare_ms += panel_timing.contour_prepare_ms;
@@ -2090,12 +2094,16 @@ fn build_render_request(
     barb_stride_cache: &SharedBarbStrideCache,
     contour_mode: NativeContourRenderMode,
     native_fill_level_multiplier: usize,
+    earth2_ensemble: Option<Earth2EnsembleSelector>,
 ) -> Result<(MapRenderRequest, DirectRequestBuildTiming), Box<dyn std::error::Error>> {
     let mut timing = DirectRequestBuildTiming::default();
     let field_prepare_start = Instant::now();
-    let filled_field = render_filled_field(recipe, filled, extracted)?;
+    let filled_field =
+        render_filled_field_with_ensemble(recipe, filled, extracted, earth2_ensemble)?;
     timing.field_prepare_ms = field_prepare_start.elapsed().as_millis();
-    let overlay_only = should_render_overlay_only(filled.selector, recipe.contours.is_some());
+    let suppress_companion_overlays = earth2_suppresses_companion_overlays(earth2_ensemble);
+    let overlay_only = !suppress_companion_overlays
+        && should_render_overlay_only(filled.selector, recipe.contours.is_some());
     let visual_mode = visual_mode_for_direct_recipe(recipe, filled.selector, overlay_only);
     let mut request = if overlay_only {
         let mut request = MapRenderRequest::contour_only(filled_field.clone().into());
@@ -2110,7 +2118,12 @@ fn build_render_request(
     } else {
         MapRenderRequest::new(
             filled_field.clone().into(),
-            scale_for_recipe(recipe, filled.selector),
+            scale_for_earth2_selector(
+                recipe,
+                filled.selector,
+                &filled_field.values,
+                earth2_ensemble,
+            ),
         )
     };
     request.visual_mode = visual_mode;
@@ -2143,24 +2156,28 @@ fn build_render_request(
     request.projected_lines = projected.lines;
     request.projected_polygons = projected.polygons;
     let contour_prepare_start = Instant::now();
-    if overlay_only {
-        request
-            .contours
-            .extend(build_contour_layers(recipe, extracted, contour_layer_cache));
-    } else {
-        request.contours = build_contour_layers(recipe, extracted, contour_layer_cache);
+    if !suppress_companion_overlays {
+        if overlay_only {
+            request
+                .contours
+                .extend(build_contour_layers(recipe, extracted, contour_layer_cache));
+        } else {
+            request.contours = build_contour_layers(recipe, extracted, contour_layer_cache);
+        }
     }
     timing.contour_prepare_ms += contour_prepare_start.elapsed().as_millis();
     let barb_prepare_start = Instant::now();
-    request.wind_barbs = build_barb_layers(
-        recipe,
-        extracted,
-        bounds,
-        barb_layer_cache,
-        barb_stride_cache,
-    );
+    if !suppress_companion_overlays {
+        request.wind_barbs = build_barb_layers(
+            recipe,
+            extracted,
+            bounds,
+            barb_layer_cache,
+            barb_stride_cache,
+        );
+    }
     timing.barb_prepare_ms = barb_prepare_start.elapsed().as_millis();
-    if !overlay_only {
+    if !overlay_only && !suppress_companion_overlays {
         let contour_fill_start = Instant::now();
         maybe_apply_below_ground_mask_overlay(filled.selector, extracted, &mut request)?;
         maybe_apply_experimental_projected_contours(
@@ -2375,15 +2392,57 @@ fn visual_mode_for_direct_recipe(
     ProductVisualMode::FilledMeteorology
 }
 
+fn earth2_filename_suffix(selector: Option<Earth2EnsembleSelector>) -> String {
+    selector
+        .map(|selector| format!("_{}", selector.filename_slug()))
+        .unwrap_or_default()
+}
+
+fn earth2_suppresses_companion_overlays(selector: Option<Earth2EnsembleSelector>) -> bool {
+    matches!(
+        selector,
+        Some(Earth2EnsembleSelector::Statistic(
+            Earth2EnsembleStat::Std | Earth2EnsembleStat::Min | Earth2EnsembleStat::Max
+        ))
+    )
+}
+
+fn earth2_is_std_selector(selector: Option<Earth2EnsembleSelector>) -> bool {
+    matches!(
+        selector,
+        Some(Earth2EnsembleSelector::Statistic(Earth2EnsembleStat::Std))
+    )
+}
+
 fn render_filled_field(
     recipe: &PlotRecipe,
     field: &SelectedField2D,
     extracted: &HashMap<FieldSelector, SelectedField2D>,
 ) -> Result<rustwx_core::Field2D, Box<dyn std::error::Error>> {
+    render_filled_field_with_ensemble(recipe, field, extracted, None)
+}
+
+fn render_filled_field_with_ensemble(
+    recipe: &PlotRecipe,
+    field: &SelectedField2D,
+    extracted: &HashMap<FieldSelector, SelectedField2D>,
+    earth2_ensemble: Option<Earth2EnsembleSelector>,
+) -> Result<rustwx_core::Field2D, Box<dyn std::error::Error>> {
+    if earth2_suppresses_companion_overlays(earth2_ensemble) {
+        return Ok(convert_filled_field_with_ensemble(
+            recipe,
+            field,
+            earth2_ensemble,
+        ));
+    }
     if let Some(wind_speed) = derived_height_winds_fill(recipe, field, extracted)? {
         return Ok(wind_speed);
     }
-    Ok(convert_filled_field(recipe, field))
+    Ok(convert_filled_field_with_ensemble(
+        recipe,
+        field,
+        earth2_ensemble,
+    ))
 }
 
 fn derived_height_winds_fill(
@@ -2426,7 +2485,11 @@ fn derived_height_winds_fill(
     Ok(Some(field))
 }
 
-fn convert_filled_field(recipe: &PlotRecipe, field: &SelectedField2D) -> rustwx_core::Field2D {
+fn convert_filled_field_with_ensemble(
+    recipe: &PlotRecipe,
+    field: &SelectedField2D,
+    earth2_ensemble: Option<Earth2EnsembleSelector>,
+) -> rustwx_core::Field2D {
     let mut core = field.clone().into_field2d();
     if field.selector.field == CanonicalField::SmokeMassDensity {
         for value in &mut core.values {
@@ -2442,10 +2505,14 @@ fn convert_filled_field(recipe: &PlotRecipe, field: &SelectedField2D) -> rustwx_
         recipe.style,
         RenderStyle::WeatherTemperature | RenderStyle::WeatherDewpoint
     ) {
-        for value in &mut core.values {
-            *value -= 273.15;
+        if earth2_is_std_selector(earth2_ensemble) {
+            core.units = "K".to_string();
+        } else {
+            for value in &mut core.values {
+                *value -= 273.15;
+            }
+            core.units = "degC".to_string();
         }
-        core.units = "degC".to_string();
     } else if field.selector.field == CanonicalField::PressureReducedToMeanSeaLevel {
         for value in &mut core.values {
             *value *= 0.01;
@@ -2489,6 +2556,91 @@ fn should_render_overlay_only(selector: FieldSelector, has_explicit_contours: bo
         return false;
     }
     matches!(selector.field, CanonicalField::GeopotentialHeight)
+}
+
+fn scale_for_earth2_selector(
+    recipe: &PlotRecipe,
+    filled_selector: FieldSelector,
+    values: &[f32],
+    earth2_ensemble: Option<Earth2EnsembleSelector>,
+) -> ColorScale {
+    if earth2_is_std_selector(earth2_ensemble) {
+        return earth2_spread_scale(values);
+    }
+    scale_for_recipe(recipe, filled_selector)
+}
+
+fn earth2_spread_scale(values: &[f32]) -> ColorScale {
+    let mut finite = values
+        .iter()
+        .filter_map(|value| {
+            let value = *value as f64;
+            value.is_finite().then_some(value.max(0.0))
+        })
+        .collect::<Vec<_>>();
+    finite.sort_by(|a, b| a.total_cmp(b));
+    let p99 = percentile_sorted(&finite, 0.99).unwrap_or(1.0);
+    let upper = nice_spread_upper_bound(p99);
+    let step = nice_spread_step(upper / 16.0);
+    ColorScale::Discrete(DiscreteColorScale {
+        levels: range_step(0.0, upper + step * 0.5, step),
+        colors: earth2_spread_colors(),
+        extend: ExtendMode::Max,
+        mask_below: None,
+    })
+}
+
+fn percentile_sorted(values: &[f64], percentile: f64) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let index = ((values.len() - 1) as f64 * percentile.clamp(0.0, 1.0)).round() as usize;
+    values.get(index).copied()
+}
+
+fn nice_spread_upper_bound(value: f64) -> f64 {
+    let value = if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        1.0
+    };
+    let magnitude = 10_f64.powf(value.log10().floor());
+    for multiple in [1.0, 2.0, 2.5, 5.0, 10.0] {
+        let candidate = multiple * magnitude;
+        if candidate >= value {
+            return candidate.max(0.1);
+        }
+    }
+    (10.0 * magnitude).max(0.1)
+}
+
+fn nice_spread_step(value: f64) -> f64 {
+    let value = if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        0.1
+    };
+    let magnitude = 10_f64.powf(value.log10().floor());
+    for multiple in [1.0, 2.0, 2.5, 5.0, 10.0] {
+        let candidate = multiple * magnitude;
+        if candidate >= value {
+            return candidate.max(0.01);
+        }
+    }
+    (10.0 * magnitude).max(0.01)
+}
+
+fn earth2_spread_colors() -> Vec<Color> {
+    vec![
+        Color::rgba(247, 251, 255, 255),
+        Color::rgba(222, 235, 247, 255),
+        Color::rgba(198, 219, 239, 255),
+        Color::rgba(158, 202, 225, 255),
+        Color::rgba(107, 174, 214, 255),
+        Color::rgba(49, 130, 189, 255),
+        Color::rgba(8, 81, 156, 255),
+        Color::rgba(8, 48, 107, 255),
+    ]
 }
 
 fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> ColorScale {
@@ -3120,16 +3272,12 @@ mod tests {
             groups[0].fetch_mode,
             PlotRecipeFetchMode::WholeFileStructuredExtract
         );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500))
-        );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700))
-        );
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500)));
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700)));
         assert!(groups[0].variable_patterns.is_empty());
     }
 
@@ -3309,18 +3457,14 @@ mod tests {
         let groups = group_direct_fetches(&request, &planned);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].product, "sfc");
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::entire_atmosphere(
-                    CanonicalField::LowCloudCover
-                ))
-        );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow))
-        );
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::entire_atmosphere(
+                CanonicalField::LowCloudCover
+            )));
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow)));
     }
 
     #[test]
@@ -3386,7 +3530,8 @@ mod tests {
             "Pa",
             vec![100000.0; 4],
         );
-        let converted_pressure = convert_filled_field(pressure_recipe, &pressure_field);
+        let converted_pressure =
+            convert_filled_field_with_ensemble(pressure_recipe, &pressure_field, None);
         assert_eq!(converted_pressure.units, "hPa");
         assert_eq!(converted_pressure.values[0], 1000.0);
 
@@ -3396,7 +3541,7 @@ mod tests {
             "kg/m^2",
             vec![25.4; 4],
         );
-        let converted_pwat = convert_filled_field(pwat_recipe, &pwat_field);
+        let converted_pwat = convert_filled_field_with_ensemble(pwat_recipe, &pwat_field, None);
         assert_eq!(converted_pwat.units, "in");
         assert!((converted_pwat.values[0] - 1.0).abs() < 1.0e-6);
 
@@ -3406,7 +3551,7 @@ mod tests {
             "m",
             vec![1609.344; 4],
         );
-        let converted_vis = convert_filled_field(vis_recipe, &vis_field);
+        let converted_vis = convert_filled_field_with_ensemble(vis_recipe, &vis_field, None);
         assert_eq!(converted_vis.units, "mi");
         assert!((converted_vis.values[0] - 1.0).abs() < 1.0e-4);
 
@@ -3416,7 +3561,7 @@ mod tests {
             "s^-1",
             vec![0.0002; 4],
         );
-        let converted_vort = convert_filled_field(vort_recipe, &vort_field);
+        let converted_vort = convert_filled_field_with_ensemble(vort_recipe, &vort_field, None);
         assert_eq!(converted_vort.units, "10^-5 s^-1");
         assert!((converted_vort.values[0] - 20.0).abs() < 1.0e-6);
     }
@@ -3439,6 +3584,69 @@ mod tests {
             FieldSelector::surface(CanonicalField::Visibility),
             false
         ));
+    }
+
+    #[test]
+    fn earth2_selector_suffixes_are_filename_friendly() {
+        assert_eq!(
+            earth2_filename_suffix(Some(Earth2EnsembleSelector::Member(3))),
+            "_m3"
+        );
+        assert_eq!(
+            earth2_filename_suffix(Some(Earth2EnsembleSelector::Statistic(
+                Earth2EnsembleStat::Mean
+            ))),
+            "_mean"
+        );
+        assert_eq!(earth2_filename_suffix(None), "");
+    }
+
+    #[test]
+    fn earth2_std_temperature_keeps_spread_units_and_scale() {
+        let recipe = plot_recipe("2m_temperature").unwrap();
+        let field = sample_selected_field(
+            FieldSelector::height_agl(CanonicalField::Temperature, 2),
+            "K",
+            vec![0.0, 2.0, 4.0, 8.0],
+        );
+        let converted = convert_filled_field_with_ensemble(
+            recipe,
+            &field,
+            Some(Earth2EnsembleSelector::Statistic(Earth2EnsembleStat::Std)),
+        );
+        assert_eq!(converted.units, "K");
+        assert_eq!(converted.values, vec![0.0, 2.0, 4.0, 8.0]);
+
+        let ColorScale::Discrete(scale) = scale_for_earth2_selector(
+            recipe,
+            field.selector,
+            &converted.values,
+            Some(Earth2EnsembleSelector::Statistic(Earth2EnsembleStat::Std)),
+        ) else {
+            panic!("expected discrete spread scale");
+        };
+        assert_eq!(scale.levels.first().copied(), Some(0.0));
+        assert!(scale.levels.last().copied().unwrap_or(0.0) >= 8.0);
+        assert_eq!(scale.extend, ExtendMode::Max);
+    }
+
+    #[test]
+    fn earth2_std_min_max_suppress_companion_overlays() {
+        assert!(earth2_suppresses_companion_overlays(Some(
+            Earth2EnsembleSelector::Statistic(Earth2EnsembleStat::Std)
+        )));
+        assert!(earth2_suppresses_companion_overlays(Some(
+            Earth2EnsembleSelector::Statistic(Earth2EnsembleStat::Min)
+        )));
+        assert!(earth2_suppresses_companion_overlays(Some(
+            Earth2EnsembleSelector::Statistic(Earth2EnsembleStat::Max)
+        )));
+        assert!(!earth2_suppresses_companion_overlays(Some(
+            Earth2EnsembleSelector::Statistic(Earth2EnsembleStat::Mean)
+        )));
+        assert!(!earth2_suppresses_companion_overlays(Some(
+            Earth2EnsembleSelector::Member(0)
+        )));
     }
 
     #[test]

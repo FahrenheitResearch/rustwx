@@ -13,17 +13,18 @@ use clap::{Parser, ValueEnum};
 use contour_mode::ContourModeArg;
 use domain::{domain_from_region_or_country, requested_domain_slug};
 use region::RegionPreset;
-use rustwx_core::{ModelId, SourceId};
+use rustwx_core::{CycleSpec, ModelId, ModelRunRequest, SourceId};
 use rustwx_io::earth2_archive::{Earth2EnsembleSelector, Earth2EnsembleStat};
 use rustwx_models::model_summary;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::direct::{
-    DirectBatchRequest, run_direct_batch, supported_direct_recipe_slugs,
+    run_direct_batch, supported_direct_recipe_slugs, DirectBatchRequest,
 };
-use rustwx_products::places::{PlaceLabelDensityTier, default_place_label_overlay_for_domain};
+use rustwx_products::places::{default_place_label_overlay_for_domain, PlaceLabelDensityTier};
 use rustwx_products::publication::{
-    ArtifactPublicationState, PublishedArtifactRecord, RunPublicationManifest, atomic_write_json,
-    canonical_run_slug, finalize_and_publish_run_manifest, publish_failure_manifest,
+    atomic_write_json, canonical_run_slug, finalize_and_publish_run_manifest,
+    publish_failure_manifest, ArtifactPublicationState, PublishedArtifactRecord,
+    RunPublicationManifest,
 };
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -63,8 +64,11 @@ struct Args {
     date: String,
     #[arg(long)]
     cycle: Option<u8>,
-    #[arg(long, default_value_t = 0)]
-    forecast_hour: u16,
+    #[arg(
+        long,
+        help = "Forecast hour. For AIFS/Earth2 archives, omitted means the first lead in the selected latest cycle."
+    )]
+    forecast_hour: Option<u16>,
     #[arg(long)]
     source: Option<SourceId>,
     #[arg(long, value_enum, default_value_t = RegionPreset::Midwest)]
@@ -117,7 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &args.model.as_str().replace('-', "_"),
         &args.date,
         args.cycle,
-        args.forecast_hour,
+        args.forecast_hour.unwrap_or(0),
         &requested_domain_slug(args.region, args.country.as_deref()),
         "direct",
     );
@@ -148,6 +152,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let source = args
         .source
         .unwrap_or(model_summary(args.model).sources[0].id);
+    let forecast_hour = resolve_forecast_hour(args, source)?;
     let earth2_ensemble = match (args.member, args.stat) {
         (Some(member), None) => Some(Earth2EnsembleSelector::Member(member)),
         (None, Some(stat)) => Some(Earth2EnsembleSelector::Statistic(stat.into())),
@@ -156,6 +161,15 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     };
     if earth2_ensemble.is_some() && args.model != ModelId::Aifs {
         return Err("--member/--stat currently apply only to --model aifs".into());
+    }
+    if let (Some(selector), Some(cycle_utc)) = (earth2_ensemble, args.cycle) {
+        let path = rustwx_io::earth2_archive::archive_path_for_request(&ModelRunRequest::new(
+            args.model,
+            CycleSpec::new(args.date.clone(), cycle_utc)?,
+            forecast_hour,
+            "oper",
+        )?)?;
+        rustwx_io::earth2_archive::validate_ensemble_selector_for_path(&path, selector)?;
     }
     let recipes = if args.all_supported {
         let supported = supported_direct_recipe_slugs(args.model);
@@ -177,7 +191,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         model: args.model,
         date_yyyymmdd: args.date.clone(),
         cycle_override_utc: args.cycle,
-        forecast_hour: args.forecast_hour,
+        forecast_hour,
         source,
         domain: domain.clone(),
         out_dir: args.out_dir.clone(),
@@ -200,13 +214,18 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let report = run_direct_batch(&request)?;
 
     let model_slug = report.model.as_str().replace('-', "_");
+    let selector_suffix = request
+        .earth2_ensemble
+        .map(|selector| format!("_{}", selector.filename_slug()))
+        .unwrap_or_default();
     let stem = format!(
-        "rustwx_{}_{}_{}z_f{:03}_{}_direct",
+        "rustwx_{}_{}_{}z_f{:03}_{}_direct{}",
         model_slug,
         report.date_yyyymmdd,
         report.cycle_utc,
         report.forecast_hour,
-        report.domain.slug
+        report.domain.slug,
+        selector_suffix
     );
     let manifest_path = args.out_dir.join(format!("{stem}_manifest.json"));
     let timing_path = args.out_dir.join(format!("{stem}_timing.json"));
@@ -269,6 +288,9 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             );
     let (canonical_manifest, attempt_manifest) =
         finalize_and_publish_run_manifest(&mut run_manifest, &args.out_dir, &stem)?;
+    if attempt_manifest != canonical_manifest {
+        fs::remove_file(&attempt_manifest)?;
+    }
 
     for recipe in &report.recipes {
         println!("{}", recipe.output_path.display());
@@ -276,8 +298,21 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", manifest_path.display());
     println!("{}", timing_path.display());
     println!("{}", canonical_manifest.display());
-    println!("{}", attempt_manifest.display());
     Ok(())
+}
+
+fn resolve_forecast_hour(args: &Args, source: SourceId) -> Result<u16, Box<dyn std::error::Error>> {
+    if let Some(forecast_hour) = args.forecast_hour {
+        return Ok(forecast_hour);
+    }
+    if args.model == ModelId::Aifs && source == SourceId::Earth2Archive {
+        if let Some(forecast_hour) = rustwx_io::earth2_archive::default_forecast_hour_for_archive(
+            args.model, &args.date, args.cycle,
+        )? {
+            return Ok(forecast_hour);
+        }
+    }
+    Ok(0)
 }
 
 fn parse_product_overrides(

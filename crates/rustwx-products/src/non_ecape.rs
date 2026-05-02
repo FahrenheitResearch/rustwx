@@ -1184,11 +1184,14 @@ fn run_prepared_non_ecape_domain(
     apply_windowed_manifest_updates(&mut manifest, &windowed);
     let (canonical_manifest_path, attempt_manifest_path) =
         finalize_and_publish_run_manifest(&mut manifest, &domain_out_dir, &run_slug)?;
+    if attempt_manifest_path != canonical_manifest_path {
+        fs::remove_file(&attempt_manifest_path)?;
+    }
 
     Ok(NonEcapeDomainReport {
         domain: domain.clone(),
         publication_manifest_path: canonical_manifest_path,
-        attempt_manifest_path: Some(attempt_manifest_path),
+        attempt_manifest_path: None,
         summary,
         direct,
         derived,

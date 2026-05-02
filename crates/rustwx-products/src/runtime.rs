@@ -15,16 +15,16 @@ use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, CanonicalBundleId, CycleSpec, LatLonGrid,
     ModelRunRequest, RustwxError, SourceId,
 };
-use rustwx_io::{FetchRequest, fetch_bytes_with_cache};
-use rustwx_models::{LatestRun, default_bundle_product};
+use rustwx_io::{fetch_bytes_with_cache, FetchRequest};
+use rustwx_models::{default_bundle_product, LatestRun};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::gridded::{
-    CachedDecode, FetchedModelFile, PressureFields, SurfaceFields, decode_cache_path,
-    load_or_decode_pressure_with_shape, load_or_decode_surface,
-    validate_pressure_decode_against_surface,
+    decode_cache_path, load_or_decode_pressure_from_file_with_shape,
+    load_or_decode_surface_from_file, validate_pressure_decode_against_surface, CachedDecode,
+    FetchedModelFile, PressureFields, SurfaceFields,
 };
 use crate::planner::{BundleFetchKey, ExecutionPlan, PlannedBundle};
 
@@ -398,9 +398,9 @@ fn decode_execution_plan_into(
                 let cache_path =
                     decode_cache_path(&config.cache_root, &fetched_bytes.file.request, "surface");
                 let start = Instant::now();
-                match load_or_decode_surface(
+                match load_or_decode_surface_from_file(
                     &cache_path,
-                    fetched_bytes.file.bytes.as_slice(),
+                    &fetched_bytes.file,
                     config.use_cache,
                 ) {
                     Ok(decoded) => {
@@ -419,9 +419,9 @@ fn decode_execution_plan_into(
                 let cache_path =
                     decode_cache_path(&config.cache_root, &fetched_bytes.file.request, "pressure");
                 let start = Instant::now();
-                let decode_outcome = load_or_decode_pressure_with_shape(
+                let decode_outcome = load_or_decode_pressure_from_file_with_shape(
                     &cache_path,
-                    fetched_bytes.file.bytes.as_slice(),
+                    &fetched_bytes.file,
                     config.use_cache,
                 );
                 loaded.timing.decode_pressure_ms_total += start.elapsed().as_millis();
@@ -801,16 +801,12 @@ mod tests {
             build_fetch_request(&plan, &nat_key, None).expect("nat-na request builds");
         let prs_request =
             build_fetch_request(&plan, &prs_key, None).expect("prs-na request builds");
-        assert!(
-            nat_request
-                .variable_patterns
-                .contains(&"TMP:2 m above ground".to_string())
-        );
-        assert!(
-            nat_request
-                .variable_patterns
-                .contains(&"UGRD:10 m above ground".to_string())
-        );
+        assert!(nat_request
+            .variable_patterns
+            .contains(&"TMP:2 m above ground".to_string()));
+        assert!(nat_request
+            .variable_patterns
+            .contains(&"UGRD:10 m above ground".to_string()));
         assert_eq!(
             prs_request.variable_patterns,
             vec![

@@ -14,28 +14,28 @@ use rustwx_core::{
 #[cfg(feature = "python")]
 use rustwx_io::earth2_archive::{Earth2EnsembleSelector, Earth2EnsembleStat};
 #[cfg(feature = "python")]
-use rustwx_io::{FetchRequest, available_forecast_hours, probe_sources};
+use rustwx_io::{available_forecast_hours, probe_sources, FetchRequest};
 #[cfg(feature = "python")]
 use rustwx_products::{
     derived::{
-        DerivedBatchReport, DerivedBatchRequest, NativeContourRenderMode,
         is_heavy_derived_recipe_slug, run_derived_batch, supported_derived_recipe_inventory,
-        supported_derived_recipe_slugs,
+        supported_derived_recipe_slugs, DerivedBatchReport, DerivedBatchRequest,
+        NativeContourRenderMode,
     },
     direct::supported_direct_recipe_slugs,
-    lightning::{GlmLightningRenderRequest, default_glm_data_dir, render_glm_lightning_map},
+    lightning::{default_glm_data_dir, render_glm_lightning_map, GlmLightningRenderRequest},
     named_geometry::{
-        NamedGeometryCatalog, NamedGeometryKind, find_built_in_country_domain,
-        find_built_in_named_geometry,
+        find_built_in_country_domain, find_built_in_named_geometry, NamedGeometryCatalog,
+        NamedGeometryKind,
     },
-    non_ecape::{NonEcapeMultiDomainRequest, run_model_non_ecape_hour_multi_domain},
-    places::{PlaceLabelDensityTier, default_place_label_overlay_for_domain},
+    non_ecape::{run_model_non_ecape_hour_multi_domain, NonEcapeMultiDomainRequest},
+    places::{default_place_label_overlay_for_domain, PlaceLabelDensityTier},
     point_timeseries::{
-        PointTimeseriesGridStore, PointTimeseriesGridStoreRequest, PointTimeseriesRequest,
         build_point_timeseries_grid_store, sample_point_timeseries,
-        sample_point_timeseries_grid_store,
+        sample_point_timeseries_grid_store, PointTimeseriesGridStore,
+        PointTimeseriesGridStoreRequest, PointTimeseriesRequest,
     },
-    satellite::{GoesSatelliteBatchRequest, run_goes_satellite_batch},
+    satellite::{run_goes_satellite_batch, GoesSatelliteBatchRequest},
     shared_context::DomainSpec,
     source::ProductSourceMode,
     windowed::HrrrWindowedProduct,
@@ -43,7 +43,7 @@ use rustwx_products::{
 #[cfg(feature = "python")]
 use rustwx_render::PngCompressionMode;
 #[cfg(feature = "python")]
-use rustwx_sounding::{SoundingColumn, write_full_sounding_png};
+use rustwx_sounding::{write_full_sounding_png, SoundingColumn};
 #[cfg(feature = "python")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "python")]
@@ -1057,6 +1057,7 @@ fn build_render_maps_plan(request: RenderMapsRequestJson) -> PyResult<RenderMaps
     let place_density = parse_place_label_density(request.place_label_density.as_deref())?;
     let routed = route_requested_products(model, &request)?;
     let earth2_ensemble = parse_render_maps_ensemble_selector(model, &request, &routed)?;
+    let forecast_hour = resolve_render_maps_forecast_hour(model, source, &date_yyyymmdd, &request)?;
     let place_label_overlay = domains
         .first()
         .and_then(|domain| default_place_label_overlay_for_domain(domain, place_density));
@@ -1068,7 +1069,7 @@ fn build_render_maps_plan(request: RenderMapsRequestJson) -> PyResult<RenderMaps
             model,
             date_yyyymmdd,
             cycle_override_utc: request.cycle_utc,
-            forecast_hour: request.forecast_hour.unwrap_or(0),
+            forecast_hour,
             source,
             domains,
             out_dir,
@@ -1091,6 +1092,28 @@ fn build_render_maps_plan(request: RenderMapsRequestJson) -> PyResult<RenderMaps
             domain_jobs: request.domain_jobs,
         },
     })
+}
+
+#[cfg(feature = "python")]
+fn resolve_render_maps_forecast_hour(
+    model: ModelId,
+    source: SourceId,
+    date_yyyymmdd: &str,
+    request: &RenderMapsRequestJson,
+) -> PyResult<u16> {
+    if let Some(forecast_hour) = request.forecast_hour {
+        return Ok(forecast_hour);
+    }
+    if model == ModelId::Aifs && source == SourceId::Earth2Archive {
+        return rustwx_io::earth2_archive::default_forecast_hour_for_archive(
+            model,
+            date_yyyymmdd,
+            request.cycle_utc,
+        )
+        .map(|forecast_hour| forecast_hour.unwrap_or(0))
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()));
+    }
+    Ok(0)
 }
 
 #[cfg(feature = "python")]

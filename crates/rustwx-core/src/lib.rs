@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+const AIFS_MAX_FORECAST_HOUR: u16 = 43_848;
+
 #[derive(Debug, Error)]
 pub enum RustwxError {
     #[error("invalid grid shape: nx={nx}, ny={ny}")]
@@ -937,7 +939,7 @@ impl ModelTimestep {
         valid_time: TimeStamp,
         source: Option<SourceId>,
     ) -> Result<Self, RustwxError> {
-        if forecast_hour > 999 {
+        if !forecast_hour_allowed_for_model(model, forecast_hour) {
             return Err(RustwxError::InvalidForecastHour(forecast_hour));
         }
         Ok(Self {
@@ -1675,7 +1677,7 @@ impl ModelRunRequest {
         forecast_hour: u16,
         product: S,
     ) -> Result<Self, RustwxError> {
-        if forecast_hour > 999 {
+        if !forecast_hour_allowed_for_model(model, forecast_hour) {
             return Err(RustwxError::InvalidForecastHour(forecast_hour));
         }
         Ok(Self {
@@ -1684,6 +1686,13 @@ impl ModelRunRequest {
             forecast_hour,
             product: product.into(),
         })
+    }
+}
+
+fn forecast_hour_allowed_for_model(model: ModelId, forecast_hour: u16) -> bool {
+    match model {
+        ModelId::Aifs => forecast_hour <= AIFS_MAX_FORECAST_HOUR,
+        _ => forecast_hour <= 999,
     }
 }
 
@@ -2028,6 +2037,40 @@ mod tests {
             "2026-04-15T00:00:00Z"
         );
         assert_eq!(timestep.source, Some(SourceId::Aws));
+    }
+
+    #[test]
+    fn aifs_allows_long_local_archive_leads() {
+        let cycle = CycleSpec::new("20260501", 0).unwrap();
+        let request =
+            ModelRunRequest::new(ModelId::Aifs, cycle.clone(), AIFS_MAX_FORECAST_HOUR, "oper")
+                .unwrap();
+        assert_eq!(request.forecast_hour, AIFS_MAX_FORECAST_HOUR);
+
+        let timestep = ModelTimestep::with_source(
+            ModelId::Aifs,
+            cycle,
+            AIFS_MAX_FORECAST_HOUR,
+            TimeStamp::new("2031-05-01T00:00:00Z").unwrap(),
+            Some(SourceId::Earth2Archive),
+        )
+        .unwrap();
+        assert_eq!(timestep.forecast_hour, AIFS_MAX_FORECAST_HOUR);
+
+        let cycle = CycleSpec::new("20260501", 0).unwrap();
+        assert!(matches!(
+            ModelRunRequest::new(ModelId::Aifs, cycle, AIFS_MAX_FORECAST_HOUR + 6, "oper"),
+            Err(RustwxError::InvalidForecastHour(_))
+        ));
+    }
+
+    #[test]
+    fn non_aifs_keeps_three_digit_forecast_hour_guard() {
+        let cycle = CycleSpec::new("20260501", 0).unwrap();
+        assert!(matches!(
+            ModelRunRequest::new(ModelId::Gfs, cycle, 1000, "pgrb2.0p25"),
+            Err(RustwxError::InvalidForecastHour(1000))
+        ));
     }
 
     #[test]

@@ -18,6 +18,9 @@ Files live at:
 {RUSTWX_EARTH2_ARCHIVE}/{model}/{YYYYMMDD}T{HH}Z/lead{HHH}.nc
 ```
 
+`HHH` is a minimum width, not a hard cap. Long experimental integrations use
+the same layout, for example `lead8640.nc` for a 360-day run.
+
 Example:
 
 ```text
@@ -80,6 +83,10 @@ If `--cycle` is omitted, rustwx scans
 `$RUSTWX_EARTH2_ARCHIVE\aifs\*\lead{forecast_hour}.nc` and picks the newest
 cycle at or before the requested date. Passing `--cycle` is still preferred for
 reproducible research runs.
+
+For local Earth2Archive AIFS runs, rustwx allows six-hourly forecast leads out
+to `f43848`, a five-calendar-year horizon with leap-day slack. Other
+operational models keep their normal shorter forecast-hour validation.
 
 Pressure product:
 

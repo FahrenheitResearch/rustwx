@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::publication_provenance::{BuildProvenance, new_attempt_id};
+use crate::publication_provenance::{new_attempt_id, BuildProvenance};
 
 pub const RUN_PUBLICATION_SCHEMA_VERSION: u32 = 4;
 
@@ -567,6 +567,7 @@ pub fn fetch_identity_from_cached_result_with_aliases(
     planned_family_aliases.retain(|alias| alias != planned_family);
     planned_family_aliases.sort();
     planned_family_aliases.dedup();
+    let (bytes_len, bytes_sha256) = fetch_payload_identity(fetched);
     PublishedFetchIdentity {
         fetch_key: fetch_key(planned_family, &fetch.request),
         planned_family: planned_family.to_string(),
@@ -576,9 +577,26 @@ pub fn fetch_identity_from_cached_result_with_aliases(
         resolved_source: fetched.result.source,
         resolved_url: fetched.result.url.clone(),
         resolved_family: fetch.request.product.clone(),
-        bytes_len: fetched.result.bytes.len(),
-        bytes_sha256: sha256_hex(&fetched.result.bytes),
+        bytes_len,
+        bytes_sha256,
     }
+}
+
+fn fetch_payload_identity(fetched: &CachedFetchResult) -> (usize, String) {
+    if !fetched.result.bytes.is_empty() {
+        return (
+            fetched.result.bytes.len(),
+            sha256_hex(&fetched.result.bytes),
+        );
+    }
+    if fetched.bytes_path.is_file() {
+        let len = fs::metadata(&fetched.bytes_path)
+            .ok()
+            .and_then(|metadata| usize::try_from(metadata.len()).ok())
+            .unwrap_or(0);
+        return (len, "path_backed_not_hashed".to_string());
+    }
+    (0, sha256_hex(&[]))
 }
 
 fn temp_path_for(path: &Path) -> PathBuf {
@@ -869,13 +887,11 @@ mod tests {
         assert_eq!(canonical_path, canonical);
         assert!(canonical.exists());
         assert!(attempt_path.exists());
-        assert!(
-            attempt_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap()
-                .contains(&manifest.attempt_id)
-        );
+        assert!(attempt_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap()
+            .contains(&manifest.attempt_id));
 
         // Rerunning with a fresh attempt id leaves the old attempt file
         // untouched; the canonical file is overwritten in place.
@@ -914,13 +930,11 @@ mod tests {
         assert_eq!(parsed.state, RunPublicationState::Failed);
         assert_eq!(parsed.detail.as_deref(), Some("simulated upstream outage"));
         assert!(parsed.build_provenance.is_some());
-        assert!(
-            attempt
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap()
-                .contains(&parsed.attempt_id)
-        );
+        assert!(attempt
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap()
+            .contains(&parsed.attempt_id));
 
         let _ = fs::remove_dir_all(root);
     }

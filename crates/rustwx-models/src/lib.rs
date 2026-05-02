@@ -442,6 +442,8 @@ const AIFS_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
     notes: "Local archive populated by Earth2Studio inference",
 }];
 
+const AIFS_MAX_FORECAST_HOUR: u16 = 43_848;
+
 const MODELS: &[ModelSummary] = &[
     ModelSummary {
         id: ModelId::Hrrr,
@@ -488,7 +490,7 @@ const MODELS: &[ModelSummary] = &[
         description: "AIFS-Single 1.1 ECMWF data-driven 0.25 deg global forecast (Earth2 archive)",
         default_product: "oper",
         cycle_hours_utc: AIFS_CYCLE_HOURS,
-        max_forecast_hour: 240,
+        max_forecast_hour: AIFS_MAX_FORECAST_HOUR,
         sources: AIFS_SOURCES,
     },
 ];
@@ -1980,9 +1982,11 @@ pub fn supported_forecast_hours(model: ModelId, cycle_hour_utc: u8) -> Vec<u16> 
         // deterministic/ensemble open-data stream carries 3-hourly steps to
         // 144h and then 6-hourly steps to 360h; 06/18z carries 3-hourly steps
         // to 144h only.
-        // AIFS-Single advances 6 h per step; we cache up to 240 h via Earth2Studio.
+        // AIFS local Earth2Archive runs can be experimental multi-year
+        // integrations. Keep the six-hour cadence convention and cap at a
+        // five-calendar-year horizon including leap-day slack.
         ModelId::Aifs => match cycle_hour_utc {
-            0 | 6 | 12 | 18 => (0..=240).step_by(6).map(|h| h as u16).collect(),
+            0 | 6 | 12 | 18 => (0..=AIFS_MAX_FORECAST_HOUR).step_by(6).collect(),
             _ => Vec::new(),
         },
         ModelId::EcmwfOpenData => match cycle_hour_utc {
@@ -2000,6 +2004,11 @@ pub fn supported_forecast_hours(model: ModelId, cycle_hour_utc: u8) -> Vec<u16> 
 }
 
 pub fn forecast_hour_supported(model: ModelId, cycle_hour_utc: u8, forecast_hour: u16) -> bool {
+    if model == ModelId::Aifs {
+        return matches!(cycle_hour_utc, 0 | 6 | 12 | 18)
+            && forecast_hour <= AIFS_MAX_FORECAST_HOUR
+            && forecast_hour % 6 == 0;
+    }
     supported_forecast_hours(model, cycle_hour_utc)
         .into_iter()
         .any(|candidate| candidate == forecast_hour)
@@ -3187,6 +3196,10 @@ mod tests {
             WRF_GDEX_DEFAULT_SURFACE_PRODUCT
         );
         assert_eq!(model_summary(ModelId::Aifs).default_product, "oper");
+        assert_eq!(
+            model_summary(ModelId::Aifs).max_forecast_hour,
+            AIFS_MAX_FORECAST_HOUR
+        );
     }
 
     #[test]
@@ -3213,6 +3226,36 @@ mod tests {
             latest_earth2_archive_run_with_root(&root, ModelId::Aifs, "20160822", 6).unwrap();
         assert_eq!(latest_6.cycle.date_yyyymmdd, "20160822");
         assert_eq!(latest_6.cycle.hour_utc, 6);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn earth2_archive_latest_run_accepts_long_leads() {
+        let root = std::env::temp_dir().join(format!(
+            "rustwx-earth2-long-lead-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("aifs/20160822T00Z")).unwrap();
+        std::fs::write(root.join("aifs/20160822T00Z/lead8640.nc"), b"").unwrap();
+
+        assert!(forecast_hour_supported(ModelId::Aifs, 0, 8640));
+        assert!(forecast_hour_supported(
+            ModelId::Aifs,
+            0,
+            AIFS_MAX_FORECAST_HOUR
+        ));
+        assert!(!forecast_hour_supported(ModelId::Aifs, 0, 8641));
+        assert!(!forecast_hour_supported(
+            ModelId::Aifs,
+            0,
+            AIFS_MAX_FORECAST_HOUR + 6
+        ));
+        let latest =
+            latest_earth2_archive_run_with_root(&root, ModelId::Aifs, "20160822", 8640).unwrap();
+        assert_eq!(latest.cycle.date_yyyymmdd, "20160822");
+        assert_eq!(latest.cycle.hour_utc, 0);
 
         let _ = std::fs::remove_dir_all(&root);
     }
