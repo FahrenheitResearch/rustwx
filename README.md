@@ -16,9 +16,23 @@ This repo is early, but it is no longer a placeholder. The workspace compiles, t
 Built-in model/source coverage:
 
 - `HRRR`
+- `HRRR-AK`
 - `GFS`
+- `GDAS`
+- `GEFS`
+- `AIGFS`
+- `AIGEFS`
 - `ECMWF open data`
+- `AIFS` via ECMWF AIFS-Single GRIB2 and local Earth2Archive NetCDF
+- `RAP`
+- `NAM`
+- `HIRESW`
+- `SREF`
+- `RTMA`
+- `URMA`
+- `NBM`
 - `RRFS-A`
+- `WRF/GDEX`
 
 Working proof lanes:
 
@@ -37,6 +51,11 @@ Current design constraints:
 - Python optional, never the main execution path
 - model adapters should feed common field/selector types
 - proof artifacts should be reproducible from code in this repo
+
+For the v0.5 model-addition contract, see
+[docs/model_compatibility_v05.md](docs/model_compatibility_v05.md). For the
+release summary, coverage snapshot, validation artifacts, and known boundaries,
+see [docs/release_v0.5.0.md](docs/release_v0.5.0.md).
 
 ## Weather-native plot engine direction
 
@@ -98,19 +117,24 @@ hot paths in Rust.
 ### Model and source plumbing
 
 - model summaries and source priorities
-- URL resolution for all four built-in models
+- URL resolution for built-in operational and archive models
 - latest-run probing for NOAA-style feeds
 - forecast-hour availability probes
 - full-family HRRR ingest on the main operator path, with structured extraction
   from local `wrfsfc` / `wrfprs` family files
-- full-file direct batching for `HRRR`, `GFS`, and `RRFS-A`, with one grouped
-  structured-extraction pass feeding many direct plots per hour
-- generic full-file derived batching for `HRRR`, `GFS`, `ECMWF open data`, and `RRFS-A`
-- generic full-file ECAPE derived-map batching for `HRRR`, `GFS`, `ECMWF open data`, and `RRFS-A`
+- indexed-subset direct batching for NOAA/NCEP-style GRIB models, with one
+  grouped structured-extraction pass feeding many direct plots per hour while
+  fetching only the needed `.idx` message ranges when the source provides them
+- generic full-file derived batching for `HRRR`, `HRRR-AK`, `GFS`, `GDAS`, `GEFS`, `AIGFS`, `AIGEFS`, `ECMWF open data`, `AIFS`, `RAP`, `NAM`, `HIRESW`, `SREF`, `RRFS-A`, and `WRF/GDEX` when the required selectors are available
+- generic full-file ECAPE derived-map batching for the supported built-in models when the required thermodynamic fields are available
+- generic member-GRIB ensemble reduction for direct map recipes, including
+  mean/std/min/max/p10/p50/p90 and native-unit probability-of-exceedance maps
+- local Earth2Archive NetCDF fetch/open support for AIFS-style inference output
 - WRF/GDEX NetCDF4 reads through vendored `netcrust`; no native `netcdf.dll`
   is required for the current WRF read surface
-- indexed byte-range fetch remains available for models and product paths that
-  are still configured for it
+- indexed byte-range fetch is the default for direct GRIB products that publish
+  `.idx` sidecars; ECMWF open data and NetCDF archive paths remain whole-file
+  until a source-specific subset mechanism exists
 - on-disk artifact caching for fetched bytes and selector-backed field extraction
 
 ### Diagnostics
@@ -148,6 +172,7 @@ uses it for grid-scale products and research catalogs.
 - projected-map framing that can consume native model projection metadata
 - native projected contour-fill rendering for signature derived products
 - wind barb overlays
+- built-in fill-plus-isopleth recipes with contour labels where configured
 - panel composition
 - public projected-map helpers in the `rustwx` Python package
 - contour topology extraction in `rustwx-contour`
@@ -161,6 +186,9 @@ uses it for grid-scale products and research catalogs.
 - true all-model severe suite parity
 - generic 3D ingest/decode APIs
 - production-grade ECMWF latest-run probing
+- generic JSON-defined custom composite/grid-overlay rendering for agents;
+  v0.5 exposes built-in composite/isopleth recipes and returns explicit errors
+  for arbitrary `composites` / `grid_overlays` request fields
 - full lake-aware preprocessing for non-WRF models
 - GIF/animation orchestration in Rust
 - typed Python API for render/fetch/calc workflows

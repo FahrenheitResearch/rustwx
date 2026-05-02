@@ -5,18 +5,18 @@ use clap::ValueEnum;
 use image::RgbaImage;
 use rustwx_core::{ModelId, SourceId};
 use rustwx_cross_section::{
-    render_scalar_section, representative_route_for_bounds, representative_route_for_cluster,
     CrossSectionPalette, CrossSectionProduct, CrossSectionRenderRequest, CrossSectionRequest,
     CrossSectionStyle, GeoBounds, GeoPoint, Insets, RenderedCrossSection,
     RepresentativeRouteStrategy, SamplingStrategy, SectionMetadata, SectionPath, WindOverlayBundle,
-    WindOverlayStyle,
+    WindOverlayStyle, render_scalar_section, representative_route_for_bounds,
+    representative_route_for_cluster,
 };
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::cross_section::{
-    build_pressure_cross_section_profiled, summarize_pressure_cross_section_artifact,
-    PressureCrossSectionArtifact, PressureCrossSectionFacts,
+    PressureCrossSectionArtifact, PressureCrossSectionFacts, build_pressure_cross_section_profiled,
+    summarize_pressure_cross_section_artifact,
 };
-use rustwx_products::gridded::{load_model_timestep_from_parts, LoadedModelTimestep};
+use rustwx_products::gridded::{LoadedModelTimestep, load_model_timestep_from_parts};
 use rustwx_products::shared_context::DomainSpec;
 use serde::Serialize;
 

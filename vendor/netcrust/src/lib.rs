@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use hdf5_reader::{Hdf5File, SliceInfo as H5SliceInfo, SliceInfoElem as H5SliceInfoElem};
 use ndarray::ArrayD;
 pub use netcdf_reader::{NcFormat, NcMetadataMode, NcOpenOptions};
 
@@ -27,6 +28,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("NetCDF read error: {0}")]
     Netcdf(#[from] netcdf_reader::Error),
+
+    #[error("HDF5 read error: {0}")]
+    Hdf5(String),
 
     #[error("variable not found: {0}")]
     VariableNotFound(String),
@@ -54,6 +58,7 @@ pub fn looks_like_netcdf(bytes: &[u8]) -> bool {
 #[derive(Clone)]
 pub struct File {
     inner: Arc<NcFile>,
+    hdf5: Option<Arc<Hdf5File>>,
     path: Option<PathBuf>,
     dimension_overrides: Arc<HashMap<String, usize>>,
 }
@@ -66,6 +71,7 @@ impl File {
         let dimension_overrides = infer_dimension_overrides(&inner);
         Ok(Self {
             inner: Arc::new(inner),
+            hdf5: Hdf5File::open(path).ok().map(Arc::new),
             path: Some(path.to_path_buf()),
             dimension_overrides: Arc::new(dimension_overrides),
         })
@@ -78,6 +84,7 @@ impl File {
         let dimension_overrides = infer_dimension_overrides(&inner);
         Ok(Self {
             inner: Arc::new(inner),
+            hdf5: Hdf5File::open(path).ok().map(Arc::new),
             path: Some(path.to_path_buf()),
             dimension_overrides: Arc::new(dimension_overrides),
         })
@@ -89,6 +96,7 @@ impl File {
         let dimension_overrides = infer_dimension_overrides(&inner);
         Ok(Self {
             inner: Arc::new(inner),
+            hdf5: Hdf5File::from_bytes(bytes).ok().map(Arc::new),
             path: None,
             dimension_overrides: Arc::new(dimension_overrides),
         })
@@ -100,6 +108,7 @@ impl File {
         let dimension_overrides = infer_dimension_overrides(&inner);
         Ok(Self {
             inner: Arc::new(inner),
+            hdf5: Hdf5File::from_bytes(bytes).ok().map(Arc::new),
             path: None,
             dimension_overrides: Arc::new(dimension_overrides),
         })
@@ -171,8 +180,10 @@ impl File {
 
     /// Read a variable as promoted `f64` values with shape metadata.
     pub fn read_array_f64(&self, name: &str) -> Result<DataArray> {
-        let array = self.inner.read_variable_as_f64(name)?;
-        Ok(DataArray::from_ndarray(array))
+        match self.inner.read_variable_as_f64(name) {
+            Ok(array) => Ok(DataArray::from_ndarray(array)),
+            Err(err) => self.read_hdf5_dataset_all(name).map_err(|_| err.into()),
+        }
     }
 
     /// Read a variable as promoted flat `f64` values.
@@ -186,10 +197,10 @@ impl File {
     /// WRF variables shaped like `[Time, south_north, west_east]` or
     /// `[Time, bottom_top, south_north, west_east]`.
     pub fn read_array_f64_first_record_or_all(&self, name: &str) -> Result<DataArray> {
-        let variable = self
-            .inner
-            .variable(name)
-            .map_err(|_| Error::VariableNotFound(name.to_string()))?;
+        let variable = match self.inner.variable(name) {
+            Ok(variable) => variable,
+            Err(_) => return self.read_hdf5_dataset_first_record_or_all(name),
+        };
 
         if variable.ndim() >= 3 {
             let selection = first_record_selection(variable.ndim());
@@ -198,6 +209,31 @@ impl File {
         } else {
             self.read_array_f64(name)
         }
+    }
+
+    fn read_hdf5_dataset_all(&self, name: &str) -> Result<DataArray> {
+        let Some(hdf5) = self.hdf5.as_ref() else {
+            return Err(Error::VariableNotFound(name.to_string()));
+        };
+        let dataset = hdf5
+            .dataset(name)
+            .map_err(|_| Error::VariableNotFound(name.to_string()))?;
+        read_hdf5_dataset_as_f64(&dataset, None)
+    }
+
+    fn read_hdf5_dataset_first_record_or_all(&self, name: &str) -> Result<DataArray> {
+        let Some(hdf5) = self.hdf5.as_ref() else {
+            return Err(Error::VariableNotFound(name.to_string()));
+        };
+        let dataset = hdf5
+            .dataset(name)
+            .map_err(|_| Error::VariableNotFound(name.to_string()))?;
+        let selection = if dataset.ndim() >= 3 {
+            Some(first_hdf5_record_selection(dataset.ndim()))
+        } else {
+            None
+        };
+        read_hdf5_dataset_as_f64(&dataset, selection.as_ref())
     }
 
     /// Read first WRF time record or all values as flat promoted `f64` values.
@@ -502,6 +538,10 @@ impl DataArray {
         }
     }
 
+    fn from_shape_values(shape: Vec<usize>, values: Vec<f64>) -> Self {
+        Self { shape, values }
+    }
+
     pub fn shape(&self) -> &[usize] {
         &self.shape
     }
@@ -536,6 +576,56 @@ fn first_record_selection(ndim: usize) -> NcSliceInfo {
         step: 1,
     }));
     NcSliceInfo { selections }
+}
+
+fn first_hdf5_record_selection(ndim: usize) -> H5SliceInfo {
+    let mut selections = Vec::with_capacity(ndim);
+    selections.push(H5SliceInfoElem::Index(0));
+    selections.extend((1..ndim).map(|_| H5SliceInfoElem::Slice {
+        start: 0,
+        end: u64::MAX,
+        step: 1,
+    }));
+    H5SliceInfo { selections }
+}
+
+fn read_hdf5_dataset_as_f64(
+    dataset: &hdf5_reader::Dataset,
+    selection: Option<&H5SliceInfo>,
+) -> Result<DataArray> {
+    read_hdf5_numeric::<f64>(dataset, selection)
+        .or_else(|_| read_hdf5_numeric::<f32>(dataset, selection))
+        .or_else(|_| read_hdf5_numeric::<i32>(dataset, selection))
+        .or_else(|_| read_hdf5_numeric::<i16>(dataset, selection))
+        .or_else(|_| read_hdf5_numeric::<u32>(dataset, selection))
+        .or_else(|_| read_hdf5_numeric::<u16>(dataset, selection))
+        .or_else(|_| read_hdf5_numeric::<u8>(dataset, selection))
+        .or_else(|err| read_hdf5_numeric::<i8>(dataset, selection).map_err(|_| err))
+        .map_err(|err| Error::Hdf5(err.to_string()))
+}
+
+fn read_hdf5_array<T: hdf5_reader::H5Type>(
+    dataset: &hdf5_reader::Dataset,
+    selection: Option<&H5SliceInfo>,
+) -> std::result::Result<ArrayD<T>, hdf5_reader::error::Error> {
+    match selection {
+        Some(selection) => dataset.read_slice::<T>(selection),
+        None => dataset.read_array::<T>(),
+    }
+}
+
+fn read_hdf5_numeric<T>(
+    dataset: &hdf5_reader::Dataset,
+    selection: Option<&H5SliceInfo>,
+) -> std::result::Result<DataArray, hdf5_reader::error::Error>
+where
+    T: hdf5_reader::H5Type + Copy + Into<f64>,
+{
+    let array = read_hdf5_array::<T>(dataset, selection)?;
+    Ok(DataArray::from_shape_values(
+        array.shape().to_vec(),
+        array.iter().map(|value| (*value).into()).collect(),
+    ))
 }
 
 fn infer_dimension_overrides(file: &NcFile) -> HashMap<String, usize> {

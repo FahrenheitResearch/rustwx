@@ -1278,6 +1278,7 @@ fn execute_direct(
         png_compression: config.png_compression,
         custom_poi_overlay: None,
         place_label_overlay: None,
+        output_suffix: None,
     };
     match run_direct_batch(&request) {
         Ok(report) => JobExecutionResult {

@@ -100,6 +100,8 @@ pub struct DirectBatchRequest {
     pub custom_poi_overlay: Option<CustomPoiOverlay>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub place_label_overlay: Option<PlaceLabelOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_suffix: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -362,6 +364,7 @@ impl DirectBatchRequest {
             png_compression: request.png_compression,
             custom_poi_overlay: request.custom_poi_overlay.clone(),
             place_label_overlay: request.place_label_overlay.clone(),
+            output_suffix: None,
         }
     }
 
@@ -408,6 +411,7 @@ fn sampling_direct_request(
         png_compression: PngCompressionMode::Default,
         custom_poi_overlay: None,
         place_label_overlay: None,
+        output_suffix: None,
     }
 }
 
@@ -454,6 +458,65 @@ pub fn run_direct_batch(
         request.source,
     )?;
     run_direct_batch_with_context(request, &latest, None)
+}
+
+pub fn render_direct_recipe_from_selected_fields(
+    request: &DirectBatchRequest,
+    latest: &LatestRun,
+    recipe_slug: &str,
+    extracted: &HashMap<FieldSelector, SelectedField2D>,
+    fetched_product: impl Into<String>,
+    resolved_url: impl Into<String>,
+    fetch_key: impl Into<String>,
+) -> Result<DirectRenderedRecipe, Box<dyn std::error::Error>> {
+    fs::create_dir_all(&request.out_dir)?;
+    let planned = plan_direct_recipes(request.model, &[recipe_slug.to_string()])?;
+    let groups = group_direct_fetches(request, &planned);
+    let fetched_product = fetched_product.into();
+    let resolved_url = resolved_url.into();
+    let fetch_key = fetch_key.into();
+    let mut fetch_truth_by_actual_product = HashMap::<String, DirectFetchRuntimeInfo>::new();
+    for group in &groups {
+        fetch_truth_by_actual_product.insert(
+            group.product.clone(),
+            DirectFetchRuntimeInfo {
+                fetch_key: fetch_key.clone(),
+                planned_product: group.product.clone(),
+                fetched_product: fetched_product.clone(),
+                planned_family_aliases: group.planned_family_aliases.iter().cloned().collect(),
+                requested_source: request.source,
+                resolved_source: latest.source,
+                resolved_url: resolved_url.clone(),
+            },
+        );
+    }
+
+    let missing = planned
+        .iter()
+        .flat_map(|item| item.plan.selectors())
+        .filter(|selector| !extracted.contains_key(selector))
+        .collect::<HashSet<_>>();
+    let (renderable, blockers) = partition_recipes_by_selector_availability(&planned, &missing);
+    if let Some(blocker) = blockers.first() {
+        return Err(format!(
+            "direct recipe '{}' cannot render from selected fields: {}",
+            blocker.recipe_slug, blocker.reason
+        )
+        .into());
+    }
+
+    let rendered = render_direct_recipes(
+        request,
+        latest,
+        &renderable,
+        extracted,
+        &fetch_truth_by_actual_product,
+        None,
+    )?;
+    rendered
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("direct recipe '{recipe_slug}' produced no render").into())
 }
 
 pub fn run_hrrr_direct_batch(
@@ -1041,11 +1104,12 @@ fn group_direct_fetches(
             canonical_fetch_product_for_selectors(request, planned_family.as_str(), &selectors);
         let entry = grouped.entry(key.clone()).or_insert_with(|| FetchGroup {
             product: key.clone(),
-            fetch_mode: PlotRecipeFetchMode::WholeFileStructuredExtract,
+            fetch_mode: item.plan.fetch_mode,
             variable_patterns: Vec::new(),
             selectors: Vec::new(),
             planned_family_aliases: std::collections::BTreeSet::new(),
         });
+        entry.fetch_mode = merge_fetch_modes(entry.fetch_mode, item.plan.fetch_mode);
         entry.planned_family_aliases.insert(planned_family);
         for pattern in item.plan.variable_patterns() {
             if !entry.variable_patterns.iter().any(|value| value == pattern) {
@@ -1079,6 +1143,16 @@ fn group_direct_fetches(
     let mut groups = grouped.into_values().collect::<Vec<_>>();
     groups.sort_by(|left, right| left.product.cmp(&right.product));
     groups
+}
+
+fn merge_fetch_modes(left: PlotRecipeFetchMode, right: PlotRecipeFetchMode) -> PlotRecipeFetchMode {
+    if matches!(left, PlotRecipeFetchMode::WholeFileStructuredExtract)
+        || matches!(right, PlotRecipeFetchMode::WholeFileStructuredExtract)
+    {
+        PlotRecipeFetchMode::WholeFileStructuredExtract
+    } else {
+        PlotRecipeFetchMode::IndexedSubset
+    }
 }
 
 fn extra_direct_selectors(
@@ -1167,7 +1241,11 @@ fn build_direct_execution_plan(
             BundleRequirement::new(CanonicalBundleDescriptor::NativeAnalysis, forecast_hour)
                 .with_native_override(group.product.clone());
         for alias in &group.planned_family_aliases {
-            builder.require_with_logical_family(&requirement, Some(alias));
+            builder.require_with_logical_family_and_patterns(
+                &requirement,
+                Some(alias),
+                group.variable_patterns.clone(),
+            );
         }
     }
     builder.build()
@@ -1660,14 +1738,21 @@ fn render_direct_recipe(
     prepared_projected_maps: &PreparedProjectedMaps,
 ) -> Result<DirectRenderedRecipe, Box<dyn std::error::Error>> {
     let render_start = Instant::now();
+    let suffix = request
+        .output_suffix
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| format!("_{}", sanitize_output_suffix(value)))
+        .unwrap_or_default();
     let output_path = request.out_dir.join(format!(
-        "rustwx_{}_{}_{}z_f{:03}_{}_{}.png",
+        "rustwx_{}_{}_{}z_f{:03}_{}_{}{}.png",
         request.model.as_str().replace('-', "_"),
         request.date_yyyymmdd,
         latest.cycle.hour_utc,
         request.forecast_hour,
         request.domain.slug,
-        item.recipe.slug
+        item.recipe.slug,
+        suffix
     ));
     let canonical_product = canonical_fetch_product_for_selectors(
         request,
@@ -1781,11 +1866,19 @@ fn render_direct_recipe(
             request.native_fill_level_multiplier,
         )?;
         let request_build_ms = request_build_start.elapsed().as_millis();
-        render_request.title = Some(direct_title_for_planned_product(
+        let mut title = direct_title_for_planned_product(
             request,
             item.plan.product.as_ref(),
             item.recipe.title,
-        ));
+        );
+        if let Some(suffix) = request
+            .output_suffix
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            title = format!("{title} ({suffix})");
+        }
+        render_request.title = Some(title);
         render_request.subtitle_left = Some(format!(
             "{} {}Z F{:03}  {}",
             request.date_yyyymmdd, latest.cycle.hour_utc, request.forecast_hour, request.model
@@ -1868,6 +1961,25 @@ fn render_direct_recipe(
             image_timing,
         },
     })
+}
+
+fn sanitize_output_suffix(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if matches!(ch, '_' | '-' | '.') {
+            out.push(ch);
+        } else if ch.is_whitespace() {
+            out.push('_');
+        }
+    }
+    let trimmed = out.trim_matches(['_', '-', '.']).to_string();
+    if trimmed.is_empty() {
+        "variant".to_string()
+    } else {
+        trimmed
+    }
 }
 
 fn render_direct_composite_panel(
@@ -3008,6 +3120,7 @@ mod tests {
             png_compression: PngCompressionMode::Default,
             custom_poi_overlay: None,
             place_label_overlay: None,
+            output_suffix: None,
         }
     }
 
@@ -3037,7 +3150,11 @@ mod tests {
                 group.product.as_str(),
             )?,
             source_override: Some(latest.source),
-            variable_patterns: Vec::new(),
+            variable_patterns: if matches!(group.fetch_mode, PlotRecipeFetchMode::IndexedSubset) {
+                group.variable_patterns.clone()
+            } else {
+                Vec::new()
+            },
         })
     }
 
@@ -3080,7 +3197,7 @@ mod tests {
     }
 
     #[test]
-    fn grouping_keeps_shared_prs_selector_union_under_whole_file_fetches() {
+    fn grouping_keeps_shared_prs_selector_union_under_indexed_fetches() {
         let planned = plan_direct_recipes(
             ModelId::Hrrr,
             &[
@@ -3093,10 +3210,7 @@ mod tests {
         let groups = group_direct_fetches(&request, &planned);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].product, "prs");
-        assert_eq!(
-            groups[0].fetch_mode,
-            PlotRecipeFetchMode::WholeFileStructuredExtract
-        );
+        assert_eq!(groups[0].fetch_mode, PlotRecipeFetchMode::IndexedSubset);
         assert!(
             groups[0]
                 .selectors
@@ -3107,7 +3221,7 @@ mod tests {
                 .selectors
                 .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700))
         );
-        assert!(groups[0].variable_patterns.is_empty());
+        assert!(!groups[0].variable_patterns.is_empty());
     }
 
     #[test]
@@ -3220,7 +3334,7 @@ mod tests {
     }
 
     #[test]
-    fn all_hrrr_direct_fetch_requests_strip_idx_patterns_before_fetch() {
+    fn all_hrrr_direct_fetch_requests_preserve_idx_patterns_for_subset_fetch() {
         let request = sample_direct_request(ModelId::Hrrr);
         let latest = LatestRun {
             model: ModelId::Hrrr,
@@ -3241,13 +3355,10 @@ mod tests {
 
         for group in &groups {
             let fetch = build_direct_fetch_request(&request, &latest, 6, group).unwrap();
-            assert_eq!(
-                group.fetch_mode,
-                PlotRecipeFetchMode::WholeFileStructuredExtract
-            );
+            assert_eq!(group.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
             assert!(
-                fetch.variable_patterns.is_empty(),
-                "full-family HRRR direct fetches should not send idx subset patterns"
+                !fetch.variable_patterns.is_empty(),
+                "indexed HRRR direct fetches should send idx subset patterns"
             );
         }
     }
@@ -3308,7 +3419,7 @@ mod tests {
     }
 
     #[test]
-    fn gfs_direct_fetches_are_now_whole_file() {
+    fn gfs_direct_fetches_are_now_indexed_subset() {
         let planned = plan_direct_recipes(
             ModelId::Gfs,
             &["500mb_temperature_height_winds".to_string()],
@@ -3317,10 +3428,7 @@ mod tests {
         let request = sample_direct_request(ModelId::Gfs);
         let groups = group_direct_fetches(&request, &planned);
         assert_eq!(groups.len(), 1);
-        assert_eq!(
-            groups[0].fetch_mode,
-            PlotRecipeFetchMode::WholeFileStructuredExtract
-        );
+        assert_eq!(groups[0].fetch_mode, PlotRecipeFetchMode::IndexedSubset);
         let request = sample_direct_request(ModelId::Gfs);
         let latest = LatestRun {
             model: ModelId::Gfs,
@@ -3329,7 +3437,7 @@ mod tests {
         };
         let fetch = build_direct_fetch_request(&request, &latest, 6, &groups[0]).unwrap();
         assert_eq!(fetch.request.product, "pgrb2.0p25");
-        assert!(fetch.variable_patterns.is_empty());
+        assert!(!fetch.variable_patterns.is_empty());
     }
 
     #[test]

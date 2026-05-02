@@ -920,6 +920,14 @@ pub struct ModelTimestep {
     pub source: Option<SourceId>,
 }
 
+/// Maximum representable forecast lead in rustwx's current request schema.
+///
+/// Early rustwx only used operational GRIB products whose file names fit
+/// `f000`..`f999`. Local inference archives can carry much longer leads
+/// (for example 5-year AIFS experiments), so the core type now accepts the
+/// full `u16` range and lets each model registry entry enforce its own horizon.
+pub const MAX_FORECAST_HOUR: u16 = u16::MAX;
+
 impl ModelTimestep {
     pub fn new(
         model: ModelId,
@@ -937,9 +945,6 @@ impl ModelTimestep {
         valid_time: TimeStamp,
         source: Option<SourceId>,
     ) -> Result<Self, RustwxError> {
-        if forecast_hour > 999 {
-            return Err(RustwxError::InvalidForecastHour(forecast_hour));
-        }
         Ok(Self {
             model,
             cycle,
@@ -1405,8 +1410,21 @@ impl From<PressureLevelVolume> for Field3D {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum ModelId {
     Hrrr,
+    HrrrAk,
     Gfs,
+    Gdas,
+    Gefs,
+    Aigfs,
+    Aigefs,
     EcmwfOpenData,
+    Aifs,
+    Rap,
+    Nam,
+    Hiresw,
+    Sref,
+    Rtma,
+    Urma,
+    Nbm,
     RrfsA,
     WrfGdex,
 }
@@ -1415,8 +1433,21 @@ impl ModelId {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Hrrr => "hrrr",
+            Self::HrrrAk => "hrrr-ak",
             Self::Gfs => "gfs",
+            Self::Gdas => "gdas",
+            Self::Gefs => "gefs",
+            Self::Aigfs => "aigfs",
+            Self::Aigefs => "aigefs",
             Self::EcmwfOpenData => "ecmwf-open-data",
+            Self::Aifs => "aifs",
+            Self::Rap => "rap",
+            Self::Nam => "nam",
+            Self::Hiresw => "hiresw",
+            Self::Sref => "sref",
+            Self::Rtma => "rtma",
+            Self::Urma => "urma",
+            Self::Nbm => "nbm",
             Self::RrfsA => "rrfs-a",
             Self::WrfGdex => "wrf-gdex",
         }
@@ -1435,8 +1466,21 @@ impl std::str::FromStr for ModelId {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
             "hrrr" => Ok(Self::Hrrr),
-            "gfs" => Ok(Self::Gfs),
+            "hrrr-ak" | "hrrrak" | "hrrr_ak" | "hrrr-alaska" | "hrrr_alaska" => Ok(Self::HrrrAk),
+            "gfs" | "gfs-0p25" | "gfs_0p25" | "gfs-0.25" | "gfs_0.25" => Ok(Self::Gfs),
+            "gdas" | "gdas-0p25" | "gdas_0p25" | "gdas-0.25" | "gdas_0.25" => Ok(Self::Gdas),
+            "gefs" | "gefs-ens" | "gefs_ens" | "gefs-ensemble" => Ok(Self::Gefs),
+            "aigfs" | "ai-gfs" | "ai_gfs" => Ok(Self::Aigfs),
+            "aigefs" | "ai-gefs" | "ai_gefs" => Ok(Self::Aigefs),
             "ecmwf" | "ifs" | "ecmwf-open-data" | "ecmwf_open_data" => Ok(Self::EcmwfOpenData),
+            "aifs" | "aifs-single" | "aifs_single" | "aifs-single-1.1" => Ok(Self::Aifs),
+            "rap" => Ok(Self::Rap),
+            "nam" => Ok(Self::Nam),
+            "hiresw" | "hires" | "hires-window" | "hires_window" => Ok(Self::Hiresw),
+            "sref" => Ok(Self::Sref),
+            "rtma" | "rtma2p5" | "rtma-2p5" | "rtma_2p5" => Ok(Self::Rtma),
+            "urma" | "urma2p5" | "urma-2p5" | "urma_2p5" => Ok(Self::Urma),
+            "nbm" | "blend" | "national-blend" | "national_blend" => Ok(Self::Nbm),
             "rrfs-a" | "rrfsa" | "rrfs_a" => Ok(Self::RrfsA),
             "wrf-gdex" | "wrf_gdex" | "wrfgdex" | "wrf" => Ok(Self::WrfGdex),
             other => Err(RustwxError::UnknownModel(other.to_string())),
@@ -1587,6 +1631,9 @@ pub enum SourceId {
     Ecmwf,
     Ncei,
     Gdex,
+    /// Local NetCDF archive populated by data-driven weather-model inference.
+    /// Layout: `$RUSTWX_EARTH2_ARCHIVE/{model}/{YYYYMMDD}T{HH}Z/lead{HHH}.nc`.
+    Earth2Archive,
 }
 
 impl SourceId {
@@ -1599,6 +1646,7 @@ impl SourceId {
             Self::Ecmwf => "ecmwf",
             Self::Ncei => "ncei",
             Self::Gdex => "gdex",
+            Self::Earth2Archive => "earth2-archive",
         }
     }
 }
@@ -1621,6 +1669,9 @@ impl std::str::FromStr for SourceId {
             "ecmwf" => Ok(Self::Ecmwf),
             "ncei" => Ok(Self::Ncei),
             "gdex" => Ok(Self::Gdex),
+            "earth2-archive" | "earth2_archive" | "earth2archive" | "earth2" => {
+                Ok(Self::Earth2Archive)
+            }
             other => Err(RustwxError::UnknownSource(other.to_string())),
         }
     }
@@ -1664,9 +1715,6 @@ impl ModelRunRequest {
         forecast_hour: u16,
         product: S,
     ) -> Result<Self, RustwxError> {
-        if forecast_hour > 999 {
-            return Err(RustwxError::InvalidForecastHour(forecast_hour));
-        }
         Ok(Self {
             model,
             cycle,

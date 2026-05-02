@@ -67,13 +67,14 @@ pub(crate) fn load_or_decode_apcp(
     path: &Path,
     bytes: &[u8],
     use_cache: bool,
+    fallback_window_hours: Option<u16>,
 ) -> Result<HrrrApcpDecode, Box<dyn std::error::Error>> {
     if use_cache {
         if let Some(cached) = load_bincode::<HrrrApcpDecode>(path)? {
             return Ok(cached);
         }
     }
-    let decoded = decode_apcp(bytes)?;
+    let decoded = decode_apcp(bytes, fallback_window_hours)?;
     if use_cache {
         store_bincode(path, &decoded)?;
     }
@@ -131,7 +132,10 @@ pub(crate) fn load_or_decode_surface_snapshot(
     Ok(decoded)
 }
 
-pub(crate) fn decode_apcp(bytes: &[u8]) -> Result<HrrrApcpDecode, Box<dyn std::error::Error>> {
+pub(crate) fn decode_apcp(
+    bytes: &[u8],
+    fallback_window_hours: Option<u16>,
+) -> Result<HrrrApcpDecode, Box<dyn std::error::Error>> {
     let grib = Grib2File::from_bytes(bytes)?;
     let mut windows = Vec::new();
     for message in &grib.messages {
@@ -141,6 +145,7 @@ pub(crate) fn decode_apcp(bytes: &[u8]) -> Result<HrrrApcpDecode, Box<dyn std::e
             && message.product.level_type == 1
         {
             let hours = time_range_hours(message)
+                .or(fallback_window_hours)
                 .ok_or("APCP message missing hourly time-range metadata")?;
             if windows
                 .iter()

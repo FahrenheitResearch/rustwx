@@ -332,6 +332,11 @@ fn build_windowed_entries() -> Vec<ProductCatalogEntry> {
     windowed_product_specs()
         .into_iter()
         .map(|spec| {
+            let support = if spec.slug == "qpf_total" {
+                qpf_total_windowed_model_support()
+            } else {
+                vec![windowed_model_support(ModelId::Hrrr)]
+            };
             build_catalog_entry(
                 spec,
                 ProductCatalogStatus::Supported,
@@ -340,18 +345,43 @@ fn build_windowed_entries() -> Vec<ProductCatalogEntry> {
                     "hrrr_non_ecape_hour".to_string(),
                     "non_ecape_hour".to_string(),
                 ],
-                vec![ProductTargetSupport {
-                    target: ModelId::Hrrr.to_string(),
-                    model: Some(ModelId::Hrrr),
-                    status: ProductTargetStatus::Supported,
-                    fetch_mode: None,
-                    grib_product: None,
-                    source_routes: vec![ProductSourceRoute::CheapDerived],
-                    blockers: Vec::new(),
-                }],
+                support,
             )
         })
         .collect()
+}
+
+fn windowed_model_support(model: ModelId) -> ProductTargetSupport {
+    ProductTargetSupport {
+        target: model.to_string(),
+        model: Some(model),
+        status: ProductTargetStatus::Supported,
+        fetch_mode: None,
+        grib_product: None,
+        source_routes: vec![ProductSourceRoute::CheapDerived],
+        blockers: Vec::new(),
+    }
+}
+
+fn qpf_total_windowed_model_support() -> Vec<ProductTargetSupport> {
+    [
+        ModelId::Hrrr,
+        ModelId::HrrrAk,
+        ModelId::Gfs,
+        ModelId::Gdas,
+        ModelId::Gefs,
+        ModelId::Aigfs,
+        ModelId::Aigefs,
+        ModelId::Rap,
+        ModelId::Nam,
+        ModelId::Hiresw,
+        ModelId::Sref,
+        ModelId::Nbm,
+        ModelId::RrfsA,
+    ]
+    .into_iter()
+    .map(windowed_model_support)
+    .collect()
 }
 
 fn collapse_entry_status(support: &[ProductTargetSupport]) -> ProductCatalogStatus {
@@ -884,6 +914,23 @@ mod tests {
                     .any(|runner| runner == "hrrr_non_ecape_hour")
                 && entry.support[0].blockers.is_empty()
         }));
+        let qpf_total = catalog
+            .windowed
+            .iter()
+            .find(|entry| entry.slug == "qpf_total")
+            .expect("catalog should expose total-QPF windowed product");
+        assert!(
+            qpf_total
+                .support
+                .iter()
+                .any(|target| target.model == Some(ModelId::Gfs))
+        );
+        assert!(
+            qpf_total
+                .support
+                .iter()
+                .any(|target| target.model == Some(ModelId::Nbm))
+        );
         assert!(
             catalog
                 .windowed

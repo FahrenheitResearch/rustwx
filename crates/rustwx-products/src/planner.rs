@@ -42,6 +42,7 @@ pub struct PlannedFamilyAlias {
     pub bundle: CanonicalBundleDescriptor,
     pub native_override: Option<String>,
     pub logical_family: Option<String>,
+    pub variable_patterns: Vec<String>,
 }
 
 impl PlannedFamilyAlias {
@@ -50,11 +51,27 @@ impl PlannedFamilyAlias {
             bundle: requirement.bundle,
             native_override: requirement.native_override.clone(),
             logical_family: None,
+            variable_patterns: Vec::new(),
         }
     }
 
     pub fn with_logical_family<S: Into<String>>(mut self, family: S) -> Self {
         self.logical_family = Some(family.into());
+        self
+    }
+
+    pub fn with_variable_patterns<I, S>(mut self, patterns: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        for pattern in patterns {
+            let pattern = pattern.into();
+            if !self.variable_patterns.contains(&pattern) {
+                self.variable_patterns.push(pattern);
+            }
+        }
+        self.variable_patterns.sort();
         self
     }
 }
@@ -210,6 +227,23 @@ impl ExecutionPlanBuilder {
         requirement: &BundleRequirement,
         logical_family: Option<&str>,
     ) -> CanonicalBundleId {
+        self.require_with_logical_family_and_patterns::<std::iter::Empty<String>, String>(
+            requirement,
+            logical_family,
+            std::iter::empty(),
+        )
+    }
+
+    pub fn require_with_logical_family_and_patterns<I, S>(
+        &mut self,
+        requirement: &BundleRequirement,
+        logical_family: Option<&str>,
+        variable_patterns: I,
+    ) -> CanonicalBundleId
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
         let id = resolve_canonical_bundle_id(
             self.model,
             self.cycle.clone(),
@@ -226,6 +260,7 @@ impl ExecutionPlanBuilder {
         if let Some(family) = logical_family {
             alias = alias.with_logical_family(family);
         }
+        alias = alias.with_variable_patterns(variable_patterns);
         let entry = self
             .bundles
             .entry(id.clone())

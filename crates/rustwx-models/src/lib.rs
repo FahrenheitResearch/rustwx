@@ -15,6 +15,25 @@ pub enum ProductFamily {
     Subhourly,
 }
 
+/// Broad runtime family used by the model-compatibility layer. The
+/// renderer still consumes canonical selectors, but this tells future
+/// model integrations which adapter style to implement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelRuntimeFamily {
+    Grib2Forecast,
+    LocalNetcdfForecast,
+    WrfNetcdfArchive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnsembleMode {
+    Deterministic,
+    MemberGribFiles,
+    MemberDimensionNetcdf,
+}
+
 impl ProductFamily {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -268,6 +287,8 @@ pub struct ModelSummary {
     pub cycle_hours_utc: &'static [u8],
     pub max_forecast_hour: u16,
     pub sources: &'static [SourceDescriptor],
+    pub runtime_family: ModelRuntimeFamily,
+    pub ensemble_mode: EnsembleMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -325,7 +346,21 @@ const HRRR_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 ];
 const GFS_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
+const GDAS_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
+const GEFS_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
+const AI_MODEL_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
 const ECMWF_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
+const AIFS_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
+const AIFS_LOCAL_MAX_FORECAST_HOUR: u16 = 43_824;
+const RAP_CYCLE_HOURS: &[u8] = &[
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+];
+const NAM_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
+const HIRESW_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
+const SREF_CYCLE_HOURS: &[u8] = &[3, 9, 15, 21];
+const HOURLY_ANALYSIS_CYCLE_HOURS: &[u8] = &[
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+];
 const RRFS_A_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 ];
@@ -366,6 +401,31 @@ const HRRR_SOURCES: &[SourceDescriptor] = &[
     },
 ];
 
+const NOMADS_ONLY_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
+    id: SourceId::Nomads,
+    idx_available: true,
+    priority: 1,
+    max_age_hours: Some(72),
+    notes: "Operational NOMADS GRIB2 feed",
+}];
+
+const NOMADS_AWS_SOURCES: &[SourceDescriptor] = &[
+    SourceDescriptor {
+        id: SourceId::Nomads,
+        idx_available: true,
+        priority: 1,
+        max_age_hours: Some(72),
+        notes: "Operational NOMADS GRIB2 feed",
+    },
+    SourceDescriptor {
+        id: SourceId::Aws,
+        idx_available: true,
+        priority: 2,
+        max_age_hours: None,
+        notes: "NOAA public S3 open-data archive",
+    },
+];
+
 const GFS_SOURCES: &[SourceDescriptor] = &[
     SourceDescriptor {
         id: SourceId::Nomads,
@@ -397,6 +457,23 @@ const GFS_SOURCES: &[SourceDescriptor] = &[
     },
 ];
 
+const GEFS_SOURCES: &[SourceDescriptor] = &[
+    SourceDescriptor {
+        id: SourceId::Nomads,
+        idx_available: true,
+        priority: 1,
+        max_age_hours: Some(48),
+        notes: "Operational NOAA GEFS feed",
+    },
+    SourceDescriptor {
+        id: SourceId::Aws,
+        idx_available: true,
+        priority: 2,
+        max_age_hours: None,
+        notes: "NOAA GEFS AWS open-data archive",
+    },
+];
+
 const ECMWF_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
     id: SourceId::Ecmwf,
     // ECMWF open-data doesn't publish `.grib2.idx` companion files, so
@@ -411,6 +488,23 @@ const ECMWF_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
     max_age_hours: None,
     notes: "ECMWF open data",
 }];
+
+const AIFS_SOURCES: &[SourceDescriptor] = &[
+    SourceDescriptor {
+        id: SourceId::Earth2Archive,
+        idx_available: false,
+        priority: 1,
+        max_age_hours: None,
+        notes: "Local NetCDF archive populated by Earth2Studio or another inference harness",
+    },
+    SourceDescriptor {
+        id: SourceId::Ecmwf,
+        idx_available: false,
+        priority: 2,
+        max_age_hours: None,
+        notes: "ECMWF open data AIFS-Single GRIB2 feed",
+    },
+];
 
 const RRFS_A_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
     id: SourceId::Aws,
@@ -436,6 +530,18 @@ const MODELS: &[ModelSummary] = &[
         cycle_hours_utc: HRRR_CYCLE_HOURS,
         max_forecast_hour: 48,
         sources: HRRR_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::Deterministic,
+    },
+    ModelSummary {
+        id: ModelId::HrrrAk,
+        description: "HRRR Alaska rapid-refresh forecast",
+        default_product: "sfc",
+        cycle_hours_utc: HRRR_CYCLE_HOURS,
+        max_forecast_hour: 48,
+        sources: HRRR_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::Deterministic,
     },
     ModelSummary {
         id: ModelId::Gfs,
@@ -444,6 +550,48 @@ const MODELS: &[ModelSummary] = &[
         cycle_hours_utc: GFS_CYCLE_HOURS,
         max_forecast_hour: 384,
         sources: GFS_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::Deterministic,
+    },
+    ModelSummary {
+        id: ModelId::Gdas,
+        description: "GDAS global data-assimilation analysis/forecast grids",
+        default_product: "pgrb2.0p25",
+        cycle_hours_utc: GDAS_CYCLE_HOURS,
+        max_forecast_hour: 9,
+        sources: NOMADS_AWS_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::Deterministic,
+    },
+    ModelSummary {
+        id: ModelId::Gefs,
+        description: "GEFS global 0.5 degree ensemble forecast",
+        default_product: "pgrb2ap5/gec00",
+        cycle_hours_utc: GEFS_CYCLE_HOURS,
+        max_forecast_hour: 384,
+        sources: GEFS_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::MemberGribFiles,
+    },
+    ModelSummary {
+        id: ModelId::Aigfs,
+        description: "NOAA AI-GFS global data-driven forecast",
+        default_product: "sfc",
+        cycle_hours_utc: AI_MODEL_CYCLE_HOURS,
+        max_forecast_hour: 384,
+        sources: NOMADS_ONLY_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::Deterministic,
+    },
+    ModelSummary {
+        id: ModelId::Aigefs,
+        description: "NOAA AI-GEFS ensemble-stat global data-driven forecast",
+        default_product: "sfc/avg",
+        cycle_hours_utc: AI_MODEL_CYCLE_HOURS,
+        max_forecast_hour: 384,
+        sources: NOMADS_ONLY_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::MemberGribFiles,
     },
     ModelSummary {
         id: ModelId::EcmwfOpenData,
@@ -452,6 +600,88 @@ const MODELS: &[ModelSummary] = &[
         cycle_hours_utc: ECMWF_CYCLE_HOURS,
         max_forecast_hour: 360,
         sources: ECMWF_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::Deterministic,
+    },
+    ModelSummary {
+        id: ModelId::Aifs,
+        description: "AIFS-Single / AIFSENS data-driven global forecast",
+        default_product: "oper",
+        cycle_hours_utc: AIFS_CYCLE_HOURS,
+        max_forecast_hour: AIFS_LOCAL_MAX_FORECAST_HOUR,
+        sources: AIFS_SOURCES,
+        runtime_family: ModelRuntimeFamily::LocalNetcdfForecast,
+        ensemble_mode: EnsembleMode::MemberDimensionNetcdf,
+    },
+    ModelSummary {
+        id: ModelId::Rap,
+        description: "RAP hourly North America forecast grids",
+        default_product: "awp130pgrb",
+        cycle_hours_utc: RAP_CYCLE_HOURS,
+        max_forecast_hour: 51,
+        sources: NOMADS_ONLY_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::Deterministic,
+    },
+    ModelSummary {
+        id: ModelId::Nam,
+        description: "NAM CONUS/North America/nest regional forecast grids",
+        default_product: "awip12",
+        cycle_hours_utc: NAM_CYCLE_HOURS,
+        max_forecast_hour: 84,
+        sources: NOMADS_ONLY_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::Deterministic,
+    },
+    ModelSummary {
+        id: ModelId::Hiresw,
+        description: "HIRESW high-resolution regional ARW/FV3 forecast grids",
+        default_product: "arw_2p5km/conus",
+        cycle_hours_utc: HIRESW_CYCLE_HOURS,
+        max_forecast_hour: 48,
+        sources: NOMADS_ONLY_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::MemberGribFiles,
+    },
+    ModelSummary {
+        id: ModelId::Sref,
+        description: "SREF regional ensemble member/statistic forecast grids",
+        default_product: "ensprod/pgrb212/mean_3hrly",
+        cycle_hours_utc: SREF_CYCLE_HOURS,
+        max_forecast_hour: 87,
+        sources: NOMADS_ONLY_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::MemberGribFiles,
+    },
+    ModelSummary {
+        id: ModelId::Rtma,
+        description: "RTMA 2.5 km hourly surface analysis",
+        default_product: "2dvaranl_ndfd",
+        cycle_hours_utc: HOURLY_ANALYSIS_CYCLE_HOURS,
+        max_forecast_hour: 0,
+        sources: NOMADS_ONLY_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::Deterministic,
+    },
+    ModelSummary {
+        id: ModelId::Urma,
+        description: "URMA 2.5 km hourly surface analysis",
+        default_product: "2dvaranl_ndfd",
+        cycle_hours_utc: HOURLY_ANALYSIS_CYCLE_HOURS,
+        max_forecast_hour: 0,
+        sources: NOMADS_ONLY_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::Deterministic,
+    },
+    ModelSummary {
+        id: ModelId::Nbm,
+        description: "National Blend of Models gridded core forecast",
+        default_product: "core/co",
+        cycle_hours_utc: HOURLY_ANALYSIS_CYCLE_HOURS,
+        max_forecast_hour: 264,
+        sources: NOMADS_AWS_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::Deterministic,
     },
     ModelSummary {
         id: ModelId::RrfsA,
@@ -460,6 +690,8 @@ const MODELS: &[ModelSummary] = &[
         cycle_hours_utc: RRFS_A_CYCLE_HOURS,
         max_forecast_hour: 60,
         sources: RRFS_A_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::Deterministic,
     },
     ModelSummary {
         id: ModelId::WrfGdex,
@@ -468,6 +700,8 @@ const MODELS: &[ModelSummary] = &[
         cycle_hours_utc: WRF_GDEX_CYCLE_HOURS,
         max_forecast_hour: 0,
         sources: WRF_GDEX_SOURCES,
+        runtime_family: ModelRuntimeFamily::WrfNetcdfArchive,
+        ensemble_mode: EnsembleMode::Deterministic,
     },
 ];
 
@@ -1812,6 +2046,15 @@ pub fn plot_recipe_fetch_blockers(
 }
 
 pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> bool {
+    if matches!(
+        (model, selector.vertical),
+        (
+            ModelId::Rtma | ModelId::Urma | ModelId::Nbm,
+            VerticalSelector::IsobaricHpa(_)
+        )
+    ) {
+        return false;
+    }
     match (selector.field, selector.vertical) {
         (
             CanonicalField::GeopotentialHeight
@@ -1840,10 +2083,13 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
         (
             CanonicalField::Pressure | CanonicalField::SmokeMassDensity,
             VerticalSelector::HybridLevel(level),
-        ) => matches!(model, ModelId::Hrrr) && is_supported_hrrr_smoke_hybrid_level(level),
+        ) => {
+            matches!(model, ModelId::Hrrr | ModelId::HrrrAk)
+                && is_supported_hrrr_smoke_hybrid_level(level)
+        }
         (CanonicalField::WindGust, VerticalSelector::HeightAboveGroundMeters(10)) => true,
         (CanonicalField::SmokeMassDensity, VerticalSelector::HeightAboveGroundMeters(8)) => {
-            matches!(model, ModelId::Hrrr)
+            matches!(model, ModelId::Hrrr | ModelId::HrrrAk)
         }
         (CanonicalField::PressureReducedToMeanSeaLevel, VerticalSelector::MeanSeaLevel) => true,
         (
@@ -1857,7 +2103,7 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
             VerticalSelector::EntireAtmosphere,
         ) => true,
         (CanonicalField::ColumnIntegratedSmoke, VerticalSelector::EntireAtmosphere) => {
-            matches!(model, ModelId::Hrrr)
+            matches!(model, ModelId::Hrrr | ModelId::HrrrAk)
         }
         (CanonicalField::TotalPrecipitation, VerticalSelector::Surface) => true,
         (CanonicalField::Visibility, VerticalSelector::Surface) => true,
@@ -1867,15 +2113,24 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
             | CanonicalField::CategoricalIcePellets
             | CanonicalField::CategoricalSnow,
             VerticalSelector::Surface,
-        ) => matches!(model, ModelId::Hrrr | ModelId::Gfs | ModelId::RrfsA),
+        ) => matches!(
+            model,
+            ModelId::Hrrr | ModelId::HrrrAk | ModelId::Gfs | ModelId::Gdas | ModelId::RrfsA
+        ),
         (CanonicalField::LandSeaMask, VerticalSelector::Surface) => {
             matches!(model, ModelId::EcmwfOpenData)
         }
         (CanonicalField::RadarReflectivity, VerticalSelector::HeightAboveGroundMeters(1000)) => {
-            matches!(model, ModelId::Hrrr | ModelId::RrfsA | ModelId::WrfGdex)
+            matches!(
+                model,
+                ModelId::Hrrr | ModelId::HrrrAk | ModelId::RrfsA | ModelId::WrfGdex
+            )
         }
         (CanonicalField::CompositeReflectivity, VerticalSelector::EntireAtmosphere) => {
-            matches!(model, ModelId::Hrrr | ModelId::RrfsA | ModelId::WrfGdex)
+            matches!(
+                model,
+                ModelId::Hrrr | ModelId::HrrrAk | ModelId::RrfsA | ModelId::WrfGdex
+            )
         }
         (
             CanonicalField::UpdraftHelicity,
@@ -1883,9 +2138,12 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
                 bottom_m: 2000,
                 top_m: 5000,
             },
-        ) => matches!(model, ModelId::Hrrr | ModelId::RrfsA | ModelId::WrfGdex),
+        ) => matches!(
+            model,
+            ModelId::Hrrr | ModelId::HrrrAk | ModelId::RrfsA | ModelId::WrfGdex
+        ),
         (CanonicalField::SimulatedInfraredBrightnessTemperature, VerticalSelector::NominalTop) => {
-            matches!(model, ModelId::Hrrr)
+            matches!(model, ModelId::Hrrr | ModelId::HrrrAk)
         }
         _ => false,
     }
@@ -1900,7 +2158,7 @@ pub fn model_summary(model: ModelId) -> &'static ModelSummary {
 
 pub fn supported_forecast_hours(model: ModelId, cycle_hour_utc: u8) -> Vec<u16> {
     match model {
-        ModelId::Hrrr => {
+        ModelId::Hrrr | ModelId::HrrrAk => {
             if cycle_hour_utc % 6 == 0 {
                 (0..=48).collect()
             } else {
@@ -1912,6 +2170,9 @@ pub fn supported_forecast_hours(model: ModelId, cycle_hour_utc: u8) -> Vec<u16> 
             hours.extend((123..=384).step_by(3));
             hours
         }
+        ModelId::Gdas => (0..=9).collect(),
+        ModelId::Gefs => (0..=384).step_by(3).collect(),
+        ModelId::Aigfs | ModelId::Aigefs => (0..=384).step_by(6).collect(),
         // ECMWF Open Data currently publishes four daily IFS runs. The 00/12z
         // deterministic/ensemble open-data stream carries 3-hourly steps to
         // 144h and then 6-hourly steps to 360h; 06/18z carries 3-hourly steps
@@ -1925,6 +2186,20 @@ pub fn supported_forecast_hours(model: ModelId, cycle_hour_utc: u8) -> Vec<u16> 
             6 | 18 => (0..=144).step_by(3).collect(),
             _ => Vec::new(),
         },
+        ModelId::Aifs => match cycle_hour_utc {
+            0 | 6 | 12 | 18 => (0..=AIFS_LOCAL_MAX_FORECAST_HOUR).step_by(6).collect(),
+            _ => Vec::new(),
+        },
+        ModelId::Rap => (0..=51).collect(),
+        ModelId::Nam => {
+            let mut hours = (0..=36).collect::<Vec<u16>>();
+            hours.extend((39..=84).step_by(3));
+            hours
+        }
+        ModelId::Hiresw => (0..=48).collect(),
+        ModelId::Sref => (0..=87).step_by(3).collect(),
+        ModelId::Rtma | ModelId::Urma => vec![0],
+        ModelId::Nbm => (1..=264).collect(),
         ModelId::RrfsA => (0..=60).collect(),
         ModelId::WrfGdex => (0..=23).collect(),
     }
@@ -1963,8 +2238,27 @@ fn default_canonical_bundle_product(
         // the surface family already covers the requested fields, but the
         // canonical native bundle still maps to `nat` here.
         (ModelId::Hrrr, CanonicalBundleDescriptor::NativeAnalysis) => "nat",
+        (ModelId::HrrrAk, CanonicalBundleDescriptor::SurfaceAnalysis) => "sfc",
+        (ModelId::HrrrAk, CanonicalBundleDescriptor::PressureAnalysis) => "prs",
+        (ModelId::HrrrAk, CanonicalBundleDescriptor::NativeAnalysis) => "nat",
         (ModelId::Gfs, _) => "pgrb2.0p25",
+        (ModelId::Gdas, _) => "pgrb2.0p25",
+        (ModelId::Gefs, _) => "pgrb2ap5/gec00",
+        (ModelId::Aigfs, CanonicalBundleDescriptor::SurfaceAnalysis) => "sfc",
+        (ModelId::Aigfs, CanonicalBundleDescriptor::PressureAnalysis) => "pres",
+        (ModelId::Aigfs, CanonicalBundleDescriptor::NativeAnalysis) => "sfc",
+        (ModelId::Aigefs, CanonicalBundleDescriptor::SurfaceAnalysis) => "sfc/avg",
+        (ModelId::Aigefs, CanonicalBundleDescriptor::PressureAnalysis) => "pres/avg",
+        (ModelId::Aigefs, CanonicalBundleDescriptor::NativeAnalysis) => "sfc/avg",
         (ModelId::EcmwfOpenData, _) => "oper",
+        (ModelId::Aifs, _) => "oper",
+        (ModelId::Rap, _) => "awp130pgrb",
+        (ModelId::Nam, _) => "awip12",
+        (ModelId::Hiresw, _) => "arw_2p5km/conus",
+        (ModelId::Sref, _) => "ensprod/pgrb212/mean_3hrly",
+        (ModelId::Rtma, _) => "2dvaranl_ndfd",
+        (ModelId::Urma, _) => "2dvaranl_ndfd",
+        (ModelId::Nbm, _) => "core/co",
         // RRFS-A keeps the faster CONUS direct lane on `prs-conus`, but the
         // shared thermo/severe kernels need the NA-domain pair that actually
         // carries both the surface bundle and matching pressure grid.
@@ -2009,23 +2303,37 @@ pub fn resolve_canonical_bundle_id(
 }
 
 pub fn resolve_urls(request: &ModelRunRequest) -> Result<Vec<ResolvedUrl>, ModelError> {
-    let mut urls = model_summary(request.model)
-        .sources
-        .iter()
-        .map(|source| {
-            let grib_url = build_grib_url(source.id, request)?;
-            let idx_url = if source.idx_available {
-                Some(format!("{grib_url}.idx"))
-            } else {
-                None
-            };
-            Ok(ResolvedUrl {
-                source: source.id,
-                grib_url,
-                idx_url,
-            })
-        })
-        .collect::<Result<Vec<_>, ModelError>>()?;
+    let mut urls = Vec::new();
+    let mut errors = Vec::new();
+    for source in model_summary(request.model).sources {
+        match build_grib_url(source.id, request) {
+            Ok(grib_url) => {
+                if grib_url.starts_with("unsupported://") {
+                    continue;
+                }
+                let idx_url = if source.idx_available {
+                    Some(format!("{grib_url}.idx"))
+                } else {
+                    None
+                };
+                urls.push(ResolvedUrl {
+                    source: source.id,
+                    grib_url,
+                    idx_url,
+                });
+            }
+            Err(err) => errors.push(err),
+        }
+    }
+    if urls.is_empty() {
+        if let Some(err) = errors.into_iter().next() {
+            return Err(err);
+        }
+        return Err(ModelError::UnsupportedProduct {
+            model: request.model,
+            product: request.product.clone(),
+        });
+    }
     urls.sort_by_key(|entry| {
         model_summary(request.model)
             .sources
@@ -2340,8 +2648,21 @@ fn range_probe_ok(agent: &ureq::Agent, url: &str) -> bool {
 fn build_grib_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
     Ok(match request.model {
         ModelId::Hrrr => build_hrrr_url(source, request),
-        ModelId::Gfs => build_gfs_url(source, request),
+        ModelId::HrrrAk => build_hrrr_ak_url(source, request),
+        ModelId::Gfs => build_gfs_url(source, request)?,
+        ModelId::Gdas => build_gdas_url(source, request)?,
+        ModelId::Gefs => build_gefs_url(source, request)?,
+        ModelId::Aigfs => build_aigfs_url(source, request)?,
+        ModelId::Aigefs => build_aigefs_url(source, request)?,
         ModelId::EcmwfOpenData => build_ecmwf_url(source, request)?,
+        ModelId::Aifs => build_aifs_url(source, request)?,
+        ModelId::Rap => build_rap_url(source, request)?,
+        ModelId::Nam => build_nam_url(source, request)?,
+        ModelId::Hiresw => build_hiresw_url(source, request)?,
+        ModelId::Sref => build_sref_url(source, request)?,
+        ModelId::Rtma => build_rtma_url(source, request)?,
+        ModelId::Urma => build_urma_url(source, request)?,
+        ModelId::Nbm => build_nbm_url(source, request)?,
         ModelId::RrfsA => build_rrfs_a_url(source, request)?,
         ModelId::WrfGdex => build_wrf_gdex_url(source, request)?,
     })
@@ -2511,28 +2832,99 @@ fn build_hrrr_url(source: SourceId, request: &ModelRunRequest) -> String {
     }
 }
 
-fn build_gfs_url(source: SourceId, request: &ModelRunRequest) -> String {
+fn build_hrrr_ak_url(source: SourceId, request: &ModelRunRequest) -> String {
+    let product_code = match normalize_token(&request.product).as_str() {
+        "sfc" | "surface" => "wrfsfc",
+        "prs" | "pressure" => "wrfprs",
+        "nat" | "native" => "wrfnat",
+        "subh" | "subhourly" => "wrfsubh",
+        _ => "wrfsfc",
+    };
+
     match source {
         SourceId::Aws => format!(
-            "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.{}/{:02}/atmos/gfs.t{:02}z.pgrb2.0p25.f{:03}",
+            "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.{}/alaska/hrrr.t{:02}z.{}f{:02}.ak.grib2",
             request.cycle.date_yyyymmdd,
             request.cycle.hour_utc,
-            request.cycle.hour_utc,
+            product_code,
             request.forecast_hour
         ),
         SourceId::Nomads => format!(
-            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gfs.{}/{:02}/atmos/gfs.t{:02}z.pgrb2.0p25.f{:03}",
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/hrrr.{}/alaska/hrrr.t{:02}z.{}f{:02}.ak.grib2",
             request.cycle.date_yyyymmdd,
             request.cycle.hour_utc,
-            request.cycle.hour_utc,
+            product_code,
             request.forecast_hour
         ),
         SourceId::Google => format!(
-            "https://storage.googleapis.com/global-forecast-system/gfs.{}/{:02}/atmos/gfs.t{:02}z.pgrb2.0p25.f{:03}",
+            "https://storage.googleapis.com/high-resolution-rapid-refresh/hrrr.{}/alaska/hrrr.t{:02}z.{}f{:02}.ak.grib2",
             request.cycle.date_yyyymmdd,
             request.cycle.hour_utc,
-            request.cycle.hour_utc,
+            product_code,
             request.forecast_hour
+        ),
+        SourceId::Azure => format!(
+            "https://noaahrrr.blob.core.windows.net/hrrr/hrrr.{}/alaska/hrrr.t{:02}z.{}f{:02}.ak.grib2",
+            request.cycle.date_yyyymmdd,
+            request.cycle.hour_utc,
+            product_code,
+            request.forecast_hour
+        ),
+        other => unsupported_source(other, request.model),
+    }
+}
+
+fn gfs_product_filename_part(product: &str) -> Result<GfsProductPart, ModelError> {
+    let token = normalize_token(product);
+    let part = match token.as_str() {
+        "pgrb2_0p25" | "pgrb2_0_25" | "0p25" | "0_25" | "hourly" | "pgrb2" => {
+            GfsProductPart::Forecast("pgrb2.0p25")
+        }
+        "pgrb2_0p50" | "pgrb2_0_50" | "0p50" | "0_50" => GfsProductPart::Forecast("pgrb2.0p50"),
+        "pgrb2_1p00" | "pgrb2_1_00" | "1p00" | "1_00" => GfsProductPart::Forecast("pgrb2.1p00"),
+        "pgrb2b_0p25" | "pgrb2b_0_25" | "secondary" | "secondary_params" => {
+            GfsProductPart::Forecast("pgrb2b.0p25")
+        }
+        "sflux" | "sfluxgrb" | "sfluxgrbf" => GfsProductPart::Sflux,
+        other => {
+            return Err(ModelError::UnsupportedProduct {
+                model: ModelId::Gfs,
+                product: other.to_string(),
+            });
+        }
+    };
+    Ok(part)
+}
+
+enum GfsProductPart {
+    Forecast(&'static str),
+    Sflux,
+}
+
+fn build_gfs_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    let filename = match gfs_product_filename_part(&request.product) {
+        Ok(GfsProductPart::Forecast(part)) => format!(
+            "gfs.t{:02}z.{}.f{:03}",
+            request.cycle.hour_utc, part, request.forecast_hour
+        ),
+        Ok(GfsProductPart::Sflux) => format!(
+            "gfs.t{:02}z.sfluxgrbf{:03}.grib2",
+            request.cycle.hour_utc, request.forecast_hour
+        ),
+        Err(err) => return Err(err),
+    };
+    Ok(match source {
+        SourceId::Aws => format!(
+            "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.{}/{:02}/atmos/{}",
+            request.cycle.date_yyyymmdd, request.cycle.hour_utc, filename
+        ),
+        SourceId::Nomads => format!(
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gfs.{}/{:02}/atmos/{}",
+            request.cycle.date_yyyymmdd, request.cycle.hour_utc, filename
+        ),
+        SourceId::Google => format!(
+            "https://storage.googleapis.com/global-forecast-system/gfs.{}/{:02}/atmos/{}",
+            request.cycle.date_yyyymmdd, request.cycle.hour_utc, filename
         ),
         SourceId::Ncei => {
             let year = &request.cycle.date_yyyymmdd[..4];
@@ -2553,7 +2945,125 @@ fn build_gfs_url(source: SourceId, request: &ModelRunRequest) -> String {
             )
         }
         other => unsupported_source(other, request.model),
+    })
+}
+
+fn build_gdas_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    if !forecast_hour_supported(request.model, request.cycle.hour_utc, request.forecast_hour) {
+        return Err(ModelError::UnsupportedForecastHour {
+            model: request.model,
+            cycle_hour: request.cycle.hour_utc,
+            forecast_hour: request.forecast_hour,
+            reason: "GDAS pgrb2 fields are wired for f000 through f009 in this v0.5 path"
+                .to_string(),
+        });
     }
+    let product = match normalize_token(&request.product).as_str() {
+        "pgrb2_0p25" | "pgrb2_0_25" | "0p25" | "0_25" | "pgrb2" => "pgrb2.0p25",
+        "pgrb2_1p00" | "pgrb2_1_00" | "1p00" | "1_00" => "pgrb2.1p00",
+        other => {
+            return Err(ModelError::UnsupportedProduct {
+                model: request.model,
+                product: other.to_string(),
+            });
+        }
+    };
+    Ok(match source {
+        SourceId::Aws => format!(
+            "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gdas.{}/{:02}/atmos/gdas.t{:02}z.{}.f{:03}",
+            request.cycle.date_yyyymmdd,
+            request.cycle.hour_utc,
+            request.cycle.hour_utc,
+            product,
+            request.forecast_hour
+        ),
+        SourceId::Nomads => format!(
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gdas.{}/{:02}/atmos/gdas.t{:02}z.{}.f{:03}",
+            request.cycle.date_yyyymmdd,
+            request.cycle.hour_utc,
+            request.cycle.hour_utc,
+            product,
+            request.forecast_hour
+        ),
+        other => unsupported_source(other, request.model),
+    })
+}
+
+fn build_gefs_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    if !forecast_hour_supported(request.model, request.cycle.hour_utc, request.forecast_hour) {
+        return Err(ModelError::UnsupportedForecastHour {
+            model: request.model,
+            cycle_hour: request.cycle.hour_utc,
+            forecast_hour: request.forecast_hour,
+            reason: "GEFS pgrb2ap5 fields are expected every 3 hours through f384".to_string(),
+        });
+    }
+    let product = gefs_product_from_product(&request.product)?;
+    Ok(match source {
+        SourceId::Aws => format!(
+            "https://noaa-gefs-pds.s3.amazonaws.com/gefs.{}/{:02}/atmos/{}/{}.t{:02}z.{}.f{:03}",
+            request.cycle.date_yyyymmdd,
+            request.cycle.hour_utc,
+            product.directory,
+            product.member_or_stat,
+            request.cycle.hour_utc,
+            product.file_product,
+            request.forecast_hour
+        ),
+        SourceId::Nomads => format!(
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gens/prod/gefs.{}/{:02}/atmos/{}/{}.t{:02}z.{}.f{:03}",
+            request.cycle.date_yyyymmdd,
+            request.cycle.hour_utc,
+            product.directory,
+            product.member_or_stat,
+            request.cycle.hour_utc,
+            product.file_product,
+            request.forecast_hour
+        ),
+        other => unsupported_source(other, request.model),
+    })
+}
+
+struct GefsProduct {
+    directory: &'static str,
+    file_product: &'static str,
+    member_or_stat: String,
+}
+
+fn gefs_product_from_product(product: &str) -> Result<GefsProduct, ModelError> {
+    let token = normalize_token(product);
+    let (directory, file_product) =
+        if token.contains("pgrb2bp5") || token.contains("pgrb2b") || token.contains("secondary") {
+            ("pgrb2bp5", "pgrb2b.0p50")
+        } else if token.contains("pgrb2sp25")
+            || token.contains("pgrb2s")
+            || token.contains("0p25")
+            || token.contains("0_25")
+        {
+            ("pgrb2sp25", "pgrb2s.0p25")
+        } else {
+            ("pgrb2ap5", "pgrb2a.0p50")
+        };
+    let candidate = token
+        .split(['_', '/'])
+        .find(|part| {
+            *part == "gec00"
+                || *part == "geavg"
+                || *part == "gespr"
+                || (part.len() == 5
+                    && part.starts_with("gep")
+                    && part[3..].chars().all(|ch| ch.is_ascii_digit()))
+        })
+        .unwrap_or(if directory == "pgrb2sp25" {
+            "geavg"
+        } else {
+            "gec00"
+        });
+    Ok(GefsProduct {
+        directory,
+        file_product,
+        member_or_stat: candidate.to_string(),
+    })
 }
 
 fn build_ecmwf_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
@@ -2595,6 +3105,366 @@ fn build_ecmwf_url(source: SourceId, request: &ModelRunRequest) -> Result<String
         request.forecast_hour,
         stream
     ))
+}
+
+fn ecmwf_open_data_forecast_hour_supported(cycle_hour_utc: u8, forecast_hour: u16) -> bool {
+    match cycle_hour_utc {
+        0 | 12 => {
+            (forecast_hour <= 144 && forecast_hour % 3 == 0)
+                || (forecast_hour > 144 && forecast_hour <= 360 && forecast_hour % 6 == 0)
+        }
+        6 | 18 => forecast_hour <= 144 && forecast_hour % 3 == 0,
+        _ => false,
+    }
+}
+
+fn build_aifs_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    match source {
+        SourceId::Earth2Archive => Ok(format!(
+            "earth2-archive://aifs/{}T{:02}Z/lead{:03}.nc",
+            request.cycle.date_yyyymmdd, request.cycle.hour_utc, request.forecast_hour
+        )),
+        SourceId::Ecmwf => {
+            if !ecmwf_open_data_forecast_hour_supported(
+                request.cycle.hour_utc,
+                request.forecast_hour,
+            ) {
+                return Err(ModelError::UnsupportedForecastHour {
+                    model: request.model,
+                    cycle_hour: request.cycle.hour_utc,
+                    forecast_hour: request.forecast_hour,
+                    reason: "AIFS-Single open data follows the ECMWF open-data step cadence; use Earth2Archive for experimental multi-year AIFS runs".to_string(),
+                });
+            }
+            let stream = match normalize_token(&request.product).as_str() {
+                "oper" | "hres" | "aifs" | "aifs_single" => "oper",
+                other => {
+                    return Err(ModelError::UnsupportedProduct {
+                        model: request.model,
+                        product: other.to_string(),
+                    });
+                }
+            };
+            Ok(format!(
+                "https://data.ecmwf.int/forecasts/{}/{:02}z/aifs-single/0p25/{}/{}{:02}0000-{}h-{}-fc.grib2",
+                request.cycle.date_yyyymmdd,
+                request.cycle.hour_utc,
+                stream,
+                request.cycle.date_yyyymmdd,
+                request.cycle.hour_utc,
+                request.forecast_hour,
+                stream
+            ))
+        }
+        other => Ok(unsupported_source(other, request.model)),
+    }
+}
+
+fn build_aigfs_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    if source != SourceId::Nomads {
+        return Ok(unsupported_source(source, request.model));
+    }
+    let family = match normalize_token(&request.product).as_str() {
+        "sfc" | "surface" => "sfc",
+        "pres" | "pressure" | "pgrb" | "pgrb2" => "pres",
+        other => {
+            return Err(ModelError::UnsupportedProduct {
+                model: request.model,
+                product: other.to_string(),
+            });
+        }
+    };
+    Ok(format!(
+        "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigfs/prod/aigfs.{}/{:02}/model/atmos/grib2/aigfs.t{:02}z.{}.f{:03}.grib2",
+        request.cycle.date_yyyymmdd,
+        request.cycle.hour_utc,
+        request.cycle.hour_utc,
+        family,
+        request.forecast_hour
+    ))
+}
+
+fn build_aigefs_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    if source != SourceId::Nomads {
+        return Ok(unsupported_source(source, request.model));
+    }
+    let token = normalize_token(&request.product);
+    let family = if token.contains("pres") || token.contains("pressure") {
+        "pres"
+    } else {
+        "sfc"
+    };
+    let stat = token
+        .split(['_', '/'])
+        .find(|part| matches!(*part, "avg" | "spr" | "p10" | "p50" | "p90"))
+        .unwrap_or("avg");
+    Ok(format!(
+        "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigefs/prod/aigefs.{}/{:02}/ensstat/products/atmos/grib2/aigefs.t{:02}z.{}.{}.f{:03}.grib2",
+        request.cycle.date_yyyymmdd,
+        request.cycle.hour_utc,
+        request.cycle.hour_utc,
+        family,
+        stat,
+        request.forecast_hour
+    ))
+}
+
+fn build_rap_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    if source != SourceId::Nomads {
+        return Ok(unsupported_source(source, request.model));
+    }
+    let prefix = match normalize_token(&request.product).as_str() {
+        "awp130pgrb" | "pgrb" | "prs" | "pressure" | "conus" => "awp130pgrb",
+        "awp130bgrb" | "bgrb" | "secondary" => "awp130bgrb",
+        "awip32" | "na32" | "north_america_32km" => "awip32",
+        "wrfprs" | "wrf_prs" => "wrfprs",
+        "wrfsfc" | "sfc" | "surface" => "wrfsfc",
+        "wrfnat" | "nat" | "native" => "wrfnat",
+        other => {
+            return Err(ModelError::UnsupportedProduct {
+                model: request.model,
+                product: other.to_string(),
+            });
+        }
+    };
+    Ok(format!(
+        "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rap/prod/rap.{}/rap.t{:02}z.{}f{:02}.grib2",
+        request.cycle.date_yyyymmdd, request.cycle.hour_utc, prefix, request.forecast_hour
+    ))
+}
+
+fn build_nam_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    if source != SourceId::Nomads {
+        return Ok(unsupported_source(source, request.model));
+    }
+    let filename = match normalize_token(&request.product).as_str() {
+        "awip12" | "conus" | "conus12" | "conus_12km" => format!(
+            "nam.t{:02}z.awip12{:02}.tm00.grib2",
+            request.cycle.hour_utc, request.forecast_hour
+        ),
+        "awip32" | "na32" | "north_america" | "north_america_32km" => format!(
+            "nam.t{:02}z.awip32{:02}.tm00.grib2",
+            request.cycle.hour_utc, request.forecast_hour
+        ),
+        "awip3d" | "3d" | "pressure" | "prs" => format!(
+            "nam.t{:02}z.awip3d{:02}.tm00.grib2",
+            request.cycle.hour_utc, request.forecast_hour
+        ),
+        "conusnest" | "nest_conus" | "namnest_conus" => format!(
+            "nam.t{:02}z.conusnest.hiresf{:02}.tm00.grib2",
+            request.cycle.hour_utc, request.forecast_hour
+        ),
+        "alaskanest" | "nest_alaska" | "aknest" => format!(
+            "nam.t{:02}z.alaskanest.hiresf{:02}.tm00.grib2",
+            request.cycle.hour_utc, request.forecast_hour
+        ),
+        "hawaiinest" | "nest_hawaii" | "hinest" => format!(
+            "nam.t{:02}z.hawaiinest.hiresf{:02}.tm00.grib2",
+            request.cycle.hour_utc, request.forecast_hour
+        ),
+        "priconest" | "nest_pr" | "prnest" => format!(
+            "nam.t{:02}z.priconest.hiresf{:02}.tm00.grib2",
+            request.cycle.hour_utc, request.forecast_hour
+        ),
+        other => {
+            return Err(ModelError::UnsupportedProduct {
+                model: request.model,
+                product: other.to_string(),
+            });
+        }
+    };
+    Ok(format!(
+        "https://nomads.ncep.noaa.gov/pub/data/nccf/com/nam/prod/nam.{}/{}",
+        request.cycle.date_yyyymmdd, filename
+    ))
+}
+
+fn build_hiresw_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    if source != SourceId::Nomads {
+        return Ok(unsupported_source(source, request.model));
+    }
+    let token = normalize_token(&request.product);
+    let core = token
+        .split('/')
+        .next()
+        .unwrap_or("arw_2p5km")
+        .replace("__", "_");
+    let core = match core.as_str() {
+        "arw" | "arw_2p5km" | "arw_2_5km" => "arw_2p5km",
+        "fv3" | "fv3_2p5km" | "fv3_2_5km" => "fv3_2p5km",
+        "arw_mem2" | "mem2arw" | "arwmem2" => "arw_mem2_2p5km",
+        other => other,
+    };
+    let domain = token
+        .split(['_', '/'])
+        .find(|part| {
+            matches!(
+                *part,
+                "conus" | "ak" | "alaska" | "hi" | "hawaii" | "guam" | "pr"
+            )
+        })
+        .unwrap_or("conus");
+    let domain = match domain {
+        "alaska" => "ak",
+        "hawaii" => "hi",
+        other => other,
+    };
+    Ok(format!(
+        "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hiresw/prod/hiresw.{}/hiresw.t{:02}z.{}.f{:02}.{}.grib2",
+        request.cycle.date_yyyymmdd, request.cycle.hour_utc, core, request.forecast_hour, domain
+    ))
+}
+
+fn build_sref_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    if source != SourceId::Nomads {
+        return Ok(unsupported_source(source, request.model));
+    }
+    let token = normalize_token(&request.product);
+    if token.starts_with("ensprod") || token.contains("mean") || token.contains("spread") {
+        let grid = token
+            .split(['_', '/'])
+            .find(|part| part.starts_with("pgrb"))
+            .unwrap_or("pgrb212");
+        let stat = token
+            .split(['_', '/'])
+            .find(|part| {
+                matches!(
+                    *part,
+                    "mean"
+                        | "max"
+                        | "min"
+                        | "p10"
+                        | "p25"
+                        | "p50"
+                        | "p75"
+                        | "p90"
+                        | "spread"
+                        | "prob"
+                )
+            })
+            .unwrap_or("mean");
+        let cadence = if token.contains("1hrly") {
+            "1hrly"
+        } else {
+            "3hrly"
+        };
+        return Ok(format!(
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/sref/prod/sref.{}/{:02}/ensprod/sref.t{:02}z.{}.{}_{}.grib2",
+            request.cycle.date_yyyymmdd,
+            request.cycle.hour_utc,
+            request.cycle.hour_utc,
+            grid,
+            stat,
+            cadence
+        ));
+    }
+    let member_family = token
+        .split(['_', '/'])
+        .find(|part| matches!(*part, "arw" | "nmb"))
+        .unwrap_or("arw");
+    let member = token
+        .split(['_', '/'])
+        .find(|part| *part == "ctl" || part.starts_with('p') || part.starts_with('n'))
+        .unwrap_or("ctl");
+    let grid = token
+        .split(['_', '/'])
+        .find(|part| part.starts_with("pgrb"))
+        .unwrap_or("pgrb132");
+    Ok(format!(
+        "https://nomads.ncep.noaa.gov/pub/data/nccf/com/sref/prod/sref.{}/{:02}/pgrb/sref_{}.t{:02}z.{}.{}.f{:02}.grib2",
+        request.cycle.date_yyyymmdd,
+        request.cycle.hour_utc,
+        member_family,
+        request.cycle.hour_utc,
+        grid,
+        member,
+        request.forecast_hour
+    ))
+}
+
+fn build_rtma_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    if source != SourceId::Nomads {
+        return Ok(unsupported_source(source, request.model));
+    }
+    let product = match normalize_token(&request.product).as_str() {
+        "2dvaranl_ndfd" | "anl" | "analysis" => "2dvaranl_ndfd",
+        "2dvarges_ndfd" | "ges" | "guess" => "2dvarges_ndfd",
+        "2dvarerr_ndfd" | "err" | "error" => "2dvarerr_ndfd",
+        other => {
+            return Err(ModelError::UnsupportedProduct {
+                model: request.model,
+                product: other.to_string(),
+            });
+        }
+    };
+    Ok(format!(
+        "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rtma/prod/rtma2p5.{}/rtma2p5.t{:02}z.{}.grb2_wexp",
+        request.cycle.date_yyyymmdd, request.cycle.hour_utc, product
+    ))
+}
+
+fn build_urma_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    if source != SourceId::Nomads {
+        return Ok(unsupported_source(source, request.model));
+    }
+    let product = match normalize_token(&request.product).as_str() {
+        "2dvaranl_ndfd" | "anl" | "analysis" => "2dvaranl_ndfd",
+        "2dvarges_ndfd" | "ges" | "guess" => "2dvarges_ndfd",
+        "2dvarerr_ndfd" | "err" | "error" => "2dvarerr_ndfd",
+        other => {
+            return Err(ModelError::UnsupportedProduct {
+                model: request.model,
+                product: other.to_string(),
+            });
+        }
+    };
+    Ok(format!(
+        "https://nomads.ncep.noaa.gov/pub/data/nccf/com/urma/prod/urma2p5.{}/urma2p5.t{:02}z.{}.grb2_wexp",
+        request.cycle.date_yyyymmdd, request.cycle.hour_utc, product
+    ))
+}
+
+fn build_nbm_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    let token = normalize_token(&request.product);
+    let stream = token
+        .split(['_', '/'])
+        .find(|part| {
+            matches!(
+                *part,
+                "core" | "qmd" | "ak" | "co" | "hi" | "pr" | "gu" | "oc" | "global"
+            )
+        })
+        .unwrap_or("core");
+    let domain = token
+        .split(['_', '/'])
+        .find(|part| {
+            matches!(
+                *part,
+                "ak" | "co" | "conus" | "hi" | "hawaii" | "pr" | "gu" | "guam" | "oc" | "global"
+            )
+        })
+        .unwrap_or("co");
+    let domain = match domain {
+        "conus" => "co",
+        "hawaii" => "hi",
+        "guam" => "gu",
+        other => other,
+    };
+    let filename = format!(
+        "blend.t{:02}z.{}.f{:03}.{}.grib2",
+        request.cycle.hour_utc, stream, request.forecast_hour, domain
+    );
+    Ok(match source {
+        SourceId::Aws => format!(
+            "https://noaa-nbm-grib2-pds.s3.amazonaws.com/blend.{}/{:02}/{}/{}",
+            request.cycle.date_yyyymmdd, request.cycle.hour_utc, stream, filename
+        ),
+        SourceId::Nomads => format!(
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/blend/prod/blend.{}/{:02}/{}/{}",
+            request.cycle.date_yyyymmdd, request.cycle.hour_utc, stream, filename
+        ),
+        other => unsupported_source(other, request.model),
+    })
 }
 
 fn build_rrfs_a_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
@@ -2774,12 +3644,35 @@ fn plot_recipe_fetch_defaults(
         .iter()
         .any(|field| field.family == ProductFamily::Surface);
     match (model, has_native, has_surface) {
-        (ModelId::Hrrr, true, _) => ("nat", PlotRecipeFetchPolicy::WholeFile),
-        (ModelId::Hrrr, false, true) => ("sfc", PlotRecipeFetchPolicy::WholeFile),
-        (ModelId::Hrrr, false, false) => ("prs", PlotRecipeFetchPolicy::WholeFile),
-        (ModelId::Gfs, _, _) => ("pgrb2.0p25", PlotRecipeFetchPolicy::WholeFile),
-        (ModelId::RrfsA, _, _) => ("prs-conus", PlotRecipeFetchPolicy::WholeFile),
+        (ModelId::Hrrr, true, _) => ("nat", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Hrrr, false, true) => ("sfc", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Hrrr, false, false) => ("prs", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::HrrrAk, true, _) => ("nat", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::HrrrAk, false, true) => ("sfc", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::HrrrAk, false, false) => ("prs", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Gfs, _, _) => ("pgrb2.0p25", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Gdas, _, _) => ("pgrb2.0p25", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Gefs, _, _) => ("pgrb2ap5/gec00", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Aigfs, _, true) => ("sfc", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Aigfs, _, false) => ("pres", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Aigefs, _, true) => ("sfc/avg", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Aigefs, _, false) => ("pres/avg", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Rap, _, _) => ("awp130pgrb", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Nam, _, _) => ("awip12", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Hiresw, _, _) => (
+            "arw_2p5km/conus",
+            PlotRecipeFetchPolicy::PreferIndexedSubset,
+        ),
+        (ModelId::Sref, _, _) => (
+            "arw/ctl/pgrb132",
+            PlotRecipeFetchPolicy::PreferIndexedSubset,
+        ),
+        (ModelId::Rtma, _, _) => ("2dvaranl_ndfd", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Urma, _, _) => ("2dvaranl_ndfd", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Nbm, _, _) => ("core/co", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::RrfsA, _, _) => ("prs-conus", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::EcmwfOpenData, _, _) => ("oper", PlotRecipeFetchPolicy::WholeFile),
+        (ModelId::Aifs, _, _) => ("oper", PlotRecipeFetchPolicy::WholeFile),
         (ModelId::WrfGdex, true, _) => (
             WRF_GDEX_DEFAULT_PRESSURE_PRODUCT,
             PlotRecipeFetchPolicy::WholeFile,
@@ -2829,21 +3722,61 @@ fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<Stri
     match (field.key, model) {
         (
             "composite_reflectivity" | "radar_reflectivity_1km_agl" | "updraft_helicity",
-            ModelId::Gfs | ModelId::EcmwfOpenData,
+            ModelId::Gfs
+            | ModelId::Gdas
+            | ModelId::Gefs
+            | ModelId::Aigfs
+            | ModelId::Aigefs
+            | ModelId::EcmwfOpenData
+            | ModelId::Aifs
+            | ModelId::Rap
+            | ModelId::Nam
+            | ModelId::Hiresw
+            | ModelId::Sref
+            | ModelId::Rtma
+            | ModelId::Urma
+            | ModelId::Nbm,
         ) => Some(format!(
             "{} is not wired for model '{model}'; rustwx-models only has native convective product fetch planning for HRRR/RRFS-A right now",
             field.label
         )),
         (
             "smoke_mass_density_8m_agl" | "column_integrated_smoke",
-            ModelId::Gfs | ModelId::EcmwfOpenData,
+            ModelId::Gfs
+            | ModelId::Gdas
+            | ModelId::Gefs
+            | ModelId::Aigfs
+            | ModelId::Aigefs
+            | ModelId::EcmwfOpenData
+            | ModelId::Aifs
+            | ModelId::Rap
+            | ModelId::Nam
+            | ModelId::Hiresw
+            | ModelId::Sref
+            | ModelId::Rtma
+            | ModelId::Urma
+            | ModelId::Nbm,
         ) => Some(format!(
             "{} is only verified and wired for HRRR wrfnat right now; the native smoke GRIB signature is not verified yet for model '{model}'",
             field.label
         )),
         (
             "simulated_infrared_brightness_temperature",
-            ModelId::Gfs | ModelId::EcmwfOpenData | ModelId::RrfsA,
+            ModelId::Gfs
+            | ModelId::Gdas
+            | ModelId::Gefs
+            | ModelId::Aigfs
+            | ModelId::Aigefs
+            | ModelId::EcmwfOpenData
+            | ModelId::Aifs
+            | ModelId::Rap
+            | ModelId::Nam
+            | ModelId::Hiresw
+            | ModelId::Sref
+            | ModelId::Rtma
+            | ModelId::Urma
+            | ModelId::Nbm
+            | ModelId::RrfsA,
         ) => Some(format!(
             "{} is only verified and wired for HRRR right now; the native GRIB signature is not verified yet for model '{model}'",
             field.label
@@ -2858,8 +3791,29 @@ fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<Stri
 
 fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> Option<String> {
     match (model, field.key) {
+        (ModelId::Rtma | ModelId::Urma | ModelId::Nbm, _) => Some(format!(
+            "{} requires an isobaric-pressure product; model '{model}' is currently wired only through surface/core grids in rustwx v0.5",
+            field.label
+        )),
         (ModelId::Gfs, "dewpoint_700mb" | "dewpoint_850mb") => Some(format!(
             "{} is not present in the GFS 0.25-degree pgrb2 file currently wired by rustwx-models; keep it blocked until a verified direct field or derived dewpoint path is implemented",
+            field.label
+        )),
+        (
+            ModelId::Gdas
+            | ModelId::Aigfs
+            | ModelId::Aigefs
+            | ModelId::Rap
+            | ModelId::Nam
+            | ModelId::Hiresw
+            | ModelId::Sref,
+            "dewpoint_700mb" | "dewpoint_850mb",
+        ) => Some(format!(
+            "{} is not verified as a direct pressure-level dewpoint field for model '{model}'; use RH/TMP or add a model-specific derived dewpoint path",
+            field.label
+        )),
+        (ModelId::Gefs, "dewpoint_700mb" | "dewpoint_850mb") => Some(format!(
+            "{} is not present in the GEFS 0.5-degree pgrb2ap5 member files currently wired by rustwx-models; use RH/TMP or add derived dewpoint support for this model",
             field.label
         )),
         (ModelId::EcmwfOpenData, "dewpoint_700mb" | "dewpoint_850mb") => Some(format!(
@@ -2875,6 +3829,33 @@ fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> O
             | "absolute_vorticity_850mb",
         ) => Some(format!(
             "{} is not present in the ECMWF open-data 'oper' pressure product currently wired by rustwx-models",
+            field.label
+        )),
+        (
+            ModelId::Aifs,
+            "absolute_vorticity_200mb"
+            | "absolute_vorticity_300mb"
+            | "absolute_vorticity_500mb"
+            | "absolute_vorticity_700mb"
+            | "absolute_vorticity_850mb",
+        ) => Some(format!(
+            "{} is not present in the Earth2Archive AIFS NetCDF schema currently wired by rustwx-models",
+            field.label
+        )),
+        (
+            ModelId::Aigfs
+            | ModelId::Aigefs
+            | ModelId::Rap
+            | ModelId::Nam
+            | ModelId::Hiresw
+            | ModelId::Sref,
+            "absolute_vorticity_200mb"
+            | "absolute_vorticity_300mb"
+            | "absolute_vorticity_500mb"
+            | "absolute_vorticity_700mb"
+            | "absolute_vorticity_850mb",
+        ) => Some(format!(
+            "{} is not verified for model '{model}' in the v0.5 compatibility path; keep vorticity recipes conservative until the GRIB signature is checked",
             field.label
         )),
         _ => None,
@@ -2904,6 +3885,17 @@ fn model_specific_surface_field_gap(field: &GribFieldSpec, model: ModelId) -> Op
         (ModelId::WrfGdex, "visibility_surface") => Some(
             "Visibility is not part of the current WRF/GDEX one-off path; no verified wrfout visibility field is wired yet".to_string(),
         ),
+        (ModelId::Aifs, "wind_gust_10m_agl" | "visibility_surface") => Some(format!(
+            "{} is not present in the current Earth2Archive AIFS NetCDF schema",
+            field.label
+        )),
+        (
+            ModelId::Aifs,
+            "low_cloud_cover" | "middle_cloud_cover" | "high_cloud_cover",
+        ) => Some(format!(
+            "{} is not present in the current Earth2Archive AIFS NetCDF schema; total cloud cover is available as tcc",
+            field.label
+        )),
         (_, "cloud_cover_levels") => None,
         (ModelId::Hrrr, "one_hour_qpf") => Some(
             "1h QPF is handled honestly in the HRRR windowed lane as 'qpf_1h' (legacy plot-recipe slug '1h_qpf'); do not treat it as a native/direct APCP recipe.".to_string(),
@@ -3030,7 +4022,18 @@ mod tests {
 
     #[test]
     fn built_in_models_are_real() {
-        assert_eq!(built_in_models().len(), 5);
+        assert_eq!(built_in_models().len(), 18);
+        assert_eq!(model_summary(ModelId::HrrrAk).default_product, "sfc");
+        assert_eq!(model_summary(ModelId::Gdas).default_product, "pgrb2.0p25");
+        assert_eq!(
+            model_summary(ModelId::Gefs).default_product,
+            "pgrb2ap5/gec00"
+        );
+        assert_eq!(model_summary(ModelId::Aigfs).default_product, "sfc");
+        assert_eq!(model_summary(ModelId::Aigefs).default_product, "sfc/avg");
+        assert_eq!(model_summary(ModelId::Aifs).max_forecast_hour, 43_824);
+        assert_eq!(model_summary(ModelId::Rtma).max_forecast_hour, 0);
+        assert_eq!(model_summary(ModelId::Nbm).default_product, "core/co");
         assert_eq!(model_summary(ModelId::RrfsA).default_product, "prs-conus");
         assert_eq!(
             model_summary(ModelId::WrfGdex).default_product,
@@ -3309,11 +4312,11 @@ mod tests {
     fn selector_backed_temperature_recipe_produces_gfs_fetch_plan() {
         let plan = plot_recipe_fetch_plan("500mb_temperature_height_winds", ModelId::Gfs).unwrap();
         assert_eq!(plan.product, "pgrb2.0p25");
-        assert_eq!(plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
         assert_eq!(
-            plan.fetch_mode,
-            PlotRecipeFetchMode::WholeFileStructuredExtract
+            plan.fetch_policy,
+            PlotRecipeFetchPolicy::PreferIndexedSubset
         );
+        assert_eq!(plan.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
         assert_eq!(plan.fields.len(), 4);
         assert_eq!(
             plan.selectors(),
@@ -3324,7 +4327,7 @@ mod tests {
                 FieldSelector::isobaric(CanonicalField::VWind, 500),
             ]
         );
-        assert!(plan.variable_patterns().is_empty());
+        assert!(!plan.variable_patterns().is_empty());
     }
 
     #[test]
@@ -3340,7 +4343,12 @@ mod tests {
                 FieldSelector::isobaric(CanonicalField::VWind, 200),
             ]
         );
-        assert!(plan.variable_patterns().is_empty());
+        assert_eq!(
+            plan.fetch_policy,
+            PlotRecipeFetchPolicy::PreferIndexedSubset
+        );
+        assert_eq!(plan.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
+        assert!(!plan.variable_patterns().is_empty());
     }
 
     #[test]
@@ -3397,7 +4405,12 @@ mod tests {
                 FieldSelector::isobaric(CanonicalField::VWind, 300),
             ]
         );
-        assert!(plan.variable_patterns().is_empty());
+        assert_eq!(
+            plan.fetch_policy,
+            PlotRecipeFetchPolicy::PreferIndexedSubset
+        );
+        assert_eq!(plan.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
+        assert!(!plan.variable_patterns().is_empty());
     }
 
     #[test]
@@ -3411,8 +4424,21 @@ mod tests {
 
         for model in [
             ModelId::Hrrr,
+            ModelId::HrrrAk,
             ModelId::Gfs,
+            ModelId::Gdas,
+            ModelId::Gefs,
+            ModelId::Aigfs,
+            ModelId::Aigefs,
             ModelId::EcmwfOpenData,
+            ModelId::Aifs,
+            ModelId::Rap,
+            ModelId::Nam,
+            ModelId::Hiresw,
+            ModelId::Sref,
+            ModelId::Rtma,
+            ModelId::Urma,
+            ModelId::Nbm,
             ModelId::RrfsA,
             ModelId::WrfGdex,
         ] {
@@ -3438,13 +4464,34 @@ mod tests {
                     vec!["temperature_700mb", "height_700mb", "u_700mb", "v_700mb"]
                 );
                 let reason = &blockers[0].reason;
-                assert!(reason.contains("700 hPa temperature/height/wind selectors"));
+                if matches!(model, ModelId::Rtma | ModelId::Urma | ModelId::Nbm) {
+                    assert!(reason.contains("surface/core grids"));
+                } else {
+                    assert!(reason.contains("700 hPa temperature/height/wind selectors"));
+                }
                 match model {
                     ModelId::EcmwfOpenData | ModelId::WrfGdex => {
                         assert!(reason.contains("whole-file structured extraction"));
                     }
-                    ModelId::Hrrr | ModelId::Gfs | ModelId::RrfsA => {
+                    ModelId::Hrrr
+                    | ModelId::HrrrAk
+                    | ModelId::Gfs
+                    | ModelId::Gdas
+                    | ModelId::Gefs
+                    | ModelId::Aigfs
+                    | ModelId::Aigefs
+                    | ModelId::Rap
+                    | ModelId::Nam
+                    | ModelId::Hiresw
+                    | ModelId::Sref
+                    | ModelId::RrfsA => {
                         assert!(reason.contains("idx subsetting can stage the GRIB messages"));
+                    }
+                    ModelId::Rtma | ModelId::Urma | ModelId::Nbm => {
+                        assert!(reason.contains("surface/core grids"));
+                    }
+                    ModelId::Aifs => {
+                        assert!(reason.contains("whole-file structured extraction"));
                     }
                 }
             }
@@ -3510,7 +4557,12 @@ mod tests {
                 FieldSelector::isobaric(CanonicalField::VWind, 700),
             ]
         );
-        assert!(plan.variable_patterns().is_empty());
+        assert_eq!(
+            plan.fetch_policy,
+            PlotRecipeFetchPolicy::PreferIndexedSubset
+        );
+        assert_eq!(plan.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
+        assert!(!plan.variable_patterns().is_empty());
 
         let blockers =
             plot_recipe_fetch_blockers("700mb_absolute_vorticity_height_winds", ModelId::Gfs)
@@ -3610,6 +4662,128 @@ mod tests {
         assert!(!hours_06z.contains(&145));
         assert!(!hours_06z.contains(&150));
         assert!(!hours_06z.contains(&360));
+    }
+
+    #[test]
+    fn gefs_urls_use_member_product_and_operational_layout() {
+        let request = ModelRunRequest::new(
+            ModelId::Gefs,
+            rustwx_core::CycleSpec::new("20260502", 0).unwrap(),
+            24,
+            "pgrb2ap5/gep03",
+        )
+        .unwrap();
+
+        assert_eq!(
+            build_grib_url(SourceId::Aws, &request).unwrap(),
+            "https://noaa-gefs-pds.s3.amazonaws.com/gefs.20260502/00/atmos/pgrb2ap5/gep03.t00z.pgrb2a.0p50.f024"
+        );
+        assert_eq!(
+            build_grib_url(SourceId::Nomads, &request).unwrap(),
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gens/prod/gefs.20260502/00/atmos/pgrb2ap5/gep03.t00z.pgrb2a.0p50.f024"
+        );
+    }
+
+    #[test]
+    fn easy_ncep_model_urls_use_current_operational_layouts() {
+        let cycle = rustwx_core::CycleSpec::new("20260502", 0).unwrap();
+        let hrrr_ak = ModelRunRequest::new(ModelId::HrrrAk, cycle.clone(), 24, "sfc").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Nomads, &hrrr_ak).unwrap(),
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/hrrr.20260502/alaska/hrrr.t00z.wrfsfcf24.ak.grib2"
+        );
+
+        let gdas = ModelRunRequest::new(ModelId::Gdas, cycle.clone(), 3, "pgrb2.0p25").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Aws, &gdas).unwrap(),
+            "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gdas.20260502/00/atmos/gdas.t00z.pgrb2.0p25.f003"
+        );
+
+        let aigfs = ModelRunRequest::new(ModelId::Aigfs, cycle.clone(), 24, "pres").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Nomads, &aigfs).unwrap(),
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigfs/prod/aigfs.20260502/00/model/atmos/grib2/aigfs.t00z.pres.f024.grib2"
+        );
+
+        let aigefs = ModelRunRequest::new(ModelId::Aigefs, cycle.clone(), 24, "sfc/avg").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Nomads, &aigefs).unwrap(),
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigefs/prod/aigefs.20260502/00/ensstat/products/atmos/grib2/aigefs.t00z.sfc.avg.f024.grib2"
+        );
+
+        let rap = ModelRunRequest::new(ModelId::Rap, cycle.clone(), 21, "awp130pgrb").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Nomads, &rap).unwrap(),
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rap/prod/rap.20260502/rap.t00z.awp130pgrbf21.grib2"
+        );
+
+        let nam = ModelRunRequest::new(ModelId::Nam, cycle.clone(), 24, "awip12").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Nomads, &nam).unwrap(),
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/nam/prod/nam.20260502/nam.t00z.awip1224.tm00.grib2"
+        );
+
+        let hiresw =
+            ModelRunRequest::new(ModelId::Hiresw, cycle.clone(), 24, "arw_2p5km/conus").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Nomads, &hiresw).unwrap(),
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hiresw/prod/hiresw.20260502/hiresw.t00z.arw_2p5km.f24.conus.grib2"
+        );
+
+        let nbm = ModelRunRequest::new(ModelId::Nbm, cycle.clone(), 24, "core/co").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Aws, &nbm).unwrap(),
+            "https://noaa-nbm-grib2-pds.s3.amazonaws.com/blend.20260502/00/core/blend.t00z.core.f024.co.grib2"
+        );
+
+        let rtma = ModelRunRequest::new(ModelId::Rtma, cycle.clone(), 0, "2dvaranl_ndfd").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Nomads, &rtma).unwrap(),
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rtma/prod/rtma2p5.20260502/rtma2p5.t00z.2dvaranl_ndfd.grb2_wexp"
+        );
+
+        let sref_cycle = rustwx_core::CycleSpec::new("20260502", 3).unwrap();
+        let sref = ModelRunRequest::new(ModelId::Sref, sref_cycle, 24, "arw/ctl/pgrb132").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Nomads, &sref).unwrap(),
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/sref/prod/sref.20260502/03/pgrb/sref_arw.t03z.pgrb132.ctl.f24.grib2"
+        );
+    }
+
+    #[test]
+    fn aifs_supports_local_long_runs_and_ecmwf_open_data_urls() {
+        let local = ModelRunRequest::new(
+            ModelId::Aifs,
+            rustwx_core::CycleSpec::new("20260502", 0).unwrap(),
+            43_824,
+            "oper",
+        )
+        .unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Earth2Archive, &local).unwrap(),
+            "earth2-archive://aifs/20260502T00Z/lead43824.nc"
+        );
+
+        let open_data = ModelRunRequest::new(
+            ModelId::Aifs,
+            rustwx_core::CycleSpec::new("20260502", 0).unwrap(),
+            24,
+            "oper",
+        )
+        .unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Ecmwf, &open_data).unwrap(),
+            "https://data.ecmwf.int/forecasts/20260502/00z/aifs-single/0p25/oper/20260502000000-24h-oper-fc.grib2"
+        );
+
+        assert!(matches!(
+            build_grib_url(SourceId::Ecmwf, &local),
+            Err(ModelError::UnsupportedForecastHour {
+                model: ModelId::Aifs,
+                forecast_hour: 43_824,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -3733,17 +4907,18 @@ mod tests {
     fn hrrr_native_reflectivity_recipe_produces_nat_fetch_plan() {
         let plan = plot_recipe_fetch_plan("composite_reflectivity", ModelId::Hrrr).unwrap();
         assert_eq!(plan.product, "nat");
-        assert_eq!(plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
         assert_eq!(
-            plan.fetch_mode,
-            PlotRecipeFetchMode::WholeFileStructuredExtract
+            plan.fetch_policy,
+            PlotRecipeFetchPolicy::PreferIndexedSubset
         );
+        assert_eq!(plan.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
         assert_eq!(
             plan.selectors(),
             vec![FieldSelector::entire_atmosphere(
                 CanonicalField::CompositeReflectivity
             )]
         );
+        assert!(!plan.variable_patterns().is_empty());
     }
 
     #[test]
@@ -3761,11 +4936,11 @@ mod tests {
         let rrfs_plan =
             plot_recipe_fetch_plan("composite_reflectivity_uh", ModelId::RrfsA).unwrap();
         assert_eq!(rrfs_plan.product, "prs-conus");
-        assert_eq!(rrfs_plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
         assert_eq!(
-            rrfs_plan.fetch_mode,
-            PlotRecipeFetchMode::WholeFileStructuredExtract
+            rrfs_plan.fetch_policy,
+            PlotRecipeFetchPolicy::PreferIndexedSubset
         );
+        assert_eq!(rrfs_plan.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
         assert_eq!(
             rrfs_plan.selectors(),
             vec![
@@ -3773,24 +4948,25 @@ mod tests {
                 FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000),
             ]
         );
+        assert!(!rrfs_plan.variable_patterns().is_empty());
     }
 
     #[test]
     fn simulated_ir_recipe_is_supported_for_hrrr_native_fetch() {
         let plan = plot_recipe_fetch_plan("simulated_ir_satellite", ModelId::Hrrr).unwrap();
         assert_eq!(plan.product, "nat");
-        assert_eq!(plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
         assert_eq!(
-            plan.fetch_mode,
-            PlotRecipeFetchMode::WholeFileStructuredExtract
+            plan.fetch_policy,
+            PlotRecipeFetchPolicy::PreferIndexedSubset
         );
+        assert_eq!(plan.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
         assert_eq!(
             plan.selectors(),
             vec![FieldSelector::nominal_top(
                 CanonicalField::SimulatedInfraredBrightnessTemperature
             )]
         );
-        assert!(plan.variable_patterns().is_empty());
+        assert!(!plan.variable_patterns().is_empty());
         assert!(
             plot_recipe_fetch_blockers("simulated_ir_satellite", ModelId::Hrrr)
                 .unwrap()
@@ -3802,11 +4978,11 @@ mod tests {
     fn smoke_recipes_use_hrrr_native_fetch_plan() {
         let smoke = plot_recipe_fetch_plan("smoke_pm25_native", ModelId::Hrrr).unwrap();
         assert_eq!(smoke.product, "nat");
-        assert_eq!(smoke.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
         assert_eq!(
-            smoke.fetch_mode,
-            PlotRecipeFetchMode::WholeFileStructuredExtract
+            smoke.fetch_policy,
+            PlotRecipeFetchPolicy::PreferIndexedSubset
         );
+        assert_eq!(smoke.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
         assert_eq!(
             smoke.selectors(),
             vec![FieldSelector::height_agl(
@@ -3814,15 +4990,22 @@ mod tests {
                 8
             )]
         );
+        assert!(!smoke.variable_patterns().is_empty());
 
         let column = plot_recipe_fetch_plan("smoke_column", ModelId::Hrrr).unwrap();
         assert_eq!(column.product, "nat");
+        assert_eq!(
+            column.fetch_policy,
+            PlotRecipeFetchPolicy::PreferIndexedSubset
+        );
+        assert_eq!(column.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
         assert_eq!(
             column.selectors(),
             vec![FieldSelector::entire_atmosphere(
                 CanonicalField::ColumnIntegratedSmoke
             )]
         );
+        assert!(!column.variable_patterns().is_empty());
     }
 
     #[test]
@@ -3987,12 +5170,12 @@ mod tests {
 
         let plan = plot_recipe_fetch_plan("2m_temperature_10m_winds", ModelId::Hrrr).unwrap();
         assert_eq!(plan.product, "sfc");
-        assert_eq!(plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
         assert_eq!(
-            plan.fetch_mode,
-            PlotRecipeFetchMode::WholeFileStructuredExtract
+            plan.fetch_policy,
+            PlotRecipeFetchPolicy::PreferIndexedSubset
         );
-        assert!(plan.variable_patterns().is_empty());
+        assert_eq!(plan.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
+        assert!(!plan.variable_patterns().is_empty());
         assert_eq!(
             plan.selectors(),
             vec![
@@ -4005,15 +5188,15 @@ mod tests {
     }
 
     #[test]
-    fn hrrr_pressure_recipe_prefers_whole_file_fetches() {
+    fn hrrr_pressure_recipe_prefers_indexed_subset_fetches() {
         let plan = plot_recipe_fetch_plan("500mb_temperature_height_winds", ModelId::Hrrr).unwrap();
         assert_eq!(plan.product, "prs");
-        assert_eq!(plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
         assert_eq!(
-            plan.fetch_mode,
-            PlotRecipeFetchMode::WholeFileStructuredExtract
+            plan.fetch_policy,
+            PlotRecipeFetchPolicy::PreferIndexedSubset
         );
-        assert!(plan.variable_patterns().is_empty());
+        assert_eq!(plan.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
+        assert!(!plan.variable_patterns().is_empty());
     }
 
     #[test]
@@ -4082,7 +5265,7 @@ mod tests {
     }
 
     #[test]
-    fn hrrr_full_file_fetch_plans_cover_pressure_surface_and_native_lanes() {
+    fn hrrr_indexed_subset_fetch_plans_cover_pressure_surface_and_native_lanes() {
         let pressure = plot_recipe_fetch_plan("500mb_temperature_height_winds", ModelId::Hrrr)
             .expect("pressure recipe should plan");
         let surface = plot_recipe_fetch_plan("2m_temperature_10m_winds", ModelId::Hrrr)
@@ -4091,14 +5274,14 @@ mod tests {
             .expect("native recipe should plan");
 
         for plan in [pressure, surface, native] {
-            assert_eq!(plan.fetch_policy, PlotRecipeFetchPolicy::WholeFile);
             assert_eq!(
-                plan.fetch_mode,
-                PlotRecipeFetchMode::WholeFileStructuredExtract
+                plan.fetch_policy,
+                PlotRecipeFetchPolicy::PreferIndexedSubset
             );
+            assert_eq!(plan.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
             assert!(
-                plan.variable_patterns().is_empty(),
-                "whole-file HRRR plans should not depend on idx variable patterns"
+                !plan.variable_patterns().is_empty(),
+                "indexed HRRR plans should carry idx variable patterns"
             );
         }
     }

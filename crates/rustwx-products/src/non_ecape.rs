@@ -737,6 +737,7 @@ fn prepare_non_ecape_hour(
             png_compression: request.png_compression,
             custom_poi_overlay: request.custom_poi_overlay.clone(),
             place_label_overlay: request.place_label_overlay.clone(),
+            output_suffix: None,
         };
         crate::direct::plan_direct_fetch_groups(&direct_request)?
     };
@@ -1062,6 +1063,7 @@ fn run_prepared_non_ecape_domain(
             png_compression: request.png_compression,
             custom_poi_overlay: request.custom_poi_overlay.clone(),
             place_label_overlay: request.place_label_overlay.clone(),
+            output_suffix: None,
         });
 
     let derived_request = (!prepared.normalized.derived_recipe_slugs.is_empty()).then(|| {
@@ -1095,23 +1097,23 @@ fn run_prepared_non_ecape_domain(
     let derived_latest = prepared.latest.clone();
     let precomputed_derived = prepared.precomputed_derived.as_ref();
 
-    let windowed_request = (request.model == ModelId::Hrrr
-        && !prepared.normalized.windowed_products.is_empty())
-    .then(|| HrrrWindowedBatchRequest {
-        date_yyyymmdd: pinned_date.clone(),
-        cycle_override_utc: pinned_cycle,
-        forecast_hour: request.forecast_hour,
-        source: pinned_source,
-        domain: domain.clone(),
-        out_dir: domain_out_dir.clone(),
-        cache_root: request.cache_root.clone(),
-        use_cache: request.use_cache,
-        products: prepared.normalized.windowed_products.clone(),
-        output_width: request.output_width,
-        output_height: request.output_height,
-        png_compression: request.png_compression,
-        place_label_overlay: request.place_label_overlay.clone(),
-    });
+    let windowed_request =
+        (!prepared.normalized.windowed_products.is_empty()).then(|| HrrrWindowedBatchRequest {
+            model: request.model,
+            date_yyyymmdd: pinned_date.clone(),
+            cycle_override_utc: pinned_cycle,
+            forecast_hour: request.forecast_hour,
+            source: pinned_source,
+            domain: domain.clone(),
+            out_dir: domain_out_dir.clone(),
+            cache_root: request.cache_root.clone(),
+            use_cache: request.use_cache,
+            products: prepared.normalized.windowed_products.clone(),
+            output_width: request.output_width,
+            output_height: request.output_height,
+            png_compression: request.png_compression,
+            place_label_overlay: request.place_label_overlay.clone(),
+        });
 
     let lane_result = run_fanout3(
         should_run_lanes_concurrently(request.model, pinned_source),
@@ -1199,10 +1201,10 @@ fn validate_requested_work(
                 .into(),
         );
     }
-    if model != ModelId::Hrrr && !request.windowed_products.is_empty() {
+    if !windowed_products_supported_for_model(model, &request.windowed_products) {
         return Err(format!(
-            "windowed products are only supported by the HRRR non-ECAPE runner, not {}",
-            model
+            "requested windowed products are not supported by model {}; HRRR supports the full windowed family, while the v0.5 cross-model GRIB path supports qpf_total only",
+            model,
         )
         .into());
     }
@@ -1218,6 +1220,33 @@ fn validate_requested_work(
         .into());
     }
     Ok(())
+}
+
+fn windowed_products_supported_for_model(model: ModelId, products: &[HrrrWindowedProduct]) -> bool {
+    if products.is_empty() {
+        return true;
+    }
+    if model == ModelId::Hrrr {
+        return true;
+    }
+    products
+        .iter()
+        .all(|product| matches!(product, HrrrWindowedProduct::QpfTotal))
+        && matches!(
+            model,
+            ModelId::HrrrAk
+                | ModelId::Gfs
+                | ModelId::Gdas
+                | ModelId::Gefs
+                | ModelId::Aigfs
+                | ModelId::Aigefs
+                | ModelId::Rap
+                | ModelId::Nam
+                | ModelId::Hiresw
+                | ModelId::Sref
+                | ModelId::Nbm
+                | ModelId::RrfsA
+        )
 }
 
 fn validate_requested_domains(domains: &[DomainSpec]) -> Result<(), Box<dyn std::error::Error>> {
@@ -1817,6 +1846,30 @@ mod tests {
     }
 
     #[test]
+    fn validation_allows_cross_model_total_qpf_windowed_product() {
+        let request = NonEcapeRequestedProducts {
+            direct_recipe_slugs: Vec::new(),
+            derived_recipe_slugs: Vec::new(),
+            windowed_products: vec![HrrrWindowedProduct::QpfTotal],
+        };
+        validate_requested_work(ModelId::Gfs, &request)
+            .expect("GFS qpf_total should use the v0.5 cross-model windowed path");
+    }
+
+    #[test]
+    fn validation_rejects_cross_model_hrrr_specific_windowed_products() {
+        let request = NonEcapeRequestedProducts {
+            direct_recipe_slugs: Vec::new(),
+            derived_recipe_slugs: Vec::new(),
+            windowed_products: vec![HrrrWindowedProduct::Qpf6h],
+        };
+        let err = validate_requested_work(ModelId::Gfs, &request)
+            .expect_err("GFS qpf_6h should remain blocked until explicitly validated")
+            .to_string();
+        assert!(err.contains("qpf_total only"));
+    }
+
+    #[test]
     fn normalization_routes_legacy_one_hour_qpf_to_windowed_lane() {
         let mut request = empty_request();
         request.direct_recipe_slugs = vec!["1h_qpf".into(), "cloud_cover".into()];
@@ -1866,6 +1919,7 @@ mod tests {
             png_compression: PngCompressionMode::Default,
             custom_poi_overlay: None,
             place_label_overlay: None,
+            output_suffix: None,
         };
         let direct_groups = plan_direct_fetch_groups(&direct_request).unwrap();
         let derived_recipes = plan_derived_recipes(&["sbcape".to_string()]).unwrap();
@@ -1913,6 +1967,7 @@ mod tests {
             png_compression: PngCompressionMode::Default,
             custom_poi_overlay: None,
             place_label_overlay: None,
+            output_suffix: None,
         };
         let direct_groups = plan_direct_fetch_groups(&direct_request).unwrap();
         let derived_recipes = plan_derived_recipes(&["sbcape".to_string()]).unwrap();
@@ -2052,6 +2107,7 @@ mod tests {
             total_ms: 11,
         };
         let windowed = HrrrWindowedBatchReport {
+            model: ModelId::Hrrr,
             date_yyyymmdd: "20260415".into(),
             cycle_utc: 12,
             forecast_hour: 6,
@@ -2279,6 +2335,7 @@ mod tests {
             total_ms: 5,
         };
         let windowed = HrrrWindowedBatchReport {
+            model: ModelId::Hrrr,
             date_yyyymmdd: "20260415".into(),
             cycle_utc: 12,
             forecast_hour: 6,
@@ -2469,6 +2526,7 @@ mod tests {
     #[test]
     fn collect_input_fetches_keeps_windowed_lineage_when_cache_is_off() {
         let report = HrrrWindowedBatchReport {
+            model: ModelId::Hrrr,
             date_yyyymmdd: "20260415".into(),
             cycle_utc: 12,
             forecast_hour: 6,

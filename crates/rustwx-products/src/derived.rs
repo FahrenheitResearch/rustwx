@@ -1342,13 +1342,24 @@ fn is_gdex_dataset_token(token: &str) -> bool {
 pub fn supported_derived_recipe_slugs(model: ModelId) -> Vec<String> {
     match model {
         ModelId::Hrrr
+        | ModelId::HrrrAk
         | ModelId::Gfs
+        | ModelId::Gdas
+        | ModelId::Gefs
+        | ModelId::Aigfs
+        | ModelId::Aigefs
         | ModelId::EcmwfOpenData
+        | ModelId::Aifs
+        | ModelId::Rap
+        | ModelId::Nam
+        | ModelId::Hiresw
+        | ModelId::Sref
         | ModelId::RrfsA
         | ModelId::WrfGdex => supported_derived_recipe_inventory()
             .iter()
             .map(|recipe| recipe.slug.to_string())
             .collect(),
+        ModelId::Rtma | ModelId::Urma | ModelId::Nbm => Vec::new(),
     }
 }
 

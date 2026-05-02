@@ -7,12 +7,11 @@ use std::time::Instant;
 mod region;
 
 use clap::Parser;
-use grib_core::grib2::Grib2File;
 use region::RegionPreset;
 use rustwx_core::VerticalSelector;
 use rustwx_core::{CanonicalField, CycleSpec, FieldSelector, ModelId, ModelRunRequest, SourceId};
 use rustwx_io::{
-    FetchRequest, extract_field_from_grib2, fetch_bytes, fetch_bytes_with_cache,
+    FetchRequest, extract_fields_partial_from_model_bytes, fetch_bytes, fetch_bytes_with_cache,
     load_cached_selected_field, store_cached_selected_field,
 };
 use rustwx_models::{ModelError, PlotRecipe, plot_recipe, plot_recipe_fetch_plan};
@@ -137,22 +136,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let parse_start = Instant::now();
-    let grib = if missing_selectors.is_empty() {
-        None
-    } else {
-        Some(Grib2File::from_bytes(&fetched.result.bytes)?)
-    };
-    let parse_ms = parse_start.elapsed().as_millis();
-
-    if let Some(grib) = grib.as_ref() {
-        for selector in &missing_selectors {
-            let field = extract_field_from_grib2(grib, *selector)?;
+    if !missing_selectors.is_empty() {
+        let partial = extract_fields_partial_from_model_bytes(
+            args.model,
+            &fetched.result.bytes,
+            Some(fetched.bytes_path.as_path()),
+            &missing_selectors,
+        )?;
+        if !partial.missing.is_empty() {
+            return Err(format!(
+                "missing selectors for {}: {}",
+                args.model,
+                partial
+                    .missing
+                    .iter()
+                    .map(|selector| selector.key())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+            .into());
+        }
+        for field in partial.extracted {
             if !args.no_cache {
                 store_cached_selected_field(&cache_root, &fetch, &field)?;
             }
-            extracted.insert(*selector, field);
+            extracted.insert(field.selector, field);
         }
     }
+    let parse_ms = parse_start.elapsed().as_millis();
     let filled_selector = recipe
         .filled
         .selector

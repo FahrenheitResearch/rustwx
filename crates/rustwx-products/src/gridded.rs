@@ -1338,17 +1338,11 @@ pub(crate) fn bundle_fetch_variable_patterns(
     native_product: &str,
 ) -> Vec<String> {
     match (bundle, native_product) {
-        (CanonicalBundleDescriptor::SurfaceAnalysis, "sfc")
-        | (CanonicalBundleDescriptor::SurfaceAnalysis, "pgrb2.0p25")
-        | (CanonicalBundleDescriptor::SurfaceAnalysis, "nat-na")
-            if matches!(model, ModelId::Hrrr | ModelId::Gfs | ModelId::RrfsA) =>
-        {
+        (CanonicalBundleDescriptor::SurfaceAnalysis, _) if model_has_grib_surface_bundle(model) => {
             surface_analysis_fetch_patterns(model)
         }
-        (CanonicalBundleDescriptor::PressureAnalysis, "prs")
-        | (CanonicalBundleDescriptor::PressureAnalysis, "pgrb2.0p25")
-        | (CanonicalBundleDescriptor::PressureAnalysis, "prs-na")
-            if matches!(model, ModelId::Hrrr | ModelId::Gfs | ModelId::RrfsA) =>
+        (CanonicalBundleDescriptor::PressureAnalysis, _)
+            if model_has_grib_pressure_bundle(model) =>
         {
             pressure_analysis_fetch_patterns(model)
         }
@@ -1395,6 +1389,45 @@ pub(crate) fn bundle_fetch_variable_patterns(
     }
 }
 
+fn model_has_grib_surface_bundle(model: ModelId) -> bool {
+    matches!(
+        model,
+        ModelId::Hrrr
+            | ModelId::HrrrAk
+            | ModelId::Gfs
+            | ModelId::Gdas
+            | ModelId::Gefs
+            | ModelId::Aigfs
+            | ModelId::Aigefs
+            | ModelId::Rap
+            | ModelId::Nam
+            | ModelId::Hiresw
+            | ModelId::Sref
+            | ModelId::Rtma
+            | ModelId::Urma
+            | ModelId::Nbm
+            | ModelId::RrfsA
+    )
+}
+
+fn model_has_grib_pressure_bundle(model: ModelId) -> bool {
+    matches!(
+        model,
+        ModelId::Hrrr
+            | ModelId::HrrrAk
+            | ModelId::Gfs
+            | ModelId::Gdas
+            | ModelId::Gefs
+            | ModelId::Aigfs
+            | ModelId::Aigefs
+            | ModelId::Rap
+            | ModelId::Nam
+            | ModelId::Hiresw
+            | ModelId::Sref
+            | ModelId::RrfsA
+    )
+}
+
 fn surface_analysis_fetch_patterns(model: ModelId) -> Vec<String> {
     let mut patterns = vec![
         "PRES:surface",
@@ -1405,7 +1438,22 @@ fn surface_analysis_fetch_patterns(model: ModelId) -> Vec<String> {
         "UGRD:10 m above ground",
         "VGRD:10 m above ground",
     ];
-    if matches!(model, ModelId::Gfs | ModelId::RrfsA) {
+    if matches!(
+        model,
+        ModelId::Gfs
+            | ModelId::Gdas
+            | ModelId::Gefs
+            | ModelId::Aigfs
+            | ModelId::Aigefs
+            | ModelId::Rap
+            | ModelId::Nam
+            | ModelId::Hiresw
+            | ModelId::Sref
+            | ModelId::Rtma
+            | ModelId::Urma
+            | ModelId::Nbm
+            | ModelId::RrfsA
+    ) {
         patterns.extend(["DPT:2 m above ground", "RH:2 m above ground"]);
     }
     patterns.into_iter().map(str::to_string).collect()
@@ -1413,11 +1461,19 @@ fn surface_analysis_fetch_patterns(model: ModelId) -> Vec<String> {
 
 fn pressure_analysis_fetch_patterns(model: ModelId) -> Vec<String> {
     let patterns = match model {
-        ModelId::Hrrr => vec![
+        ModelId::Hrrr | ModelId::HrrrAk => vec![
             "HGT", "TMP", "SPFH", "VVEL", "UGRD", "VGRD", "ABSV", "CLWMR", "CIMIXR", "ICMR",
             "RWMR", "SNMR", "GRLE",
         ],
-        ModelId::Gfs => vec!["HGT", "TMP", "RH", "UGRD", "VGRD"],
+        ModelId::Gfs
+        | ModelId::Gdas
+        | ModelId::Gefs
+        | ModelId::Aigfs
+        | ModelId::Aigefs
+        | ModelId::Rap
+        | ModelId::Nam
+        | ModelId::Hiresw
+        | ModelId::Sref => vec!["HGT", "TMP", "RH", "UGRD", "VGRD"],
         ModelId::RrfsA => vec!["HGT", "GP", "TMP", "SPFH", "DPT", "RH", "UGRD", "VGRD"],
         _ => Vec::new(),
     };

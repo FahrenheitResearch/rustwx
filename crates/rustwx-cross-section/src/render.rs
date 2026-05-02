@@ -1,4 +1,4 @@
-use rusttype::{point, Font, Scale};
+use rusttype::{Font, Scale, point};
 use rustwx_contour::{ContourEngine, ContourLevels, RectilinearGrid, ScalarField2D};
 use std::sync::OnceLock;
 use std::time::Instant;

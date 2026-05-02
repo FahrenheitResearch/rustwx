@@ -20,6 +20,7 @@ thiserror.workspace = true
 rustwx-core = { path = "../rustwx-core" }
 rustwx-models = { path = "../rustwx-models" }
 rustwx-wrf = { path = "../rustwx-wrf", optional = true }
+netcrust = { path = "../../vendor/netcrust" }
 wx-core = { path = "../../vendor/wx-core", default-features = false, features = ["network"] }
 
 [dev-dependencies]

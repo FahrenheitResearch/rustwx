@@ -147,6 +147,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             &domain,
             PlaceLabelDensityTier::from_numeric(args.place_label_density),
         ),
+        output_suffix: None,
     };
     let report = run_direct_batch(&request)?;
 

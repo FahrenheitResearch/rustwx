@@ -170,8 +170,21 @@ const AGENT_API_VERSION: &str = "rustwx-agent-v1";
 #[cfg(feature = "python")]
 const BUILT_IN_MODELS: &[ModelId] = &[
     ModelId::Hrrr,
+    ModelId::HrrrAk,
     ModelId::Gfs,
+    ModelId::Gdas,
+    ModelId::Gefs,
+    ModelId::Aigfs,
+    ModelId::Aigefs,
     ModelId::EcmwfOpenData,
+    ModelId::Aifs,
+    ModelId::Rap,
+    ModelId::Nam,
+    ModelId::Hiresw,
+    ModelId::Sref,
+    ModelId::Rtma,
+    ModelId::Urma,
+    ModelId::Nbm,
     ModelId::RrfsA,
     ModelId::WrfGdex,
 ];
@@ -368,6 +381,10 @@ struct RenderMapsRequestJson {
     #[serde(default)]
     windowed_products: Option<Vec<String>>,
     #[serde(default)]
+    composites: Option<Vec<serde_json::Value>>,
+    #[serde(default)]
+    grid_overlays: Option<Vec<serde_json::Value>>,
+    #[serde(default)]
     domain_jobs: Option<usize>,
 }
 
@@ -554,10 +571,13 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
         .copied()
         .map(|model| {
             let derived_inventory = supported_derived_recipe_inventory();
+            let summary = rustwx_models::model_summary(model);
             serde_json::json!({
                 "id": model.as_str(),
-                "default_product": rustwx_models::model_summary(model).default_product,
+                "default_product": summary.default_product,
                 "default_render_product": default_render_product(model),
+                "runtime_family": summary.runtime_family,
+                "ensemble_mode": summary.ensemble_mode,
                 "direct_recipes": supported_direct_recipe_slugs(model),
                 "derived_recipes": supported_derived_recipe_slugs(model),
                 "light_derived_recipes": derived_inventory
@@ -570,11 +590,7 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
                     .filter(|recipe| recipe.heavy)
                     .map(|recipe| recipe.slug)
                     .collect::<Vec<_>>(),
-                "windowed_products": if model == ModelId::Hrrr {
-                    supported_windowed_product_slugs()
-                } else {
-                    Vec::<String>::new()
-                },
+                "windowed_products": supported_windowed_product_slugs_for_model(model),
             })
         })
         .collect::<Vec<_>>();
@@ -614,10 +630,10 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
             "domain": "optional built-in domain/country/metro slug; default conus",
             "domains": "optional list of built-in domain/country/metro slugs",
             "bounds": "optional [west,east,south,north] custom domain override",
-            "products": "optional mixed product slugs; rustwx routes to direct, derived, or HRRR windowed products",
+            "products": "optional mixed product slugs; rustwx routes to direct, derived, or model-supported windowed products",
             "direct_recipes": "optional explicit direct product slugs",
             "derived_recipes": "optional explicit derived product slugs; heavy ECAPE recipes route through the canonical derived_batch ECAPE path",
-            "windowed_products": "optional explicit HRRR windowed product slugs",
+            "windowed_products": "optional explicit windowed product slugs; HRRR supports the full family, while the v0.5 cross-model GRIB path supports qpf_total",
             "out_dir": "optional output directory",
             "cache_dir": "optional shared fetch/decode cache; default rustwx_outputs/cache, or RUSTWX_CACHE_DIR when set",
             "place_label_density": "none, major, major-and-aux, or dense"
@@ -1012,6 +1028,19 @@ fn build_render_maps_plan(request: RenderMapsRequestJson) -> PyResult<RenderMaps
     let use_cache = request.use_cache.unwrap_or(true) && !request.no_cache.unwrap_or(false);
     let source_mode = parse_product_source_mode(request.source_mode.as_deref())?;
     let place_density = parse_place_label_density(request.place_label_density.as_deref())?;
+    if request
+        .composites
+        .as_ref()
+        .is_some_and(|values| !values.is_empty())
+        || request
+            .grid_overlays
+            .as_ref()
+            .is_some_and(|values| !values.is_empty())
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "custom JSON composites/grid_overlays are not implemented in rustwx v0.5.0; use built-in direct recipes with fill/contour/isopleth layers such as 500mb_height_winds, mslp_10m_winds, cloud_cover_levels, and precipitation_type",
+        ));
+    }
     let routed = route_requested_products(model, &request)?;
     let place_label_overlay = domains
         .first()
@@ -1387,10 +1416,15 @@ fn route_requested_products(
     if direct.is_empty() && derived.is_empty() && windowed.is_empty() {
         direct.push(default_render_product(model));
     }
-    if !windowed.is_empty() && model != ModelId::Hrrr {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "windowed_products are currently HRRR-only",
-        ));
+    if let Some(unsupported) = windowed
+        .iter()
+        .find(|product| !windowed_product_supported_for_model(model, **product))
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "windowed product '{}' is not supported for model {}; HRRR supports the full windowed family, while the v0.5 cross-model GRIB path supports qpf_total only",
+            unsupported.slug(),
+            model,
+        )));
     }
     let (derived, heavy_derived) = split_heavy_derived_recipes(derived);
     Ok(RoutedRenderProducts {
@@ -1754,6 +1788,43 @@ fn supported_windowed_product_slugs() -> Vec<String> {
         .iter()
         .map(|product| product.slug().to_string())
         .collect()
+}
+
+#[cfg(feature = "python")]
+fn supported_windowed_product_slugs_for_model(model: ModelId) -> Vec<String> {
+    if model == ModelId::Hrrr {
+        return supported_windowed_product_slugs();
+    }
+    if cross_model_total_qpf_windowed_supported(model) {
+        return vec![HrrrWindowedProduct::QpfTotal.slug().to_string()];
+    }
+    Vec::new()
+}
+
+#[cfg(feature = "python")]
+fn windowed_product_supported_for_model(model: ModelId, product: HrrrWindowedProduct) -> bool {
+    model == ModelId::Hrrr
+        || (matches!(product, HrrrWindowedProduct::QpfTotal)
+            && cross_model_total_qpf_windowed_supported(model))
+}
+
+#[cfg(feature = "python")]
+fn cross_model_total_qpf_windowed_supported(model: ModelId) -> bool {
+    matches!(
+        model,
+        ModelId::HrrrAk
+            | ModelId::Gfs
+            | ModelId::Gdas
+            | ModelId::Gefs
+            | ModelId::Aigfs
+            | ModelId::Aigefs
+            | ModelId::Rap
+            | ModelId::Nam
+            | ModelId::Hiresw
+            | ModelId::Sref
+            | ModelId::Nbm
+            | ModelId::RrfsA
+    )
 }
 
 #[cfg(feature = "python")]
@@ -2468,6 +2539,37 @@ mod tests {
                 HrrrWindowedProduct::Vpd2m0to48hRange
             ]
         );
+    }
+
+    #[test]
+    fn render_maps_router_allows_cross_model_total_qpf_windowed_product() {
+        let request = RenderMapsRequestJson {
+            windowed_products: Some(vec!["qpf_total".to_string()]),
+            ..RenderMapsRequestJson::default()
+        };
+
+        let routed = route_requested_products(ModelId::Gfs, &request).unwrap();
+
+        assert!(routed.direct_recipe_slugs.is_empty());
+        assert!(routed.derived_recipe_slugs.is_empty());
+        assert_eq!(
+            routed.windowed_products,
+            vec![HrrrWindowedProduct::QpfTotal]
+        );
+    }
+
+    #[test]
+    fn render_maps_router_rejects_cross_model_hrrr_specific_windowed_product() {
+        pyo3::prepare_freethreaded_python();
+        let request = RenderMapsRequestJson {
+            windowed_products: Some(vec!["qpf_6h".to_string()]),
+            ..RenderMapsRequestJson::default()
+        };
+
+        let err = route_requested_products(ModelId::Gfs, &request)
+            .expect_err("GFS qpf_6h should remain blocked until validated");
+
+        assert!(err.to_string().contains("qpf_total only"));
     }
 
     #[test]

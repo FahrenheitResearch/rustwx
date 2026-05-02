@@ -511,11 +511,19 @@ fn build_fetch_request(
     let variable_patterns = sharing_bundles
         .iter()
         .map(|bundle| {
-            crate::gridded::bundle_fetch_variable_patterns(
+            let mut patterns = crate::gridded::bundle_fetch_variable_patterns(
                 bundle.id.model,
                 bundle.id.bundle,
                 bundle.resolved.native_product.as_str(),
-            )
+            );
+            for alias in &bundle.aliases {
+                for pattern in &alias.variable_patterns {
+                    if !patterns.contains(pattern) {
+                        patterns.push(pattern.clone());
+                    }
+                }
+            }
+            patterns
         })
         // Indexed subsetting is only safe when every consumer that
         // shares this physical GRIB explicitly declares a safe subset.
@@ -826,6 +834,40 @@ mod tests {
         assert!(
             request.variable_patterns.is_empty(),
             "shared fetch should keep whole-file bytes when any consumer lacks an explicit subset contract"
+        );
+    }
+
+    #[test]
+    fn direct_native_requirement_patterns_reach_fetch_request() {
+        use rustwx_core::BundleRequirement;
+
+        let latest = LatestRun {
+            model: rustwx_core::ModelId::Gfs,
+            cycle: CycleSpec::new("20260415", 18).unwrap(),
+            source: SourceId::Aws,
+        };
+        let mut builder = crate::planner::ExecutionPlanBuilder::new(&latest, 6);
+        let requirement = BundleRequirement::new(CanonicalBundleDescriptor::NativeAnalysis, 6)
+            .with_native_override("pgrb2.0p25");
+        builder.require_with_logical_family_and_patterns(
+            &requirement,
+            Some("pgrb2.0p25"),
+            ["TMP:500 mb", "UGRD:500 mb", "VGRD:500 mb"],
+        );
+        let plan = builder.build();
+        let key = plan
+            .fetch_keys()
+            .into_iter()
+            .find(|key| key.native_product == "pgrb2.0p25")
+            .expect("direct plan includes pgrb2.0p25");
+        let request = build_fetch_request(&plan, &key).expect("request builds");
+        assert_eq!(
+            request.variable_patterns,
+            vec![
+                "TMP:500 mb".to_string(),
+                "UGRD:500 mb".to_string(),
+                "VGRD:500 mb".to_string(),
+            ]
         );
     }
 }

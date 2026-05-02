@@ -9,6 +9,7 @@ pub mod derived;
 pub mod direct;
 pub mod ecape;
 pub mod gallery;
+pub mod grib_ensemble;
 pub mod gridded;
 pub mod heavy;
 pub mod hrrr;

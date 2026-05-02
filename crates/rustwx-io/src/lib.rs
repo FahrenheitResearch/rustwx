@@ -1,9 +1,13 @@
 mod cache;
+mod earth2_archive;
 
 pub use cache::{
     CachedFetchMetadata, CachedFetchResult, CachedFieldResult, artifact_cache_dir,
     fetch_cache_paths, field_cache_path, load_cached_fetch, load_cached_selected_field,
     store_cached_fetch, store_cached_selected_field,
+};
+pub use earth2_archive::{
+    archive_path_from_url as earth2_archive_path_from_url, url_is_earth2_archive,
 };
 
 use grib_core::grib2::{
@@ -36,6 +40,8 @@ pub enum IoError {
     Cache(String),
     #[error("grib error: {0}")]
     Grib(String),
+    #[error("earth2 archive error: {0}")]
+    Earth2Archive(String),
     #[error("field '{selector}' was not found in GRIB data")]
     FieldNotFound { selector: FieldSelector },
     #[error("selector '{selector}' is not supported by structured GRIB extraction")]
@@ -212,6 +218,18 @@ pub fn fetch_bytes(fetch: &FetchRequest) -> Result<FetchResult, IoError> {
 
     let mut errors = Vec::new();
     for resolved in urls {
+        if matches!(resolved.source, SourceId::Earth2Archive) {
+            match local_earth2_fetch_result(&resolved)? {
+                Some(result) => return Ok(result),
+                None => {
+                    errors.push(format!(
+                        "{}: local Earth2Archive file is not available",
+                        resolved.source
+                    ));
+                    continue;
+                }
+            }
+        }
         match try_fetch_one(&client, &resolved, &patterns) {
             Ok(bytes) => {
                 return Ok(FetchResult {
@@ -237,6 +255,9 @@ pub fn fetch_bytes_with_cache(
     cache_root: &std::path::Path,
     use_cache: bool,
 ) -> Result<CachedFetchResult, IoError> {
+    if let Some(cached) = fetch_local_earth2_archive(fetch, cache_root)? {
+        return Ok(cached);
+    }
     if use_cache {
         if let Some(cached) = load_cached_fetch(cache_root, fetch)? {
             return Ok(cached);
@@ -397,6 +418,9 @@ pub fn extract_fields_partial_from_model_bytes(
     selectors: &[FieldSelector],
 ) -> Result<PartialExtraction, IoError> {
     match model {
+        ModelId::Aifs if should_extract_aifs_as_earth2_archive(bytes, preferred_path) => {
+            extract_earth2_archive_fields_partial(bytes, preferred_path, selectors)
+        }
         ModelId::WrfGdex => extract_wrf_gdex_fields_partial(bytes, preferred_path, selectors),
         _ => {
             let grib =
@@ -404,6 +428,29 @@ pub fn extract_fields_partial_from_model_bytes(
             extract_fields_from_grib2_partial(&grib, selectors)
         }
     }
+}
+
+fn should_extract_aifs_as_earth2_archive(bytes: &[u8], preferred_path: Option<&Path>) -> bool {
+    if bytes.is_empty() {
+        return true;
+    }
+    preferred_path
+        .and_then(|path| path.extension().and_then(|extension| extension.to_str()))
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("nc"))
+}
+
+fn extract_earth2_archive_fields_partial(
+    bytes: &[u8],
+    preferred_path: Option<&Path>,
+    selectors: &[FieldSelector],
+) -> Result<PartialExtraction, IoError> {
+    let partial =
+        earth2_archive::extract_selectors_partial_from_bytes(bytes, preferred_path, selectors)
+            .map_err(|err| IoError::Earth2Archive(err.to_string()))?;
+    Ok(PartialExtraction {
+        extracted: partial.extracted,
+        missing: partial.missing,
+    })
 }
 
 #[cfg(feature = "wrf")]
@@ -592,11 +639,67 @@ fn fetch_request_is_available(
 }
 
 fn probe_availability(client: &DownloadClient, resolved: &ResolvedUrl) -> bool {
+    if matches!(resolved.source, SourceId::Earth2Archive) {
+        return earth2_archive::archive_path_from_url(&resolved.grib_url)
+            .is_some_and(|path| path.exists());
+    }
     if matches!(resolved.source, SourceId::Nomads) {
         client.get_range(&resolved.grib_url, 0, 0).is_ok()
     } else {
         client.head_ok(resolved.availability_probe_url())
     }
+}
+
+fn fetch_local_earth2_archive(
+    fetch: &FetchRequest,
+    cache_root: &std::path::Path,
+) -> Result<Option<CachedFetchResult>, IoError> {
+    let Some(resolved) = filtered_urls(fetch)?
+        .into_iter()
+        .find(|resolved| matches!(resolved.source, SourceId::Earth2Archive))
+    else {
+        return Ok(None);
+    };
+    let Some(path) = earth2_archive::archive_path_from_url(&resolved.grib_url) else {
+        return Ok(None);
+    };
+    if !path.exists() {
+        if fetch.source_override != Some(SourceId::Earth2Archive) {
+            return Ok(None);
+        }
+        return Err(IoError::Earth2Archive(format!(
+            "local Earth2Archive file does not exist: {}",
+            path.display()
+        )));
+    }
+    let (_, metadata_path) = fetch_cache_paths(cache_root, fetch);
+    Ok(Some(CachedFetchResult {
+        result: FetchResult {
+            source: SourceId::Earth2Archive,
+            url: resolved.grib_url,
+            bytes: Vec::new(),
+        },
+        cache_hit: true,
+        bytes_path: path,
+        metadata_path,
+    }))
+}
+
+fn local_earth2_fetch_result(resolved: &ResolvedUrl) -> Result<Option<FetchResult>, IoError> {
+    if !matches!(resolved.source, SourceId::Earth2Archive) {
+        return Ok(None);
+    }
+    let Some(path) = earth2_archive::archive_path_from_url(&resolved.grib_url) else {
+        return Ok(None);
+    };
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(Some(FetchResult {
+        source: SourceId::Earth2Archive,
+        url: resolved.grib_url.clone(),
+        bytes: Vec::new(),
+    }))
 }
 
 fn any_source_available<F>(resolved: &[ResolvedUrl], mut probe: F) -> bool

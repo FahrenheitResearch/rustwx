@@ -159,6 +159,8 @@ impl From<PlaceLabelDensityArg> for PlaceLabelDensityTier {
     about = "Generate conservative multi-hour HRRR QPF, UH, 10 m wind, and 2 m surface window products"
 )]
 struct Args {
+    #[arg(long, default_value = "hrrr")]
+    model: rustwx_core::ModelId,
     #[arg(long, default_value = "20260414")]
     date: String,
     #[arg(long)]
@@ -195,7 +197,7 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let failure_slug = canonical_run_slug(
-        "hrrr",
+        args.model.as_str(),
         &args.date,
         args.cycle,
         args.forecast_hour,
@@ -228,6 +230,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let domain = DomainSpec::new(args.region.slug(), args.region.bounds());
     let request = HrrrWindowedBatchRequest {
+        model: args.model,
         date_yyyymmdd: args.date.clone(),
         cycle_override_utc: args.cycle,
         forecast_hour: args.forecast_hour,
@@ -247,12 +250,20 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     };
     let report = run_hrrr_windowed_batch(&request)?;
     let report_path = args.out_dir.join(format!(
-        "rustwx_hrrr_{}_{}z_f{:03}_{}_windowed_report.json",
-        report.date_yyyymmdd, report.cycle_utc, report.forecast_hour, report.domain.slug
+        "rustwx_{}_{}_{}z_f{:03}_{}_windowed_report.json",
+        report.model.as_str().replace('-', "_"),
+        report.date_yyyymmdd,
+        report.cycle_utc,
+        report.forecast_hour,
+        report.domain.slug
     ));
     let run_slug = format!(
-        "rustwx_hrrr_{}_{}z_f{:03}_{}_windowed",
-        report.date_yyyymmdd, report.cycle_utc, report.forecast_hour, report.domain.slug
+        "rustwx_{}_{}_{}z_f{:03}_{}_windowed",
+        report.model.as_str().replace('-', "_"),
+        report.date_yyyymmdd,
+        report.cycle_utc,
+        report.forecast_hour,
+        report.domain.slug
     );
     atomic_write_json(&report_path, &report)?;
     let mut artifacts = Vec::with_capacity(report.products.len() + report.blockers.len());
@@ -284,7 +295,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         args.out_dir.clone(),
     )
     .with_run_metadata(
-        "hrrr",
+        report.model.as_str(),
         report.date_yyyymmdd.clone(),
         report.cycle_utc,
         report.forecast_hour,

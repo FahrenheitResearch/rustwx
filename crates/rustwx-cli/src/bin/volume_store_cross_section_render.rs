@@ -1,14 +1,14 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use image::{DynamicImage, ImageFormat, RgbaImage};
 use rustwx_cross_section::{
-    decompose_wind_grid, render_scalar_section_profile, Color, CrossSectionProduct,
-    CrossSectionStyle, Insets, ScalarContourOverlayBundle, SectionMetadata, VerticalAxis,
-    WindOverlayBundle, WindOverlayStyle, ALL_CROSS_SECTION_PRODUCTS,
+    ALL_CROSS_SECTION_PRODUCTS, Color, CrossSectionProduct, CrossSectionStyle, Insets,
+    ScalarContourOverlayBundle, SectionMetadata, VerticalAxis, WindOverlayBundle, WindOverlayStyle,
+    decompose_wind_grid, render_scalar_section_profile,
 };
 use rustwx_products::cross_section::{
-    build_pressure_cross_section_product_values, missing_pressure_volume_requirements,
     PressureCrossSectionOptionalProductFields, PressureCrossSectionProductInputs,
+    build_pressure_cross_section_product_values, missing_pressure_volume_requirements,
 };
 use rustwx_products::volume_store::{
     RouteDef, RouteSectionPrimitives, SurfaceTerrainStore, VolumeStore,
