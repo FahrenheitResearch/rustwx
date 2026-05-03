@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
-use ureq::http::header::LOCATION;
+use ureq::http::header::{CONTENT_RANGE, LOCATION};
 
 use super::cache::DiskCache;
 
@@ -26,6 +26,9 @@ pub struct DownloadClient {
 /// especially `wrfnat`. Keep the cap comfortably above current operational
 /// artifacts while still guarding against obviously runaway downloads.
 const MAX_BODY_SIZE: u64 = 8 * 1024 * 1024 * 1024;
+
+/// Chunk size for whole-file parallel range downloads.
+const FULL_FILE_RANGE_CHUNK_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Default timeout per request.
 ///
@@ -75,10 +78,19 @@ pub struct DownloadConfig {
 impl Default for DownloadConfig {
     fn default() -> Self {
         Self {
-            timeout: DEFAULT_TIMEOUT,
+            timeout: default_timeout(),
             max_retries: DEFAULT_MAX_RETRIES,
         }
     }
+}
+
+fn default_timeout() -> Duration {
+    std::env::var("RUSTWX_DOWNLOAD_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_TIMEOUT)
 }
 
 /// Check whether an error from ureq should be retried.
@@ -493,6 +505,58 @@ impl DownloadClient {
         Ok(data)
     }
 
+    /// Download a full URL via byte ranges and return the concatenated bytes.
+    ///
+    /// This does not require an external `.idx` file. It first probes range
+    /// support with `Range: bytes=0-0`; if the origin does not respond with a
+    /// usable `Content-Range`, it falls back to the normal full-body download.
+    pub fn get_bytes_parallel_whole(&self, url: &str) -> crate::error::Result<Vec<u8>> {
+        let key = DiskCache::cache_key(url, None);
+
+        if let Some(cache) = &self.cache {
+            if let Some(data) = cache.get(&key) {
+                return Ok(data);
+            }
+        }
+
+        let total_len = match self.probe_range_total_length(url) {
+            Ok(Some(total_len)) if total_len > 0 => total_len,
+            _ => return self.get_bytes(url),
+        };
+        let ranges = full_file_ranges(total_len, FULL_FILE_RANGE_CHUNK_BYTES);
+        if ranges.len() <= 1 {
+            return self.get_bytes(url);
+        }
+
+        let data = self.get_ranges(url, &ranges)?;
+        if data.len() as u64 != total_len {
+            return Err(crate::RustmetError::Http(format!(
+                "parallel whole-file download for {} returned {} bytes, expected {}",
+                url,
+                data.len(),
+                total_len
+            )));
+        }
+
+        if let Some(cache) = &self.cache {
+            cache.put(&key, &data);
+        }
+
+        Ok(data)
+    }
+
+    fn probe_range_total_length(&self, url: &str) -> crate::error::Result<Option<u64>> {
+        let response = self.get_response_following_redirects(url, Some("bytes=0-0"))?;
+        if response.status().as_u16() != 206 {
+            return Ok(None);
+        }
+        Ok(response
+            .headers()
+            .get(CONTENT_RANGE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(parse_content_range_total))
+    }
+
     /// Download a URL and return the response body as a string (for .idx files).
     ///
     /// Text responses (like .idx) are NOT cached because they are small and
@@ -612,9 +676,32 @@ impl DownloadClient {
     }
 }
 
+fn parse_content_range_total(value: &str) -> Option<u64> {
+    let (_, total) = value.rsplit_once('/')?;
+    if total == "*" {
+        return None;
+    }
+    total.parse().ok()
+}
+
+fn full_file_ranges(total_len: u64, chunk_size: u64) -> Vec<(u64, u64)> {
+    if total_len == 0 || chunk_size == 0 {
+        return Vec::new();
+    }
+
+    let mut ranges = Vec::new();
+    let mut start = 0u64;
+    while start < total_len {
+        let end = start.saturating_add(chunk_size - 1).min(total_len - 1);
+        ranges.push((start, end));
+        start = end.saturating_add(1);
+    }
+    ranges
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DownloadClient, DownloadConfig};
+    use super::{full_file_ranges, parse_content_range_total, DownloadClient, DownloadConfig};
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
@@ -669,5 +756,19 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("redirect response missing Location header"));
         assert!(!message.contains("protocol: missing a location header"));
+    }
+
+    #[test]
+    fn content_range_total_parses_known_total() {
+        assert_eq!(parse_content_range_total("bytes 0-0/12345"), Some(12345));
+        assert_eq!(parse_content_range_total("bytes 10-20/*"), None);
+        assert_eq!(parse_content_range_total("not a range"), None);
+    }
+
+    #[test]
+    fn full_file_ranges_cover_file_once_in_order() {
+        assert_eq!(full_file_ranges(0, 4), Vec::<(u64, u64)>::new());
+        assert_eq!(full_file_ranges(1, 4), vec![(0, 0)]);
+        assert_eq!(full_file_ranges(10, 4), vec![(0, 3), (4, 7), (8, 9)]);
     }
 }

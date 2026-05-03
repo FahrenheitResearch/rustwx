@@ -11,8 +11,8 @@ use rustwx_calc::{
     compute_mucape_cin, compute_mucin, compute_sbcape, compute_sbcape_cin, compute_sbcin,
     compute_sblcl, compute_scp, compute_scp_effective, compute_scp_ehi, compute_shear,
     compute_shear_01km, compute_shear_06km, compute_ship, compute_srh, compute_srh_01km,
-    compute_srh_03km, compute_stp, compute_stp_effective, compute_stp_fixed,
-    compute_supported_severe_fields, compute_temperature_advection,
+    compute_srh_03km, compute_srh_03km_hemispheric, compute_stp, compute_stp_effective,
+    compute_stp_fixed, compute_supported_severe_fields, compute_temperature_advection,
     compute_temperature_advection_700mb, compute_temperature_advection_850mb,
 };
 
@@ -286,6 +286,23 @@ fn layer_specific_wind_and_ehi_wrappers_match_generic_paths() {
     assert_eq!(srh_03, compute_srh(wind, 3000.0).unwrap());
     assert_eq!(ehi_01, layers.ehi_01km);
     assert_eq!(ehi_03, layers.ehi_03km);
+}
+
+#[test]
+fn hemispheric_srh_uses_left_mover_and_positive_cyclonic_sign_in_shem() {
+    let shape = VolumeShape::new(GridShape::new(1, 1).unwrap(), 3).unwrap();
+    let wind = WindGridInputs {
+        shape,
+        u_3d_ms: &[0.0, 10.0, 20.0],
+        v_3d_ms: &[0.0, 0.0, 0.0],
+        height_agl_3d_m: &[0.0, 3000.0, 6000.0],
+    };
+
+    let north = compute_srh_03km_hemispheric(wind, &[35.0]).unwrap();
+    let south = compute_srh_03km_hemispheric(wind, &[-35.0]).unwrap();
+
+    assert_close(north[0], 75.0);
+    assert_close(south[0], 75.0);
 }
 
 #[test]

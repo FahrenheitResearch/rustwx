@@ -4,6 +4,7 @@ use crate::ecape::{EcapeVolumeInputs, SurfaceInputs, validate_inputs, validate_l
 use crate::error::CalcError;
 use crate::severe::{
     CapeCinOutputs, WindGridInputs, compute_cape_cin, compute_ehi, compute_shear, compute_srh,
+    compute_srh_hemispheric,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -341,6 +342,20 @@ pub fn compute_srh_01km(wind: WindGridInputs<'_>) -> Result<Vec<f64>, CalcError>
 
 pub fn compute_srh_03km(wind: WindGridInputs<'_>) -> Result<Vec<f64>, CalcError> {
     compute_srh(wind, 3000.0)
+}
+
+pub fn compute_srh_01km_hemispheric(
+    wind: WindGridInputs<'_>,
+    lat_deg: &[f64],
+) -> Result<Vec<f64>, CalcError> {
+    compute_srh_hemispheric(wind, lat_deg, 1000.0)
+}
+
+pub fn compute_srh_03km_hemispheric(
+    wind: WindGridInputs<'_>,
+    lat_deg: &[f64],
+) -> Result<Vec<f64>, CalcError> {
+    compute_srh_hemispheric(wind, lat_deg, 3000.0)
 }
 
 pub fn compute_ehi_01km(

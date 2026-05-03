@@ -64,7 +64,7 @@ pub mod grid {
     pub use wx_math::composite::compute_lapse_rate;
     pub use wx_math::composite::compute_pw;
     pub use wx_math::composite::compute_shear;
-    pub use wx_math::composite::compute_srh;
+    pub use wx_math::composite::{compute_srh, compute_srh_hemispheric};
 
     #[derive(Debug, Clone, PartialEq)]
     pub struct WindDiagnosticsBundle {

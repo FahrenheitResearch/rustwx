@@ -62,10 +62,10 @@ pub struct LoadedBundleSet {
 ///
 /// Note on `fetch_ms_total`: this is the **sum of per-worker elapsed
 /// time across fetches**, not the wall-clock cost of the fetch phase.
-/// When fetches run in parallel (non-NOMADS), wall-clock is roughly
-/// `max(per_fetch_ms)` while this field is the sum across workers and
-/// will be larger. Callers that want wall-clock fetch cost should
-/// measure around `load_execution_plan` directly.
+/// When fetches run in parallel, wall-clock is roughly `max(per_fetch_ms)`
+/// while this field is the sum across workers and will be larger. Callers
+/// that want wall-clock fetch cost should measure around
+/// `load_execution_plan` directly.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LoadedBundleTiming {
     /// Summed worker-elapsed fetch time across all distinct fetch keys.
@@ -285,51 +285,56 @@ fn fetch_execution_plan_into(
     loaded: &mut LoadedBundleSet,
     config: &BundleLoaderConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let parallel_fetches = !matches!(loaded.plan.source, SourceId::Nomads);
-
-    // Phase 1: fetch each unique physical file. Parallel for non-NOMADS
-    // sources; the planner already deduped, so each spawn corresponds
-    // to one distinct GRIB file.
+    // Phase 1: fetch each unique physical file. The planner already
+    // deduped, so each worker corresponds to one distinct GRIB file.
+    // NOMADS still needs bounded concurrency; fully serial full-GRIB
+    // pulls make HRRR latest-cycle processing miss the target budget.
     let fetch_keys = loaded.plan.fetch_keys();
+    let fetch_concurrency = fetch_concurrency_for_source(loaded.plan.source, fetch_keys.len());
     let cache_root = config.cache_root.clone();
     let use_cache = config.use_cache;
     let fetch_results: Vec<(
         BundleFetchKey,
         Result<FetchedBundleBytes, Box<dyn std::error::Error + Send + Sync>>,
-    )> = if parallel_fetches && fetch_keys.len() > 1 {
-        std::thread::scope(|scope| -> Vec<_> {
-            let handles: Vec<_> = fetch_keys
-                .iter()
-                .cloned()
-                .map(|key| {
-                    let cache_root = cache_root.clone();
-                    let use_cache = use_cache;
-                    let key_for_worker = key.clone();
-                    let plan = &loaded.plan;
-                    let handle = scope.spawn(move || {
-                        fetch_one(
-                            plan,
-                            key_for_worker,
-                            &cache_root,
-                            use_cache,
-                            config.earth2_ensemble,
-                        )
-                    });
-                    (key, handle)
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|(key, handle)| {
-                    let result = handle.join().unwrap_or_else(|_| {
-                        Err(Box::<dyn std::error::Error + Send + Sync>::from(
-                            "planner fetch worker panicked",
-                        ))
-                    });
-                    (key, result)
-                })
-                .collect()
-        })
+    )> = if fetch_concurrency > 1 && fetch_keys.len() > 1 {
+        let mut results = Vec::with_capacity(fetch_keys.len());
+        for chunk in fetch_keys.chunks(fetch_concurrency) {
+            let chunk_results = std::thread::scope(|scope| -> Vec<_> {
+                let handles: Vec<_> = chunk
+                    .iter()
+                    .cloned()
+                    .map(|key| {
+                        let cache_root = cache_root.clone();
+                        let use_cache = use_cache;
+                        let key_for_worker = key.clone();
+                        let plan = &loaded.plan;
+                        let handle = scope.spawn(move || {
+                            fetch_one(
+                                plan,
+                                key_for_worker,
+                                &cache_root,
+                                use_cache,
+                                config.earth2_ensemble,
+                            )
+                        });
+                        (key, handle)
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|(key, handle)| {
+                        let result = handle.join().unwrap_or_else(|_| {
+                            Err(Box::<dyn std::error::Error + Send + Sync>::from(
+                                "planner fetch worker panicked",
+                            ))
+                        });
+                        (key, result)
+                    })
+                    .collect()
+            });
+            results.extend(chunk_results);
+        }
+        results
     } else {
         fetch_keys
             .iter()
@@ -364,6 +369,16 @@ fn fetch_execution_plan_into(
     }
 
     Ok(())
+}
+
+fn fetch_concurrency_for_source(source: SourceId, fetch_key_count: usize) -> usize {
+    if fetch_key_count <= 1 {
+        return fetch_key_count;
+    }
+    match source {
+        SourceId::Nomads => fetch_key_count.min(3),
+        _ => fetch_key_count,
+    }
 }
 
 fn decode_execution_plan_into(
@@ -678,6 +693,19 @@ mod tests {
         assert_eq!(plan.bundles.len(), 2);
         assert_eq!(plan.fetch_keys().len(), 1);
         assert_eq!(plan.fetch_keys()[0].native_product, "pgrb2.0p25");
+    }
+
+    #[test]
+    fn nomads_fetch_concurrency_is_bounded_but_not_serial() {
+        assert_eq!(fetch_concurrency_for_source(SourceId::Nomads, 0), 0);
+        assert_eq!(fetch_concurrency_for_source(SourceId::Nomads, 1), 1);
+        assert_eq!(fetch_concurrency_for_source(SourceId::Nomads, 3), 3);
+        assert_eq!(fetch_concurrency_for_source(SourceId::Nomads, 6), 3);
+    }
+
+    #[test]
+    fn archive_fetch_concurrency_uses_all_fetch_keys() {
+        assert_eq!(fetch_concurrency_for_source(SourceId::Aws, 6), 6);
     }
 
     #[test]

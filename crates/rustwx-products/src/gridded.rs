@@ -5,6 +5,7 @@ use grib_core::grib2::{
     Grib2File, Grib2Message, flip_rows, grid_latlon,
     unpack_message_normalized as unpack_message_scan_normalized,
 };
+use rayon::prelude::*;
 use rustwx_calc::{GridShape as CalcGridShape, VolumeShape};
 use rustwx_core::{
     CanonicalBundleDescriptor, CanonicalDataFamily, CycleSpec, GridProjection, GridShape,
@@ -27,6 +28,7 @@ use std::time::Instant;
 
 const GEOPOTENTIAL_M2S2_TO_M: f64 = 1.0 / 9.806_65;
 const MAX_DECODE_CACHE_WRITE_BYTES: usize = 512 * 1024 * 1024;
+const PRESSURE_OPTIONAL_FIELDS_ENV: &str = "RUSTWX_PRESSURE_OPTIONAL_FIELDS";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SurfaceFields {
@@ -449,7 +451,11 @@ pub fn load_model_timestep_from_latest(
         };
 
     let surface_cache_path = decode_cache_path(cache_root, &surface_file.request, "surface");
-    let pressure_cache_path = decode_cache_path(cache_root, &pressure_file.request, "pressure");
+    let pressure_cache_path = decode_cache_path(
+        cache_root,
+        &pressure_file.request,
+        pressure_decode_cache_name(),
+    );
     let surface_bytes = surface_file.bytes.as_slice();
     let pressure_bytes = pressure_file.bytes.as_slice();
     let decode_surface_start = Instant::now();
@@ -559,8 +565,12 @@ pub fn load_model_timestep_from_latest_cropped(
         .ok_or("requested cropped load produced an empty domain")?;
     let surface_cache_path =
         cropped_decode_cache_path(cache_root, &surface_file.request, "surface", crop);
-    let pressure_cache_path =
-        cropped_decode_cache_path(cache_root, &pressure_file.request, "pressure", crop);
+    let pressure_cache_path = cropped_decode_cache_path(
+        cache_root,
+        &pressure_file.request,
+        pressure_decode_cache_name(),
+        crop,
+    );
 
     let decode_surface_start = Instant::now();
     let surface_decode = load_or_decode_surface_cropped(
@@ -1462,16 +1472,18 @@ fn surface_analysis_fetch_patterns(model: ModelId) -> Vec<String> {
 
 fn pressure_analysis_fetch_patterns(model: ModelId) -> Vec<String> {
     let patterns = match model {
-        ModelId::Hrrr | ModelId::HrrrAk => vec![
-            "HGT", "TMP", "SPFH", "VVEL", "UGRD", "VGRD", "ABSV", "CLWMR", "CIMIXR", "ICMR",
-            "RWMR", "SNMR", "GRLE",
-        ],
+        ModelId::Hrrr | ModelId::HrrrAk => {
+            hrrr_pressure_analysis_fetch_patterns(pressure_optional_decode_enabled())
+        }
+        // RAP pressure products stay on the full family fetch in production;
+        // old subset attempts could omit pressure-level wind records required
+        // by the generic pressure decoder.
+        ModelId::Rap => Vec::new(),
         ModelId::Gfs
         | ModelId::Gdas
         | ModelId::Gefs
         | ModelId::Aigfs
         | ModelId::Aigefs
-        | ModelId::Rap
         | ModelId::Nam
         | ModelId::Hiresw
         | ModelId::Sref => vec!["HGT", "TMP", "RH", "UGRD", "VGRD"],
@@ -1479,6 +1491,16 @@ fn pressure_analysis_fetch_patterns(model: ModelId) -> Vec<String> {
         _ => Vec::new(),
     };
     patterns.into_iter().map(str::to_string).collect()
+}
+
+fn hrrr_pressure_analysis_fetch_patterns(include_optional: bool) -> Vec<&'static str> {
+    let mut patterns = vec!["HGT", "TMP", "SPFH", "UGRD", "VGRD"];
+    if include_optional {
+        patterns.extend([
+            "VVEL", "ABSV", "CLWMR", "CIMIXR", "ICMR", "RWMR", "SNMR", "GRLE",
+        ]);
+    }
+    patterns
 }
 
 fn merge_variable_patterns(pattern_groups: impl IntoIterator<Item = Vec<String>>) -> Vec<String> {
@@ -1961,13 +1983,42 @@ fn decode_pressure_with_shape(
     let v_wind = collect_levels(&file.messages, 0, 2, 3, 100)?;
     let gh = decode_height_levels(&file.messages)?;
     let moisture = decode_pressure_mixing_ratio_levels(&file.messages, &temperature)?;
-    let omega = collect_optional_levels(&file.messages, 0, 2, 8, 100)?;
-    let absolute_vorticity = collect_optional_levels(&file.messages, 0, 2, 10, 100)?;
-    let cloud_liquid = collect_optional_levels(&file.messages, 0, 1, 22, 100)?;
-    let cloud_ice = collect_optional_levels_any(&file.messages, &[(0, 1, 82), (0, 1, 23)], 100)?;
-    let rain = collect_optional_levels(&file.messages, 0, 1, 24, 100)?;
-    let snow = collect_optional_levels(&file.messages, 0, 1, 25, 100)?;
-    let graupel = collect_optional_levels_any(&file.messages, &[(0, 1, 32), (0, 1, 74)], 100)?;
+    let include_optional = pressure_optional_decode_enabled();
+    let omega = if include_optional {
+        collect_optional_levels(&file.messages, 0, 2, 8, 100)?
+    } else {
+        None
+    };
+    let absolute_vorticity = if include_optional {
+        collect_optional_levels(&file.messages, 0, 2, 10, 100)?
+    } else {
+        None
+    };
+    let cloud_liquid = if include_optional {
+        collect_optional_levels(&file.messages, 0, 1, 22, 100)?
+    } else {
+        None
+    };
+    let cloud_ice = if include_optional {
+        collect_optional_levels_any(&file.messages, &[(0, 1, 82), (0, 1, 23)], 100)?
+    } else {
+        None
+    };
+    let rain = if include_optional {
+        collect_optional_levels(&file.messages, 0, 1, 24, 100)?
+    } else {
+        None
+    };
+    let snow = if include_optional {
+        collect_optional_levels(&file.messages, 0, 1, 25, 100)?
+    } else {
+        None
+    };
+    let graupel = if include_optional {
+        collect_optional_levels_any(&file.messages, &[(0, 1, 32), (0, 1, 74)], 100)?
+    } else {
+        None
+    };
 
     let levels = common_isobaric_levels(&temperature, &[&moisture, &u_wind, &v_wind, &gh]);
     if levels.is_empty() {
@@ -1990,10 +2041,20 @@ fn decode_pressure_with_shape(
     };
     let flatten_optional =
         |records: &Option<Vec<(f64, Vec<f64>)>>| -> Result<Option<Vec<f64>>, Box<dyn std::error::Error>> {
-            records
-                .as_ref()
-                .map(|records| flatten(records))
-                .transpose()
+            let Some(records) = records.as_ref() else {
+                return Ok(None);
+            };
+            let mut out = Vec::with_capacity(levels.len() * expected);
+            for &level in &levels {
+                let Some(values) = level_values(records, level) else {
+                    return Ok(None);
+                };
+                if values.len() != expected {
+                    return Ok(None);
+                }
+                out.extend_from_slice(values);
+            }
+            Ok(Some(out))
         };
 
     Ok((
@@ -2045,26 +2106,54 @@ fn decode_pressure_cropped_with_shape(
     let gh = decode_height_levels_cropped(&file.messages, nx, crop)?;
     let moisture =
         decode_pressure_mixing_ratio_levels_cropped(&file.messages, &temperature, nx, crop)?;
-    let omega = collect_optional_levels_cropped(&file.messages, 0, 2, 8, 100, nx, crop)?;
-    let absolute_vorticity =
-        collect_optional_levels_cropped(&file.messages, 0, 2, 10, 100, nx, crop)?;
-    let cloud_liquid = collect_optional_levels_cropped(&file.messages, 0, 1, 22, 100, nx, crop)?;
-    let cloud_ice = collect_optional_levels_any_cropped(
-        &file.messages,
-        &[(0, 1, 82), (0, 1, 23)],
-        100,
-        nx,
-        crop,
-    )?;
-    let rain = collect_optional_levels_cropped(&file.messages, 0, 1, 24, 100, nx, crop)?;
-    let snow = collect_optional_levels_cropped(&file.messages, 0, 1, 25, 100, nx, crop)?;
-    let graupel = collect_optional_levels_any_cropped(
-        &file.messages,
-        &[(0, 1, 32), (0, 1, 74)],
-        100,
-        nx,
-        crop,
-    )?;
+    let include_optional = pressure_optional_decode_enabled();
+    let omega = if include_optional {
+        collect_optional_levels_cropped(&file.messages, 0, 2, 8, 100, nx, crop)?
+    } else {
+        None
+    };
+    let absolute_vorticity = if include_optional {
+        collect_optional_levels_cropped(&file.messages, 0, 2, 10, 100, nx, crop)?
+    } else {
+        None
+    };
+    let cloud_liquid = if include_optional {
+        collect_optional_levels_cropped(&file.messages, 0, 1, 22, 100, nx, crop)?
+    } else {
+        None
+    };
+    let cloud_ice = if include_optional {
+        collect_optional_levels_any_cropped(
+            &file.messages,
+            &[(0, 1, 82), (0, 1, 23)],
+            100,
+            nx,
+            crop,
+        )?
+    } else {
+        None
+    };
+    let rain = if include_optional {
+        collect_optional_levels_cropped(&file.messages, 0, 1, 24, 100, nx, crop)?
+    } else {
+        None
+    };
+    let snow = if include_optional {
+        collect_optional_levels_cropped(&file.messages, 0, 1, 25, 100, nx, crop)?
+    } else {
+        None
+    };
+    let graupel = if include_optional {
+        collect_optional_levels_any_cropped(
+            &file.messages,
+            &[(0, 1, 32), (0, 1, 74)],
+            100,
+            nx,
+            crop,
+        )?
+    } else {
+        None
+    };
 
     let levels = common_isobaric_levels(&temperature, &[&moisture, &u_wind, &v_wind, &gh]);
     if levels.is_empty() {
@@ -2086,10 +2175,20 @@ fn decode_pressure_cropped_with_shape(
     };
     let flatten_optional =
         |records: &Option<Vec<(f64, Vec<f64>)>>| -> Result<Option<Vec<f64>>, Box<dyn std::error::Error>> {
-            records
-                .as_ref()
-                .map(|records| flatten(records))
-                .transpose()
+            let Some(records) = records.as_ref() else {
+                return Ok(None);
+            };
+            let mut out = Vec::with_capacity(levels.len() * expected);
+            for &level in &levels {
+                let Some(values) = level_values(records, level) else {
+                    return Ok(None);
+                };
+                if values.len() != expected {
+                    return Ok(None);
+                }
+                out.extend_from_slice(values);
+            }
+            Ok(Some(out))
         };
 
     let pressure_levels_hpa = levels
@@ -2415,15 +2514,20 @@ fn collect_levels(
     level_type: u8,
 ) -> Result<Vec<(f64, Vec<f64>)>, Box<dyn std::error::Error>> {
     let mut records = messages
-        .iter()
+        .par_iter()
         .filter(|msg| {
             msg.discipline == discipline
                 && msg.product.parameter_category == category
                 && msg.product.parameter_number == number
                 && msg.product.level_type == level_type
         })
-        .map(|msg| Ok((msg.product.level_value, unpack_message_normalized(msg)?)))
-        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+        .map(|msg| {
+            unpack_message_normalized(msg)
+                .map(|values| (msg.product.level_value, values))
+                .map_err(|err| err.to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()
+        .map_err(|err| std::io::Error::other(err))?;
 
     if records.is_empty() {
         return Err(format!(
@@ -2473,7 +2577,7 @@ fn collect_levels_cropped(
     crop: GridCrop,
 ) -> Result<Vec<(f64, Vec<f64>)>, Box<dyn std::error::Error>> {
     let mut records = messages
-        .iter()
+        .par_iter()
         .filter(|msg| {
             msg.discipline == discipline
                 && msg.product.parameter_category == category
@@ -2481,12 +2585,17 @@ fn collect_levels_cropped(
                 && msg.product.level_type == level_type
         })
         .map(|msg| {
-            Ok((
-                msg.product.level_value,
-                crop_2d_values(&unpack_message_normalized(msg)?, source_nx, crop),
-            ))
+            unpack_message_normalized(msg)
+                .map(|values| {
+                    (
+                        msg.product.level_value,
+                        crop_2d_values(&values, source_nx, crop),
+                    )
+                })
+                .map_err(|err| err.to_string())
         })
-        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+        .collect::<Result<Vec<_>, String>>()
+        .map_err(|err| std::io::Error::other(err))?;
 
     if records.is_empty() {
         return Err(format!(
@@ -2530,6 +2639,34 @@ fn collect_optional_levels_any_cropped(
         }
     }
     Ok(None)
+}
+
+fn pressure_optional_decode_enabled() -> bool {
+    pressure_optional_decode_enabled_from_env_value(
+        std::env::var(PRESSURE_OPTIONAL_FIELDS_ENV).ok(),
+    )
+}
+
+fn pressure_decode_cache_name() -> &'static str {
+    pressure_decode_cache_name_from_optional_enabled(pressure_optional_decode_enabled())
+}
+
+fn pressure_decode_cache_name_from_optional_enabled(include_optional: bool) -> &'static str {
+    if include_optional {
+        "pressure_optional"
+    } else {
+        "pressure_core"
+    }
+}
+
+fn pressure_optional_decode_enabled_from_env_value(value: Option<String>) -> bool {
+    let Some(value) = value else {
+        return true;
+    };
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+    )
 }
 
 fn common_isobaric_levels(
@@ -2901,6 +3038,18 @@ mod tests {
     }
 
     #[test]
+    fn rap_pressure_bundle_uses_full_family_fetch() {
+        assert!(
+            bundle_fetch_variable_patterns(
+                ModelId::Rap,
+                CanonicalBundleDescriptor::PressureAnalysis,
+                "awp130pgrb",
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
     fn product_overrides_replace_defaults() {
         let (surface, pressure) = thermo_bundles(ModelId::RrfsA, Some("prs-na"), Some("prs-na"));
         assert_eq!(surface.native_product, "prs-na");
@@ -2913,6 +3062,50 @@ mod tests {
         let rh = mixing_ratio_from_relative_humidity(1000.0, 298.15, 65.0);
         assert!(dewpoint > 0.0);
         assert!(rh > 0.0);
+    }
+
+    #[test]
+    fn pressure_optional_decode_env_parser_defaults_on() {
+        assert!(pressure_optional_decode_enabled_from_env_value(None));
+        assert!(pressure_optional_decode_enabled_from_env_value(Some(
+            "1".to_string()
+        )));
+        assert!(pressure_optional_decode_enabled_from_env_value(Some(
+            "true".to_string()
+        )));
+        assert!(!pressure_optional_decode_enabled_from_env_value(Some(
+            "0".to_string()
+        )));
+        assert!(!pressure_optional_decode_enabled_from_env_value(Some(
+            "false".to_string()
+        )));
+        assert!(!pressure_optional_decode_enabled_from_env_value(Some(
+            " off ".to_string()
+        )));
+    }
+
+    #[test]
+    fn hrrr_core_pressure_fetch_patterns_omit_optional_volumes() {
+        let core = hrrr_pressure_analysis_fetch_patterns(false);
+        assert_eq!(core, vec!["HGT", "TMP", "SPFH", "UGRD", "VGRD"]);
+
+        let full = hrrr_pressure_analysis_fetch_patterns(true);
+        assert!(full.contains(&"VVEL"));
+        assert!(full.contains(&"ABSV"));
+        assert!(full.contains(&"CLWMR"));
+        assert!(full.len() > core.len());
+    }
+
+    #[test]
+    fn pressure_decode_cache_name_includes_optional_policy() {
+        assert_eq!(
+            pressure_decode_cache_name_from_optional_enabled(false),
+            "pressure_core"
+        );
+        assert_eq!(
+            pressure_decode_cache_name_from_optional_enabled(true),
+            "pressure_optional"
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@ use rustwx_io::{
 };
 use rustwx_models::{ModelError, PlotRecipe, plot_recipe, plot_recipe_fetch_plan};
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
+use rustwx_products::shared_context::model_time_subtitle;
 use rustwx_render::{
     Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode, LevelDensity,
     LineworkRole, MapRenderRequest, ProductVisualMode, ProjectedDomain, ProjectedMap,
@@ -274,9 +275,11 @@ fn build_request(
 
     let mut render_request =
         build_render_request(recipe, &filled, &extracted, projected, args.region);
-    render_request.subtitle_left = Some(format!(
-        "{} {}Z F{:03}  {}",
-        args.date, latest.cycle.hour_utc, args.forecast_hour, args.model
+    render_request.subtitle_left = Some(model_time_subtitle(
+        args.model,
+        &args.date,
+        latest.cycle.hour_utc,
+        args.forecast_hour,
     ));
     render_request.subtitle_right = Some(format!("source: {}", latest.source));
     Ok(render_request)

@@ -1,24 +1,24 @@
-use crate::custom_poi::{CustomPoiOverlay, apply_custom_poi_overlay};
+use crate::custom_poi::{apply_custom_poi_overlay, CustomPoiOverlay};
 use crate::direct::{build_projected_map, build_projected_map_with_projection};
 use rayon::prelude::*;
 use rustwx_calc::{
-    CalcError, EcapeVolumeInputs, FixedStpInputs, GridShape as CalcGridShape, SurfaceInputs,
-    TemperatureAdvectionInputs, VolumeShape, WindGridInputs, compute_2m_apparent_temperature,
-    compute_ehi_01km, compute_ehi_03km, compute_lapse_rate_0_3km, compute_lapse_rate_700_500,
-    compute_lifted_index, compute_mlcape_cin, compute_mucape_cin, compute_sbcape_cin,
-    compute_shear_01km, compute_shear_06km, compute_srh_01km, compute_srh_03km, compute_stp_fixed,
-    compute_surface_thermo,
+    compute_2m_apparent_temperature, compute_ehi_01km, compute_ehi_03km, compute_lapse_rate_0_3km,
+    compute_lapse_rate_700_500, compute_lifted_index, compute_mlcape_cin, compute_mucape_cin,
+    compute_sbcape_cin, compute_shear_01km, compute_shear_06km, compute_srh_01km_hemispheric,
+    compute_srh_03km_hemispheric, compute_stp_fixed, compute_surface_thermo, CalcError,
+    EcapeVolumeInputs, FixedStpInputs, GridShape as CalcGridShape, SurfaceInputs,
+    TemperatureAdvectionInputs, VolumeShape, WindGridInputs,
 };
 use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId,
 };
 use rustwx_render::{
-    ChromeScale, Color, ColorScale, DerivedProductStyle, DiscreteColorScale, DomainFrame,
-    ExtendMode, LevelDensity, MapRenderRequest, PngCompressionMode, PngWriteOptions,
-    ProductVisualMode, ProjectedContourLineStyle, ProjectedDomain, ProjectedExtent, ProjectedMap,
-    RenderImageTiming, RenderStateTiming, WeatherPalette, WeatherProduct, WindBarbLayer,
     build_projected_contour_geometry_profile, densify_discrete_scale, map_frame_aspect_ratio,
-    save_png_profile_with_options, weather::temperature_palette_cropped_f,
+    save_png_profile_with_options, weather::temperature_palette_cropped_f, ChromeScale, Color,
+    ColorScale, DerivedProductStyle, DiscreteColorScale, DomainFrame, ExtendMode, LevelDensity,
+    MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode,
+    ProjectedContourLineStyle, ProjectedDomain, ProjectedExtent, ProjectedMap, RenderImageTiming,
+    RenderStateTiming, WeatherPalette, WeatherProduct, WindBarbLayer,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -30,37 +30,40 @@ use std::time::Instant;
 
 use crate::ecape::compute_ecape_map_fields_with_prepared_volume;
 use crate::gridded::{
-    GridCrop, PressureFields as GenericPressureFields, ProjectedGridIntersection,
-    SharedTiming as GenericSharedTiming, SurfaceFields as GenericSurfaceFields,
     broadcast_levels_pa, classify_projected_grid_intersection, crop_latlon_grid, crop_values_f64,
     decode_cache_path, decode_surface_grid, fetch_family_file,
     load_or_decode_pressure_cropped_with_shape, load_or_decode_surface_cropped,
-    prepare_heavy_volume_timed, resolve_thermo_pair_run,
+    prepare_heavy_volume_timed, resolve_thermo_pair_run, GridCrop,
+    PressureFields as GenericPressureFields, ProjectedGridIntersection,
+    SharedTiming as GenericSharedTiming, SurfaceFields as GenericSurfaceFields,
 };
-use crate::heavy::{HeavyComputeTiming, crop_and_guard_heavy_domain};
+use crate::heavy::{crop_and_guard_heavy_domain, HeavyComputeTiming};
 use crate::places::PlaceLabelOverlay;
 use crate::planner::{ExecutionPlanBuilder, PlannedBundle};
 use crate::publication::{
-    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
+    artifact_identity_from_path, ArtifactContentIdentity, PublishedFetchIdentity,
 };
 use crate::runtime::{
-    BundleLoaderConfig, CroppedDecodeProfile, FetchedBundleBytes, LoadedBundleSet,
-    LoadedBundleTiming, load_execution_plan,
+    load_execution_plan, BundleLoaderConfig, CroppedDecodeProfile, FetchedBundleBytes,
+    LoadedBundleSet, LoadedBundleTiming,
 };
 use crate::severe::{
     build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
 };
-use crate::shared_context::{DomainSpec, WeatherPanelField, build_weather_map_request};
+use crate::shared_context::{
+    build_weather_map_request, model_time_subtitle, source_subtitle, static_supersample_factor,
+    DomainSpec, WeatherPanelField,
+};
 use crate::source::{ProductSourceMode, ProductSourceRoute};
 use crate::thermo_native::{
-    NativeSemantics, NativeThermoRecipe, extract_native_thermo_field, native_candidate,
+    extract_native_thermo_field, native_candidate, NativeSemantics, NativeThermoRecipe,
 };
 use rustwx_models::{
-    LatestRun, latest_available_run_at_forecast_hour,
-    latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
+    latest_available_run_at_forecast_hour, latest_available_run_for_products_at_forecast_hour,
+    resolve_canonical_bundle_product, LatestRun,
 };
 #[cfg(feature = "wrf")]
-use rustwx_wrf::{WrfFile, looks_like_wrf};
+use rustwx_wrf::{looks_like_wrf, WrfFile};
 
 const OUTPUT_WIDTH: u32 = 1200;
 const OUTPUT_HEIGHT: u32 = 900;
@@ -1731,12 +1734,62 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
             map_frame_aspect_ratio(request.output_width, request.output_height, true, true),
         )?;
         project_ms += project_start.elapsed().as_millis();
-        let compute_start = Instant::now();
-        computed = compute_surface_only_derived_fields(surface, &planned_routes.compute_recipes)?;
-        compute_ms += compute_start.elapsed().as_millis();
-        grid = Some(surface_grid);
-        grid_projection = surface.projection.clone();
-        projected = Some(surface_projected);
+        match shared_precomputed {
+            Some(shared) => {
+                match classify_projected_grid_intersection(
+                    shared.grid.shape.nx,
+                    shared.grid.shape.ny,
+                    &surface_projected.projected_x,
+                    &surface_projected.projected_y,
+                    &surface_projected.extent,
+                    2,
+                )? {
+                    ProjectedGridIntersection::Empty => {
+                        return Err(format!(
+                            "derived projected crop for domain '{}' produced an empty domain",
+                            request.domain.slug
+                        )
+                        .into());
+                    }
+                    ProjectedGridIntersection::Full => {
+                        grid = Some(shared.grid.clone());
+                        grid_projection = shared.projection.clone();
+                        projected = Some(surface_projected.clone());
+                        computed = shared.computed.clone();
+                    }
+                    ProjectedGridIntersection::Crop(crop) => {
+                        let derived_grid = crop_latlon_grid(&shared.grid, crop)?;
+                        let derived_projected = build_projected_map_with_projection(
+                            &derived_grid.lat_deg,
+                            &derived_grid.lon_deg,
+                            shared.projection.as_ref(),
+                            request.domain.bounds,
+                            map_frame_aspect_ratio(
+                                request.output_width,
+                                request.output_height,
+                                true,
+                                true,
+                            ),
+                        )?;
+                        grid = Some(derived_grid);
+                        grid_projection = shared.projection.clone();
+                        projected = Some(derived_projected);
+                        computed =
+                            crop_computed_fields(&shared.computed, shared.grid.shape.nx, crop);
+                    }
+                }
+                fetch_decode = shared.fetch_decode.clone();
+            }
+            None => {
+                let compute_start = Instant::now();
+                computed =
+                    compute_surface_only_derived_fields(surface, &planned_routes.compute_recipes)?;
+                compute_ms += compute_start.elapsed().as_millis();
+                grid = Some(surface_grid);
+                grid_projection = surface.projection.clone();
+                projected = Some(surface_projected);
+            }
+        }
     }
 
     if needs_pair {
@@ -1914,9 +1967,9 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
         let native_field = crop_native_derived_field(&native_field, request.domain.bounds)?;
         native_extract_ms += extract_start.elapsed().as_millis();
 
-        let needs_native_projection = projected
+        let needs_native_projection = grid
             .as_ref()
-            .map(|existing| existing.projected_x.len() != native_field.grid.shape.len())
+            .map(|existing| !latlon_grids_match(existing, &native_field.grid))
             .unwrap_or(true);
         let native_projected = if needs_native_projection {
             let project_start = Instant::now();
@@ -3475,12 +3528,12 @@ where
         None
     };
     let srh_01km_m2s2 = if requirements.srh_01km {
-        Some(compute_srh_01km(make_wind()?)?)
+        Some(compute_srh_01km_hemispheric(make_wind()?, surface.lat())?)
     } else {
         None
     };
     let srh_03km_m2s2 = if requirements.srh_03km {
-        Some(compute_srh_03km(make_wind()?)?)
+        Some(compute_srh_03km_hemispheric(make_wind()?, surface.lat())?)
     } else {
         None
     };
@@ -3680,6 +3733,41 @@ pub(crate) fn load_derived_sampled_fields_from_latest(
         plan,
         &BundleLoaderConfig::new(cache_root.to_path_buf(), use_cache),
     )?;
+    load_derived_sampled_fields_from_loaded(recipe_slugs, &loaded)
+}
+
+pub(crate) fn build_derived_sampled_execution_plan(
+    latest: &LatestRun,
+    forecast_hour: u16,
+    recipe_slugs: &[String],
+) -> Result<crate::planner::ExecutionPlan, Box<dyn std::error::Error>> {
+    let recipes = plan_derived_recipes(recipe_slugs)?;
+    if recipes.is_empty() {
+        return Ok(ExecutionPlanBuilder::new(latest, forecast_hour).build());
+    }
+    Ok(build_derived_execution_plan(
+        latest,
+        forecast_hour,
+        None,
+        None,
+        true,
+        true,
+        &Vec::new(),
+    ))
+}
+
+pub(crate) fn load_derived_sampled_fields_from_loaded(
+    recipe_slugs: &[String],
+    loaded: &LoadedBundleSet,
+) -> Result<DerivedSampledProductSet, Box<dyn std::error::Error>> {
+    let recipes = plan_derived_recipes(recipe_slugs)?;
+    if recipes.is_empty() {
+        return Ok(DerivedSampledProductSet {
+            fields: Vec::new(),
+            blockers: Vec::new(),
+        });
+    }
+
     let (_, surface_decode, _, pressure_decode) = loaded
         .require_surface_pressure_pair()
         .map_err(|err| format!("derived sampling surface/pressure pair unavailable: {err}"))?;
@@ -3687,31 +3775,67 @@ pub(crate) fn load_derived_sampled_fields_from_latest(
     let mut fields = Vec::new();
     let mut blockers = Vec::new();
 
-    for recipe in recipes {
-        match compute_derived_query_field(
-            &surface_decode.value,
-            &pressure_decode.value,
-            recipe.slug(),
-        ) {
-            Ok(query) => {
-                let field = Field2D::new(
-                    ProductKey::named(query.recipe_slug.clone()),
-                    query.units.clone(),
-                    surface_decode.value.core_grid()?,
-                    query.values.into_iter().map(|value| value as f32).collect(),
-                )?;
-                fields.push(DerivedSampledProductField {
-                    recipe_slug: query.recipe_slug,
-                    source_route: ProductSourceRoute::CanonicalDerived,
-                    field,
-                    input_fetches: input_fetches.clone(),
-                });
+    match compute_derived_fields_generic(&surface_decode.value, &pressure_decode.value, &recipes) {
+        Ok(computed) => {
+            for recipe in recipes {
+                match derived_query_field_from_computed(
+                    surface_decode.value.nx,
+                    surface_decode.value.ny,
+                    recipe,
+                    &computed,
+                ) {
+                    Ok(query) => {
+                        let field = Field2D::new(
+                            ProductKey::named(query.recipe_slug.clone()),
+                            query.units.clone(),
+                            surface_decode.value.core_grid()?,
+                            query.values.into_iter().map(|value| value as f32).collect(),
+                        )?;
+                        fields.push(DerivedSampledProductField {
+                            recipe_slug: query.recipe_slug,
+                            source_route: ProductSourceRoute::CanonicalDerived,
+                            field,
+                            input_fetches: input_fetches.clone(),
+                        });
+                    }
+                    Err(err) => blockers.push(DerivedRecipeBlocker {
+                        recipe_slug: recipe.slug().to_string(),
+                        source_route: ProductSourceRoute::CanonicalDerived,
+                        reason: err.to_string(),
+                    }),
+                }
             }
-            Err(err) => blockers.push(DerivedRecipeBlocker {
-                recipe_slug: recipe.slug().to_string(),
-                source_route: ProductSourceRoute::CanonicalDerived,
-                reason: err.to_string(),
-            }),
+        }
+        Err(shared_err) => {
+            for recipe in recipes {
+                match compute_derived_query_field(
+                    &surface_decode.value,
+                    &pressure_decode.value,
+                    recipe.slug(),
+                ) {
+                    Ok(query) => {
+                        let field = Field2D::new(
+                            ProductKey::named(query.recipe_slug.clone()),
+                            query.units.clone(),
+                            surface_decode.value.core_grid()?,
+                            query.values.into_iter().map(|value| value as f32).collect(),
+                        )?;
+                        fields.push(DerivedSampledProductField {
+                            recipe_slug: query.recipe_slug,
+                            source_route: ProductSourceRoute::CanonicalDerived,
+                            field,
+                            input_fetches: input_fetches.clone(),
+                        });
+                    }
+                    Err(err) => blockers.push(DerivedRecipeBlocker {
+                        recipe_slug: recipe.slug().to_string(),
+                        source_route: ProductSourceRoute::CanonicalDerived,
+                        reason: format!(
+                            "shared derived compute failed: {shared_err}; recipe failed: {err}"
+                        ),
+                    }),
+                }
+            }
         }
     }
 
@@ -3722,6 +3846,25 @@ pub(crate) fn compute_derived_query_field(
     surface: &GenericSurfaceFields,
     pressure: &GenericPressureFields,
     recipe_slug: &str,
+) -> Result<DerivedQueryField, Box<dyn std::error::Error>> {
+    let recipe = DerivedRecipe::parse(recipe_slug).map_err(std::io::Error::other)?;
+    if recipe.is_heavy() {
+        return Err(format!(
+            "heavy derived recipe '{}' is not exposed through the lightweight query path",
+            recipe.slug()
+        )
+        .into());
+    }
+
+    let computed = compute_derived_fields_generic(surface, pressure, &[recipe])?;
+    derived_query_field_from_computed(surface.nx, surface.ny, recipe, &computed)
+}
+
+fn derived_query_field_from_computed(
+    nx: usize,
+    ny: usize,
+    recipe: DerivedRecipe,
+    computed: &DerivedComputedFields,
 ) -> Result<DerivedQueryField, Box<dyn std::error::Error>> {
     fn take_values(
         values: &Option<Vec<f64>>,
@@ -3737,16 +3880,6 @@ pub(crate) fn compute_derived_query_field(
         })
     }
 
-    let recipe = DerivedRecipe::parse(recipe_slug).map_err(std::io::Error::other)?;
-    if recipe.is_heavy() {
-        return Err(format!(
-            "heavy derived recipe '{}' is not exposed through the lightweight query path",
-            recipe.slug()
-        )
-        .into());
-    }
-
-    let computed = compute_derived_fields_generic(surface, pressure, &[recipe])?;
     let (values, units) = match recipe {
         DerivedRecipe::Sbcape => (
             take_values(&computed.sbcape_jkg, recipe, "sbcape_jkg")?,
@@ -3912,8 +4045,8 @@ pub(crate) fn compute_derived_query_field(
         title: recipe.title().to_string(),
         units: units.to_string(),
         values,
-        nx: surface.nx,
-        ny: surface.ny,
+        nx,
+        ny,
     })
 }
 
@@ -4258,14 +4391,16 @@ fn build_render_artifact_with_contour_mode(
     request.width = output_width;
     request.height = output_height;
     request.chrome_scale = ChromeScale::Fixed(1.5);
-    request.supersample_factor = 2;
+    request.supersample_factor = static_supersample_factor();
     request.domain_frame = Some(DomainFrame::model_data_default());
     request.title = Some(derived_title_for_model(model, recipe.title()));
-    request.subtitle_left = Some(format!(
-        "{} {}Z F{:03}  {}",
-        date_yyyymmdd, cycle_utc, forecast_hour, model
+    request.subtitle_left = Some(model_time_subtitle(
+        model,
+        date_yyyymmdd,
+        cycle_utc,
+        forecast_hour,
     ));
-    request.subtitle_right = Some(format!("source: {}", source));
+    request.subtitle_right = Some(source_subtitle(source));
     request.projected_domain = Some(ProjectedDomain {
         x: projected.projected_x.clone(),
         y: projected.projected_y.clone(),
@@ -4610,14 +4745,16 @@ fn build_render_artifact_with_contour_mode_profiled(
     request.width = output_width;
     request.height = output_height;
     request.chrome_scale = ChromeScale::Fixed(1.5);
-    request.supersample_factor = 2;
+    request.supersample_factor = static_supersample_factor();
     request.domain_frame = Some(DomainFrame::model_data_default());
     request.title = Some(derived_title_for_model(model, recipe.title()));
-    request.subtitle_left = Some(format!(
-        "{} {}Z F{:03}  {}",
-        date_yyyymmdd, cycle_utc, forecast_hour, model
+    request.subtitle_left = Some(model_time_subtitle(
+        model,
+        date_yyyymmdd,
+        cycle_utc,
+        forecast_hour,
     ));
-    request.subtitle_right = Some(format!("source: {}", source));
+    request.subtitle_right = Some(source_subtitle(source));
     request.projected_domain = Some(ProjectedDomain {
         x: projected.projected_x.clone(),
         y: projected.projected_y.clone(),
@@ -4838,7 +4975,7 @@ fn densify_native_contour_scale(
 }
 
 fn heavy_ecape_subtitle_right(recipe: DerivedRecipe, source: SourceId) -> String {
-    let source_label = format!("source: {}", source);
+    let source_label = source_subtitle(source);
     match recipe {
         DerivedRecipe::SbEcapeDerivedCapeRatio
         | DerivedRecipe::MlEcapeDerivedCapeRatio
@@ -4883,10 +5020,7 @@ fn render_derived_heavy_recipe(
         request.domain.slug,
         recipe.slug()
     ));
-    let subtitle_left = format!(
-        "{} {}Z F{:03}  {}",
-        date_yyyymmdd, cycle_utc, forecast_hour, model
-    );
+    let subtitle_left = model_time_subtitle(model, date_yyyymmdd, cycle_utc, forecast_hour);
     let render_start = Instant::now();
     let mut render_request = build_weather_map_request(
         grid,
@@ -5135,6 +5269,10 @@ fn crop_computed_fields(
             crop,
         ),
     }
+}
+
+fn latlon_grids_match(a: &rustwx_core::LatLonGrid, b: &rustwx_core::LatLonGrid) -> bool {
+    a.shape == b.shape && a.lat_deg == b.lat_deg && a.lon_deg == b.lon_deg
 }
 
 fn computed_surface_u10(
@@ -6030,14 +6168,12 @@ mod tests {
         .unwrap();
 
         assert!(artifact.request.projected_data_polygons.is_empty());
-        assert!(
-            artifact
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(artifact
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
         let ColorScale::Discrete(scale) = artifact.request.scale else {
             panic!("wet-bulb scale should be discrete");
         };
@@ -6074,14 +6210,12 @@ mod tests {
         )
         .unwrap();
         assert!(automatic.request.projected_data_polygons.is_empty());
-        assert!(
-            automatic
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(automatic
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
 
         let legacy = build_native_render_artifact(
             DerivedRecipe::Sbcape,
@@ -6100,14 +6234,12 @@ mod tests {
         )
         .unwrap();
         assert!(legacy.request.projected_data_polygons.is_empty());
-        assert!(
-            legacy
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(legacy
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
     }
 
     #[test]
@@ -6151,14 +6283,12 @@ mod tests {
         )
         .unwrap();
         assert!(!experimental.request.projected_data_polygons.is_empty());
-        assert!(
-            experimental
-                .request
-                .field
-                .values
-                .iter()
-                .all(|value| value.is_nan())
-        );
+        assert!(experimental
+            .request
+            .field
+            .values
+            .iter()
+            .all(|value| value.is_nan()));
     }
 
     #[test]
@@ -6184,14 +6314,12 @@ mod tests {
         )
         .unwrap();
         assert!(signature.request.projected_data_polygons.is_empty());
-        assert!(
-            signature
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(signature
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
     }
 
     #[test]
@@ -6217,14 +6345,12 @@ mod tests {
         )
         .unwrap();
         assert!(signature.request.projected_data_polygons.is_empty());
-        assert!(
-            signature
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(signature
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
     }
 
     #[test]
@@ -6277,14 +6403,12 @@ mod tests {
         )
         .unwrap();
         assert!(signature.request.projected_data_polygons.is_empty());
-        assert!(
-            signature
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(signature
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
     }
 
     #[test]
@@ -6438,11 +6562,9 @@ mod tests {
         assert!(planned.output_recipes.is_empty());
         assert!(planned.native_routes.is_empty());
         assert_eq!(planned.blockers.len(), 1);
-        assert!(
-            planned.blockers[0]
-                .reason
-                .contains("will not fall back to canonical-derived compute")
-        );
+        assert!(planned.blockers[0]
+            .reason
+            .contains("will not fall back to canonical-derived compute"));
     }
 
     #[test]
@@ -6458,11 +6580,9 @@ mod tests {
         assert!(planned.compute_recipes.is_empty());
         assert!(planned.heavy_recipes.is_empty());
         assert_eq!(planned.blockers.len(), 1);
-        assert!(
-            planned.blockers[0]
-                .reason
-                .contains("cropped heavy ECAPE path")
-        );
+        assert!(planned.blockers[0]
+            .reason
+            .contains("cropped heavy ECAPE path"));
     }
 
     #[test]

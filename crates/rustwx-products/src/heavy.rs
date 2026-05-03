@@ -14,7 +14,8 @@ use crate::severe::{
     compute_severe_panel_fields_with_prepared_volume,
 };
 use crate::shared_context::{
-    DomainSpec, ProjectedMap, WeatherPanelField, build_weather_map_request,
+    DomainSpec, ProjectedMap, WeatherPanelField, build_weather_map_request, model_time_subtitle,
+    source_subtitle,
 };
 use rustwx_core::{LatLonGrid, ModelId, SourceId};
 use rustwx_render::{ProductVisualMode, map_frame_aspect_ratio_for_mode, save_png_profile};
@@ -372,11 +373,13 @@ pub fn run_heavy_panel_hour(
     let compute_ms = compute_start.elapsed().as_millis();
 
     let model_slug = request.model.as_str().replace('-', "_");
-    let subtitle_left = format!(
-        "{} {}Z F{:03}  {}",
-        request.date_yyyymmdd, loaded.latest.cycle.hour_utc, request.forecast_hour, request.model
+    let subtitle_left = model_time_subtitle(
+        request.model,
+        &request.date_yyyymmdd,
+        loaded.latest.cycle.hour_utc,
+        request.forecast_hour,
     );
-    let source_label = format!("source: {}", loaded.latest.source.as_str());
+    let source_label = source_subtitle(loaded.latest.source);
     let (ecape_outputs, ecape_render_ms) = render_heavy_map_group(
         &request.out_dir,
         &model_slug,

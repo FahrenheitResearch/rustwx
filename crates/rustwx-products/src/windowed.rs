@@ -1,28 +1,32 @@
 use crate::gridded::{
-    FetchRuntimeInfo, decode_cache_path, decode_surface_grid, fetch_family_file_with_patterns,
-    load_surface_geometry_from_latest, resolve_model_run,
+    crop_latlon_grid, crop_values_f32, decode_cache_path, decode_surface_grid,
+    fetch_family_file_with_patterns, load_surface_geometry_from_latest, resolve_model_run,
+    FetchRuntimeInfo, GridCrop,
 };
 use crate::hrrr::HrrrFetchRuntimeInfo;
 use crate::places::PlaceLabelOverlay;
 use crate::planner::ExecutionPlanBuilder;
-use crate::publication::{PublishedFetchIdentity, fetch_identity_from_cached_result};
+use crate::publication::{fetch_identity_from_cached_result, PublishedFetchIdentity};
 use crate::runtime::{
-    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
+    load_execution_plan, BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet,
 };
-use crate::shared_context::{DomainSpec, ProjectedMap};
+use crate::shared_context::{
+    model_time_subtitle_with_lead_label, source_subtitle, static_supersample_factor, DomainSpec,
+    ProjectedMap,
+};
 use crate::windowed_decoder::{
-    HrrrApcpDecode, HrrrSurfaceSnapshotDecode, HrrrUhDecode, HrrrWind10mMaxDecode,
     compute_qpf_product, compute_surface_snapshot_product, compute_uh_product,
     compute_wind10m_product, load_or_decode_apcp, load_or_decode_surface_snapshot,
-    load_or_decode_uh25, load_or_decode_wind10m_max,
+    load_or_decode_uh25, load_or_decode_wind10m_max, qpf_fallback_hours_if_direct_missing,
+    HrrrApcpDecode, HrrrSurfaceSnapshotDecode, HrrrUhDecode, HrrrWind10mMaxDecode,
 };
-use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
-use rustwx_models::{LatestRun, resolve_canonical_bundle_product};
+use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId, SourceId};
+use rustwx_models::{resolve_canonical_bundle_product, LatestRun};
 use rustwx_render::map_frame_aspect_ratio;
 use rustwx_render::{
-    ChromeScale, DomainFrame, LegendControls, LegendMode, LevelDensity, MapRenderRequest,
-    PngCompressionMode, PngWriteOptions, ProductVisualMode, RenderDensity, WeatherProduct,
-    save_png_profile_with_options,
+    save_png_profile_with_options, ChromeScale, DomainFrame, LegendControls, LegendMode,
+    LevelDensity, MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode,
+    RenderDensity, WeatherProduct,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -395,6 +399,8 @@ pub struct HrrrWindowedSharedTiming {
     pub fetch_temp_ms: u128,
     #[serde(default)]
     pub decode_temp_ms: u128,
+    #[serde(default)]
+    pub compute_products_ms: u128,
     pub geometry_fetch_cache_hit: bool,
     pub geometry_decode_cache_hit: bool,
     pub surface_hours_loaded: Vec<u16>,
@@ -471,6 +477,43 @@ pub(crate) struct WindowedSampledProductSet {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct WindowedSampledHourProductField {
+    pub forecast_hour: u16,
+    pub product: HrrrWindowedProduct,
+    pub field: rustwx_core::Field2D,
+    pub input_fetches: Vec<PublishedFetchIdentity>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WindowedSampledHourBlocker {
+    pub forecast_hour: u16,
+    pub blocker: HrrrWindowedBlocker,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WindowedSampledMultiHourProductSet {
+    pub fields: Vec<WindowedSampledHourProductField>,
+    pub blockers: Vec<WindowedSampledHourBlocker>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedWindowedProduct {
+    product: HrrrWindowedProduct,
+    computed: crate::windowed_decoder::ComputedWindowedField,
+    compute_ms: u128,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedWindowedBatch {
+    latest: LatestRun,
+    shared_timing: HrrrWindowedSharedTiming,
+    products: Vec<PreparedWindowedProduct>,
+    blockers: Vec<HrrrWindowedBlocker>,
+    grid: rustwx_core::LatLonGrid,
+    projection: Option<rustwx_core::GridProjection>,
+}
+
+#[derive(Debug, Clone)]
 struct PreparedWindowedGeometryContext {
     fetch_geometry_ms: u128,
     decode_geometry_ms: u128,
@@ -489,6 +532,18 @@ enum WindowedProductOutcome {
     Rendered {
         index: usize,
         rendered: HrrrWindowedRenderedProduct,
+    },
+    Blocker {
+        index: usize,
+        blocker: HrrrWindowedBlocker,
+    },
+}
+
+#[derive(Debug)]
+enum WindowedComputeOutcome {
+    Computed {
+        index: usize,
+        prepared: PreparedWindowedProduct,
     },
     Blocker {
         index: usize,
@@ -729,27 +784,103 @@ fn push_unique(patterns: &mut Vec<String>, value: &str) {
     }
 }
 
-pub(crate) fn load_windowed_sampled_fields_from_latest(
-    latest: &LatestRun,
+fn qpf_hourly_fallback_hours_if_allowed(
+    model: ModelId,
+    product: HrrrWindowedProduct,
     forecast_hour: u16,
-    cache_root: &std::path::Path,
-    use_cache: bool,
-    products: &[HrrrWindowedProduct],
-) -> Result<WindowedSampledProductSet, Box<dyn std::error::Error>> {
-    let (planned_products, mut blockers, surface_hours, nat_hours, wind_hours, temp_hours) =
-        plan_windowed_products(products, forecast_hour, Some(latest.cycle.hour_utc));
-    if planned_products.is_empty() {
-        return Ok(WindowedSampledProductSet {
-            fields: Vec::new(),
-            blockers,
-        });
+    apcp_by_hour: &BTreeMap<u16, Result<HrrrApcpDecode, String>>,
+) -> Option<Vec<u16>> {
+    if !qpf_hourly_fallback_supported(model, forecast_hour) {
+        return None;
+    }
+    qpf_fallback_hours_if_direct_missing(product, forecast_hour, apcp_by_hour)
+}
+
+fn qpf_hourly_fallback_supported(model: ModelId, forecast_hour: u16) -> bool {
+    match model {
+        ModelId::Hrrr | ModelId::HrrrAk | ModelId::Rap => true,
+        ModelId::Gfs | ModelId::Gdas | ModelId::Aigfs => forecast_hour <= 120,
+        _ => false,
+    }
+}
+
+fn load_apcp_fallback_hours(
+    loaded: Option<&LoadedBundleSet>,
+    request: &HrrrWindowedBatchRequest,
+    latest: &LatestRun,
+    hours: &BTreeSet<u16>,
+) -> Result<
+    (
+        BTreeMap<u16, Result<HrrrApcpDecode, String>>,
+        Vec<HrrrWindowedHourFetchInfo>,
+        u128,
+        u128,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let fetch_product = windowed_fetch_product(latest.model);
+    let mut already_loaded_hours = BTreeSet::new();
+    let mut missing_hours = BTreeSet::new();
+    for &hour in hours {
+        if loaded
+            .and_then(|set| lookup_planner_bundle_for_hour(set, hour, fetch_product.as_str()))
+            .is_some()
+        {
+            already_loaded_hours.insert(hour);
+        } else {
+            missing_hours.insert(hour);
+        }
     }
 
-    let mut plan_builder = ExecutionPlanBuilder::new(latest, forecast_hour);
+    let mut out = BTreeMap::new();
+    let mut fetches = Vec::new();
+    let mut fetch_ms = 0u128;
+    let mut decode_ms = 0u128;
+
+    if !already_loaded_hours.is_empty() {
+        let (mut loaded_apcp, mut loaded_fetches, loaded_fetch_ms, loaded_decode_ms) =
+            load_apcp_hours_from_plan(loaded, request, &already_loaded_hours)?;
+        out.append(&mut loaded_apcp);
+        fetches.append(&mut loaded_fetches);
+        fetch_ms += loaded_fetch_ms;
+        decode_ms += loaded_decode_ms;
+    }
+
+    if !missing_hours.is_empty() {
+        let empty_hours = BTreeSet::new();
+        let fallback_loaded = load_windowed_plan_for_hours(
+            request,
+            latest,
+            &missing_hours,
+            &empty_hours,
+            &empty_hours,
+            &empty_hours,
+        )?;
+        let (mut fallback_apcp, mut fallback_fetches, fallback_fetch_ms, fallback_decode_ms) =
+            load_apcp_hours_from_plan(fallback_loaded.as_ref(), request, &missing_hours)?;
+        out.append(&mut fallback_apcp);
+        fetches.append(&mut fallback_fetches);
+        fetch_ms += fallback_fetch_ms;
+        decode_ms += fallback_decode_ms;
+    }
+
+    Ok((out, fetches, fetch_ms, decode_ms))
+}
+
+fn load_windowed_plan_for_hours(
+    request: &HrrrWindowedBatchRequest,
+    latest: &LatestRun,
+    surface_hours: &BTreeSet<u16>,
+    nat_hours: &BTreeSet<u16>,
+    wind_hours: &BTreeSet<u16>,
+    temp_hours: &BTreeSet<u16>,
+) -> Result<Option<LoadedBundleSet>, Box<dyn std::error::Error>> {
     let mut all_hours: BTreeSet<u16> = surface_hours.iter().copied().collect();
     all_hours.extend(nat_hours.iter().copied());
     all_hours.extend(wind_hours.iter().copied());
     all_hours.extend(temp_hours.iter().copied());
+
+    let mut plan_builder = ExecutionPlanBuilder::new(latest, request.forecast_hour);
     let fetch_product = windowed_fetch_product(latest.model);
     for &hour in &all_hours {
         let requirement = BundleRequirement::new(CanonicalBundleDescriptor::NativeAnalysis, hour)
@@ -760,6 +891,11 @@ pub(crate) fn load_windowed_sampled_fields_from_latest(
             wind_hours.contains(&hour),
             temp_hours.contains(&hour),
         );
+        // Preserve the logical alias names manifests have always
+        // surfaced for windowed: QPF hours show up as "sfc"; UH hours
+        // show up as "nat" because the windowed lane historically
+        // logged them as native-family fetches even though both decode
+        // out of wrfsfc.
         if surface_hours.contains(&hour) || wind_hours.contains(&hour) || temp_hours.contains(&hour)
         {
             plan_builder.require_with_logical_family_and_patterns(
@@ -776,10 +912,56 @@ pub(crate) fn load_windowed_sampled_fields_from_latest(
             );
         }
     }
-    let loaded = load_execution_plan(
-        plan_builder.build(),
-        &BundleLoaderConfig::new(cache_root.to_path_buf(), use_cache),
-    )?;
+    let plan = plan_builder.build();
+    if plan.bundles.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(load_execution_plan(
+        plan,
+        &BundleLoaderConfig::new(request.cache_root.clone(), request.use_cache),
+    )?))
+}
+
+pub(crate) fn load_windowed_sampled_fields_from_latest(
+    latest: &LatestRun,
+    forecast_hour: u16,
+    cache_root: &std::path::Path,
+    use_cache: bool,
+    products: &[HrrrWindowedProduct],
+) -> Result<WindowedSampledProductSet, Box<dyn std::error::Error>> {
+    let (planned_products, mut blockers, planned_surface_hours, nat_hours, wind_hours, temp_hours) =
+        plan_windowed_products(products, forecast_hour, Some(latest.cycle.hour_utc));
+    if planned_products.is_empty() {
+        return Ok(WindowedSampledProductSet {
+            fields: Vec::new(),
+            blockers,
+        });
+    }
+
+    let fetch_product = windowed_fetch_product(latest.model);
+    let request = sampling_windowed_request(
+        latest.model,
+        forecast_hour,
+        latest.source,
+        cache_root,
+        use_cache,
+    );
+    let mut surface_hours = if planned_products.iter().any(|product| product.is_qpf()) {
+        let mut hours = BTreeSet::new();
+        hours.insert(forecast_hour);
+        hours
+    } else {
+        planned_surface_hours
+    };
+    let loaded = load_windowed_plan_for_hours(
+        &request,
+        latest,
+        &surface_hours,
+        &nat_hours,
+        &wind_hours,
+        &temp_hours,
+    )?
+    .ok_or("windowed sampling produced no input bundle plan")?;
     let geometry = lookup_planner_bundle_for_hour(&loaded, forecast_hour, fetch_product.as_str())
         .ok_or("windowed sampling missing surface bundle for query grid")?;
     let surface_grid = decode_surface_grid(&geometry.file.bytes)?;
@@ -798,15 +980,29 @@ pub(crate) fn load_windowed_sampled_fields_from_latest(
             .map(|value| value as f32)
             .collect(),
     )?;
-    let request = sampling_windowed_request(
-        latest.model,
-        forecast_hour,
-        latest.source,
-        cache_root,
-        use_cache,
-    );
-    let (apcp_by_hour, surface_hour_fetches, _, _) =
+    let (mut apcp_by_hour, mut surface_hour_fetches, _, _) =
         load_apcp_hours_from_plan(Some(&loaded), &request, &surface_hours)?;
+    let fallback_surface_hours = planned_products
+        .iter()
+        .filter(|product| product.is_qpf())
+        .flat_map(|&product| {
+            qpf_hourly_fallback_hours_if_allowed(
+                latest.model,
+                product,
+                forecast_hour,
+                &apcp_by_hour,
+            )
+            .unwrap_or_default()
+        })
+        .filter(|hour| !surface_hours.contains(hour))
+        .collect::<BTreeSet<_>>();
+    if !fallback_surface_hours.is_empty() {
+        let (fallback_apcp_by_hour, mut fallback_surface_hour_fetches, _, _) =
+            load_apcp_fallback_hours(Some(&loaded), &request, latest, &fallback_surface_hours)?;
+        apcp_by_hour.extend(fallback_apcp_by_hour);
+        surface_hour_fetches.append(&mut fallback_surface_hour_fetches);
+        surface_hours.extend(fallback_surface_hours);
+    }
     let (uh_by_hour, uh_hour_fetches, _, _) =
         load_uh_hours_from_plan(Some(&loaded), &request, &nat_hours)?;
     let (wind_by_hour, wind_hour_fetches, _, _) =
@@ -843,6 +1039,184 @@ pub(crate) fn load_windowed_sampled_fields_from_latest(
     }
 
     Ok(WindowedSampledProductSet { fields, blockers })
+}
+
+pub(crate) fn load_windowed_sampled_fields_for_hours_from_latest(
+    latest: &LatestRun,
+    forecast_hours: &[u16],
+    cache_root: &std::path::Path,
+    use_cache: bool,
+    products: &[HrrrWindowedProduct],
+) -> Result<WindowedSampledMultiHourProductSet, Box<dyn std::error::Error>> {
+    if forecast_hours.is_empty() || products.is_empty() {
+        return Ok(WindowedSampledMultiHourProductSet {
+            fields: Vec::new(),
+            blockers: Vec::new(),
+        });
+    }
+
+    let mut planned_by_hour = BTreeMap::<u16, Vec<HrrrWindowedProduct>>::new();
+    let mut blockers = Vec::<WindowedSampledHourBlocker>::new();
+    let mut planned_surface_hours = BTreeSet::<u16>::new();
+    let mut nat_hours = BTreeSet::<u16>::new();
+    let mut wind_hours = BTreeSet::<u16>::new();
+    let mut temp_hours = BTreeSet::<u16>::new();
+
+    for &forecast_hour in forecast_hours {
+        let (planned_products, hour_blockers, hour_surface, hour_nat, hour_wind, hour_temp) =
+            plan_windowed_products(products, forecast_hour, Some(latest.cycle.hour_utc));
+        blockers.extend(
+            hour_blockers
+                .into_iter()
+                .map(|blocker| WindowedSampledHourBlocker {
+                    forecast_hour,
+                    blocker,
+                }),
+        );
+        if !planned_products.is_empty() {
+            planned_by_hour.insert(forecast_hour, planned_products);
+        }
+        planned_surface_hours.extend(hour_surface);
+        nat_hours.extend(hour_nat);
+        wind_hours.extend(hour_wind);
+        temp_hours.extend(hour_temp);
+    }
+
+    if planned_by_hour.is_empty() {
+        return Ok(WindowedSampledMultiHourProductSet {
+            fields: Vec::new(),
+            blockers,
+        });
+    }
+
+    let any_qpf = planned_by_hour
+        .values()
+        .flat_map(|products| products.iter())
+        .any(|product| product.is_qpf());
+    let mut surface_hours = if any_qpf {
+        planned_by_hour
+            .iter()
+            .filter(|(_, products)| products.iter().any(|product| product.is_qpf()))
+            .map(|(&hour, _)| hour)
+            .collect::<BTreeSet<_>>()
+    } else {
+        planned_surface_hours
+    };
+
+    let mut all_hours = BTreeSet::<u16>::new();
+    all_hours.extend(surface_hours.iter().copied());
+    all_hours.extend(nat_hours.iter().copied());
+    all_hours.extend(wind_hours.iter().copied());
+    all_hours.extend(temp_hours.iter().copied());
+
+    let fetch_product = windowed_fetch_product(latest.model);
+    let request = sampling_windowed_request(
+        latest.model,
+        forecast_hours[0],
+        latest.source,
+        cache_root,
+        use_cache,
+    );
+    let loaded = load_windowed_plan_for_hours(
+        &request,
+        latest,
+        &surface_hours,
+        &nat_hours,
+        &wind_hours,
+        &temp_hours,
+    )?
+    .ok_or("windowed multi-hour sampling produced no input bundle plan")?;
+    let geometry_hour = all_hours
+        .iter()
+        .next()
+        .copied()
+        .ok_or("windowed multi-hour sampling had no contributing hours")?;
+    let geometry = lookup_planner_bundle_for_hour(&loaded, geometry_hour, fetch_product.as_str())
+        .ok_or("windowed multi-hour sampling missing geometry bundle")?;
+    let surface_grid = decode_surface_grid(&geometry.file.bytes)?;
+    let grid = rustwx_core::LatLonGrid::new(
+        rustwx_core::GridShape::new(surface_grid.nx, surface_grid.ny)?,
+        surface_grid
+            .lat
+            .iter()
+            .copied()
+            .map(|value| value as f32)
+            .collect(),
+        surface_grid
+            .lon
+            .iter()
+            .copied()
+            .map(|value| value as f32)
+            .collect(),
+    )?;
+    let (mut apcp_by_hour, mut surface_hour_fetches, _, _) =
+        load_apcp_hours_from_plan(Some(&loaded), &request, &surface_hours)?;
+    let mut fallback_surface_hours = BTreeSet::new();
+    for (&forecast_hour, products) in &planned_by_hour {
+        for &product in products.iter().filter(|product| product.is_qpf()) {
+            if let Some(hours) = qpf_hourly_fallback_hours_if_allowed(
+                latest.model,
+                product,
+                forecast_hour,
+                &apcp_by_hour,
+            ) {
+                fallback_surface_hours.extend(
+                    hours
+                        .into_iter()
+                        .filter(|hour| !surface_hours.contains(hour)),
+                );
+            }
+        }
+    }
+    if !fallback_surface_hours.is_empty() {
+        let (fallback_apcp_by_hour, mut fallback_surface_hour_fetches, _, _) =
+            load_apcp_fallback_hours(Some(&loaded), &request, latest, &fallback_surface_hours)?;
+        apcp_by_hour.extend(fallback_apcp_by_hour);
+        surface_hour_fetches.append(&mut fallback_surface_hour_fetches);
+        surface_hours.extend(fallback_surface_hours);
+    }
+    let (uh_by_hour, uh_hour_fetches, _, _) =
+        load_uh_hours_from_plan(Some(&loaded), &request, &nat_hours)?;
+    let (wind_by_hour, wind_hour_fetches, _, _) =
+        load_wind10m_hours_from_plan(Some(&loaded), &request, &wind_hours)?;
+    let (snapshot_by_hour, temp_hour_fetches, _, _) =
+        load_surface_snapshot_hours_from_plan(Some(&loaded), &request, &temp_hours)?;
+
+    let mut fields = Vec::new();
+    for (forecast_hour, planned_products) in planned_by_hour {
+        for product in planned_products {
+            let computed = if product.is_qpf() {
+                compute_qpf_product(product, forecast_hour, &grid, &apcp_by_hour)
+            } else if product.is_wind10m() {
+                compute_wind10m_product(product, forecast_hour, &grid, &wind_by_hour)
+            } else if product.is_surface_snapshot() {
+                compute_surface_snapshot_product(product, &grid, &snapshot_by_hour)
+            } else {
+                compute_uh_product(product, forecast_hour, &grid, &uh_by_hour)
+            };
+            match computed {
+                Ok(computed) => fields.push(WindowedSampledHourProductField {
+                    forecast_hour,
+                    product,
+                    input_fetches: input_fetches_for_windowed_product(
+                        product,
+                        &computed.metadata.contributing_forecast_hours,
+                        &surface_hour_fetches,
+                        &uh_hour_fetches,
+                        &wind_hour_fetches,
+                        &temp_hour_fetches,
+                    ),
+                    field: computed.field,
+                }),
+                Err(reason) => blockers.push(WindowedSampledHourBlocker {
+                    forecast_hour,
+                    blocker: HrrrWindowedBlocker { product, reason },
+                }),
+            }
+        }
+    }
+
+    Ok(WindowedSampledMultiHourProductSet { fields, blockers })
 }
 
 fn sampling_windowed_request(
@@ -927,6 +1301,20 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
     }
 
     let total_start = Instant::now();
+    let prepared = prepare_hrrr_windowed_batch_with_context(request, latest)?;
+    run_hrrr_windowed_batch_from_prepared_with_total_start(request, &prepared, total_start)
+}
+
+pub(crate) fn prepare_hrrr_windowed_batch_with_context(
+    request: &HrrrWindowedBatchRequest,
+    latest: &rustwx_models::LatestRun,
+) -> Result<PreparedWindowedBatch, Box<dyn std::error::Error>> {
+    fs::create_dir_all(&request.out_dir)?;
+    if request.use_cache {
+        fs::create_dir_all(&request.cache_root)?;
+    }
+
+    let total_start = Instant::now();
     let geometry_context = prepare_windowed_geometry_context(request, latest)?;
     let fetch_geometry_ms = geometry_context.fetch_geometry_ms;
     let decode_geometry_ms = geometry_context.decode_geometry_ms;
@@ -934,72 +1322,62 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
     let geometry_decode_cache_hit = geometry_context.geometry_decode_cache_hit;
     let geometry_fetch = geometry_context.geometry_fetch;
     let geometry_input_fetch = geometry_context.geometry_input_fetch;
-    let projected = geometry_context.projected;
-    let project_ms = geometry_context.project_ms;
+    let _source_projected = geometry_context.projected;
     let grid = geometry_context.grid;
     let projection = geometry_context.projection;
 
-    let (planned_products, mut blockers, surface_hours, nat_hours, wind_hours, temp_hours) =
+    let (planned_products, mut blockers, planned_surface_hours, nat_hours, wind_hours, temp_hours) =
         plan_windowed_products(
             &request.products,
             request.forecast_hour,
             Some(latest.cycle.hour_utc),
         );
 
-    // Build a planner execution plan for every contributing forecast
-    // hour the windowed lane needs. APCP and native UH both live in the
-    // wrfsfc file, so the planner dedupes when QPF and UH products at
-    // the same hour share a fetch - and the loader's parallel-fetch
-    // path (off for NOMADS) keeps multi-hour runs reasonable.
-    let mut all_hours: BTreeSet<u16> = surface_hours.iter().copied().collect();
-    all_hours.extend(nat_hours.iter().copied());
-    all_hours.extend(wind_hours.iter().copied());
-    all_hours.extend(temp_hours.iter().copied());
-
-    let mut plan_builder = ExecutionPlanBuilder::new(latest, request.forecast_hour);
-    let fetch_product = windowed_fetch_product(latest.model);
-    for &hour in &all_hours {
-        let requirement = BundleRequirement::new(CanonicalBundleDescriptor::NativeAnalysis, hour)
-            .with_native_override(fetch_product.clone());
-        let patterns = windowed_hour_patterns(
-            surface_hours.contains(&hour),
-            nat_hours.contains(&hour),
-            wind_hours.contains(&hour),
-            temp_hours.contains(&hour),
-        );
-        // Preserve the logical alias names manifests have always
-        // surfaced for windowed: QPF hours show up as "sfc"; UH hours
-        // show up as "nat" because the windowed lane historically
-        // logged them as native-family fetches even though both decode
-        // out of wrfsfc.
-        if surface_hours.contains(&hour) || wind_hours.contains(&hour) || temp_hours.contains(&hour)
-        {
-            plan_builder.require_with_logical_family_and_patterns(
-                &requirement,
-                Some(fetch_product.as_str()),
-                patterns.clone(),
-            );
-        }
-        if nat_hours.contains(&hour) {
-            plan_builder.require_with_logical_family_and_patterns(
-                &requirement,
-                Some(fetch_product.as_str()),
-                patterns,
-            );
-        }
-    }
-    let plan = plan_builder.build();
-    let loaded = if plan.bundles.is_empty() {
-        None
+    let mut surface_hours = if planned_products.iter().any(|product| product.is_qpf()) {
+        let mut hours = BTreeSet::new();
+        hours.insert(request.forecast_hour);
+        hours
     } else {
-        Some(load_execution_plan(
-            plan,
-            &BundleLoaderConfig::new(request.cache_root.clone(), request.use_cache),
-        )?)
+        planned_surface_hours.clone()
     };
+    let loaded = load_windowed_plan_for_hours(
+        request,
+        latest,
+        &surface_hours,
+        &nat_hours,
+        &wind_hours,
+        &temp_hours,
+    )?;
 
-    let (apcp_by_hour, surface_hour_fetches, fetch_surface_ms, decode_surface_ms) =
+    let (mut apcp_by_hour, mut surface_hour_fetches, mut fetch_surface_ms, mut decode_surface_ms) =
         load_apcp_hours_from_plan(loaded.as_ref(), request, &surface_hours)?;
+    let fallback_surface_hours = planned_products
+        .iter()
+        .filter(|product| product.is_qpf())
+        .flat_map(|&product| {
+            qpf_hourly_fallback_hours_if_allowed(
+                latest.model,
+                product,
+                request.forecast_hour,
+                &apcp_by_hour,
+            )
+            .unwrap_or_default()
+        })
+        .filter(|hour| !surface_hours.contains(hour))
+        .collect::<BTreeSet<_>>();
+    if !fallback_surface_hours.is_empty() {
+        let (
+            fallback_apcp_by_hour,
+            mut fallback_surface_hour_fetches,
+            fallback_fetch_surface_ms,
+            fallback_decode_surface_ms,
+        ) = load_apcp_fallback_hours(loaded.as_ref(), request, latest, &fallback_surface_hours)?;
+        apcp_by_hour.extend(fallback_apcp_by_hour);
+        surface_hour_fetches.append(&mut fallback_surface_hour_fetches);
+        fetch_surface_ms += fallback_fetch_surface_ms;
+        decode_surface_ms += fallback_decode_surface_ms;
+        surface_hours.extend(fallback_surface_hours);
+    }
     let (uh_by_hour, uh_hour_fetches, fetch_nat_ms, decode_nat_ms) =
         load_uh_hours_from_plan(loaded.as_ref(), request, &nat_hours)?;
     let (wind_by_hour, wind_hour_fetches, fetch_wind_ms, decode_wind_ms) =
@@ -1007,28 +1385,76 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
     let (snapshot_by_hour, temp_hour_fetches, fetch_temp_ms, decode_temp_ms) =
         load_surface_snapshot_hours_from_plan(loaded.as_ref(), request, &temp_hours)?;
 
-    let product_parallelism = windowed_parallelism(request.source, planned_products.len());
-    let date_yyyymmdd = request.date_yyyymmdd.as_str();
-    let cycle_utc = latest.cycle.hour_utc;
-    let forecast_hour = request.forecast_hour;
-    let domain_slug = request.domain.slug.as_str();
-    let out_dir = &request.out_dir;
-    let model = latest.model;
-    let source = latest.source;
-    let projected = &projected;
-    let grid = &grid;
-    let projection = projection.as_ref();
-    let apcp_by_hour = &apcp_by_hour;
-    let uh_by_hour = &uh_by_hour;
-    let wind_by_hour = &wind_by_hour;
-    let snapshot_by_hour = &snapshot_by_hour;
-    let mut outcomes = thread::scope(|scope| -> Result<Vec<WindowedProductOutcome>, io::Error> {
+    let compute_start = Instant::now();
+    let (products, compute_blockers) = compute_prepared_windowed_products(
+        latest.source,
+        &planned_products,
+        request.forecast_hour,
+        &grid,
+        &apcp_by_hour,
+        &uh_by_hour,
+        &wind_by_hour,
+        &snapshot_by_hour,
+    )?;
+    let compute_products_ms = compute_start.elapsed().as_millis();
+    blockers.extend(compute_blockers);
+
+    let shared_timing = HrrrWindowedSharedTiming {
+        fetch_geometry_ms,
+        decode_geometry_ms,
+        project_ms: 0,
+        fetch_surface_ms,
+        decode_surface_ms,
+        fetch_nat_ms,
+        decode_nat_ms,
+        fetch_wind_ms,
+        decode_wind_ms,
+        fetch_temp_ms,
+        decode_temp_ms,
+        compute_products_ms,
+        geometry_fetch_cache_hit,
+        geometry_decode_cache_hit,
+        surface_hours_loaded: surface_hours.into_iter().collect(),
+        nat_hours_loaded: nat_hours.into_iter().collect(),
+        wind_hours_loaded: wind_hours.into_iter().collect(),
+        temp_hours_loaded: temp_hours.into_iter().collect(),
+        geometry_fetch,
+        geometry_input_fetch,
+        surface_hour_fetches,
+        uh_hour_fetches,
+        wind_hour_fetches,
+        temp_hour_fetches,
+    };
+
+    let _prepare_ms = total_start.elapsed().as_millis();
+    Ok(PreparedWindowedBatch {
+        latest: latest.clone(),
+        shared_timing,
+        products,
+        blockers,
+        grid,
+        projection,
+    })
+}
+
+fn compute_prepared_windowed_products(
+    source: SourceId,
+    planned_products: &[HrrrWindowedProduct],
+    forecast_hour: u16,
+    grid: &rustwx_core::LatLonGrid,
+    apcp_by_hour: &BTreeMap<u16, Result<HrrrApcpDecode, String>>,
+    uh_by_hour: &BTreeMap<u16, Result<HrrrUhDecode, String>>,
+    wind_by_hour: &BTreeMap<u16, Result<HrrrWind10mMaxDecode, String>>,
+    snapshot_by_hour: &BTreeMap<u16, Result<HrrrSurfaceSnapshotDecode, String>>,
+) -> Result<(Vec<PreparedWindowedProduct>, Vec<HrrrWindowedBlocker>), Box<dyn std::error::Error>> {
+    let product_parallelism = windowed_parallelism(source, planned_products.len());
+    let mut outcomes = thread::scope(|scope| -> Result<Vec<WindowedComputeOutcome>, io::Error> {
         let mut done = Vec::with_capacity(planned_products.len());
         let mut pending = std::collections::VecDeque::new();
 
         for (index, &product) in planned_products.iter().enumerate() {
             pending.push_back(
-                scope.spawn(move || -> Result<WindowedProductOutcome, io::Error> {
+                scope.spawn(move || -> Result<WindowedComputeOutcome, io::Error> {
                     let compute_start = Instant::now();
                     let computed = if product.is_qpf() {
                         compute_qpf_product(product, forecast_hour, grid, apcp_by_hour)
@@ -1044,13 +1470,114 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
                     let computed = match computed {
                         Ok(value) => value,
                         Err(reason) => {
-                            return Ok(WindowedProductOutcome::Blocker {
+                            return Ok(WindowedComputeOutcome::Blocker {
                                 index,
                                 blocker: HrrrWindowedBlocker { product, reason },
                             });
                         }
                     };
 
+                    Ok(WindowedComputeOutcome::Computed {
+                        index,
+                        prepared: PreparedWindowedProduct {
+                            product,
+                            computed,
+                            compute_ms,
+                        },
+                    })
+                }),
+            );
+
+            if pending.len() >= product_parallelism {
+                done.push(join_windowed_job(pending.pop_front().unwrap())?);
+            }
+        }
+
+        while let Some(handle) = pending.pop_front() {
+            done.push(join_windowed_job(handle)?);
+        }
+
+        Ok(done)
+    })?;
+    outcomes.sort_by_key(|outcome| match outcome {
+        WindowedComputeOutcome::Computed { index, .. } => *index,
+        WindowedComputeOutcome::Blocker { index, .. } => *index,
+    });
+    let mut products = Vec::new();
+    let mut blockers = Vec::new();
+    for outcome in outcomes {
+        match outcome {
+            WindowedComputeOutcome::Computed { prepared, .. } => products.push(prepared),
+            WindowedComputeOutcome::Blocker { blocker, .. } => blockers.push(blocker),
+        }
+    }
+    Ok((products, blockers))
+}
+
+pub(crate) fn run_hrrr_windowed_batch_from_prepared(
+    request: &HrrrWindowedBatchRequest,
+    prepared: &PreparedWindowedBatch,
+) -> Result<HrrrWindowedBatchReport, Box<dyn std::error::Error>> {
+    run_hrrr_windowed_batch_from_prepared_with_total_start(request, prepared, Instant::now())
+}
+
+fn run_hrrr_windowed_batch_from_prepared_with_total_start(
+    request: &HrrrWindowedBatchRequest,
+    prepared: &PreparedWindowedBatch,
+    total_start: Instant,
+) -> Result<HrrrWindowedBatchReport, Box<dyn std::error::Error>> {
+    fs::create_dir_all(&request.out_dir)?;
+    if request.use_cache {
+        fs::create_dir_all(&request.cache_root)?;
+    }
+
+    let crop = crop_for_domain_grid(
+        &prepared.grid,
+        request.domain.bounds,
+        windowed_domain_crop_pad_cells(),
+    )?;
+    let domain_grid = if let Some(crop) = crop {
+        crop_latlon_grid(&prepared.grid, crop)?
+    } else {
+        prepared.grid.clone()
+    };
+
+    let project_start = Instant::now();
+    let projected = crate::direct::build_projected_map_with_projection(
+        &domain_grid.lat_deg,
+        &domain_grid.lon_deg,
+        prepared.projection.as_ref(),
+        request.domain.bounds,
+        map_frame_aspect_ratio(request.output_width, request.output_height, true, true),
+    )?;
+    let project_ms = project_start.elapsed().as_millis();
+
+    let product_parallelism = windowed_parallelism(prepared.latest.source, prepared.products.len());
+    let date_yyyymmdd = request.date_yyyymmdd.as_str();
+    let cycle_utc = prepared.latest.cycle.hour_utc;
+    let forecast_hour = request.forecast_hour;
+    let domain_slug = request.domain.slug.as_str();
+    let out_dir = &request.out_dir;
+    let model = prepared.latest.model;
+    let source = prepared.latest.source;
+    let projected = &projected;
+    let projection = prepared.projection.as_ref();
+    let domain_grid = &domain_grid;
+    let prepared_products = &prepared.products;
+    let mut outcomes = thread::scope(|scope| -> Result<Vec<WindowedProductOutcome>, io::Error> {
+        let mut done = Vec::with_capacity(prepared_products.len());
+        let mut pending = std::collections::VecDeque::new();
+
+        for (index, prepared_product) in prepared_products.iter().enumerate() {
+            pending.push_back(
+                scope.spawn(move || -> Result<WindowedProductOutcome, io::Error> {
+                    let product = prepared_product.product;
+                    let computed = cropped_windowed_field_for_domain(
+                        &prepared_product.computed,
+                        domain_grid,
+                        crop,
+                    )
+                    .map_err(thread_windowed_error)?;
                     let output_path = out_dir.join(format!(
                         "rustwx_{}_{}_{}z_f{:03}_{}_{}.png",
                         model.as_str().replace('-', "_"),
@@ -1097,9 +1624,9 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
                             product,
                             output_path,
                             timing: HrrrWindowedProductTiming {
-                                compute_ms,
+                                compute_ms: 0,
                                 render_ms,
-                                total_ms: compute_ms + render_ms,
+                                total_ms: render_ms,
                             },
                             metadata: computed.metadata,
                         },
@@ -1123,49 +1650,134 @@ pub(crate) fn run_hrrr_windowed_batch_with_context(
         WindowedProductOutcome::Blocker { index, .. } => *index,
     });
     let mut rendered = Vec::new();
+    let mut blockers = prepared.blockers.clone();
     for outcome in outcomes {
         match outcome {
             WindowedProductOutcome::Rendered { rendered: item, .. } => rendered.push(item),
             WindowedProductOutcome::Blocker { blocker, .. } => blockers.push(blocker),
         }
     }
+    let mut shared_timing = prepared.shared_timing.clone();
+    shared_timing.project_ms = project_ms;
 
     Ok(HrrrWindowedBatchReport {
-        model: latest.model,
+        model: prepared.latest.model,
         date_yyyymmdd: request.date_yyyymmdd.clone(),
-        cycle_utc: latest.cycle.hour_utc,
+        cycle_utc: prepared.latest.cycle.hour_utc,
         forecast_hour: request.forecast_hour,
-        source: latest.source,
+        source: prepared.latest.source,
         domain: request.domain.clone(),
-        shared_timing: HrrrWindowedSharedTiming {
-            fetch_geometry_ms,
-            decode_geometry_ms,
-            project_ms,
-            fetch_surface_ms,
-            decode_surface_ms,
-            fetch_nat_ms,
-            decode_nat_ms,
-            fetch_wind_ms,
-            decode_wind_ms,
-            fetch_temp_ms,
-            decode_temp_ms,
-            geometry_fetch_cache_hit,
-            geometry_decode_cache_hit,
-            surface_hours_loaded: surface_hours.into_iter().collect(),
-            nat_hours_loaded: nat_hours.into_iter().collect(),
-            wind_hours_loaded: wind_hours.into_iter().collect(),
-            temp_hours_loaded: temp_hours.into_iter().collect(),
-            geometry_fetch,
-            geometry_input_fetch,
-            surface_hour_fetches,
-            uh_hour_fetches,
-            wind_hour_fetches,
-            temp_hour_fetches,
-        },
+        shared_timing,
         products: rendered,
         blockers,
         total_ms: total_start.elapsed().as_millis(),
     })
+}
+
+fn windowed_domain_crop_pad_cells() -> usize {
+    std::env::var("RUSTWX_DOMAIN_CROP_PAD_CELLS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(6)
+}
+
+fn crop_for_domain_grid(
+    grid: &rustwx_core::LatLonGrid,
+    bounds: (f64, f64, f64, f64),
+    pad_cells: usize,
+) -> Result<Option<GridCrop>, Box<dyn std::error::Error>> {
+    let nx = grid.shape.nx;
+    let ny = grid.shape.ny;
+    if nx == 0 || ny == 0 {
+        return Ok(None);
+    }
+
+    let mut min_x = nx;
+    let mut max_x = 0usize;
+    let mut min_y = ny;
+    let mut max_y = 0usize;
+    let mut found = false;
+
+    for y in 0..ny {
+        let row_offset = y * nx;
+        for x in 0..nx {
+            let idx = row_offset + x;
+            let lat = grid.lat_deg[idx] as f64;
+            let lon = grid.lon_deg[idx] as f64;
+            if point_in_geographic_bounds(lon, lat, bounds) {
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+                found = true;
+            }
+        }
+    }
+
+    if !found {
+        return Ok(None);
+    }
+
+    let crop = GridCrop {
+        x_start: min_x.saturating_sub(pad_cells),
+        x_end: (max_x + 1 + pad_cells).min(nx),
+        y_start: min_y.saturating_sub(pad_cells),
+        y_end: (max_y + 1 + pad_cells).min(ny),
+    };
+
+    if crop.x_start == 0 && crop.x_end == nx && crop.y_start == 0 && crop.y_end == ny {
+        Ok(None)
+    } else {
+        Ok(Some(crop))
+    }
+}
+
+fn cropped_windowed_field_for_domain(
+    computed: &crate::windowed_decoder::ComputedWindowedField,
+    domain_grid: &rustwx_core::LatLonGrid,
+    crop: Option<GridCrop>,
+) -> Result<crate::windowed_decoder::ComputedWindowedField, Box<dyn std::error::Error>> {
+    let field = if let Some(crop) = crop {
+        Field2D::new(
+            computed.field.product.clone(),
+            computed.field.units.clone(),
+            domain_grid.clone(),
+            crop_values_f32(&computed.field.values, computed.field.grid.shape.nx, crop),
+        )?
+    } else {
+        computed.field.clone()
+    };
+
+    Ok(crate::windowed_decoder::ComputedWindowedField {
+        field,
+        title: computed.title.clone(),
+        metadata: computed.metadata.clone(),
+        scale: computed.scale.clone(),
+    })
+}
+
+fn point_in_geographic_bounds(lon: f64, lat: f64, bounds: (f64, f64, f64, f64)) -> bool {
+    if !lon.is_finite() || !lat.is_finite() || lat < bounds.2 || lat > bounds.3 {
+        return false;
+    }
+    let west = normalize_longitude_for_bounds(bounds.0);
+    let east = normalize_longitude_for_bounds(bounds.1);
+    let lon = normalize_longitude_for_bounds(lon);
+    if west <= east {
+        lon >= west && lon <= east
+    } else {
+        lon >= west || lon <= east
+    }
+}
+
+fn normalize_longitude_for_bounds(lon: f64) -> f64 {
+    let mut lon = lon % 360.0;
+    if lon > 180.0 {
+        lon -= 360.0;
+    } else if lon <= -180.0 {
+        lon += 360.0;
+    }
+    lon
 }
 
 fn build_windowed_render_request(
@@ -1188,11 +1800,14 @@ fn build_windowed_render_request(
     render_request.height = request.output_height;
     render_request.title = Some(computed.title.clone());
     let hour_label = windowed_display_hour_label(product, &computed.metadata, forecast_hour);
-    render_request.subtitle_left = Some(format!(
-        "{} {}Z {}  {}",
-        date_yyyymmdd, cycle_utc, hour_label, model
+    render_request.subtitle_left = Some(model_time_subtitle_with_lead_label(
+        model,
+        date_yyyymmdd,
+        cycle_utc,
+        forecast_hour,
+        hour_label,
     ));
-    render_request.subtitle_right = Some(format!("source: {}", source));
+    render_request.subtitle_right = Some(source_subtitle(source));
     render_request.chrome_scale = ChromeScale::Fixed(1.5);
     render_request.render_density = RenderDensity {
         fill: LevelDensity::default(),
@@ -1202,7 +1817,7 @@ fn build_windowed_render_request(
         density: LevelDensity::default(),
         mode: LegendMode::Stepped,
     };
-    render_request.supersample_factor = 2;
+    render_request.supersample_factor = static_supersample_factor();
     render_request.domain_frame = Some(DomainFrame::model_data_default());
     render_request.visual_mode =
         if product.is_qpf() || product.is_wind10m() || product.is_surface_snapshot() {
@@ -1830,6 +2445,16 @@ mod tests {
     }
 
     #[test]
+    fn qpf_hourly_fallback_is_limited_to_hourly_cadence_models() {
+        assert!(qpf_hourly_fallback_supported(ModelId::Hrrr, 48));
+        assert!(qpf_hourly_fallback_supported(ModelId::Rap, 51));
+        assert!(qpf_hourly_fallback_supported(ModelId::Gfs, 120));
+        assert!(!qpf_hourly_fallback_supported(ModelId::Gfs, 123));
+        assert!(!qpf_hourly_fallback_supported(ModelId::Gefs, 6));
+        assert!(!qpf_hourly_fallback_supported(ModelId::EcmwfOpenData, 6));
+    }
+
+    #[test]
     fn plan_windowed_products_adds_wind_max_hours_for_any_extended_cycle() {
         let (planned, blockers, surface_hours, nat_hours, wind_hours, temp_hours) =
             plan_windowed_products(
@@ -1982,7 +2607,7 @@ mod tests {
         assert_eq!(render_request.supersample_factor, 2);
         assert_eq!(
             render_request.subtitle_left.as_deref(),
-            Some("20260424 22Z F001  hrrr")
+            Some("Init 04/24 22Z | F001 | Valid 04/24 23Z | HRRR")
         );
         assert_eq!(
             render_request.subtitle_right.as_deref(),
@@ -2066,7 +2691,7 @@ mod tests {
 
         assert_eq!(
             render_request.subtitle_left.as_deref(),
-            Some("20260424 0Z F025-F048  hrrr")
+            Some("Init 04/24 00Z | F025-F048 | Valid 04/26 00Z | HRRR")
         );
         assert_eq!(
             render_request.subtitle_right.as_deref(),

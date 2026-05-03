@@ -166,7 +166,9 @@ impl Transform {
 }
 
 pub fn is_earth2_archive_fetch(fetch: &FetchRequest) -> bool {
-    fetch.request.model == ModelId::Aifs || fetch.source_override == Some(SourceId::Earth2Archive)
+    fetch.source_override == Some(SourceId::Earth2Archive)
+        || (fetch.request.model == ModelId::Aifs
+            && fetch.source_override.unwrap_or(SourceId::Earth2Archive) == SourceId::Earth2Archive)
 }
 
 pub fn archive_root() -> Result<PathBuf, IoError> {

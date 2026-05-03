@@ -3062,13 +3062,13 @@ pub fn encode_rgba_png_profile_with_options(
     options: &PngWriteOptions,
 ) -> (Vec<u8>, u128) {
     let encode_start = Instant::now();
-    let compression = match options.compression {
-        PngCompressionMode::Default => CompressionType::Default,
-        PngCompressionMode::Fast => CompressionType::Fast,
-        PngCompressionMode::Fastest => CompressionType::Best,
+    let (compression, filter) = match options.compression {
+        PngCompressionMode::Default => (CompressionType::Default, PngFilterType::Adaptive),
+        PngCompressionMode::Fast => (CompressionType::Fast, PngFilterType::Adaptive),
+        PngCompressionMode::Fastest => (CompressionType::Fast, PngFilterType::NoFilter),
     };
     let mut buf = Vec::new();
-    let encoder = PngEncoder::new_with_quality(&mut buf, compression, PngFilterType::Adaptive);
+    let encoder = PngEncoder::new_with_quality(&mut buf, compression, filter);
     encoder
         .write_image(
             image.as_raw(),

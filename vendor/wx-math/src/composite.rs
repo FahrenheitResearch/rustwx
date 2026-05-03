@@ -227,8 +227,84 @@ pub fn compute_srh(
         .collect()
 }
 
+/// Compute 0-X km cyclonic Storm Relative Helicity using hemisphere-aware
+/// Bunkers storm motion.
+///
+/// Northern Hemisphere points use the Bunkers right mover. Southern Hemisphere
+/// points use the Bunkers left mover and negate the SRH term so cyclonic SRH
+/// remains positive for downstream severe composites.
+pub fn compute_srh_hemispheric(
+    u_3d: &[f64],
+    v_3d: &[f64],
+    height_agl_3d: &[f64],
+    lat_deg: &[f64],
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    top_m: f64,
+) -> Vec<f64> {
+    let n2d = ny * nx;
+
+    (0..n2d)
+        .into_par_iter()
+        .map(|idx| {
+            let j = idx / nx;
+            let i = idx % nx;
+
+            let u_col = extract_column(u_3d, nz, ny, nx, j, i);
+            let v_col = extract_column(v_3d, nz, ny, nx, j, i);
+            let h_col = extract_column(height_agl_3d, nz, ny, nx, j, i);
+
+            // Ensure ordered from surface upward
+            let (h_prof, u_prof, v_prof) = if h_col.len() > 1 && h_col[0] > h_col[h_col.len() - 1] {
+                let mut h = h_col;
+                let mut u = u_col;
+                let mut v = v_col;
+                h.reverse();
+                u.reverse();
+                v.reverse();
+                (h, u, v)
+            } else {
+                (h_col, u_col, v_col)
+            };
+
+            compute_srh_column_hemispheric(&h_prof, &u_prof, &v_prof, lat_deg[idx], top_m)
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BunkersStormMotion {
+    Right,
+    Left,
+}
+
 /// Compute SRH for a single column using Bunkers storm motion.
 fn compute_srh_column(heights: &[f64], u_prof: &[f64], v_prof: &[f64], top_m: f64) -> f64 {
+    compute_srh_column_for_motion(heights, u_prof, v_prof, top_m, BunkersStormMotion::Right)
+}
+
+fn compute_srh_column_hemispheric(
+    heights: &[f64],
+    u_prof: &[f64],
+    v_prof: &[f64],
+    lat_deg: f64,
+    top_m: f64,
+) -> f64 {
+    if lat_deg.is_finite() && lat_deg < 0.0 {
+        -compute_srh_column_for_motion(heights, u_prof, v_prof, top_m, BunkersStormMotion::Left)
+    } else {
+        compute_srh_column_for_motion(heights, u_prof, v_prof, top_m, BunkersStormMotion::Right)
+    }
+}
+
+fn compute_srh_column_for_motion(
+    heights: &[f64],
+    u_prof: &[f64],
+    v_prof: &[f64],
+    top_m: f64,
+    storm_motion: BunkersStormMotion,
+) -> f64 {
     let nz = heights.len();
     if nz < 2 {
         return 0.0;
@@ -272,17 +348,21 @@ fn compute_srh_column(heights: &[f64], u_prof: &[f64], v_prof: &[f64], top_m: f6
     let shear_u = u_6km - u_sfc;
     let shear_v = v_6km - v_sfc;
 
-    // 3. Bunkers deviation: rotate shear 90 degrees clockwise, scale to 7.5 m/s
+    // 3. Bunkers deviation: rotate shear 90 degrees, scale to 7.5 m/s.
     let shear_mag = (shear_u * shear_u + shear_v * shear_v).sqrt();
     let (dev_u, dev_v) = if shear_mag > 0.1 {
         let scale = 7.5 / shear_mag;
-        // 90-degree clockwise rotation: (u, v) -> (v, -u)
-        (shear_v * scale, -shear_u * scale)
+        match storm_motion {
+            // 90-degree clockwise rotation: (u, v) -> (v, -u)
+            BunkersStormMotion::Right => (shear_v * scale, -shear_u * scale),
+            // 90-degree counter-clockwise rotation: (u, v) -> (-v, u)
+            BunkersStormMotion::Left => (-shear_v * scale, shear_u * scale),
+        }
     } else {
         (0.0, 0.0)
     };
 
-    // Right-moving storm motion
+    // Bunkers storm motion
     let storm_u = mean_u + dev_u;
     let storm_v = mean_v + dev_v;
 

@@ -11,7 +11,7 @@ mod region;
 use clap::{Parser, ValueEnum};
 use region::conus_plus_us_split_region_domains;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
-use rustwx_products::derived::supported_derived_recipe_inventory;
+use rustwx_products::derived::{is_heavy_derived_recipe_slug, supported_derived_recipe_inventory};
 use rustwx_products::direct::supported_direct_recipe_slugs;
 use rustwx_products::non_ecape::{
     HrrrNonEcapeFanoutTiming, HrrrNonEcapeMultiDomainReport, HrrrNonEcapeMultiDomainRequest,
@@ -228,10 +228,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         args.direct_recipes.clone()
     };
     let derived_recipe_slugs = if args.derived_recipes.is_empty() {
-        supported_derived_recipe_inventory()
-            .iter()
-            .map(|recipe| recipe.slug.to_string())
-            .collect()
+        default_non_ecape_derived_recipe_slugs()
     } else {
         args.derived_recipes.clone()
     };
@@ -366,6 +363,17 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", report_path.display());
 
     Ok(())
+}
+
+fn default_non_ecape_derived_recipe_slugs() -> Vec<String> {
+    supported_derived_recipe_inventory()
+        .iter()
+        .filter(|recipe| {
+            let slug = recipe.slug.to_ascii_lowercase();
+            !slug.contains("ecape") && !is_heavy_derived_recipe_slug(recipe.slug)
+        })
+        .map(|recipe| recipe.slug.to_string())
+        .collect()
 }
 
 fn write_hour_report(

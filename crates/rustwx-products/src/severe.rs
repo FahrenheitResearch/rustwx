@@ -12,9 +12,10 @@ use crate::publication::{PublishedFetchIdentity, fetch_identity_from_cached_resu
 use crate::runtime::{
     BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
 };
-use crate::shared_context::{DomainSpec, WeatherPanelField};
+use crate::shared_context::{DomainSpec, WeatherPanelField, model_time_subtitle, source_subtitle};
 use rustwx_calc::{
-    EcapeVolumeInputs, SupportedSevereFields, SurfaceInputs, compute_supported_severe_fields,
+    EcapeVolumeInputs, SupportedSevereFields, SurfaceInputs,
+    compute_supported_severe_fields_hemispheric,
 };
 use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
 use rustwx_models::{LatestRun, default_bundle_product};
@@ -143,11 +144,13 @@ pub fn run_severe_batch(
     let compute_ms = compute_start.elapsed().as_millis();
 
     let model_slug = request.model.as_str().replace('-', "_");
-    let subtitle_left = format!(
-        "{} {}Z F{:03}  {}",
-        request.date_yyyymmdd, loaded.latest.cycle.hour_utc, request.forecast_hour, request.model
+    let subtitle_left = model_time_subtitle(
+        request.model,
+        &request.date_yyyymmdd,
+        loaded.latest.cycle.hour_utc,
+        request.forecast_hour,
     );
-    let source_label = format!("source: {}", loaded.latest.source.as_str());
+    let source_label = source_subtitle(loaded.latest.source);
     let (outputs, render_ms) = render_heavy_map_group(
         &request.out_dir,
         &model_slug,
@@ -499,7 +502,7 @@ pub fn compute_severe_panel_fields_with_prepared_volume(
     pressure: &PressureFields,
     prepared: &PreparedHeavyVolume,
 ) -> Result<Vec<WeatherPanelField>, Box<dyn std::error::Error>> {
-    let fields = compute_supported_severe_fields(
+    let fields = compute_supported_severe_fields_hemispheric(
         prepared.grid,
         EcapeVolumeInputs {
             pressure_pa: prepared
@@ -520,6 +523,7 @@ pub fn compute_severe_panel_fields_with_prepared_volume(
             u10_ms: &surface.u10_ms,
             v10_ms: &surface.v10_ms,
         },
+        &surface.lat,
     )?;
     Ok(severe_panel_fields_from_supported(fields))
 }

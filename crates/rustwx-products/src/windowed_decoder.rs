@@ -375,6 +375,39 @@ pub(crate) fn compute_qpf_product(
     })
 }
 
+pub(crate) fn qpf_fallback_hours_if_direct_missing(
+    product: HrrrWindowedProduct,
+    forecast_hour: u16,
+    apcp_by_hour: &BTreeMap<u16, Result<HrrrApcpDecode, String>>,
+) -> Option<Vec<u16>> {
+    let direct_window = match product {
+        HrrrWindowedProduct::Qpf1h => 1,
+        HrrrWindowedProduct::Qpf6h => 6,
+        HrrrWindowedProduct::Qpf12h => 12,
+        HrrrWindowedProduct::Qpf24h => 24,
+        HrrrWindowedProduct::QpfTotal => forecast_hour,
+        _ => return None,
+    };
+    let end = apcp_by_hour.get(&forecast_hour)?.as_ref().ok()?;
+    if select_window(&end.windows, direct_window).is_some() {
+        return None;
+    }
+    match product {
+        HrrrWindowedProduct::Qpf1h => Some(vec![forecast_hour]),
+        HrrrWindowedProduct::Qpf6h if forecast_hour >= 6 => {
+            Some(((forecast_hour - 5)..=forecast_hour).collect())
+        }
+        HrrrWindowedProduct::Qpf12h if forecast_hour >= 12 => {
+            Some(((forecast_hour - 11)..=forecast_hour).collect())
+        }
+        HrrrWindowedProduct::Qpf24h if forecast_hour >= 24 => {
+            Some(((forecast_hour - 23)..=forecast_hour).collect())
+        }
+        HrrrWindowedProduct::QpfTotal if forecast_hour >= 1 => Some((1..=forecast_hour).collect()),
+        _ => None,
+    }
+}
+
 pub(crate) fn compute_uh_product(
     product: HrrrWindowedProduct,
     forecast_hour: u16,
@@ -1319,6 +1352,32 @@ mod tests {
         assert_eq!(computed.metadata.strategy, "direct APCP 6h accumulation");
         assert_eq!(computed.metadata.contributing_forecast_hours, vec![6]);
         assert_eq!(computed.field.values, vec![0.5_f32, 1.0_f32]);
+    }
+
+    #[test]
+    fn qpf_fallback_hours_only_when_direct_window_is_missing() {
+        let mut apcp = BTreeMap::new();
+        apcp.insert(
+            12,
+            Ok(HrrrApcpDecode {
+                windows: vec![WindowedFieldRecord {
+                    hours: 12,
+                    values: vec![12.7, 25.4],
+                }],
+            }),
+        );
+        assert_eq!(
+            qpf_fallback_hours_if_direct_missing(HrrrWindowedProduct::Qpf12h, 12, &apcp),
+            None
+        );
+        assert_eq!(
+            qpf_fallback_hours_if_direct_missing(HrrrWindowedProduct::Qpf6h, 12, &apcp),
+            Some(vec![7, 8, 9, 10, 11, 12])
+        );
+        assert_eq!(
+            qpf_fallback_hours_if_direct_missing(HrrrWindowedProduct::QpfTotal, 12, &apcp),
+            None
+        );
     }
 
     #[test]

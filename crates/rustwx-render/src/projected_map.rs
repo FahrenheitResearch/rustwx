@@ -380,6 +380,8 @@ fn project_domain(
 
     let bounds = if framed_bounds.is_valid() {
         framed_bounds
+    } else if matches!(frame_source, ProjectedFrameSource::GeographicBounds(_)) {
+        return Err("requested geographic bounds crop does not intersect the model grid".into());
     } else {
         full_bounds
     };
@@ -638,6 +640,57 @@ mod tests {
         assert!(bounds.contains(0.0, 180.0));
         assert!(bounds.contains(0.0, -179.75));
         assert!(bounds.contains(0.0, 0.0));
+    }
+
+    #[test]
+    fn hrrr_like_crop_outside_footprint_errors_instead_of_framing_full_domain() {
+        let (lat, lon) = sample_lat_lon();
+        let err = build_projected_domain(
+            &lat,
+            &lon,
+            &ProjectedDomainBuildOptions::from_bounds((8.0, 15.0, 45.0, 52.0), 1.5)
+                .with_projection(ProjectionSpec::Geographic),
+        )
+        .expect_err("outside HRRR-like footprint should error");
+
+        assert!(
+            err.to_string().contains("does not intersect"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rap_like_crop_outside_footprint_errors_instead_of_framing_full_domain() {
+        let lat = vec![20.0, 20.0, 55.0, 55.0, 35.0, 45.0];
+        let lon = vec![-135.0, -60.0, -135.0, -60.0, -100.0, -80.0];
+        let err = build_projected_domain(
+            &lat,
+            &lon,
+            &ProjectedDomainBuildOptions::from_bounds((120.0, 150.0, -40.0, -20.0), 1.5)
+                .with_projection(ProjectionSpec::Geographic),
+        )
+        .expect_err("outside RAP-like footprint should error");
+
+        assert!(
+            err.to_string().contains("does not intersect"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn gfs_like_global_crop_inside_footprint_still_builds() {
+        let lat = vec![60.0, 60.0, 30.0, 30.0, 0.0, 0.0, -30.0, -30.0];
+        let lon = vec![-130.0, -70.0, -120.0, -80.0, 0.0, 90.0, 120.0, -120.0];
+        let cropped = build_projected_domain(
+            &lat,
+            &lon,
+            &ProjectedDomainBuildOptions::from_bounds((-125.0, -75.0, 25.0, 50.0), 1.5)
+                .with_projection(ProjectionSpec::Geographic),
+        )
+        .expect("GFS-like in-footprint crop should build");
+
+        assert!(cropped.extent.x_min < cropped.extent.x_max);
+        assert!(cropped.extent.y_min < cropped.extent.y_max);
     }
 
     #[test]

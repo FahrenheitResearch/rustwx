@@ -492,11 +492,9 @@ fn build_param_table(profile: &Profile, p: &ComputedParams) -> ParamTableData {
         }
     };
     let srh_layer = |bottom_agl: f64, top_agl: f64| -> f64 {
-        winds::helicity(
-            profile, bottom_agl, top_agl, p.rstu, p.rstv, -1.0, false,
-        )
-        .map(|value| value.0)
-        .unwrap_or(f64::NAN)
+        winds::helicity(profile, bottom_agl, top_agl, p.rstu, p.rstv, -1.0, false)
+            .map(|value| value.0)
+            .unwrap_or(f64::NAN)
     };
     let ehi_for_srh = |srh: f64| composites::ehi(p.sfcpcl.bplus, srh).unwrap_or(f64::NAN);
     let shear_row =
@@ -569,14 +567,22 @@ fn build_param_table(profile: &Profile, p: &ComputedParams) -> ParamTableData {
     let shear_layers = vec![
         shear_row("SFC-500m", p_sfc, p500m, 0.0, 500.0),
         shear_row("SFC-1km", p_sfc, p1km, 0.0, 1000.0),
-        shear_row("Eff Inflow", p.eff_inflow.0, p.eff_inflow.1, eff_bot_h, eff_top_h),
+        shear_row(
+            "Eff Inflow",
+            p.eff_inflow.0,
+            p.eff_inflow.1,
+            eff_bot_h,
+            eff_top_h,
+        ),
         shear_row("SFC-3km", p_sfc, p3km, 0.0, 3000.0),
         shear_row("1km-3km", p1km, p3km, 1000.0, 3000.0),
         shear_row("3km-6km", p3km, p6km, 3000.0, 6000.0),
         shear_row("SFC-6km", p_sfc, p6km, 0.0, 6000.0),
         shear_row("C 0-2km", p_sfc, p2km, 0.0, 2000.0),
     ];
-    let lr03_table = p.lr03.unwrap_or_else(|| lapse_rate_agl(profile, 0.0, 3000.0));
+    let lr03_table = p
+        .lr03
+        .unwrap_or_else(|| lapse_rate_agl(profile, 0.0, 3000.0));
     let lr36_table = p
         .lr36
         .unwrap_or_else(|| lapse_rate_agl(profile, 3000.0, 6000.0));
@@ -623,11 +629,7 @@ fn build_param_table(profile: &Profile, p: &ComputedParams) -> ParamTableData {
     let (lm_dir, lm_spd) = crate::profile::comp2vec(p.lstu, p.lstv);
     let (cu_dir, cu_spd) = crate::profile::comp2vec(p.corfidi_up_u, p.corfidi_up_v);
     let (cd_dir, cd_spd) = crate::profile::comp2vec(p.corfidi_dn_u, p.corfidi_dn_v);
-    let (_, lcl_temp_c) = cape::lcl(
-        p_sfc,
-        profile.tmpc[profile.sfc],
-        profile.dwpc[profile.sfc],
-    );
+    let (_, lcl_temp_c) = cape::lcl(p_sfc, profile.tmpc[profile.sfc], profile.dwpc[profile.sfc]);
     let (dgz_bot, dgz_top) = indices::dgz(profile);
     let dgz_rh = indices::mean_relh(profile, Some(dgz_bot), Some(dgz_top)).unwrap_or(f64::NAN);
     let mean_wind_1_35_ms = mean_wind_mag(p1km, p3500m) * 0.514_444;
@@ -635,8 +637,8 @@ fn build_param_table(profile: &Profile, p: &ComputedParams) -> ParamTableData {
         .unwrap_or(f64::NAN);
     let shr06_mag = mag(p.shr06.0, p.shr06.1);
     let mean06_mag = mag(p.mean_wind_06.0, p.mean_wind_06.1);
-    let dcp = composites::dcp(p.dcape.dcape, p.mupcl.bplus, shr06_mag, mean06_mag)
-        .unwrap_or(f64::NAN);
+    let dcp =
+        composites::dcp(p.dcape.dcape, p.mupcl.bplus, shr06_mag, mean06_mag).unwrap_or(f64::NAN);
     let esp = composites::esp(p.mlpcl.b3km, lr03_table, p.mlpcl.bplus).unwrap_or(f64::NAN);
     let lr38 = indices::lapse_rate(profile, 3000.0, 8000.0, false).unwrap_or(f64::NAN);
     let mean_wind_3_12_ms = mean_wind_mag(p3km, p12km) * 0.514_444;
@@ -649,11 +651,7 @@ fn build_param_table(profile: &Profile, p: &ComputedParams) -> ParamTableData {
         }
     };
     let down_t = p.dcape.ttrace.last().copied().unwrap_or(f64::NAN);
-    let sfc_rh = profile
-        .relh
-        .get(profile.sfc)
-        .copied()
-        .unwrap_or(f64::NAN);
+    let sfc_rh = profile.relh.get(profile.sfc).copied().unwrap_or(f64::NAN);
 
     ParamTableData {
         parcels,

@@ -495,33 +495,33 @@ pub struct ParamTableData {
     pub shear_layers: Vec<ShearRow>,
 
     // Row 3 — Thermodynamic indices
-    pub pw: f64,       // Precipitable water (in)
-    pub mean_w: f64,   // Mean mixing ratio (g/kg)
-    pub sfc_rh: f64,   // Surface RH (%)
-    pub low_rh: f64,   // Low-level mean RH (%)
-    pub mid_rh: f64,   // Mid-level mean RH (%)
-    pub dgz_rh: f64,   // Mean RH in the dendritic growth zone (%)
+    pub pw: f64,               // Precipitable water (in)
+    pub mean_w: f64,           // Mean mixing ratio (g/kg)
+    pub sfc_rh: f64,           // Surface RH (%)
+    pub low_rh: f64,           // Low-level mean RH (%)
+    pub mid_rh: f64,           // Mid-level mean RH (%)
+    pub dgz_rh: f64,           // Mean RH in the dendritic growth zone (%)
     pub freezing_level_m: f64, // Freezing level (m AGL)
-    pub wb_zero_m: f64, // Wet-bulb zero height (m AGL)
-    pub mu_mpl_m: f64, // MU maximum parcel level (m AGL)
-    pub thetae_diff_3km: f64, // 3 km theta-e difference (K)
-    pub lcl_temp_c: f64, // Surface parcel LCL temperature (C)
-    pub dcape: f64,    // Downdraft CAPE (J/kg)
-    pub dwn_t: f64,    // Downdraft temperature (F or C)
-    pub k_index: f64,  // K-Index
-    pub t_totals: f64, // Total Totals
-    pub tei: f64,      // Theta-E Index (K)
-    pub tehi: f64,     // Theta-E / helicity index placeholder
-    pub tts: f64,      // Thunderstorm threat score placeholder
-    pub conv_t: f64,   // Convective temperature (F or C)
-    pub max_t: f64,    // Forecast max temperature (F or C)
-    pub mmp: f64,      // MCS Maintenance Probability
-    pub sig_svr: f64,  // Significant Severe (m^3/s^3)
-    pub esp: f64,      // Enhanced Stretching Potential
-    pub wndg: f64,     // Wind Damage Parameter
-    pub dcp: f64,      // Derecho Composite Parameter
-    pub lhp: f64,      // Large Hail Parameter
-    pub cape_3km: f64, // 0-3 km CAPE (J/kg)
+    pub wb_zero_m: f64,        // Wet-bulb zero height (m AGL)
+    pub mu_mpl_m: f64,         // MU maximum parcel level (m AGL)
+    pub thetae_diff_3km: f64,  // 3 km theta-e difference (K)
+    pub lcl_temp_c: f64,       // Surface parcel LCL temperature (C)
+    pub dcape: f64,            // Downdraft CAPE (J/kg)
+    pub dwn_t: f64,            // Downdraft temperature (F or C)
+    pub k_index: f64,          // K-Index
+    pub t_totals: f64,         // Total Totals
+    pub tei: f64,              // Theta-E Index (K)
+    pub tehi: f64,             // Theta-E / helicity index placeholder
+    pub tts: f64,              // Thunderstorm threat score placeholder
+    pub conv_t: f64,           // Convective temperature (F or C)
+    pub max_t: f64,            // Forecast max temperature (F or C)
+    pub mmp: f64,              // MCS Maintenance Probability
+    pub sig_svr: f64,          // Significant Severe (m^3/s^3)
+    pub esp: f64,              // Enhanced Stretching Potential
+    pub wndg: f64,             // Wind Damage Parameter
+    pub dcp: f64,              // Derecho Composite Parameter
+    pub lhp: f64,              // Large Hail Parameter
+    pub cape_3km: f64,         // 0-3 km CAPE (J/kg)
 
     // Row 4 — Lapse rates
     pub lapse_rates: Vec<LapseRateRow>,
@@ -641,8 +641,18 @@ pub fn render_sized(data: &ParamTableData, width: usize, height: usize) -> Pixel
                 y,
                 cape_color(pcl.cape),
             );
-            buf.draw_str_right(&lpad(&fmt_int(pcl.cape_3km), 5), c4 + SCALED_CW * 5, y, WHITE);
-            buf.draw_str_right(&lpad(&fmt_int(pcl.cape_6km), 5), c5 + SCALED_CW * 5, y, WHITE);
+            buf.draw_str_right(
+                &lpad(&fmt_int(pcl.cape_3km), 5),
+                c4 + SCALED_CW * 5,
+                y,
+                WHITE,
+            );
+            buf.draw_str_right(
+                &lpad(&fmt_int(pcl.cape_6km), 5),
+                c5 + SCALED_CW * 5,
+                y,
+                WHITE,
+            );
             buf.draw_str_right(&lpad(&fmt_int(pcl.cinh), 5), c6 + SCALED_CW * 5, y, WHITE);
             buf.draw_str_right(&lpad(&fmt_int(pcl.lcl_m), 5), c7 + SCALED_CW * 5, y, WHITE);
             buf.draw_str_right(&lpad(&fmt_int(pcl.lfc_m), 5), c8 + SCALED_CW * 5, y, WHITE);

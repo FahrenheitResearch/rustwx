@@ -2171,7 +2171,11 @@ pub fn supported_forecast_hours(model: ModelId, cycle_hour_utc: u8) -> Vec<u16> 
             hours
         }
         ModelId::Gdas => (0..=9).collect(),
-        ModelId::Gefs => (0..=384).step_by(3).collect(),
+        ModelId::Gefs => {
+            let mut hours = (0..=240).step_by(3).collect::<Vec<u16>>();
+            hours.extend((246..=384).step_by(6));
+            hours
+        }
         ModelId::Aigfs | ModelId::Aigefs => (0..=384).step_by(6).collect(),
         // ECMWF Open Data currently publishes four daily IFS runs. The 00/12z
         // deterministic/ensemble open-data stream carries 3-hourly steps to
@@ -2190,7 +2194,13 @@ pub fn supported_forecast_hours(model: ModelId, cycle_hour_utc: u8) -> Vec<u16> 
             0 | 6 | 12 | 18 => (0..=AIFS_LOCAL_MAX_FORECAST_HOUR).step_by(6).collect(),
             _ => Vec::new(),
         },
-        ModelId::Rap => (0..=51).collect(),
+        ModelId::Rap => {
+            if rap_extended_forecast_cycle(cycle_hour_utc) {
+                (0..=51).collect()
+            } else {
+                (0..=21).collect()
+            }
+        }
         ModelId::Nam => {
             let mut hours = (0..=36).collect::<Vec<u16>>();
             hours.extend((39..=84).step_by(3));
@@ -2209,6 +2219,10 @@ pub fn forecast_hour_supported(model: ModelId, cycle_hour_utc: u8, forecast_hour
     supported_forecast_hours(model, cycle_hour_utc)
         .into_iter()
         .any(|candidate| candidate == forecast_hour)
+}
+
+fn rap_extended_forecast_cycle(cycle_hour_utc: u8) -> bool {
+    matches!(cycle_hour_utc, 3 | 9 | 15 | 21)
 }
 
 pub fn resolve_canonical_bundle_product(
@@ -3212,6 +3226,15 @@ fn build_aigefs_url(source: SourceId, request: &ModelRunRequest) -> Result<Strin
 fn build_rap_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
     if source != SourceId::Nomads {
         return Ok(unsupported_source(source, request.model));
+    }
+    if !forecast_hour_supported(request.model, request.cycle.hour_utc, request.forecast_hour) {
+        return Err(ModelError::UnsupportedForecastHour {
+            model: request.model,
+            cycle_hour: request.cycle.hour_utc,
+            forecast_hour: request.forecast_hour,
+            reason: "RAP publishes f000 through f021 on most cycles and f000 through f051 on 03/09/15/21z cycles"
+                .to_string(),
+        });
     }
     let prefix = match normalize_token(&request.product).as_str() {
         "awp130pgrb" | "pgrb" | "prs" | "pressure" | "conus" => "awp130pgrb",
@@ -4662,6 +4685,45 @@ mod tests {
         assert!(!hours_06z.contains(&145));
         assert!(!hours_06z.contains(&150));
         assert!(!hours_06z.contains(&360));
+    }
+
+    #[test]
+    fn gefs_supported_forecast_hours_follow_operational_high_hour_cadence() {
+        let hours = supported_forecast_hours(ModelId::Gefs, 12);
+        assert!(hours.contains(&0));
+        assert!(hours.contains(&240));
+        assert!(!hours.contains(&243));
+        assert!(hours.contains(&246));
+        assert!(!hours.contains(&249));
+        assert!(hours.contains(&384));
+    }
+
+    #[test]
+    fn rap_supported_forecast_hours_are_cycle_aware() {
+        let short_cycle = supported_forecast_hours(ModelId::Rap, 0);
+        assert!(short_cycle.contains(&21));
+        assert!(!short_cycle.contains(&22));
+        assert!(!short_cycle.contains(&51));
+
+        let extended_cycle = supported_forecast_hours(ModelId::Rap, 3);
+        assert!(extended_cycle.contains(&21));
+        assert!(extended_cycle.contains(&22));
+        assert!(extended_cycle.contains(&51));
+    }
+
+    #[test]
+    fn rap_url_builder_rejects_extended_hours_on_short_cycles() {
+        let short_cycle = rustwx_core::CycleSpec::new("20260502", 0).unwrap();
+        let request = ModelRunRequest::new(ModelId::Rap, short_cycle, 22, "awp130pgrb").unwrap();
+        let err = build_grib_url(SourceId::Nomads, &request).unwrap_err();
+        assert!(matches!(err, ModelError::UnsupportedForecastHour { .. }));
+
+        let extended_cycle = rustwx_core::CycleSpec::new("20260502", 3).unwrap();
+        let request = ModelRunRequest::new(ModelId::Rap, extended_cycle, 51, "awp130pgrb").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Nomads, &request).unwrap(),
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rap/prod/rap.20260502/rap.t03z.awp130pgrbf51.grib2"
+        );
     }
 
     #[test]

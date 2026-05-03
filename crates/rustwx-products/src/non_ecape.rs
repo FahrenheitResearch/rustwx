@@ -1,6 +1,6 @@
 use crate::custom_poi::CustomPoiOverlay;
 use crate::derived::{
-    DerivedBatchRequest, HrrrDerivedBatchReport, PlannedDerivedSourceRoutes,
+    DerivedBatchRequest, DerivedRecipeBlocker, HrrrDerivedBatchReport, PlannedDerivedSourceRoutes,
     derived_compute_recipes_need_pressure, is_heavy_derived_recipe_slug,
     maybe_load_special_pair_for_derived, plan_derived_recipes,
     plan_native_thermo_routes_with_surface_product, prepare_shared_derived_fields,
@@ -8,7 +8,8 @@ use crate::derived::{
     run_model_derived_batch_without_loaded,
 };
 use crate::direct::{
-    DirectBatchRequest, FetchGroup, HrrrDirectBatchReport, run_direct_batch_from_loaded,
+    DirectBatchRequest, FetchGroup, HrrrDirectBatchReport, PreparedDirectBatch,
+    prepare_direct_batch_from_loaded, run_direct_batch_from_loaded, run_direct_batch_from_prepared,
 };
 use crate::hrrr::{DomainSpec, resolve_hrrr_run};
 use crate::orchestrator::{lane, run_fanout3};
@@ -22,11 +23,15 @@ use crate::publication::{
 use crate::publication_provenance::capture_default_build_provenance;
 use crate::runtime::{BundleLoaderConfig, load_execution_plan};
 use crate::severe::build_severe_execution_plan;
-use crate::source::ProductSourceMode;
+use crate::source::{ProductSourceMode, ProductSourceRoute};
 use crate::windowed::{
     HrrrWindowedBatchReport, HrrrWindowedBatchRequest, HrrrWindowedProduct,
-    HrrrWindowedRenderedProduct, collect_windowed_input_fetches,
+    HrrrWindowedRenderedProduct, PreparedWindowedBatch, collect_windowed_input_fetches,
+    prepare_hrrr_windowed_batch_with_context, run_hrrr_windowed_batch_from_prepared,
     run_hrrr_windowed_batch_with_context, windowed_product_input_fetch_keys,
+};
+use crate::wxstore_export::{
+    WxStoreGridExportReport, WxStoreGridExportRequest, export_wxstore_grid_bundle_from_loaded_parts,
 };
 use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
 use rustwx_io::earth2_archive::Earth2EnsembleSelector;
@@ -116,7 +121,23 @@ pub struct HrrrNonEcapeMultiDomainRequest {
 pub struct HrrrNonEcapeSharedTiming {
     pub resolve_run_ms: u128,
     pub shared_load_decode_ms: u128,
+    #[serde(default)]
+    pub shared_fetch_ms_total: u128,
+    #[serde(default)]
+    pub shared_decode_surface_ms_total: u128,
+    #[serde(default)]
+    pub shared_decode_pressure_ms_total: u128,
+    #[serde(default)]
+    pub shared_fetched_bundle_count: usize,
+    #[serde(default)]
+    pub shared_surface_decode_count: usize,
+    #[serde(default)]
+    pub shared_pressure_decode_count: usize,
+    #[serde(default)]
+    pub shared_direct_prepare_ms: u128,
     pub shared_derived_prepare_ms: u128,
+    #[serde(default)]
+    pub shared_windowed_prepare_ms: u128,
     pub total_prepare_ms: u128,
 }
 
@@ -357,14 +378,91 @@ pub struct NonEcapeMultiDomainReport {
     pub total_ms: u128,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NonEcapeBuildDomainTiming {
+    pub domain_slug: String,
+    pub total_ms: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_total_ms: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_total_ms: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windowed_total_ms: Option<u128>,
+    pub output_count: usize,
+    pub direct_count: usize,
+    pub derived_count: usize,
+    pub windowed_count: usize,
+    pub windowed_blocker_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NonEcapeBuildProductTiming {
+    pub domain_slug: String,
+    pub lane: String,
+    pub product_slug: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub output_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_route: Option<ProductSourceRoute>,
+    pub render_ms: u128,
+    pub total_ms: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_to_image_ms: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_layer_draw_ms: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_draw_ms: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub png_encode_ms: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_write_ms: Option<u128>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NonEcapeHourBuildReport {
+    pub static_report: NonEcapeMultiDomainReport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wxstore_report: Option<WxStoreGridExportReport>,
+    #[serde(default)]
+    pub static_domain_timings: Vec<NonEcapeBuildDomainTiming>,
+    #[serde(default)]
+    pub static_product_timings: Vec<NonEcapeBuildProductTiming>,
+    pub total_ms: u128,
+}
+
 struct PreparedNonEcapeHour {
     normalized: NonEcapeRequestedProducts,
     latest: LatestRun,
     derived_recipes: Vec<crate::derived::DerivedRecipe>,
+    precomputed_direct: Option<Arc<PreparedDirectBatch>>,
     precomputed_derived: Option<crate::derived::PreparedSharedDerivedFields>,
+    precomputed_windowed: Option<Arc<PreparedWindowedBatch>>,
     direct_loaded: Option<Arc<crate::runtime::LoadedBundleSet>>,
     derived_loaded: Option<Arc<crate::runtime::LoadedBundleSet>>,
+    derived_lane_blocker: Option<String>,
     timing: NonEcapeSharedTiming,
+}
+
+#[derive(Debug, Default)]
+struct SharedLoaderProfile {
+    fetch_ms_total: u128,
+    decode_surface_ms_total: u128,
+    decode_pressure_ms_total: u128,
+    fetched_bundle_count: usize,
+    surface_decode_count: usize,
+    pressure_decode_count: usize,
+}
+
+impl SharedLoaderProfile {
+    fn record(&mut self, loaded: &crate::runtime::LoadedBundleSet) {
+        self.fetch_ms_total += loaded.timing.fetch_ms_total;
+        self.decode_surface_ms_total += loaded.timing.decode_surface_ms_total;
+        self.decode_pressure_ms_total += loaded.timing.decode_pressure_ms_total;
+        self.fetched_bundle_count += loaded.fetched.len();
+        self.surface_decode_count += loaded.surface_decodes.len();
+        self.pressure_decode_count += loaded.pressure_decodes.len();
+    }
 }
 
 fn non_ecape_request_from_hrrr(request: &HrrrNonEcapeHourRequest) -> NonEcapeHourRequest {
@@ -553,6 +651,43 @@ pub fn run_model_non_ecape_hour_multi_domain(
     validate_requested_domains(&request.domains)?;
     let total_start = Instant::now();
     let prepared = prepare_non_ecape_hour(request)?;
+    run_prepared_model_non_ecape_hour_multi_domain(request, &prepared, total_start)
+}
+
+pub fn run_model_non_ecape_hour_build(
+    request: &NonEcapeMultiDomainRequest,
+    wxstore_request: Option<&WxStoreGridExportRequest>,
+) -> Result<NonEcapeHourBuildReport, Box<dyn std::error::Error>> {
+    validate_requested_domains(&request.domains)?;
+    let total_start = Instant::now();
+    let static_start = Instant::now();
+    let prepared = prepare_non_ecape_hour(request)?;
+    let static_report =
+        run_prepared_model_non_ecape_hour_multi_domain(request, &prepared, static_start)?;
+    let static_domain_timings = build_static_domain_timings(&static_report);
+    let static_product_timings = build_static_product_timings(&static_report);
+    let wxstore_report = match wxstore_request {
+        Some(wxstore_request) => Some(export_wxstore_grid_bundle_from_loaded_parts(
+            wxstore_request,
+            prepared.direct_loaded.as_deref(),
+            prepared.derived_loaded.as_deref(),
+        )?),
+        None => None,
+    };
+    Ok(NonEcapeHourBuildReport {
+        static_report,
+        wxstore_report,
+        static_domain_timings,
+        static_product_timings,
+        total_ms: total_start.elapsed().as_millis(),
+    })
+}
+
+fn run_prepared_model_non_ecape_hour_multi_domain(
+    request: &NonEcapeMultiDomainRequest,
+    prepared: &PreparedNonEcapeHour,
+    total_start: Instant,
+) -> Result<NonEcapeMultiDomainReport, Box<dyn std::error::Error>> {
     let worker_count = domain_worker_count(request.domain_jobs, request.domains.len());
     let domain_context_build_ms = 0;
     let domain_fanout_start = Instant::now();
@@ -721,11 +856,12 @@ fn prepare_non_ecape_hour(
     let pinned_date = latest.cycle.date_yyyymmdd.clone();
     let pinned_cycle = Some(latest.cycle.hour_utc);
     let pinned_source = latest.source;
-    let planning_domain = request
+    let first_domain = request
         .domains
         .first()
         .cloned()
         .ok_or("multi-domain HRRR hour runner needs at least one domain")?;
+    let planning_domain = source_preparation_domain(request.model).unwrap_or(first_domain);
 
     let direct_groups = if normalized.direct_recipe_slugs.is_empty() {
         Vec::new()
@@ -795,28 +931,43 @@ fn prepare_non_ecape_hour(
     });
 
     let mut shared_load_decode_ms = 0u128;
+    let mut shared_loader_profile = SharedLoaderProfile::default();
     let mut derived_loaded_override: Option<Arc<crate::runtime::LoadedBundleSet>> = None;
+    let mut derived_lane_blocker = None::<String>;
     if let (Some(derived_request), Some(routes)) =
         (derived_request.as_ref(), derived_routes.as_ref())
     {
         let special_load_start = Instant::now();
-        if let Some(loaded) = maybe_load_special_pair_for_derived(derived_request, &latest, routes)?
-        {
-            shared_load_decode_ms += special_load_start.elapsed().as_millis();
-            derived_loaded_override = Some(Arc::new(loaded));
+        match maybe_load_special_pair_for_derived(derived_request, &latest, routes) {
+            Ok(Some(loaded)) => {
+                shared_load_decode_ms += special_load_start.elapsed().as_millis();
+                shared_loader_profile.record(&loaded);
+                derived_loaded_override = Some(Arc::new(loaded));
+            }
+            Ok(None) => {}
+            Err(err) => {
+                shared_load_decode_ms += special_load_start.elapsed().as_millis();
+                derived_lane_blocker = Some(format!("derived shared load failed: {err}"));
+            }
         }
     }
 
     let mut main_loaded: Option<Arc<crate::runtime::LoadedBundleSet>> = None;
     let mut direct_loaded: Option<Arc<crate::runtime::LoadedBundleSet>> = None;
 
-    let build_shared_loaded = request.model == ModelId::Hrrr || derived_loaded_override.is_none();
+    let derived_routes_for_plan = if derived_lane_blocker.is_some() {
+        None
+    } else {
+        derived_routes.as_ref()
+    };
+    let build_shared_loaded = request.model == ModelId::Hrrr
+        || (derived_loaded_override.is_none() && derived_lane_blocker.is_none());
     if build_shared_loaded {
         let plan = build_shared_non_ecape_execution_plan(
             &latest,
             request.forecast_hour,
             &direct_groups,
-            derived_routes.as_ref(),
+            derived_routes_for_plan,
             derived_loaded_override.is_none(),
             request.surface_product_override.as_deref(),
             request.pressure_product_override.as_deref(),
@@ -825,16 +976,47 @@ fn prepare_non_ecape_hour(
         main_loaded = if plan.bundles.is_empty() {
             None
         } else {
-            Some(Arc::new(load_execution_plan(
+            match load_execution_plan(
                 plan,
                 &BundleLoaderConfig {
                     cache_root: request.cache_root.clone(),
                     use_cache: request.use_cache,
                     earth2_ensemble: request.earth2_ensemble,
                 },
-            )?))
+            ) {
+                Ok(loaded) => Some(Arc::new(loaded)),
+                Err(err) if derived_routes_for_plan.is_some() => {
+                    derived_lane_blocker =
+                        Some(format!("derived/shared execution plan failed: {err}"));
+                    let direct_plan = build_shared_non_ecape_execution_plan(
+                        &latest,
+                        request.forecast_hour,
+                        &direct_groups,
+                        None,
+                        false,
+                        request.surface_product_override.as_deref(),
+                        request.pressure_product_override.as_deref(),
+                    );
+                    if direct_plan.bundles.is_empty() {
+                        None
+                    } else {
+                        Some(Arc::new(load_execution_plan(
+                            direct_plan,
+                            &BundleLoaderConfig {
+                                cache_root: request.cache_root.clone(),
+                                use_cache: request.use_cache,
+                                earth2_ensemble: request.earth2_ensemble,
+                            },
+                        )?))
+                    }
+                }
+                Err(err) => return Err(err),
+            }
         };
         shared_load_decode_ms += load_start.elapsed().as_millis();
+        if let Some(loaded) = main_loaded.as_ref() {
+            shared_loader_profile.record(loaded);
+        }
         direct_loaded = main_loaded.clone();
     } else {
         if !direct_groups.is_empty() {
@@ -846,7 +1028,15 @@ fn prepare_non_ecape_hour(
                 )
                 .with_native_override(group.product.clone());
                 for alias in &group.planned_family_aliases {
-                    direct_plan_builder.require_with_logical_family(&requirement, Some(alias));
+                    if should_attach_direct_idx_patterns(latest.source) {
+                        direct_plan_builder.require_with_logical_family_and_patterns(
+                            &requirement,
+                            Some(alias),
+                            group.variable_patterns.clone(),
+                        );
+                    } else {
+                        direct_plan_builder.require_with_logical_family(&requirement, Some(alias));
+                    }
                 }
             }
             let direct_plan = direct_plan_builder.build();
@@ -864,6 +1054,9 @@ fn prepare_non_ecape_hour(
                 )?))
             };
             shared_load_decode_ms += direct_load_start.elapsed().as_millis();
+            if let Some(loaded) = direct_loaded.as_ref() {
+                shared_loader_profile.record(loaded);
+            }
         }
     }
 
@@ -871,9 +1064,49 @@ fn prepare_non_ecape_hour(
         None
     } else if let Some(loaded) = derived_loaded_override {
         Some(loaded)
+    } else if derived_lane_blocker.is_some() {
+        None
     } else {
         main_loaded.clone()
     };
+
+    let shared_direct_prepare_start = Instant::now();
+    let precomputed_direct =
+        if normalized.direct_recipe_slugs.is_empty() || request.domains.len() <= 1 {
+            None
+        } else if let Some(direct_loaded_ref) = direct_loaded.as_ref() {
+            let direct_request = DirectBatchRequest {
+                model: request.model,
+                date_yyyymmdd: latest.cycle.date_yyyymmdd.clone(),
+                cycle_override_utc: Some(latest.cycle.hour_utc),
+                forecast_hour: request.forecast_hour,
+                source: latest.source,
+                domain: planning_domain.clone(),
+                out_dir: request.out_dir.clone(),
+                cache_root: request.cache_root.clone(),
+                use_cache: request.use_cache,
+                recipe_slugs: normalized.direct_recipe_slugs.clone(),
+                product_overrides: request.direct_product_overrides.clone(),
+                contour_mode: crate::derived::NativeContourRenderMode::Automatic,
+                native_fill_level_multiplier: 1,
+                output_width: request.output_width,
+                output_height: request.output_height,
+                png_compression: request.png_compression,
+                custom_poi_overlay: request.custom_poi_overlay.clone(),
+                place_label_overlay: request.place_label_overlay.clone(),
+                output_suffix: None,
+                earth2_ensemble: request.earth2_ensemble,
+            };
+            Some(Arc::new(prepare_direct_batch_from_loaded(
+                &direct_request,
+                direct_loaded_ref,
+                &request.cache_root,
+                request.use_cache,
+            )?))
+        } else {
+            None
+        };
+    let shared_direct_prepare_ms = shared_direct_prepare_start.elapsed().as_millis();
 
     let shared_derived_prepare_start = Instant::now();
     let precomputed_derived = if derived_recipes.is_empty() || request.domains.len() <= 1 {
@@ -887,17 +1120,56 @@ fn prepare_non_ecape_hour(
     };
     let shared_derived_prepare_ms = shared_derived_prepare_start.elapsed().as_millis();
 
+    let shared_windowed_prepare_start = Instant::now();
+    let precomputed_windowed =
+        if normalized.windowed_products.is_empty() || request.domains.len() <= 1 {
+            None
+        } else {
+            let windowed_request = HrrrWindowedBatchRequest {
+                model: request.model,
+                date_yyyymmdd: latest.cycle.date_yyyymmdd.clone(),
+                cycle_override_utc: Some(latest.cycle.hour_utc),
+                forecast_hour: request.forecast_hour,
+                source: latest.source,
+                domain: planning_domain.clone(),
+                out_dir: request.out_dir.clone(),
+                cache_root: request.cache_root.clone(),
+                use_cache: request.use_cache,
+                products: normalized.windowed_products.clone(),
+                output_width: request.output_width,
+                output_height: request.output_height,
+                png_compression: request.png_compression,
+                place_label_overlay: None,
+            };
+            Some(Arc::new(prepare_hrrr_windowed_batch_with_context(
+                &windowed_request,
+                &latest,
+            )?))
+        };
+    let shared_windowed_prepare_ms = shared_windowed_prepare_start.elapsed().as_millis();
+
     Ok(PreparedNonEcapeHour {
         normalized,
         latest,
         derived_recipes,
+        precomputed_direct,
         precomputed_derived,
+        precomputed_windowed,
         direct_loaded,
         derived_loaded,
+        derived_lane_blocker,
         timing: HrrrNonEcapeSharedTiming {
             resolve_run_ms,
             shared_load_decode_ms,
+            shared_fetch_ms_total: shared_loader_profile.fetch_ms_total,
+            shared_decode_surface_ms_total: shared_loader_profile.decode_surface_ms_total,
+            shared_decode_pressure_ms_total: shared_loader_profile.decode_pressure_ms_total,
+            shared_fetched_bundle_count: shared_loader_profile.fetched_bundle_count,
+            shared_surface_decode_count: shared_loader_profile.surface_decode_count,
+            shared_pressure_decode_count: shared_loader_profile.pressure_decode_count,
+            shared_direct_prepare_ms,
             shared_derived_prepare_ms,
+            shared_windowed_prepare_ms,
             total_prepare_ms: total_prepare_start.elapsed().as_millis(),
         },
     })
@@ -940,8 +1212,17 @@ fn build_shared_non_ecape_execution_plan(
     if let Some(routes) = derived_routes {
         add_native_route_requirements(&mut plan_builder, forecast_hour, routes);
     }
-    add_direct_fetch_group_requirements(&mut plan_builder, forecast_hour, direct_groups);
+    add_direct_fetch_group_requirements(
+        &mut plan_builder,
+        latest.source,
+        forecast_hour,
+        direct_groups,
+    );
     plan_builder.build()
+}
+
+fn should_attach_direct_idx_patterns(source: SourceId) -> bool {
+    matches!(source, SourceId::Aws | SourceId::Google)
 }
 
 fn add_pair_requirements(
@@ -1008,6 +1289,7 @@ fn add_surface_requirement(
 
 fn add_direct_fetch_group_requirements(
     plan_builder: &mut ExecutionPlanBuilder,
+    source: SourceId,
     forecast_hour: u16,
     direct_groups: &[FetchGroup],
 ) {
@@ -1016,7 +1298,15 @@ fn add_direct_fetch_group_requirements(
             BundleRequirement::new(CanonicalBundleDescriptor::NativeAnalysis, forecast_hour)
                 .with_native_override(group.product.clone());
         for alias in &group.planned_family_aliases {
-            plan_builder.require_with_logical_family(&requirement, Some(alias));
+            if should_attach_direct_idx_patterns(source) {
+                plan_builder.require_with_logical_family_and_patterns(
+                    &requirement,
+                    Some(alias),
+                    group.variable_patterns.clone(),
+                );
+            } else {
+                plan_builder.require_with_logical_family(&requirement, Some(alias));
+            }
         }
     }
 }
@@ -1050,6 +1340,7 @@ fn run_prepared_non_ecape_domain(
         &pinned_date,
         pinned_cycle_utc,
         request.forecast_hour,
+        pinned_source,
         &domain.slug,
     );
     manifest.build_provenance = Some(capture_default_build_provenance());
@@ -1112,6 +1403,7 @@ fn run_prepared_non_ecape_domain(
     });
     let derived_latest = prepared.latest.clone();
     let precomputed_derived = prepared.precomputed_derived.as_ref();
+    let derived_lane_blocker = prepared.derived_lane_blocker.as_deref();
 
     let windowed_request =
         (!prepared.normalized.windowed_products.is_empty()).then(|| HrrrWindowedBatchRequest {
@@ -1135,18 +1427,25 @@ fn run_prepared_non_ecape_domain(
         should_run_lanes_concurrently(request.model, pinned_source),
         direct_request.as_ref().map(|lane_request| {
             lane("direct", move || {
-                run_direct_batch_from_loaded(
-                    lane_request,
-                    direct_loaded_ref.expect("planner must load bundles when direct is requested"),
-                    &lane_request.cache_root,
-                    lane_request.use_cache,
-                    None,
-                )
+                if let Some(precomputed) = prepared.precomputed_direct.as_deref() {
+                    run_direct_batch_from_prepared(lane_request, precomputed, None)
+                } else {
+                    run_direct_batch_from_loaded(
+                        lane_request,
+                        direct_loaded_ref
+                            .expect("planner must load bundles when direct is requested"),
+                        &lane_request.cache_root,
+                        lane_request.use_cache,
+                        None,
+                    )
+                }
             })
         }),
         derived_request.as_ref().map(|(lane_request, recipes)| {
             lane("derived", move || {
-                if let Some(loaded) = derived_loaded_ref {
+                let report = if let Some(reason) = derived_lane_blocker {
+                    derived_lane_failure_report(lane_request, recipes, &derived_latest, reason)
+                } else if let Some(loaded) = derived_loaded_ref {
                     if let Some(precomputed) = precomputed_derived {
                         run_model_derived_batch_from_loaded_with_precomputed(
                             lane_request,
@@ -1159,13 +1458,26 @@ fn run_prepared_non_ecape_domain(
                     }
                 } else {
                     run_model_derived_batch_without_loaded(lane_request, recipes, &derived_latest)
+                };
+                match report {
+                    Ok(report) => Ok(report),
+                    Err(err) => derived_lane_failure_report(
+                        lane_request,
+                        recipes,
+                        &derived_latest,
+                        &format!("derived lane failed: {err}"),
+                    ),
                 }
             })
         }),
         windowed_request.as_ref().map(|lane_request| {
             let windowed_latest = prepared.latest.clone();
             lane("windowed", move || {
-                run_hrrr_windowed_batch_with_context(lane_request, &windowed_latest)
+                if let Some(precomputed) = prepared.precomputed_windowed.as_deref() {
+                    run_hrrr_windowed_batch_from_prepared(lane_request, precomputed)
+                } else {
+                    run_hrrr_windowed_batch_with_context(lane_request, &windowed_latest)
+                }
             })
         }),
     );
@@ -1202,6 +1514,36 @@ fn run_prepared_non_ecape_domain(
         windowed,
         total_ms: total_start.elapsed().as_millis(),
     })
+}
+
+fn derived_lane_failure_report(
+    request: &DerivedBatchRequest,
+    recipes: &[crate::derived::DerivedRecipe],
+    latest: &LatestRun,
+    reason: &str,
+) -> Result<HrrrDerivedBatchReport, Box<dyn std::error::Error>> {
+    let mut report = run_model_derived_batch_without_loaded(request, recipes, latest)?;
+    let existing = report
+        .blockers
+        .iter()
+        .map(|blocker| blocker.recipe_slug.clone())
+        .collect::<HashSet<_>>();
+    let source_route = match request.source_mode {
+        ProductSourceMode::Canonical => ProductSourceRoute::CanonicalDerived,
+        ProductSourceMode::Fastest => ProductSourceRoute::BlockedNoFastRoute,
+    };
+    report.blockers.extend(
+        request
+            .recipe_slugs
+            .iter()
+            .filter(|slug| !existing.contains(*slug))
+            .map(|slug| DerivedRecipeBlocker {
+                recipe_slug: slug.clone(),
+                source_route,
+                reason: reason.to_string(),
+            }),
+    );
+    Ok(report)
 }
 
 fn validate_requested_work(
@@ -1276,6 +1618,25 @@ fn validate_requested_domains(domains: &[DomainSpec]) -> Result<(), Box<dyn std:
         }
     }
     Ok(())
+}
+
+fn source_preparation_domain(model: ModelId) -> Option<DomainSpec> {
+    match model {
+        ModelId::Hrrr | ModelId::Rap | ModelId::RrfsA | ModelId::Nam | ModelId::Hiresw => {
+            Some(DomainSpec::new("conus_source", (-127.0, -66.0, 23.0, 51.5)))
+        }
+        ModelId::Gfs
+        | ModelId::Gdas
+        | ModelId::Gefs
+        | ModelId::Aigfs
+        | ModelId::Aigefs
+        | ModelId::EcmwfOpenData
+        | ModelId::Aifs => Some(DomainSpec::new(
+            "global_source",
+            (-180.0, 179.999, -90.0, 90.0),
+        )),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -1394,6 +1755,103 @@ fn build_summary(
     }
 }
 
+fn build_static_domain_timings(
+    report: &NonEcapeMultiDomainReport,
+) -> Vec<NonEcapeBuildDomainTiming> {
+    report
+        .domains
+        .iter()
+        .map(|domain| NonEcapeBuildDomainTiming {
+            domain_slug: domain.domain.slug.clone(),
+            total_ms: domain.total_ms,
+            direct_total_ms: domain.direct.as_ref().map(|direct| direct.total_ms),
+            derived_total_ms: domain.derived.as_ref().map(|derived| derived.total_ms),
+            windowed_total_ms: domain.windowed.as_ref().map(|windowed| windowed.total_ms),
+            output_count: domain.summary.output_count,
+            direct_count: domain.summary.direct_rendered_count,
+            derived_count: domain.summary.derived_rendered_count,
+            windowed_count: domain.summary.windowed_rendered_count,
+            windowed_blocker_count: domain.summary.windowed_blocker_count,
+        })
+        .collect()
+}
+
+fn build_static_product_timings(
+    report: &NonEcapeMultiDomainReport,
+) -> Vec<NonEcapeBuildProductTiming> {
+    let mut timings = Vec::new();
+    for domain in &report.domains {
+        let domain_slug = domain.domain.slug.clone();
+        if let Some(direct) = &domain.direct {
+            timings.extend(
+                direct
+                    .recipes
+                    .iter()
+                    .map(|recipe| NonEcapeBuildProductTiming {
+                        domain_slug: domain_slug.clone(),
+                        lane: "direct".to_string(),
+                        product_slug: recipe.recipe_slug.clone(),
+                        title: Some(recipe.title.clone()),
+                        output_path: recipe.output_path.clone(),
+                        source_route: Some(recipe.source_route),
+                        render_ms: recipe.timing.render_ms,
+                        total_ms: recipe.timing.total_ms,
+                        render_to_image_ms: Some(recipe.timing.render_to_image_ms),
+                        data_layer_draw_ms: Some(recipe.timing.data_layer_draw_ms),
+                        overlay_draw_ms: Some(recipe.timing.overlay_draw_ms),
+                        png_encode_ms: Some(recipe.timing.png_encode_ms),
+                        file_write_ms: Some(recipe.timing.file_write_ms),
+                    }),
+            );
+        }
+        if let Some(derived) = &domain.derived {
+            timings.extend(
+                derived
+                    .recipes
+                    .iter()
+                    .map(|recipe| NonEcapeBuildProductTiming {
+                        domain_slug: domain_slug.clone(),
+                        lane: "derived".to_string(),
+                        product_slug: recipe.recipe_slug.clone(),
+                        title: Some(recipe.title.clone()),
+                        output_path: recipe.output_path.clone(),
+                        source_route: Some(recipe.source_route),
+                        render_ms: recipe.timing.render_ms,
+                        total_ms: recipe.timing.total_ms,
+                        render_to_image_ms: Some(recipe.timing.render_to_image_ms),
+                        data_layer_draw_ms: Some(recipe.timing.data_layer_draw_ms),
+                        overlay_draw_ms: Some(recipe.timing.overlay_draw_ms),
+                        png_encode_ms: Some(recipe.timing.png_encode_ms),
+                        file_write_ms: Some(recipe.timing.file_write_ms),
+                    }),
+            );
+        }
+        if let Some(windowed) = &domain.windowed {
+            timings.extend(
+                windowed
+                    .products
+                    .iter()
+                    .map(|product| NonEcapeBuildProductTiming {
+                        domain_slug: domain_slug.clone(),
+                        lane: "windowed".to_string(),
+                        product_slug: format!("{:?}", product.product),
+                        title: None,
+                        output_path: product.output_path.clone(),
+                        source_route: None,
+                        render_ms: product.timing.render_ms,
+                        total_ms: product.timing.total_ms,
+                        render_to_image_ms: None,
+                        data_layer_draw_ms: None,
+                        overlay_draw_ms: None,
+                        png_encode_ms: None,
+                        file_write_ms: None,
+                    }),
+            );
+        }
+    }
+    timings
+}
+
 fn build_run_manifest(
     model: ModelId,
     request: &NonEcapeRequestedProducts,
@@ -1402,6 +1860,7 @@ fn build_run_manifest(
     date_yyyymmdd: &str,
     cycle_utc: u8,
     forecast_hour: u16,
+    source: SourceId,
     domain_slug: &str,
 ) -> RunPublicationManifest {
     let mut seen = HashSet::new();
@@ -1465,6 +1924,14 @@ fn build_run_manifest(
         format!("{}_non_ecape_hour", model.as_str().replace('-', "_"))
     };
     RunPublicationManifest::new(&runner_name, run_slug.to_string(), out_dir.to_path_buf())
+        .with_run_metadata(
+            model.as_str(),
+            date_yyyymmdd,
+            cycle_utc,
+            forecast_hour,
+            source.as_str(),
+            domain_slug,
+        )
         .with_artifacts(artifacts)
 }
 
@@ -1526,6 +1993,13 @@ fn apply_direct_manifest_updates(
         manifest.update_artifact_input_fetch_keys(
             &direct_artifact_key(&recipe.recipe_slug),
             recipe.input_fetch_keys.clone(),
+        );
+    }
+    for blocker in &report.blockers {
+        manifest.update_artifact_state(
+            &direct_artifact_key(&blocker.recipe_slug),
+            ArtifactPublicationState::Blocked,
+            Some(blocker.reason.clone()),
         );
     }
 }
@@ -1964,6 +2438,61 @@ mod tests {
     }
 
     #[test]
+    fn shared_non_ecape_plan_strips_nomads_hrrr_direct_idx_patterns() {
+        let latest = LatestRun {
+            model: ModelId::Hrrr,
+            cycle: rustwx_core::CycleSpec::new("20260415", 12).unwrap(),
+            source: SourceId::Nomads,
+        };
+        let direct_request = DirectBatchRequest {
+            model: ModelId::Hrrr,
+            date_yyyymmdd: latest.cycle.date_yyyymmdd.clone(),
+            cycle_override_utc: Some(latest.cycle.hour_utc),
+            forecast_hour: 6,
+            source: latest.source,
+            domain: domain(),
+            out_dir: PathBuf::from("C:\\temp\\proof"),
+            cache_root: PathBuf::from("C:\\temp\\proof\\cache"),
+            use_cache: true,
+            recipe_slugs: vec!["500mb_temperature_height_winds".into()],
+            product_overrides: HashMap::new(),
+            contour_mode: crate::derived::NativeContourRenderMode::Automatic,
+            native_fill_level_multiplier: 1,
+            output_width: 1200,
+            output_height: 900,
+            png_compression: PngCompressionMode::Default,
+            custom_poi_overlay: None,
+            place_label_overlay: None,
+            output_suffix: None,
+            earth2_ensemble: None,
+        };
+        let direct_groups = plan_direct_fetch_groups(&direct_request).unwrap();
+        let plan = build_shared_non_ecape_execution_plan(
+            &latest,
+            6,
+            &direct_groups,
+            None,
+            false,
+            None,
+            None,
+        );
+        let prs_bundle = plan
+            .bundles
+            .iter()
+            .find(|bundle| bundle.id.native_product == "prs")
+            .expect("expected HRRR prs direct bundle");
+        let patterns = prs_bundle
+            .aliases
+            .iter()
+            .flat_map(|alias| alias.variable_patterns.iter())
+            .collect::<Vec<_>>();
+        assert!(
+            patterns.is_empty(),
+            "NOMADS production aliases should not carry .idx subset patterns"
+        );
+    }
+
+    #[test]
     fn shared_non_ecape_plan_collapses_ecmwf_direct_and_pair_to_one_fetch_key() {
         let latest = latest_global(ModelId::EcmwfOpenData);
         let direct_request = DirectBatchRequest {
@@ -2234,6 +2763,7 @@ mod tests {
             "20260415",
             12,
             6,
+            SourceId::Aws,
             "conus",
         );
         manifest.mark_running();

@@ -21,9 +21,17 @@ use rustwx_models::{latest_available_run, model_summary, resolve_urls};
 use rustwx_wrf as wrf;
 use serde::Serialize;
 use std::collections::HashSet;
-use std::path::Path;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use wx_core::download::{DownloadClient, byte_ranges, find_entries, parse_idx};
+
+const FETCH_CACHE_LOCK_STALE_AFTER: Duration = Duration::from_secs(30 * 60);
+const FETCH_CACHE_LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(45 * 60);
+const FETCH_CACHE_LOCK_RETRY_AFTER: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Error)]
 pub enum IoError {
@@ -267,10 +275,15 @@ pub fn fetch_bytes_with_cache(
             return Ok(cached);
         }
     }
-    let result = fetch_bytes(fetch)?;
     if use_cache {
+        let _cache_lock = acquire_fetch_cache_lock(cache_root, fetch)?;
+        if let Some(cached) = load_cached_fetch(cache_root, fetch)? {
+            return Ok(cached);
+        }
+        let result = fetch_bytes(fetch)?;
         store_cached_fetch(cache_root, fetch, &result)
     } else {
+        let result = fetch_bytes(fetch)?;
         let (bytes_path, metadata_path) = fetch_cache_paths(cache_root, fetch);
         Ok(CachedFetchResult {
             result,
@@ -279,6 +292,77 @@ pub fn fetch_bytes_with_cache(
             metadata_path,
         })
     }
+}
+
+struct FetchCacheLock {
+    path: PathBuf,
+    file: Option<File>,
+}
+
+impl Drop for FetchCacheLock {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn acquire_fetch_cache_lock(
+    cache_root: &std::path::Path,
+    fetch: &FetchRequest,
+) -> Result<FetchCacheLock, IoError> {
+    let (bytes_path, _) = fetch_cache_paths(cache_root, fetch);
+    let lock_path = bytes_path.with_file_name("fetch.grib2.lock");
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| IoError::Cache(err.to_string()))?;
+    }
+
+    let started = Instant::now();
+    loop {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(mut file) => {
+                writeln!(
+                    file,
+                    "pid={} model={} date={} cycle={:02} forecast_hour={}",
+                    std::process::id(),
+                    fetch.request.model,
+                    fetch.request.cycle.date_yyyymmdd,
+                    fetch.request.cycle.hour_utc,
+                    fetch.request.forecast_hour
+                )
+                .map_err(|err| IoError::Cache(err.to_string()))?;
+                return Ok(FetchCacheLock {
+                    path: lock_path,
+                    file: Some(file),
+                });
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                if is_stale_fetch_cache_lock(&lock_path) {
+                    let _ = fs::remove_file(&lock_path);
+                    continue;
+                }
+                if started.elapsed() > FETCH_CACHE_LOCK_WAIT_TIMEOUT {
+                    return Err(IoError::Cache(format!(
+                        "timed out waiting for fetch cache lock {}",
+                        lock_path.display()
+                    )));
+                }
+                thread::sleep(FETCH_CACHE_LOCK_RETRY_AFTER);
+            }
+            Err(err) => return Err(IoError::Cache(err.to_string())),
+        }
+    }
+}
+
+fn is_stale_fetch_cache_lock(lock_path: &Path) -> bool {
+    fs::metadata(lock_path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age > FETCH_CACHE_LOCK_STALE_AFTER)
 }
 
 pub fn extract_field_from_bytes(
@@ -438,12 +522,14 @@ pub fn extract_fields_partial_from_model_bytes_with_earth2_selector(
     earth2_ensemble: Option<earth2_archive::Earth2EnsembleSelector>,
 ) -> Result<PartialExtraction, IoError> {
     match model {
-        ModelId::Aifs => earth2_archive::extract_fields_partial_from_bytes_with_selector(
-            bytes,
-            preferred_path,
-            selectors,
-            earth2_ensemble.unwrap_or_default(),
-        ),
+        ModelId::Aifs if should_decode_aifs_as_earth2(bytes, preferred_path) => {
+            earth2_archive::extract_fields_partial_from_bytes_with_selector(
+                bytes,
+                preferred_path,
+                selectors,
+                earth2_ensemble.unwrap_or_default(),
+            )
+        }
         ModelId::WrfGdex => extract_wrf_gdex_fields_partial(bytes, preferred_path, selectors),
         _ => {
             let grib =
@@ -451,6 +537,15 @@ pub fn extract_fields_partial_from_model_bytes_with_earth2_selector(
             extract_fields_from_grib2_partial(&grib, selectors)
         }
     }
+}
+
+fn should_decode_aifs_as_earth2(bytes: &[u8], preferred_path: Option<&Path>) -> bool {
+    earth2_archive::looks_like_earth2_archive(bytes)
+        || preferred_path.is_some_and(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("nc"))
+        })
 }
 
 #[cfg(feature = "wrf")]
@@ -674,7 +769,13 @@ fn try_fetch_one(
     resolved: &ResolvedUrl,
     variable_patterns: &[&str],
 ) -> Result<Vec<u8>, String> {
-    if !variable_patterns.is_empty() {
+    if resolved.source == SourceId::Nomads {
+        return client
+            .get_bytes(&resolved.grib_url)
+            .map_err(|err| err.to_string());
+    }
+
+    if should_use_idx_subset_fetch(resolved.source) && !variable_patterns.is_empty() {
         if let Some(idx_url) = &resolved.idx_url {
             if let Ok(idx_text) = client.get_text(idx_url) {
                 if let Some(ranges) = idx_subset_ranges(&idx_text, variable_patterns)? {
@@ -685,9 +786,22 @@ fn try_fetch_one(
             }
         }
     }
-    client
-        .get_bytes(&resolved.grib_url)
-        .map_err(|err| err.to_string())
+    let result = if should_use_parallel_whole_file_fetch(resolved.source) {
+        client.get_bytes_parallel_whole(&resolved.grib_url)
+    } else {
+        client.get_bytes(&resolved.grib_url)
+    };
+    result.map_err(|err| err.to_string())
+}
+
+fn should_use_parallel_whole_file_fetch(source: SourceId) -> bool {
+    matches!(source, SourceId::Aws | SourceId::Google)
+}
+
+fn should_use_idx_subset_fetch(source: SourceId) -> bool {
+    // NOMADS production fetches full GRIB files. The .idx sidecar is allowed
+    // for availability probes only, not product subsetting.
+    matches!(source, SourceId::Aws | SourceId::Google)
 }
 
 fn idx_subset_ranges(idx_text: &str, patterns: &[&str]) -> Result<Option<Vec<(u64, u64)>>, String> {
@@ -1584,6 +1698,30 @@ mod tests {
             None,
             model_summary(ModelId::Hrrr)
         ));
+    }
+
+    #[test]
+    fn aws_fetches_can_use_idx_subsets_and_parallel_whole_file_fallback() {
+        assert!(should_use_idx_subset_fetch(SourceId::Aws));
+        assert!(should_use_parallel_whole_file_fetch(SourceId::Aws));
+    }
+
+    #[test]
+    fn nomads_skips_idx_subsets_and_fetches_full_grib_files() {
+        assert!(!should_use_idx_subset_fetch(SourceId::Nomads));
+        assert!(!should_use_parallel_whole_file_fetch(SourceId::Nomads));
+    }
+
+    #[test]
+    fn nomads_fetch_strategy_ignores_variable_patterns() {
+        let resolved = ResolvedUrl {
+            source: SourceId::Nomads,
+            grib_url: "https://nomads.ncep.noaa.gov/file.grib2".to_string(),
+            idx_url: Some("https://nomads.ncep.noaa.gov/file.grib2.idx".to_string()),
+        };
+
+        assert!(!should_use_idx_subset_fetch(resolved.source));
+        assert_eq!(resolved.grib_url, "https://nomads.ncep.noaa.gov/file.grib2");
     }
 
     #[test]

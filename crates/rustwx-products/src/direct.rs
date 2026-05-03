@@ -9,21 +9,22 @@ use rustwx_io::{
     store_cached_selected_field,
 };
 use rustwx_models::{
-    LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
-    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan,
+    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan, LatestRun,
+    ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
 };
 use rustwx_render::{
+    build_projected_contour_geometry_profile, densify_discrete_scale, draw_centered_text_line,
+    map_frame_aspect_ratio_for_mode, render_panel_grid, save_png_profile_with_options,
+    save_rgba_png_profile_with_options,
+    weather::{
+        dewpoint_palette_params, temperature_palette_cropped_f, weather_palette,
+        winds_palette_segments, WeatherPalette,
+    },
     ChromeScale, Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode,
     LegendControls, LegendMode, LevelDensity, MapRenderRequest, PanelGridLayout, PanelPadding,
     PngCompressionMode, PngWriteOptions, ProductVisualMode, ProjectedContourLineStyle,
     ProjectedDomain, ProjectedMap, RenderDensity, RenderImageTiming, RenderStateTiming,
-    WindBarbLayer, build_projected_contour_geometry_profile, densify_discrete_scale,
-    draw_centered_text_line, map_frame_aspect_ratio_for_mode, render_panel_grid,
-    save_png_profile_with_options, save_rgba_png_profile_with_options,
-    weather::{
-        WeatherPalette, dewpoint_palette_params, temperature_palette_cropped_f, weather_palette,
-        winds_palette_segments,
-    },
+    WindBarbLayer,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -33,18 +34,22 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
-use crate::custom_poi::{CustomPoiOverlay, apply_custom_poi_overlay};
+use crate::custom_poi::{apply_custom_poi_overlay, CustomPoiOverlay};
+use crate::gridded::{crop_latlon_grid, crop_values_f32, GridCrop};
 use crate::places::PlaceLabelOverlay;
 use crate::planner::{ExecutionPlan, ExecutionPlanBuilder};
 use crate::publication::{
-    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
-    fetch_identity_from_cached_result_with_aliases,
+    artifact_identity_from_path, fetch_identity_from_cached_result_with_aliases,
+    ArtifactContentIdentity, PublishedFetchIdentity,
 };
 use crate::runtime::{
-    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
+    load_execution_plan, BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet,
 };
-use crate::shared_context::{DomainSpec, ProjectedMapProvider};
-use crate::source::{ProductSourceRoute, direct_route_for_recipe_slug};
+use crate::shared_context::{
+    model_time_subtitle, source_subtitle, static_supersample_factor, DomainSpec,
+    ProjectedMapProvider,
+};
+use crate::source::{direct_route_for_recipe_slug, ProductSourceRoute};
 use crate::spec::direct_product_specs;
 
 const OUTPUT_WIDTH: u32 = 1200;
@@ -275,6 +280,16 @@ pub(crate) struct DirectSampledProductSet {
     pub latest: LatestRun,
     pub fields: Vec<DirectSampledProductField>,
     pub blockers: Vec<DirectRecipeBlocker>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedDirectBatch {
+    latest: LatestRun,
+    renderable: Vec<PlannedDirectRecipe>,
+    extracted: HashMap<FieldSelector, SelectedField2D>,
+    fetches: Vec<DirectFetchTiming>,
+    fetch_truth_by_actual_product: HashMap<String, DirectFetchRuntimeInfo>,
+    blockers: Vec<DirectRecipeBlocker>,
 }
 
 fn direct_data_layer_draw_ms(image_timing: &RenderImageTiming) -> u128 {
@@ -570,6 +585,61 @@ pub(crate) fn load_direct_sampled_fields_from_latest(
         &BundleLoaderConfig::new(cache_root.to_path_buf(), use_cache)
             .with_earth2_ensemble(request.earth2_ensemble),
     )?;
+    load_direct_sampled_fields_from_loaded_request(&request, &loaded, recipe_slugs)
+}
+
+pub(crate) fn build_direct_sampled_execution_plan(
+    latest: &LatestRun,
+    forecast_hour: u16,
+    cache_root: &std::path::Path,
+    use_cache: bool,
+    recipe_slugs: &[String],
+) -> Result<ExecutionPlan, Box<dyn std::error::Error>> {
+    let request = sampling_direct_request(
+        latest.model,
+        latest.source,
+        forecast_hour,
+        cache_root,
+        use_cache,
+    );
+    let planned = plan_direct_recipes(latest.model, recipe_slugs)?;
+    let groups = group_direct_fetches(&request, &planned);
+    Ok(build_direct_execution_plan(latest, forecast_hour, &groups))
+}
+
+pub(crate) fn load_direct_sampled_fields_from_loaded(
+    latest: &LatestRun,
+    forecast_hour: u16,
+    cache_root: &std::path::Path,
+    use_cache: bool,
+    recipe_slugs: &[String],
+    loaded: &LoadedBundleSet,
+) -> Result<DirectSampledProductSet, Box<dyn std::error::Error>> {
+    let request = sampling_direct_request(
+        latest.model,
+        latest.source,
+        forecast_hour,
+        cache_root,
+        use_cache,
+    );
+    load_direct_sampled_fields_from_loaded_request(&request, loaded, recipe_slugs)
+}
+
+fn load_direct_sampled_fields_from_loaded_request(
+    request: &DirectBatchRequest,
+    loaded: &LoadedBundleSet,
+    recipe_slugs: &[String],
+) -> Result<DirectSampledProductSet, Box<dyn std::error::Error>> {
+    let planned = plan_direct_recipes(request.model, recipe_slugs)?;
+    if planned.is_empty() {
+        return Ok(DirectSampledProductSet {
+            latest: loaded.latest.clone(),
+            fields: Vec::new(),
+            blockers: Vec::new(),
+        });
+    }
+
+    let groups = group_direct_fetches(request, &planned);
 
     let mut extracted = HashMap::<FieldSelector, SelectedField2D>::new();
     let mut missing_selectors = HashSet::<FieldSelector>::new();
@@ -594,7 +664,7 @@ pub(crate) fn load_direct_sampled_fields_from_latest(
             }
         };
         let (fields, unmatched, timing) =
-            extract_direct_fetch_group_from_loaded(&request, group, fetched, use_cache)?;
+            extract_direct_fetch_group_from_loaded(request, group, fetched, request.use_cache)?;
         extracted.extend(fields.into_iter().map(|field| (field.selector, field)));
         for selector in unmatched {
             missing_selectors.insert(selector);
@@ -793,11 +863,21 @@ pub(crate) fn run_direct_batch_from_loaded(
     use_cache: bool,
     shared_context: Option<&dyn ProjectedMapProvider>,
 ) -> Result<DirectBatchReport, Box<dyn std::error::Error>> {
+    let total_start = Instant::now();
+    let prepared = prepare_direct_batch_from_loaded(request, loaded, cache_root, use_cache)?;
+    run_direct_batch_from_prepared_with_total_start(request, &prepared, shared_context, total_start)
+}
+
+pub(crate) fn prepare_direct_batch_from_loaded(
+    request: &DirectBatchRequest,
+    loaded: &LoadedBundleSet,
+    cache_root: &std::path::Path,
+    use_cache: bool,
+) -> Result<PreparedDirectBatch, Box<dyn std::error::Error>> {
     fs::create_dir_all(&request.out_dir)?;
     if use_cache {
         fs::create_dir_all(cache_root)?;
     }
-    let total_start = Instant::now();
     let planned = plan_direct_recipes(request.model, &request.recipe_slugs)?;
     let groups = group_direct_fetches(request, &planned);
     let mut extracted = HashMap::<FieldSelector, SelectedField2D>::new();
@@ -855,25 +935,56 @@ pub(crate) fn run_direct_batch_from_loaded(
         partition_recipes_by_selector_availability(&planned, &missing_selectors);
     blockers.extend(selector_blockers);
 
+    Ok(PreparedDirectBatch {
+        latest: loaded.latest.clone(),
+        renderable,
+        extracted,
+        fetches,
+        fetch_truth_by_actual_product,
+        blockers,
+    })
+}
+
+pub(crate) fn run_direct_batch_from_prepared(
+    request: &DirectBatchRequest,
+    prepared: &PreparedDirectBatch,
+    shared_context: Option<&dyn ProjectedMapProvider>,
+) -> Result<DirectBatchReport, Box<dyn std::error::Error>> {
+    run_direct_batch_from_prepared_with_total_start(
+        request,
+        prepared,
+        shared_context,
+        Instant::now(),
+    )
+}
+
+fn run_direct_batch_from_prepared_with_total_start(
+    request: &DirectBatchRequest,
+    prepared: &PreparedDirectBatch,
+    shared_context: Option<&dyn ProjectedMapProvider>,
+    total_start: Instant,
+) -> Result<DirectBatchReport, Box<dyn std::error::Error>> {
+    fs::create_dir_all(&request.out_dir)?;
+
     let rendered = render_direct_recipes(
         request,
-        &loaded.latest,
-        &renderable,
-        &extracted,
-        &fetch_truth_by_actual_product,
+        &prepared.latest,
+        &prepared.renderable,
+        &prepared.extracted,
+        &prepared.fetch_truth_by_actual_product,
         shared_context,
     )?;
 
     Ok(DirectBatchReport {
         model: request.model,
         date_yyyymmdd: request.date_yyyymmdd.clone(),
-        cycle_utc: loaded.latest.cycle.hour_utc,
+        cycle_utc: prepared.latest.cycle.hour_utc,
         forecast_hour: request.forecast_hour,
-        source: loaded.latest.source,
+        source: prepared.latest.source,
         domain: request.domain.clone(),
-        fetches,
+        fetches: prepared.fetches.clone(),
         recipes: rendered,
-        blockers,
+        blockers: prepared.blockers.clone(),
         total_ms: total_start.elapsed().as_millis(),
     })
 }
@@ -1235,10 +1346,22 @@ fn build_direct_execution_plan(
             BundleRequirement::new(CanonicalBundleDescriptor::NativeAnalysis, forecast_hour)
                 .with_native_override(group.product.clone());
         for alias in &group.planned_family_aliases {
-            builder.require_with_logical_family(&requirement, Some(alias));
+            if should_attach_direct_idx_patterns(latest.source) {
+                builder.require_with_logical_family_and_patterns(
+                    &requirement,
+                    Some(alias),
+                    group.variable_patterns.clone(),
+                );
+            } else {
+                builder.require_with_logical_family(&requirement, Some(alias));
+            }
         }
     }
     builder.build()
+}
+
+fn should_attach_direct_idx_patterns(source: SourceId) -> bool {
+    matches!(source, SourceId::Aws | SourceId::Google)
 }
 
 fn dataset_token_from_product(product: &str) -> Option<&str> {
@@ -1303,17 +1426,29 @@ fn find_loaded_bytes_for_group<'a>(
     loaded: &'a LoadedBundleSet,
     group: &FetchGroup,
 ) -> Result<&'a FetchedBundleBytes, Box<dyn std::error::Error>> {
-    loaded
+    if let Some(bundle) = loaded
         .fetched
         .values()
         .find(|bundle| bundle.key.native_product == group.product)
-        .ok_or_else(|| {
-            format!(
-                "direct planner missed fetch for canonical family '{}'",
-                group.product
-            )
-            .into()
-        })
+    {
+        return Ok(bundle);
+    }
+    if let Some((key, reason)) = loaded
+        .fetch_failures
+        .iter()
+        .find(|(key, _)| key.native_product == group.product)
+    {
+        return Err(format!(
+            "direct fetch failed for canonical family '{}' from {:?}: {}",
+            group.product, key.source, reason
+        )
+        .into());
+    }
+    Err(format!(
+        "direct planner missed fetch for canonical family '{}'",
+        group.product
+    )
+    .into())
 }
 
 fn extract_direct_fetch_group_from_loaded(
@@ -1432,6 +1567,12 @@ fn render_direct_recipes(
         return Ok(Vec::new());
     }
 
+    let domain_extracted = crop_direct_fields_for_domain(
+        extracted,
+        request.domain.bounds,
+        direct_domain_crop_pad_cells(),
+    )?;
+    let extracted = &domain_extracted;
     let contour_layer_cache = Arc::new(Mutex::new(HashMap::new()));
     let barb_layer_cache = Arc::new(Mutex::new(HashMap::new()));
     let barb_stride_cache = Arc::new(Mutex::new(HashMap::new()));
@@ -1538,6 +1679,99 @@ fn render_worker_count(recipe_count: usize) -> usize {
         .map(|count| override_threads.unwrap_or((count.get() / 2).max(1)))
         .unwrap_or(1)
         .min(recipe_count)
+}
+
+fn direct_domain_crop_pad_cells() -> usize {
+    std::env::var("RUSTWX_DOMAIN_CROP_PAD_CELLS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(6)
+}
+
+fn crop_direct_fields_for_domain(
+    extracted: &HashMap<FieldSelector, SelectedField2D>,
+    bounds: (f64, f64, f64, f64),
+    pad_cells: usize,
+) -> Result<HashMap<FieldSelector, SelectedField2D>, Box<dyn std::error::Error>> {
+    let mut cropped = HashMap::with_capacity(extracted.len());
+    for (&selector, field) in extracted {
+        cropped.insert(
+            selector,
+            crop_selected_field_for_domain(field, bounds, pad_cells)?,
+        );
+    }
+    Ok(cropped)
+}
+
+fn crop_selected_field_for_domain(
+    field: &SelectedField2D,
+    bounds: (f64, f64, f64, f64),
+    pad_cells: usize,
+) -> Result<SelectedField2D, Box<dyn std::error::Error>> {
+    let Some(crop) = crop_for_direct_grid(&field.grid, bounds, pad_cells)? else {
+        return Ok(field.clone());
+    };
+    let mut cropped = SelectedField2D::new(
+        field.selector,
+        field.units.clone(),
+        crop_latlon_grid(&field.grid, crop)?,
+        crop_values_f32(&field.values, field.grid.shape.nx, crop),
+    )?;
+    if let Some(projection) = field.projection.clone() {
+        cropped = cropped.with_projection(projection);
+    }
+    Ok(cropped)
+}
+
+fn crop_for_direct_grid(
+    grid: &rustwx_core::LatLonGrid,
+    bounds: (f64, f64, f64, f64),
+    pad_cells: usize,
+) -> Result<Option<GridCrop>, Box<dyn std::error::Error>> {
+    let nx = grid.shape.nx;
+    let ny = grid.shape.ny;
+    if nx == 0 || ny == 0 {
+        return Ok(None);
+    }
+
+    let mut min_x = nx;
+    let mut max_x = 0usize;
+    let mut min_y = ny;
+    let mut max_y = 0usize;
+    let mut found = false;
+
+    for y in 0..ny {
+        let row_offset = y * nx;
+        for x in 0..nx {
+            let idx = row_offset + x;
+            let lat = grid.lat_deg[idx] as f64;
+            let lon = grid.lon_deg[idx] as f64;
+            if point_in_geographic_bounds(lon, lat, bounds) {
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+                found = true;
+            }
+        }
+    }
+
+    if !found {
+        return Ok(None);
+    }
+
+    let crop = GridCrop {
+        x_start: min_x.saturating_sub(pad_cells),
+        x_end: (max_x + 1 + pad_cells).min(nx),
+        y_start: min_y.saturating_sub(pad_cells),
+        y_end: (max_y + 1 + pad_cells).min(ny),
+    };
+
+    if crop.x_start == 0 && crop.x_end == nx && crop.y_start == 0 && crop.y_end == ny {
+        Ok(None)
+    } else {
+        Ok(Some(crop))
+    }
 }
 
 fn range_step(start: f64, stop: f64, step: f64) -> Vec<f64> {
@@ -1700,6 +1934,7 @@ fn build_prepared_projected_maps(
     }
 
     let mut prepared = HashMap::new();
+    let mut by_geometry = HashMap::<(u32, u32, u64), ProjectedMap>::new();
     for (width, height, mode_key) in keys {
         let visual_mode = match mode_key {
             0 => ProductVisualMode::FilledMeteorology,
@@ -1710,13 +1945,21 @@ fn build_prepared_projected_maps(
             5 => ProductVisualMode::ComparisonPanel,
             _ => ProductVisualMode::FilledMeteorology,
         };
-        let projected = build_projected_map_with_projection(
-            &sample_field.grid.lat_deg,
-            &sample_field.grid.lon_deg,
-            sample_field.projection.as_ref(),
-            request.domain.bounds,
-            map_frame_aspect_ratio_for_mode(visual_mode, width, height, true, true),
-        )?;
+        let target_ratio = map_frame_aspect_ratio_for_mode(visual_mode, width, height, true, true);
+        let geometry_key = (width, height, target_ratio.to_bits());
+        let projected = if let Some(projected) = by_geometry.get(&geometry_key) {
+            projected.clone()
+        } else {
+            let projected = build_projected_map_with_projection(
+                &sample_field.grid.lat_deg,
+                &sample_field.grid.lon_deg,
+                sample_field.projection.as_ref(),
+                request.domain.bounds,
+                target_ratio,
+            )?;
+            by_geometry.insert(geometry_key, projected.clone());
+            projected
+        };
         prepared.insert((width, height, mode_key), projected);
     }
     Ok(Arc::new(prepared))
@@ -1869,11 +2112,13 @@ fn render_direct_recipe(
             item.plan.product.as_ref(),
             item.recipe.title,
         ));
-        render_request.subtitle_left = Some(format!(
-            "{} {}Z F{:03}  {}",
-            request.date_yyyymmdd, latest.cycle.hour_utc, request.forecast_hour, request.model
+        render_request.subtitle_left = Some(model_time_subtitle(
+            request.model,
+            &request.date_yyyymmdd,
+            latest.cycle.hour_utc,
+            request.forecast_hour,
         ));
-        render_request.subtitle_right = Some(format!("source: {}", latest.source));
+        render_request.subtitle_right = Some(source_subtitle(latest.source));
         if let Some(overlay) = request.custom_poi_overlay.as_ref() {
             apply_custom_poi_overlay(
                 &mut render_request,
@@ -2111,12 +2356,14 @@ fn render_direct_composite_panel(
     draw_centered_text_line(
         &mut canvas,
         &format!(
-            "{} {}Z F{:03}  {} | source: {}",
-            request.date_yyyymmdd,
-            latest.cycle.hour_utc,
-            request.forecast_hour,
-            request.model,
-            latest.source
+            "{} | {}",
+            model_time_subtitle(
+                request.model,
+                &request.date_yyyymmdd,
+                latest.cycle.hour_utc,
+                request.forecast_hour
+            ),
+            source_subtitle(latest.source)
         ),
         35,
         Color::BLACK,
@@ -2209,7 +2456,7 @@ fn build_render_request(
             mode: LegendMode::SmoothRamp,
         };
     }
-    request.supersample_factor = 2;
+    request.supersample_factor = static_supersample_factor();
     request.domain_frame = Some(DomainFrame::model_data_default());
     request.projected_domain = Some(ProjectedDomain {
         x: projected.projected_x,
@@ -3289,7 +3536,11 @@ mod tests {
                 group.product.as_str(),
             )?,
             source_override: Some(latest.source),
-            variable_patterns: Vec::new(),
+            variable_patterns: if should_attach_direct_idx_patterns(latest.source) {
+                group.variable_patterns.clone()
+            } else {
+                Vec::new()
+            },
             earth2_ensemble: request.earth2_ensemble,
         })
     }
@@ -3350,32 +3601,24 @@ mod tests {
             groups[0].fetch_mode,
             PlotRecipeFetchMode::WholeFileStructuredExtract
         );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500))
-        );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700))
-        );
-        assert!(
-            groups[0]
-                .variable_patterns
-                .iter()
-                .any(|pattern| pattern.contains("500 mb"))
-        );
-        assert!(
-            groups[0]
-                .variable_patterns
-                .iter()
-                .any(|pattern| pattern.contains("700 mb"))
-        );
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500)));
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700)));
+        assert!(groups[0]
+            .variable_patterns
+            .iter()
+            .any(|pattern| pattern.contains("500 mb")));
+        assert!(groups[0]
+            .variable_patterns
+            .iter()
+            .any(|pattern| pattern.contains("700 mb")));
     }
 
     #[test]
-    fn direct_fetch_request_uses_full_family_bytes() {
+    fn direct_fetch_request_strips_nomads_subset_patterns() {
         let request = sample_direct_request(ModelId::Hrrr);
         let latest = LatestRun {
             model: ModelId::Hrrr,
@@ -3485,12 +3728,12 @@ mod tests {
     }
 
     #[test]
-    fn all_hrrr_direct_fetch_requests_strip_idx_patterns_before_fetch() {
+    fn nomads_hrrr_direct_fetch_requests_use_full_grib_files() {
         let request = sample_direct_request(ModelId::Hrrr);
         let latest = LatestRun {
             model: ModelId::Hrrr,
             cycle: rustwx_core::CycleSpec::new("20260414", 23).unwrap(),
-            source: SourceId::Aws,
+            source: SourceId::Nomads,
         };
         let planned = plan_direct_recipes(
             ModelId::Hrrr,
@@ -3512,9 +3755,103 @@ mod tests {
             );
             assert!(
                 fetch.variable_patterns.is_empty(),
-                "full-family HRRR direct fetches should not send idx subset patterns"
+                "NOMADS production direct fetches should not carry .idx subset patterns"
             );
         }
+    }
+
+    #[test]
+    fn aws_hrrr_direct_fetch_requests_keep_idx_patterns_for_fallback() {
+        let request = sample_direct_request(ModelId::Hrrr);
+        let latest = LatestRun {
+            model: ModelId::Hrrr,
+            cycle: rustwx_core::CycleSpec::new("20260414", 23).unwrap(),
+            source: SourceId::Aws,
+        };
+        let planned = plan_direct_recipes(
+            ModelId::Hrrr,
+            &[
+                "500mb_temperature_height_winds".to_string(),
+                "2m_temperature_10m_winds".to_string(),
+            ],
+        )
+        .unwrap();
+        let groups = group_direct_fetches(&request, &planned);
+        let prs_group = groups
+            .iter()
+            .find(|group| group.product == "prs")
+            .expect("expected a pressure fetch group");
+        assert!(!prs_group.variable_patterns.is_empty());
+
+        let fetch = build_direct_fetch_request(&request, &latest, 6, prs_group).unwrap();
+        assert_eq!(fetch.source_override, Some(SourceId::Aws));
+        assert_eq!(fetch.variable_patterns, prs_group.variable_patterns);
+    }
+
+    #[test]
+    fn direct_execution_plan_strips_group_subset_patterns_for_nomads() {
+        let planned = plan_direct_recipes(
+            ModelId::Hrrr,
+            &[
+                "500mb_temperature_height_winds".to_string(),
+                "700mb_temperature_height_winds".to_string(),
+            ],
+        )
+        .unwrap();
+        let request = sample_direct_request(ModelId::Hrrr);
+        let groups = group_direct_fetches(&request, &planned);
+        let latest = LatestRun {
+            model: ModelId::Hrrr,
+            cycle: rustwx_core::CycleSpec::new("20260414", 23).unwrap(),
+            source: SourceId::Nomads,
+        };
+        let plan = build_direct_execution_plan(&latest, 6, &groups);
+        let prs_bundle = plan
+            .bundles
+            .iter()
+            .find(|bundle| bundle.id.native_product == "prs")
+            .expect("expected a planned HRRR pressure bundle");
+        let patterns = prs_bundle
+            .aliases
+            .iter()
+            .flat_map(|alias| alias.variable_patterns.iter())
+            .collect::<Vec<_>>();
+        assert!(
+            patterns.is_empty(),
+            "NOMADS production execution should use full GRIB files without .idx subset patterns"
+        );
+    }
+
+    #[test]
+    fn direct_execution_plan_keeps_group_subset_patterns_for_aws_fallback() {
+        let planned = plan_direct_recipes(
+            ModelId::Hrrr,
+            &[
+                "500mb_temperature_height_winds".to_string(),
+                "700mb_temperature_height_winds".to_string(),
+            ],
+        )
+        .unwrap();
+        let request = sample_direct_request(ModelId::Hrrr);
+        let groups = group_direct_fetches(&request, &planned);
+        let latest = LatestRun {
+            model: ModelId::Hrrr,
+            cycle: rustwx_core::CycleSpec::new("20260414", 23).unwrap(),
+            source: SourceId::Aws,
+        };
+        let plan = build_direct_execution_plan(&latest, 6, &groups);
+        let prs_bundle = plan
+            .bundles
+            .iter()
+            .find(|bundle| bundle.id.native_product == "prs")
+            .expect("expected a planned HRRR pressure bundle");
+        let patterns = prs_bundle
+            .aliases
+            .iter()
+            .flat_map(|alias| alias.variable_patterns.iter())
+            .collect::<Vec<_>>();
+        assert!(patterns.iter().any(|pattern| pattern.contains("500 mb")));
+        assert!(patterns.iter().any(|pattern| pattern.contains("700 mb")));
     }
 
     #[test]
@@ -3550,18 +3887,14 @@ mod tests {
         let groups = group_direct_fetches(&request, &planned);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].product, "sfc");
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::entire_atmosphere(
-                    CanonicalField::LowCloudCover
-                ))
-        );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow))
-        );
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::entire_atmosphere(
+                CanonicalField::LowCloudCover
+            )));
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow)));
     }
 
     #[test]
@@ -3594,7 +3927,7 @@ mod tests {
         };
         let fetch = build_direct_fetch_request(&request, &latest, 6, &groups[0]).unwrap();
         assert_eq!(fetch.request.product, "pgrb2.0p25");
-        assert!(fetch.variable_patterns.is_empty());
+        assert!(!fetch.variable_patterns.is_empty());
     }
 
     #[test]

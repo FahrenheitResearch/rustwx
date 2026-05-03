@@ -1,10 +1,11 @@
+use chrono::{Duration, NaiveDate};
 use image::DynamicImage;
-use rustwx_core::{Field2D, LatLonGrid, ProductKey};
+use rustwx_core::{Field2D, LatLonGrid, ModelId, ProductKey, SourceId};
 pub use rustwx_render::ProjectedMap;
 use rustwx_render::{
-    Color, DomainFrame, MapRenderRequest, PanelGridLayout, PanelPadding, ProductVisualMode,
-    ProjectedDomain, WeatherProduct, draw_centered_text_line, map_frame_aspect_ratio_for_mode,
-    render_panel_grid,
+    draw_centered_text_line, map_frame_aspect_ratio_for_mode, render_panel_grid, Color,
+    DomainFrame, MapRenderRequest, PanelGridLayout, PanelPadding, ProductVisualMode,
+    ProjectedDomain, WeatherProduct,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -24,6 +25,57 @@ impl DomainSpec {
             bounds,
         }
     }
+}
+
+pub fn model_time_subtitle(
+    model: ModelId,
+    date_yyyymmdd: &str,
+    cycle_utc: u8,
+    forecast_hour: u16,
+) -> String {
+    model_time_subtitle_with_lead_label(
+        model,
+        date_yyyymmdd,
+        cycle_utc,
+        forecast_hour,
+        format!("F{forecast_hour:03}"),
+    )
+}
+
+pub fn model_time_subtitle_with_lead_label<S: AsRef<str>>(
+    model: ModelId,
+    date_yyyymmdd: &str,
+    cycle_utc: u8,
+    forecast_hour: u16,
+    lead_label: S,
+) -> String {
+    let valid = valid_time_label(date_yyyymmdd, cycle_utc, forecast_hour)
+        .unwrap_or_else(|| "unknown".to_string());
+    let init = init_date_label(date_yyyymmdd).unwrap_or_else(|| date_yyyymmdd.to_string());
+    format!(
+        "Init {} {:02}Z | {} | Valid {} | {}",
+        init,
+        cycle_utc,
+        lead_label.as_ref(),
+        valid,
+        model.to_string().to_ascii_uppercase()
+    )
+}
+
+pub fn source_subtitle(source: SourceId) -> String {
+    format!("source: {}", source.as_str())
+}
+
+fn valid_time_label(date_yyyymmdd: &str, cycle_utc: u8, forecast_hour: u16) -> Option<String> {
+    let date = NaiveDate::parse_from_str(date_yyyymmdd, "%Y%m%d").ok()?;
+    let cycle_time = date.and_hms_opt(u32::from(cycle_utc), 0, 0)?;
+    let valid_time = cycle_time + Duration::hours(i64::from(forecast_hour));
+    Some(valid_time.format("%m/%d %HZ").to_string())
+}
+
+fn init_date_label(date_yyyymmdd: &str) -> Option<String> {
+    let date = NaiveDate::parse_from_str(date_yyyymmdd, "%Y%m%d").ok()?;
+    Some(date.format("%m/%d").to_string())
 }
 
 #[derive(Debug, Clone, Default)]
@@ -155,6 +207,14 @@ pub fn layout_key(layout: WeatherPanelLayout) -> (u32, u32, u32) {
     (layout.panel_width, layout.panel_height, layout.top_padding)
 }
 
+pub(crate) fn static_supersample_factor() -> u32 {
+    std::env::var("RUSTWX_SUPERSAMPLE_FACTOR")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(2)
+}
+
 pub fn build_weather_map_request(
     grid: &LatLonGrid,
     projected: &ProjectedMap,
@@ -173,7 +233,7 @@ pub fn build_weather_map_request(
     let mut request = MapRenderRequest::for_core_weather_product(field, field_spec.product);
     request.width = width;
     request.height = height;
-    request.supersample_factor = 2;
+    request.supersample_factor = static_supersample_factor();
     request.domain_frame = Some(DomainFrame::model_data_default());
     request.visual_mode = ProductVisualMode::SevereDiagnostic;
     request.title = Some(field_spec.display_title().to_string());
@@ -282,6 +342,14 @@ mod tests {
         let field = WeatherPanelField::new(WeatherProduct::Scp, "dimensionless", vec![1.0])
             .with_artifact_slug("scp_mu_0_3km_0_6km_proxy");
         assert_eq!(field.artifact_slug(), "scp_mu_0_3km_0_6km_proxy");
+    }
+
+    #[test]
+    fn model_time_subtitle_includes_init_lead_and_valid_time() {
+        assert_eq!(
+            model_time_subtitle(ModelId::Gfs, "20260424", 22, 4),
+            "Init 04/24 22Z | F004 | Valid 04/25 02Z | GFS"
+        );
     }
 
     #[test]

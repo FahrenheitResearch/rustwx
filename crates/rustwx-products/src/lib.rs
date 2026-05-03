@@ -34,6 +34,7 @@ pub mod thermo_native;
 pub mod volume_store;
 pub mod windowed;
 pub mod windowed_decoder;
+pub mod wxstore_export;
 
 pub use named_geometry::{
     NamedGeoBounds, NamedGeoPoint, NamedGeometry, NamedGeometryAsset, NamedGeometryCatalog,

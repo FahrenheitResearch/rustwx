@@ -166,6 +166,25 @@ pub fn compute_srh(wind: WindGridInputs<'_>, top_m: f64) -> Result<Vec<f64>, Cal
     ))
 }
 
+pub fn compute_srh_hemispheric(
+    wind: WindGridInputs<'_>,
+    lat_deg: &[f64],
+    top_m: f64,
+) -> Result<Vec<f64>, CalcError> {
+    validate_wind_inputs(wind)?;
+    validate_len("lat_deg", lat_deg.len(), wind.shape.grid.len())?;
+    Ok(metrust::calc::severe::grid::compute_srh_hemispheric(
+        wind.u_3d_ms,
+        wind.v_3d_ms,
+        wind.height_agl_3d_m,
+        lat_deg,
+        wind.shape.grid.nx,
+        wind.shape.grid.ny,
+        wind.shape.nz,
+        top_m,
+    ))
+}
+
 pub fn compute_shear(
     wind: WindGridInputs<'_>,
     bottom_m: f64,
@@ -425,6 +444,25 @@ pub fn compute_supported_severe_fields(
     volume: EcapeVolumeInputs<'_>,
     surface: SurfaceInputs<'_>,
 ) -> Result<SupportedSevereFields, CalcError> {
+    compute_supported_severe_fields_impl(grid, volume, surface, None)
+}
+
+pub fn compute_supported_severe_fields_hemispheric(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+    lat_deg: &[f64],
+) -> Result<SupportedSevereFields, CalcError> {
+    validate_len("lat_deg", lat_deg.len(), grid.len())?;
+    compute_supported_severe_fields_impl(grid, volume, surface, Some(lat_deg))
+}
+
+fn compute_supported_severe_fields_impl(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+    lat_deg: Option<&[f64]>,
+) -> Result<SupportedSevereFields, CalcError> {
     validate_severe_inputs(grid, volume, surface)?;
 
     let sb = compute_cape_cin(grid, volume, surface, "sb", None)?;
@@ -437,7 +475,15 @@ pub fn compute_supported_severe_fields(
         v_3d_ms: volume.v_ms,
         height_agl_3d_m: volume.height_agl_m,
     };
-    let wind_diagnostics = compute_wind_diagnostics_bundle(wind)?;
+    let wind_diagnostics = if let Some(lat_deg) = lat_deg {
+        WindDiagnosticsBundle {
+            srh_01km_m2s2: compute_srh_hemispheric(wind, lat_deg, 1000.0)?,
+            srh_03km_m2s2: compute_srh_hemispheric(wind, lat_deg, 3000.0)?,
+            shear_06km_ms: compute_shear(wind, 0.0, 6000.0)?,
+        }
+    } else {
+        compute_wind_diagnostics_bundle(wind)?
+    };
     let stp_fixed = compute_stp_fixed(FixedStpInputs {
         grid,
         sbcape_jkg: &sb.cape_jkg,

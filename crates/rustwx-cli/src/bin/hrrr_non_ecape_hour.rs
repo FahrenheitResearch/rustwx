@@ -7,8 +7,8 @@ mod region;
 use clap::{Parser, ValueEnum};
 use region::RegionPreset;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
-use rustwx_products::derived::supported_derived_recipe_slugs;
-use rustwx_products::direct::supported_direct_recipe_slugs;
+use rustwx_products::catalog::{ProductTargetStatus, build_supported_products_catalog};
+use rustwx_products::derived::is_heavy_derived_recipe_slug;
 use rustwx_products::non_ecape::{HrrrNonEcapeHourRequest, run_hrrr_non_ecape_hour};
 use rustwx_products::places::{PlaceLabelDensityTier, default_place_label_overlay_for_domain};
 use rustwx_products::publication::{
@@ -225,54 +225,6 @@ impl From<SourceModeArg> for ProductSourceMode {
     }
 }
 
-fn default_direct_recipes() -> Vec<String> {
-    vec![
-        "composite_reflectivity",
-        "2m_temperature_10m_winds",
-        "2m_dewpoint_10m_winds",
-        "2m_relative_humidity_10m_winds",
-        "250mb_height_winds",
-        "500mb_height_winds",
-        "250mb_temperature_height_winds",
-        "700mb_height_winds",
-        "850mb_height_winds",
-        "500mb_rh_height_winds",
-        "700mb_temperature_height_winds",
-        "850mb_temperature_height_winds",
-        "mslp_10m_winds",
-        "precipitable_water",
-        "10m_wind_gusts",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect()
-}
-
-fn default_derived_recipes() -> Vec<String> {
-    vec![
-        "sbcape",
-        "mlcape",
-        "mucape",
-        "sbcin",
-        "mlcin",
-        "bulk_shear_0_6km",
-        "bulk_shear_0_1km",
-        "srh_0_1km",
-        "srh_0_3km",
-        "ehi_0_1km",
-        "ehi_0_3km",
-        "stp_fixed",
-        "scp_mu_0_3km_0_6km_proxy",
-        "lapse_rate_700_500",
-        "lapse_rate_0_3km",
-        "theta_e_2m_10m_winds",
-        "lifted_index",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect()
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let failure_slug = canonical_run_slug(
@@ -313,21 +265,14 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         ensure_dir(&cache_root)?;
     }
 
+    let (default_direct, default_derived, default_windowed) = default_hrrr_non_ecape_product_sets();
     let direct_recipe_slugs = if args.direct_recipes.is_empty() {
-        let supported = supported_direct_recipe_slugs(rustwx_core::ModelId::Hrrr);
-        default_direct_recipes()
-            .into_iter()
-            .filter(|slug| supported.contains(slug))
-            .collect()
+        default_direct
     } else {
         args.direct_recipes.clone()
     };
     let derived_recipe_slugs = if args.derived_recipes.is_empty() {
-        let supported = supported_derived_recipe_slugs(rustwx_core::ModelId::Hrrr);
-        default_derived_recipes()
-            .into_iter()
-            .filter(|slug| supported.contains(slug))
-            .collect()
+        default_derived
     } else {
         args.derived_recipes.clone()
     };
@@ -344,12 +289,15 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         use_cache: !args.no_cache,
         direct_recipe_slugs,
         derived_recipe_slugs,
-        windowed_products: args
-            .windowed_products
-            .iter()
-            .copied()
-            .map(Into::into)
-            .collect(),
+        windowed_products: if args.windowed_products.is_empty() {
+            default_windowed
+        } else {
+            args.windowed_products
+                .iter()
+                .copied()
+                .map(Into::into)
+                .collect()
+        },
         source_mode: args.source_mode.into(),
         output_width: 1200,
         output_height: 900,
@@ -398,4 +346,44 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("{}", report_path.display());
     Ok(())
+}
+
+fn default_hrrr_non_ecape_product_sets() -> (Vec<String>, Vec<String>, Vec<HrrrWindowedProduct>) {
+    let catalog = build_supported_products_catalog();
+    let supported_for_hrrr = |entry: &rustwx_products::catalog::ProductCatalogEntry| {
+        entry.support.iter().any(|target| {
+            target.model == Some(rustwx_core::ModelId::Hrrr)
+                && matches!(target.status, ProductTargetStatus::Supported)
+        })
+    };
+    let direct = catalog
+        .direct
+        .iter()
+        .filter(|entry| supported_for_hrrr(entry))
+        .map(|entry| entry.slug.clone())
+        .collect::<Vec<_>>();
+    let derived = catalog
+        .derived
+        .iter()
+        .filter(|entry| supported_for_hrrr(entry))
+        .filter(|entry| {
+            let slug = entry.slug.to_ascii_lowercase();
+            !slug.contains("ecape") && !is_heavy_derived_recipe_slug(&entry.slug)
+        })
+        .map(|entry| entry.slug.clone())
+        .collect::<Vec<_>>();
+    let windowed = catalog
+        .windowed
+        .iter()
+        .filter(|entry| supported_for_hrrr(entry))
+        .filter_map(|entry| windowed_product_from_slug(&entry.slug))
+        .collect::<Vec<_>>();
+    (direct, derived, windowed)
+}
+
+fn windowed_product_from_slug(slug: &str) -> Option<HrrrWindowedProduct> {
+    HrrrWindowedProduct::supported_products()
+        .iter()
+        .copied()
+        .find(|product| product.slug() == slug)
 }

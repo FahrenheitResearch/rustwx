@@ -13,9 +13,9 @@ pub use derived::{
     compute_mlcape, compute_mlcape_cin, compute_mlcin, compute_mucape, compute_mucape_cin,
     compute_mucin, compute_relative_humidity_from_pressure_temperature_and_mixing_ratio,
     compute_sbcape, compute_sbcape_cin, compute_sbcin, compute_sblcl, compute_shear_01km,
-    compute_shear_06km, compute_srh_01km, compute_srh_03km, compute_surface_thermo,
-    compute_temperature_advection, compute_temperature_advection_700mb,
-    compute_temperature_advection_850mb,
+    compute_shear_06km, compute_srh_01km, compute_srh_01km_hemispheric, compute_srh_03km,
+    compute_srh_03km_hemispheric, compute_surface_thermo, compute_temperature_advection,
+    compute_temperature_advection_700mb, compute_temperature_advection_850mb,
     compute_theta_e_from_pressure_temperature_and_mixing_ratio,
 };
 pub use ecape::{
@@ -33,9 +33,10 @@ pub use severe::{
     EffectiveSevereOutputs, EffectiveStpInputs, FixedStpInputs, ScpEhiInputs, ScpEhiOutputs,
     ShipInputs, SupportedSevereFields, WindDiagnosticsBundle, WindGridInputs, compute_bri,
     compute_cape_cin, compute_effective_severe, compute_ehi, compute_scp, compute_scp_effective,
-    compute_scp_ehi, compute_shear, compute_ship, compute_srh, compute_stp, compute_stp_effective,
-    compute_stp_fixed, compute_supported_severe_fields, compute_wind_diagnostics_bundle,
-    critical_angle, significant_tornado_parameter, supercell_composite_parameter,
+    compute_scp_ehi, compute_shear, compute_ship, compute_srh, compute_srh_hemispheric,
+    compute_stp, compute_stp_effective, compute_stp_fixed, compute_supported_severe_fields,
+    compute_supported_severe_fields_hemispheric, compute_wind_diagnostics_bundle, critical_angle,
+    significant_tornado_parameter, supercell_composite_parameter,
 };
 pub use windowed::{max_window_fields, sum_window_fields};
 
