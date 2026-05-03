@@ -9,22 +9,21 @@ use rustwx_io::{
     store_cached_selected_field,
 };
 use rustwx_models::{
-    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan, LatestRun,
-    ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
+    LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
+    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan,
 };
 use rustwx_render::{
-    build_projected_contour_geometry_profile, densify_discrete_scale, draw_centered_text_line,
-    map_frame_aspect_ratio_for_mode, render_panel_grid, save_png_profile_with_options,
-    save_rgba_png_profile_with_options,
-    weather::{
-        dewpoint_palette_params, temperature_palette_cropped_f, weather_palette,
-        winds_palette_segments, WeatherPalette,
-    },
     ChromeScale, Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode,
     LegendControls, LegendMode, LevelDensity, MapRenderRequest, PanelGridLayout, PanelPadding,
     PngCompressionMode, PngWriteOptions, ProductVisualMode, ProjectedContourLineStyle,
     ProjectedDomain, ProjectedMap, RenderDensity, RenderImageTiming, RenderStateTiming,
-    WindBarbLayer,
+    WindBarbLayer, build_projected_contour_geometry_profile, densify_discrete_scale,
+    draw_centered_text_line, map_frame_aspect_ratio_for_mode, render_panel_grid,
+    save_png_profile_with_options, save_rgba_png_profile_with_options,
+    weather::{
+        WeatherPalette, dewpoint_palette_params, temperature_palette_cropped_f, weather_palette,
+        winds_palette_segments,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -34,22 +33,22 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
-use crate::custom_poi::{apply_custom_poi_overlay, CustomPoiOverlay};
-use crate::gridded::{crop_latlon_grid, crop_values_f32, GridCrop};
+use crate::custom_poi::{CustomPoiOverlay, apply_custom_poi_overlay};
+use crate::gridded::{GridCrop, crop_latlon_grid, crop_values_f32};
 use crate::places::PlaceLabelOverlay;
 use crate::planner::{ExecutionPlan, ExecutionPlanBuilder};
 use crate::publication::{
-    artifact_identity_from_path, fetch_identity_from_cached_result_with_aliases,
-    ArtifactContentIdentity, PublishedFetchIdentity,
+    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
+    fetch_identity_from_cached_result_with_aliases,
 };
 use crate::runtime::{
-    load_execution_plan, BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet,
+    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
 };
 use crate::shared_context::{
-    model_time_subtitle, source_subtitle, static_supersample_factor, DomainSpec,
-    ProjectedMapProvider,
+    DomainSpec, ProjectedMapProvider, model_time_subtitle, source_subtitle,
+    static_supersample_factor,
 };
-use crate::source::{direct_route_for_recipe_slug, ProductSourceRoute};
+use crate::source::{ProductSourceRoute, direct_route_for_recipe_slug};
 use crate::spec::direct_product_specs;
 
 const OUTPUT_WIDTH: u32 = 1200;
@@ -3601,20 +3600,28 @@ mod tests {
             groups[0].fetch_mode,
             PlotRecipeFetchMode::WholeFileStructuredExtract
         );
-        assert!(groups[0]
-            .selectors
-            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500)));
-        assert!(groups[0]
-            .selectors
-            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700)));
-        assert!(groups[0]
-            .variable_patterns
-            .iter()
-            .any(|pattern| pattern.contains("500 mb")));
-        assert!(groups[0]
-            .variable_patterns
-            .iter()
-            .any(|pattern| pattern.contains("700 mb")));
+        assert!(
+            groups[0]
+                .selectors
+                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500))
+        );
+        assert!(
+            groups[0]
+                .selectors
+                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700))
+        );
+        assert!(
+            groups[0]
+                .variable_patterns
+                .iter()
+                .any(|pattern| pattern.contains("500 mb"))
+        );
+        assert!(
+            groups[0]
+                .variable_patterns
+                .iter()
+                .any(|pattern| pattern.contains("700 mb"))
+        );
     }
 
     #[test]
@@ -3887,14 +3894,18 @@ mod tests {
         let groups = group_direct_fetches(&request, &planned);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].product, "sfc");
-        assert!(groups[0]
-            .selectors
-            .contains(&FieldSelector::entire_atmosphere(
-                CanonicalField::LowCloudCover
-            )));
-        assert!(groups[0]
-            .selectors
-            .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow)));
+        assert!(
+            groups[0]
+                .selectors
+                .contains(&FieldSelector::entire_atmosphere(
+                    CanonicalField::LowCloudCover
+                ))
+        );
+        assert!(
+            groups[0]
+                .selectors
+                .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow))
+        );
     }
 
     #[test]

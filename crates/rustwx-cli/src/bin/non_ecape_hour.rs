@@ -10,13 +10,13 @@ use region::RegionPreset;
 use rustwx_core::{ModelId, SourceId};
 use rustwx_models::model_summary;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
-use rustwx_products::catalog::{build_supported_products_catalog, ProductTargetStatus};
+use rustwx_products::catalog::{ProductTargetStatus, build_supported_products_catalog};
 use rustwx_products::derived::is_heavy_derived_recipe_slug;
 use rustwx_products::non_ecape::{
-    run_model_non_ecape_hour, run_model_non_ecape_hour_build,
-    run_model_non_ecape_hour_multi_domain, NonEcapeHourRequest, NonEcapeMultiDomainRequest,
+    NonEcapeHourRequest, NonEcapeMultiDomainRequest, run_model_non_ecape_hour,
+    run_model_non_ecape_hour_build, run_model_non_ecape_hour_multi_domain,
 };
-use rustwx_products::places::{default_place_label_overlay_for_domain, PlaceLabelDensityTier};
+use rustwx_products::places::{PlaceLabelDensityTier, default_place_label_overlay_for_domain};
 use rustwx_products::publication::{
     atomic_write_json, canonical_run_slug, publish_failure_manifest,
 };
@@ -24,7 +24,7 @@ use rustwx_products::shared_context::DomainSpec;
 use rustwx_products::source::ProductSourceMode;
 use rustwx_products::windowed::HrrrWindowedProduct;
 use rustwx_products::wxstore_export::{
-    default_wxstore_export_product_slugs, WxStoreGridExportRequest,
+    WxStoreGridExportRequest, default_wxstore_export_product_slugs,
 };
 use rustwx_render::{PngCompressionMode, ProductMaturity, ProductSemanticFlag};
 

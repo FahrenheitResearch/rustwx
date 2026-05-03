@@ -662,18 +662,63 @@ pub fn run_model_non_ecape_hour_build(
     let total_start = Instant::now();
     let static_start = Instant::now();
     let prepared = prepare_non_ecape_hour(request)?;
-    let static_report =
-        run_prepared_model_non_ecape_hour_multi_domain(request, &prepared, static_start)?;
+
+    let (static_report, wxstore_report) = match wxstore_request {
+        Some(wxstore_request) if should_export_wxstore_concurrently() => {
+            let result = thread::scope(
+                |scope| -> Result<
+                    (NonEcapeMultiDomainReport, Option<WxStoreGridExportReport>),
+                    String,
+                > {
+                    let static_handle = scope.spawn(|| {
+                        run_prepared_model_non_ecape_hour_multi_domain(
+                            request,
+                            &prepared,
+                            static_start,
+                        )
+                        .map_err(|err| err.to_string())
+                    });
+                    let wxstore_handle = scope.spawn(|| {
+                        export_wxstore_grid_bundle_from_loaded_parts(
+                            wxstore_request,
+                            prepared.direct_loaded.as_deref(),
+                            prepared.derived_loaded.as_deref(),
+                        )
+                        .map(Some)
+                        .map_err(|err| err.to_string())
+                    });
+
+                    let static_report = static_handle
+                        .join()
+                        .map_err(|_| "static render worker panicked".to_string())??;
+                    let wxstore_report = wxstore_handle
+                        .join()
+                        .map_err(|_| "WxStore export worker panicked".to_string())??;
+                    Ok((static_report, wxstore_report))
+                },
+            );
+            result.map_err(|err| -> Box<dyn std::error::Error> {
+                Box::new(std::io::Error::other(err))
+            })?
+        }
+        Some(wxstore_request) => {
+            let static_report =
+                run_prepared_model_non_ecape_hour_multi_domain(request, &prepared, static_start)?;
+            let wxstore_report = Some(export_wxstore_grid_bundle_from_loaded_parts(
+                wxstore_request,
+                prepared.direct_loaded.as_deref(),
+                prepared.derived_loaded.as_deref(),
+            )?);
+            (static_report, wxstore_report)
+        }
+        None => {
+            let static_report =
+                run_prepared_model_non_ecape_hour_multi_domain(request, &prepared, static_start)?;
+            (static_report, None)
+        }
+    };
     let static_domain_timings = build_static_domain_timings(&static_report);
     let static_product_timings = build_static_product_timings(&static_report);
-    let wxstore_report = match wxstore_request {
-        Some(wxstore_request) => Some(export_wxstore_grid_bundle_from_loaded_parts(
-            wxstore_request,
-            prepared.direct_loaded.as_deref(),
-            prepared.derived_loaded.as_deref(),
-        )?),
-        None => None,
-    };
     Ok(NonEcapeHourBuildReport {
         static_report,
         wxstore_report,
@@ -1424,7 +1469,7 @@ fn run_prepared_non_ecape_domain(
         });
 
     let lane_result = run_fanout3(
-        should_run_lanes_concurrently(request.model, pinned_source),
+        should_run_prepared_lanes_concurrently(request, prepared, pinned_source),
         direct_request.as_ref().map(|lane_request| {
             lane("direct", move || {
                 if let Some(precomputed) = prepared.precomputed_direct.as_deref() {
@@ -1682,6 +1727,37 @@ fn normalize_requested_products_from_parts(
 
 fn should_run_lanes_concurrently(model: ModelId, source: SourceId) -> bool {
     matches!(model, ModelId::Hrrr | ModelId::WrfGdex) && !matches!(source, SourceId::Nomads)
+}
+
+fn should_run_prepared_lanes_concurrently(
+    request: &NonEcapeMultiDomainRequest,
+    prepared: &PreparedNonEcapeHour,
+    source: SourceId,
+) -> bool {
+    if let Some(enabled) = env_bool("RUSTWX_PREPARED_LANE_CONCURRENCY") {
+        return enabled;
+    }
+    if request.domains.len() > 1
+        && (prepared.precomputed_direct.is_some()
+            || prepared.precomputed_derived.is_some()
+            || prepared.precomputed_windowed.is_some())
+    {
+        return true;
+    }
+    should_run_lanes_concurrently(request.model, source)
+}
+
+fn should_export_wxstore_concurrently() -> bool {
+    env_bool("RUSTWX_CONCURRENT_WXSTORE_EXPORT").unwrap_or(true)
+}
+
+fn env_bool(name: &str) -> Option<bool> {
+    let value = std::env::var(name).ok()?;
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 fn domain_worker_count(requested_jobs: Option<usize>, domain_count: usize) -> usize {

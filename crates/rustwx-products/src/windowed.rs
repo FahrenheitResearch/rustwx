@@ -1,32 +1,32 @@
 use crate::gridded::{
-    crop_latlon_grid, crop_values_f32, decode_cache_path, decode_surface_grid,
-    fetch_family_file_with_patterns, load_surface_geometry_from_latest, resolve_model_run,
-    FetchRuntimeInfo, GridCrop,
+    FetchRuntimeInfo, GridCrop, crop_latlon_grid, crop_values_f32, decode_cache_path,
+    decode_surface_grid, fetch_family_file_with_patterns, load_surface_geometry_from_latest,
+    resolve_model_run,
 };
 use crate::hrrr::HrrrFetchRuntimeInfo;
 use crate::places::PlaceLabelOverlay;
 use crate::planner::ExecutionPlanBuilder;
-use crate::publication::{fetch_identity_from_cached_result, PublishedFetchIdentity};
+use crate::publication::{PublishedFetchIdentity, fetch_identity_from_cached_result};
 use crate::runtime::{
-    load_execution_plan, BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet,
+    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
 };
 use crate::shared_context::{
-    model_time_subtitle_with_lead_label, source_subtitle, static_supersample_factor, DomainSpec,
-    ProjectedMap,
+    DomainSpec, ProjectedMap, model_time_subtitle_with_lead_label, source_subtitle,
+    static_supersample_factor,
 };
 use crate::windowed_decoder::{
+    HrrrApcpDecode, HrrrSurfaceSnapshotDecode, HrrrUhDecode, HrrrWind10mMaxDecode,
     compute_qpf_product, compute_surface_snapshot_product, compute_uh_product,
     compute_wind10m_product, load_or_decode_apcp, load_or_decode_surface_snapshot,
     load_or_decode_uh25, load_or_decode_wind10m_max, qpf_fallback_hours_if_direct_missing,
-    HrrrApcpDecode, HrrrSurfaceSnapshotDecode, HrrrUhDecode, HrrrWind10mMaxDecode,
 };
 use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId, SourceId};
-use rustwx_models::{resolve_canonical_bundle_product, LatestRun};
+use rustwx_models::{LatestRun, resolve_canonical_bundle_product};
 use rustwx_render::map_frame_aspect_ratio;
 use rustwx_render::{
-    save_png_profile_with_options, ChromeScale, DomainFrame, LegendControls, LegendMode,
-    LevelDensity, MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode,
-    RenderDensity, WeatherProduct,
+    ChromeScale, DomainFrame, LegendControls, LegendMode, LevelDensity, MapRenderRequest,
+    PngCompressionMode, PngWriteOptions, ProductVisualMode, RenderDensity, WeatherProduct,
+    save_png_profile_with_options,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};

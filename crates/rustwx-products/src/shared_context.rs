@@ -3,9 +3,9 @@ use image::DynamicImage;
 use rustwx_core::{Field2D, LatLonGrid, ModelId, ProductKey, SourceId};
 pub use rustwx_render::ProjectedMap;
 use rustwx_render::{
-    draw_centered_text_line, map_frame_aspect_ratio_for_mode, render_panel_grid, Color,
-    DomainFrame, MapRenderRequest, PanelGridLayout, PanelPadding, ProductVisualMode,
-    ProjectedDomain, WeatherProduct,
+    Color, DomainFrame, MapRenderRequest, PanelGridLayout, PanelPadding, ProductVisualMode,
+    ProjectedDomain, WeatherProduct, draw_centered_text_line, map_frame_aspect_ratio_for_mode,
+    render_panel_grid,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
