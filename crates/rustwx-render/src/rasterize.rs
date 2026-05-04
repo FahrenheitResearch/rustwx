@@ -250,13 +250,30 @@ fn sample_regular_latlon_grid(
     }
     let gy = (lat - axes.lat0) / axes.lat_step;
     let adjusted_lon = adjust_longitude_to_axis(lon, *axes);
-    let gx = (adjusted_lon - axes.lon0) / axes.lon_step;
-    if gx < 0.0 || gy < 0.0 || gx > (axes.nx - 1) as f64 || gy > (axes.ny - 1) as f64 {
+    let mut gx = (adjusted_lon - axes.lon0) / axes.lon_step;
+    if gy < 0.0 || gy > (axes.ny - 1) as f64 {
         return None;
     }
-    let i0 = gx.floor() as usize;
+    let periodic_lon = axes.lon_span >= 300.0;
+    if periodic_lon {
+        let period = axes.nx as f64;
+        while gx < 0.0 {
+            gx += period;
+        }
+        while gx >= period {
+            gx -= period;
+        }
+    } else if gx < 0.0 || gx > (axes.nx - 1) as f64 {
+        return None;
+    }
+
+    let i0 = (gx.floor() as usize).min(axes.nx - 1);
     let j0 = gy.floor() as usize;
-    let i1 = (i0 + 1).min(axes.nx - 1);
+    let i1 = if periodic_lon {
+        (i0 + 1) % axes.nx
+    } else {
+        (i0 + 1).min(axes.nx - 1)
+    };
     let j1 = (j0 + 1).min(axes.ny - 1);
     let fx = gx - i0 as f64;
     let fy = gy - j0 as f64;

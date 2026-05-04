@@ -3537,12 +3537,31 @@ fn inverse_raster_projection_for_latlon_mesh(
                 Some(&GridProjection::Geographic),
                 bounds,
             ),
-            clip_bounds: Some(GeographicClipBounds::new(
-                bounds.0, bounds.1, bounds.2, bounds.3,
-            )),
+            clip_bounds: inverse_raster_clip_bounds(bounds),
         }),
         _ => None,
     }
+}
+
+fn inverse_raster_clip_bounds(bounds: (f64, f64, f64, f64)) -> Option<GeographicClipBounds> {
+    if !env_flag_enabled("RUSTWX_INVERSE_RASTER_GEO_CLIP", false) {
+        return None;
+    }
+    Some(GeographicClipBounds::new(
+        bounds.0, bounds.1, bounds.2, bounds.3,
+    ))
+}
+
+fn env_flag_enabled(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(default)
 }
 
 fn rectilinear_latlon_mesh_for_inverse(lat_deg: &[f32], lon_deg: &[f32]) -> bool {
