@@ -2479,6 +2479,7 @@ fn draw_variable_layers(
             &inverse.lat_deg,
             &inverse.lon_deg,
             inverse.projector,
+            inverse.clip_bounds,
             extent,
             &opts.cmap,
             layout.map_w,

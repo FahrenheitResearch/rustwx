@@ -2,6 +2,7 @@ use crate::color::Rgba;
 use crate::colormap::LeveledColormap;
 use crate::overlay::MapExtent;
 use crate::projection::ProjectionProjector;
+use crate::request::GeographicClipBounds;
 use image::RgbaImage;
 
 /// Rasterize a 2D grid into an RGBA image using bilinear sampling.
@@ -106,6 +107,7 @@ pub(crate) fn rasterize_inverse_projected_grid(
     lat_deg: &[f64],
     lon_deg: &[f64],
     projector: ProjectionProjector,
+    clip_bounds: Option<GeographicClipBounds>,
     extent: &MapExtent,
     cmap: &LeveledColormap,
     img_w: u32,
@@ -134,6 +136,9 @@ pub(crate) fn rasterize_inverse_projected_grid(
             let Some((lat, lon)) = projector.unproject(x, y) else {
                 continue;
             };
+            if clip_bounds.is_some_and(|bounds| !bounds.contains(lat, lon)) {
+                continue;
+            }
             let Some(value) = sample_regular_latlon_grid(data, &axes, lat, lon) else {
                 continue;
             };
@@ -246,11 +251,7 @@ fn sample_regular_latlon_grid(
     let gy = (lat - axes.lat0) / axes.lat_step;
     let adjusted_lon = adjust_longitude_to_axis(lon, *axes);
     let gx = (adjusted_lon - axes.lon0) / axes.lon_step;
-    if gx < 0.0
-        || gy < 0.0
-        || gx > (axes.nx - 1) as f64
-        || gy > (axes.ny - 1) as f64
-    {
+    if gx < 0.0 || gy < 0.0 || gx > (axes.nx - 1) as f64 || gy > (axes.ny - 1) as f64 {
         return None;
     }
     let i0 = gx.floor() as usize;
@@ -280,8 +281,12 @@ fn adjust_longitude_to_axis(lon: f64, axes: RegularLatLonAxes) -> f64 {
         adjusted += 360.0;
     }
     if axes.lon_span >= 300.0 {
-        let min_lon = axes.lon0.min(axes.lon0 + axes.lon_step * (axes.nx - 1) as f64);
-        let max_lon = axes.lon0.max(axes.lon0 + axes.lon_step * (axes.nx - 1) as f64);
+        let min_lon = axes
+            .lon0
+            .min(axes.lon0 + axes.lon_step * (axes.nx - 1) as f64);
+        let max_lon = axes
+            .lon0
+            .max(axes.lon0 + axes.lon_step * (axes.nx - 1) as f64);
         while adjusted < min_lon {
             adjusted += 360.0;
         }

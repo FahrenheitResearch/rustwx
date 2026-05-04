@@ -300,7 +300,9 @@ pub fn build_projected_map_with_options(
     let basemap = options
         .basemap
         .as_ref()
-        .map(|basemap| build_projected_basemap(projector, &extent, *basemap))
+        .map(|basemap| {
+            build_projected_basemap(projector, &extent, options.domain.frame_source, *basemap)
+        })
         .transpose()?
         .unwrap_or_default();
 
@@ -393,7 +395,9 @@ fn project_domain(
 
     let bounds = if let ProjectedFrameSource::GeographicBounds(bounds) = frame_source {
         if !framed_bounds.is_valid() {
-            return Err("requested geographic bounds crop does not intersect the model grid".into());
+            return Err(
+                "requested geographic bounds crop does not intersect the model grid".into(),
+            );
         }
         projected_geographic_frame_bounds(projector, bounds).unwrap_or(framed_bounds)
     } else if framed_bounds.is_valid() {
@@ -469,10 +473,17 @@ fn include_projected_point(bounds: &mut ProjectedBounds, point: (f64, f64)) {
 fn build_projected_basemap(
     projector: ProjectionProjector,
     extent: &ProjectedExtent,
+    frame_source: ProjectedFrameSource,
     options: ProjectedBasemapBuildOptions,
 ) -> Result<ProjectedBasemap, Box<dyn Error>> {
     let line_bbox = expanded_bbox(extent, options.line_pad_fraction.max(0.0));
     let polygon_bbox = expanded_bbox(extent, options.polygon_pad_fraction.max(0.0));
+    let geographic_clip = match frame_source {
+        ProjectedFrameSource::GeographicBounds(bounds) if bounds.longitude_span_deg() < 359.0 => {
+            Some(bounds)
+        }
+        _ => None,
+    };
 
     let mut lines = Vec::new();
     for layer in load_styled_basemap_features_for_detail(options.style, options.detail) {
@@ -480,6 +491,19 @@ fn build_projected_basemap(
         for line in layer.lines {
             let mut current = Vec::<(f64, f64)>::with_capacity(line.len());
             for (lon, lat) in line {
+                if geographic_clip.is_some_and(|bounds| !bounds.contains(lat, lon)) {
+                    if current.len() >= 2 {
+                        lines.push(ProjectedLineOverlay {
+                            points: std::mem::take(&mut current),
+                            color,
+                            width: layer.width,
+                            role: layer.role,
+                        });
+                    } else {
+                        current.clear();
+                    }
+                    continue;
+                }
                 let point = projector.project(lat, lon);
                 if point_in_bbox(point, line_bbox) {
                     current.push(point);
@@ -511,6 +535,11 @@ fn build_projected_basemap(
         for polygon in layer.polygons {
             let rings: Vec<Vec<(f64, f64)>> = polygon
                 .into_iter()
+                .filter(|ring| {
+                    geographic_clip
+                        .map(|bounds| ring.iter().any(|&(lon, lat)| bounds.contains(lat, lon)))
+                        .unwrap_or(true)
+                })
                 .map(|ring| {
                     ring.into_iter()
                         .map(|(lon, lat)| projector.project(lat, lon))

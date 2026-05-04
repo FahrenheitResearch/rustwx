@@ -2638,12 +2638,11 @@ fn crop_native_derived_field(
         return Ok(field.clone());
     }
 
-    let pad_cells =
-        if inverse_raster_projection_for_grid(None, bounds, &field.grid).is_some() {
-            inverse_raster_crop_pad_cells()
-        } else {
-            0
-        };
+    let pad_cells = if inverse_raster_projection_for_grid(None, bounds, &field.grid).is_some() {
+        inverse_raster_crop_pad_cells()
+    } else {
+        0
+    };
     let crop = GridCrop {
         x_start: min_x.saturating_sub(pad_cells),
         x_end: (max_x + 1 + pad_cells).min(nx),

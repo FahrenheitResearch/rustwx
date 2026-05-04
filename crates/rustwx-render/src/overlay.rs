@@ -1,7 +1,10 @@
 use crate::color::Rgba;
 use crate::presentation::{LineworkRole, PolygonRole};
 use crate::projection::ProjectionProjector;
-use crate::request::{ProjectedLabelPlacement, ProjectedMarkerShape, ProjectedPlaceLabelPriority};
+use crate::request::{
+    GeographicClipBounds, ProjectedLabelPlacement, ProjectedMarkerShape,
+    ProjectedPlaceLabelPriority,
+};
 
 #[derive(Clone, Debug)]
 pub struct MapExtent {
@@ -22,6 +25,7 @@ pub struct ProjectedGrid {
 #[derive(Clone, Debug)]
 pub(crate) struct InverseProjectedGrid {
     pub projector: ProjectionProjector,
+    pub clip_bounds: Option<GeographicClipBounds>,
     pub lat_deg: Vec<f64>,
     pub lon_deg: Vec<f64>,
 }

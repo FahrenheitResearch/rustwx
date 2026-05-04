@@ -351,6 +351,72 @@ pub struct ProjectedDomain {
 pub struct InverseRasterProjection {
     pub projection: ProjectionSpec,
     pub reference_latitude_deg: Option<f64>,
+    #[serde(default)]
+    pub clip_bounds: Option<GeographicClipBounds>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GeographicClipBounds {
+    pub west_deg: f64,
+    pub east_deg: f64,
+    pub south_deg: f64,
+    pub north_deg: f64,
+}
+
+impl GeographicClipBounds {
+    pub fn new(west_deg: f64, east_deg: f64, south_deg: f64, north_deg: f64) -> Self {
+        Self {
+            west_deg,
+            east_deg,
+            south_deg: south_deg.min(north_deg),
+            north_deg: south_deg.max(north_deg),
+        }
+    }
+
+    pub fn contains(self, lat_deg: f64, lon_deg: f64) -> bool {
+        if !lat_deg.is_finite() || !lon_deg.is_finite() {
+            return false;
+        }
+        if lat_deg < self.south_deg || lat_deg > self.north_deg {
+            return false;
+        }
+        if self.longitude_span_deg() >= 359.0 {
+            return true;
+        }
+        let west = normalize_clip_longitude_deg(self.west_deg);
+        let east = normalize_clip_longitude_deg(self.east_deg);
+        let lon = normalize_clip_longitude_deg(lon_deg);
+        if west <= east {
+            lon >= west && lon <= east
+        } else {
+            lon >= west || lon <= east
+        }
+    }
+
+    fn longitude_span_deg(self) -> f64 {
+        let raw_span = (self.east_deg - self.west_deg).abs();
+        if raw_span >= 359.0 {
+            return raw_span.min(360.0);
+        }
+
+        let west = normalize_clip_longitude_deg(self.west_deg);
+        let east = normalize_clip_longitude_deg(self.east_deg);
+        if west <= east {
+            east - west
+        } else {
+            east + 360.0 - west
+        }
+    }
+}
+
+fn normalize_clip_longitude_deg(lon_deg: f64) -> f64 {
+    let mut lon = lon_deg % 360.0;
+    if lon > 180.0 {
+        lon -= 360.0;
+    } else if lon <= -180.0 {
+        lon += 360.0;
+    }
+    lon
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

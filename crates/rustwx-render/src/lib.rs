@@ -48,11 +48,12 @@ pub use render::{
 };
 pub use request::{
     ChromeScale, Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, DomainFrame,
-    ExtendMode, Field2D, GridShape, InverseRasterProjection, LatLonGrid, MapRenderRequest,
-    ProductKey, ProductMaturity, ProductSemanticFlag, ProductSemantics, ProjectedDomain, ProjectedExtent,
-    ProjectedLabelPlacement, ProjectedLineOverlay, ProjectedMarkerShape, ProjectedPlaceLabel,
-    ProjectedPlaceLabelPriority, ProjectedPlaceLabelStyle, ProjectedPointOverlay,
-    ProjectedPolygonFill, RgbaGridField, WindBarbLayer, WindBarbStyle,
+    ExtendMode, Field2D, GeographicClipBounds, GridShape, InverseRasterProjection, LatLonGrid,
+    MapRenderRequest, ProductKey, ProductMaturity, ProductSemanticFlag, ProductSemantics,
+    ProjectedDomain, ProjectedExtent, ProjectedLabelPlacement, ProjectedLineOverlay,
+    ProjectedMarkerShape, ProjectedPlaceLabel, ProjectedPlaceLabelPriority,
+    ProjectedPlaceLabelStyle, ProjectedPointOverlay, ProjectedPolygonFill, RgbaGridField,
+    WindBarbLayer, WindBarbStyle,
 };
 pub use rustwx_core::{
     Field2D as CoreField2D, GridProjection as CoreGridProjection, GridShape as CoreGridShape,
@@ -432,25 +433,27 @@ fn with_render_state_profile<T>(
         });
         let projected_grid_ms = projected_grid_start.elapsed().as_millis();
 
-        let inverse_projected_grid = request
-            .inverse_raster_projection
-            .as_ref()
-            .and_then(|inverse| {
-                let projector = inverse
-                    .projection
-                    .build_projector(
-                        inverse.reference_latitude_deg,
-                        None,
-                        &request.field.grid.lat_deg,
-                        &request.field.grid.lon_deg,
-                    )
-                    .ok()?;
-                Some(InverseProjectedGrid {
-                    projector,
-                    lat_deg: scratch.fill_f64_from_f32(&request.field.grid.lat_deg),
-                    lon_deg: scratch.fill_f64_from_f32(&request.field.grid.lon_deg),
-                })
-            });
+        let inverse_projected_grid =
+            request
+                .inverse_raster_projection
+                .as_ref()
+                .and_then(|inverse| {
+                    let projector = inverse
+                        .projection
+                        .build_projector(
+                            inverse.reference_latitude_deg,
+                            None,
+                            &request.field.grid.lat_deg,
+                            &request.field.grid.lon_deg,
+                        )
+                        .ok()?;
+                    Some(InverseProjectedGrid {
+                        projector,
+                        clip_bounds: inverse.clip_bounds,
+                        lat_deg: scratch.fill_f64_from_f32(&request.field.grid.lat_deg),
+                        lon_deg: scratch.fill_f64_from_f32(&request.field.grid.lon_deg),
+                    })
+                });
 
         let rgba_grid = request.rgba_grid.as_ref().map(|field| {
             field
