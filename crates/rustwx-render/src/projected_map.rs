@@ -388,10 +388,13 @@ fn project_domain(
         }
     }
 
-    let bounds = if framed_bounds.is_valid() {
+    let bounds = if let ProjectedFrameSource::GeographicBounds(bounds) = frame_source {
+        if !framed_bounds.is_valid() {
+            return Err("requested geographic bounds crop does not intersect the model grid".into());
+        }
+        projected_geographic_frame_bounds(projector, bounds).unwrap_or(framed_bounds)
+    } else if framed_bounds.is_valid() {
         framed_bounds
-    } else if matches!(frame_source, ProjectedFrameSource::GeographicBounds(_)) {
-        return Err("requested geographic bounds crop does not intersect the model grid".into());
     } else {
         full_bounds
     };
@@ -418,6 +421,46 @@ fn project_domain(
             y_max: extent.y_max,
         },
     ))
+}
+
+fn projected_geographic_frame_bounds(
+    projector: ProjectionProjector,
+    bounds: GeographicBounds,
+) -> Option<ProjectedBounds> {
+    let mut projected = ProjectedBounds::default();
+    let segments = if bounds.longitude_span_deg() >= 300.0 {
+        180
+    } else {
+        96
+    };
+    let west = normalize_longitude_deg(bounds.west_deg);
+    let mut east = normalize_longitude_deg(bounds.east_deg);
+    if bounds.longitude_span_deg() >= 359.0 {
+        east = west + 360.0;
+    } else if east < west {
+        east += 360.0;
+    }
+
+    for step in 0..=segments {
+        let t = step as f64 / segments as f64;
+        let lon = normalize_longitude_deg(west + (east - west) * t);
+        include_projected_point(&mut projected, projector.project(bounds.south_deg, lon));
+        include_projected_point(&mut projected, projector.project(bounds.north_deg, lon));
+    }
+    for step in 0..=segments {
+        let t = step as f64 / segments as f64;
+        let lat = bounds.south_deg + (bounds.north_deg - bounds.south_deg) * t;
+        include_projected_point(&mut projected, projector.project(lat, bounds.west_deg));
+        include_projected_point(&mut projected, projector.project(lat, bounds.east_deg));
+    }
+
+    projected.is_valid().then_some(projected)
+}
+
+fn include_projected_point(bounds: &mut ProjectedBounds, point: (f64, f64)) {
+    if point.0.is_finite() && point.1.is_finite() {
+        bounds.include(point.0, point.1);
+    }
 }
 
 fn build_projected_basemap(

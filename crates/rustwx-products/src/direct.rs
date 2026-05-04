@@ -1715,12 +1715,30 @@ fn crop_direct_fields_for_domain(
     let mut cropped = HashMap::with_capacity(extracted.len());
     for (&selector, field) in extracted {
         let pad_cells = direct_domain_crop_pad_cells_for_field(field);
-        cropped.insert(
-            selector,
-            crop_selected_field_for_domain(field, bounds, pad_cells)?,
-        );
+        let mut field = crop_selected_field_for_domain(field, bounds, pad_cells)?;
+        mask_geographic_field_to_bounds(&mut field, bounds);
+        cropped.insert(selector, field);
     }
     Ok(cropped)
+}
+
+fn mask_geographic_field_to_bounds(field: &mut SelectedField2D, bounds: (f64, f64, f64, f64)) {
+    if is_global_scale_domain(bounds)
+        || !matches!(field.projection.as_ref(), Some(GridProjection::Geographic) | None)
+    {
+        return;
+    }
+
+    for ((value, &lat), &lon) in field
+        .values
+        .iter_mut()
+        .zip(field.grid.lat_deg.iter())
+        .zip(field.grid.lon_deg.iter())
+    {
+        if !point_in_geographic_bounds(f64::from(lon), f64::from(lat), bounds) {
+            *value = f32::NAN;
+        }
+    }
 }
 
 fn estimate_geographic_grid_spacing_deg(grid: &rustwx_core::LatLonGrid) -> Option<f64> {
@@ -3512,7 +3530,9 @@ fn direct_map_frame_aspect_ratio(
 fn basemap_detail_for_bounds(bounds: (f64, f64, f64, f64)) -> BasemapDetail {
     let lat_span = (bounds.3 - bounds.2).abs();
     let lon_span = longitude_bounds_span_deg(bounds);
-    if lat_span >= 45.0 || lon_span >= 65.0 {
+    if is_global_scale_domain(bounds) {
+        BasemapDetail::Global
+    } else if lat_span >= 45.0 || lon_span >= 65.0 {
         BasemapDetail::Broad
     } else {
         BasemapDetail::Regional
@@ -3604,6 +3624,10 @@ fn regional_latlon_presentation_projection(
             pivotal_lambert_conus_projection()
         }
         ProjectionPresentationVariant::Robinson => robinson_presentation_projection(bounds),
+        _ if is_conus_lambert_candidate(bounds) => pivotal_lambert_conus_projection(),
+        _ if is_north_america_projection_candidate(bounds) => {
+            north_america_albers_presentation_projection()
+        }
         _ => regional_presentation_projection(bounds),
     }
 }
@@ -3622,6 +3646,15 @@ fn pivotal_lambert_conus_projection() -> rustwx_render::ProjectionSpec {
         standard_parallel_1_deg: PIVOTAL_CONUS_STANDARD_PARALLEL_1_DEG,
         standard_parallel_2_deg: PIVOTAL_CONUS_STANDARD_PARALLEL_2_DEG,
         central_meridian_deg: PIVOTAL_CONUS_CENTRAL_MERIDIAN_DEG,
+    }
+}
+
+fn north_america_albers_presentation_projection() -> rustwx_render::ProjectionSpec {
+    rustwx_render::ProjectionSpec::AlbersEqualArea {
+        standard_parallel_1_deg: 20.0,
+        standard_parallel_2_deg: 60.0,
+        central_meridian_deg: -100.0,
+        latitude_of_origin_deg: 40.0,
     }
 }
 
@@ -3671,6 +3704,24 @@ fn is_conus_lambert_candidate(bounds: (f64, f64, f64, f64)) -> bool {
         && lat_span <= 38.0
         && lon_span >= 8.0
         && lon_span <= 75.0
+}
+
+fn is_north_america_projection_candidate(bounds: (f64, f64, f64, f64)) -> bool {
+    let west = normalize_longitude_for_bounds(bounds.0);
+    let east = normalize_longitude_for_bounds(bounds.1);
+    if west > east {
+        return false;
+    }
+
+    let lat_span = (bounds.3 - bounds.2).abs();
+    let lon_span = longitude_bounds_span_deg(bounds);
+    bounds.2 >= -5.0
+        && bounds.3 <= 88.0
+        && west >= -180.0
+        && east <= -35.0
+        && lat_span >= 45.0
+        && lon_span >= 80.0
+        && lon_span <= 155.0
 }
 
 fn regional_presentation_projection(bounds: (f64, f64, f64, f64)) -> rustwx_render::ProjectionSpec {
@@ -4390,7 +4441,7 @@ mod tests {
         };
         let fetch = build_direct_fetch_request(&request, &latest, 6, &groups[0]).unwrap();
         assert_eq!(fetch.request.product, "pgrb2.0p25");
-        assert!(!fetch.variable_patterns.is_empty());
+        assert!(fetch.variable_patterns.is_empty());
     }
 
     #[test]
