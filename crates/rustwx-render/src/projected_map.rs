@@ -5,6 +5,7 @@ use crate::features::{
     BasemapDetail, BasemapStyle, load_styled_basemap_features_for_detail,
     load_styled_basemap_polygons_for_detail,
 };
+use crate::presentation::LineworkRole;
 use crate::projection::{ProjectionProjector, ProjectionSpec};
 use crate::request::{
     Color, InverseRasterProjection, ProjectedDomain, ProjectedExtent, ProjectedLineOverlay,
@@ -486,37 +487,66 @@ fn build_projected_basemap(
     };
 
     let mut lines = Vec::new();
+    if subtle_graticule_enabled(options.detail) {
+        append_graticule_lines(
+            &mut lines,
+            projector,
+            line_bbox,
+            geographic_clip,
+            options.detail,
+        );
+    }
+
+    let line_densify_step_deg = basemap_line_densify_step_deg(options.detail);
+    let max_projected_step = max_projected_basemap_segment_length(line_bbox);
     for layer in load_styled_basemap_features_for_detail(options.style, options.detail) {
         let color = Color::rgba(layer.color.r, layer.color.g, layer.color.b, layer.color.a);
         for line in layer.lines {
             let mut current = Vec::<(f64, f64)>::with_capacity(line.len());
+            let mut previous_lonlat: Option<(f64, f64)> = None;
             for (lon, lat) in line {
-                if geographic_clip.is_some_and(|bounds| !bounds.contains(lat, lon)) {
-                    if current.len() >= 2 {
-                        lines.push(ProjectedLineOverlay {
-                            points: std::mem::take(&mut current),
+                if let Some((prev_lon, prev_lat)) = previous_lonlat {
+                    let steps = densified_lonlat_segment_steps(
+                        prev_lon,
+                        prev_lat,
+                        lon,
+                        lat,
+                        line_densify_step_deg,
+                    );
+                    for step in 1..=steps {
+                        let t = step as f64 / steps as f64;
+                        let point_lon = interpolate_longitude(prev_lon, lon, t);
+                        let point_lat = prev_lat + (lat - prev_lat) * t;
+                        push_projected_line_point(
+                            &mut lines,
+                            &mut current,
+                            projector,
+                            geographic_clip,
+                            line_bbox,
+                            max_projected_step,
+                            point_lon,
+                            point_lat,
                             color,
-                            width: layer.width,
-                            role: layer.role,
-                        });
-                    } else {
-                        current.clear();
+                            layer.width,
+                            layer.role,
+                        );
                     }
-                    continue;
-                }
-                let point = projector.project(lat, lon);
-                if point_in_bbox(point, line_bbox) {
-                    current.push(point);
-                } else if current.len() >= 2 {
-                    lines.push(ProjectedLineOverlay {
-                        points: std::mem::take(&mut current),
-                        color,
-                        width: layer.width,
-                        role: layer.role,
-                    });
                 } else {
-                    current.clear();
+                    push_projected_line_point(
+                        &mut lines,
+                        &mut current,
+                        projector,
+                        geographic_clip,
+                        line_bbox,
+                        max_projected_step,
+                        lon,
+                        lat,
+                        color,
+                        layer.width,
+                        layer.role,
+                    );
                 }
+                previous_lonlat = Some((lon, lat));
             }
             if current.len() >= 2 {
                 lines.push(ProjectedLineOverlay {
@@ -530,6 +560,7 @@ fn build_projected_basemap(
     }
 
     let mut polygons = Vec::new();
+    let polygon_densify_step_deg = basemap_polygon_densify_step_deg(options.detail);
     for layer in load_styled_basemap_polygons_for_detail(options.style, options.detail) {
         let color = Color::rgba(layer.color.r, layer.color.g, layer.color.b, layer.color.a);
         for polygon in layer.polygons {
@@ -540,11 +571,7 @@ fn build_projected_basemap(
                         .map(|bounds| ring.iter().any(|&(lon, lat)| bounds.contains(lat, lon)))
                         .unwrap_or(true)
                 })
-                .map(|ring| {
-                    ring.into_iter()
-                        .map(|(lon, lat)| projector.project(lat, lon))
-                        .collect::<Vec<(f64, f64)>>()
-                })
+                .map(|ring| project_densified_ring(projector, &ring, polygon_densify_step_deg))
                 .filter(|ring| ring_overlaps_bbox(ring, polygon_bbox))
                 .collect();
             if !rings.is_empty() {
@@ -558,6 +585,230 @@ fn build_projected_basemap(
     }
 
     Ok(ProjectedBasemap { lines, polygons })
+}
+
+fn subtle_graticule_enabled(detail: BasemapDetail) -> bool {
+    if !matches!(detail, BasemapDetail::Global) {
+        return false;
+    }
+    std::env::var("RUSTWX_BASEMAP_GRATICULE")
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(true)
+}
+
+fn append_graticule_lines(
+    lines: &mut Vec<ProjectedLineOverlay>,
+    projector: ProjectionProjector,
+    bbox: (f64, f64, f64, f64),
+    geographic_clip: Option<GeographicBounds>,
+    detail: BasemapDetail,
+) {
+    let color = Color::rgba(32, 40, 52, 42);
+    let step_deg = match detail {
+        BasemapDetail::Global => 2.0,
+        BasemapDetail::Broad => 1.0,
+        BasemapDetail::Regional => 0.5,
+    };
+    let max_projected_step = max_projected_basemap_segment_length(bbox);
+
+    for lat in [-60.0, -30.0, 0.0, 30.0, 60.0] {
+        let mut current = Vec::new();
+        let mut lon = -180.0;
+        while lon <= 180.0 {
+            push_projected_line_point(
+                lines,
+                &mut current,
+                projector,
+                geographic_clip,
+                bbox,
+                max_projected_step,
+                lon,
+                lat,
+                color,
+                1,
+                LineworkRole::Generic,
+            );
+            lon += step_deg;
+        }
+        flush_projected_line(lines, &mut current, color, 1, LineworkRole::Generic);
+    }
+
+    for lon in (-150..=150).step_by(30) {
+        let mut current = Vec::new();
+        let mut lat = -80.0;
+        while lat <= 80.0 {
+            push_projected_line_point(
+                lines,
+                &mut current,
+                projector,
+                geographic_clip,
+                bbox,
+                max_projected_step,
+                lon as f64,
+                lat,
+                color,
+                1,
+                LineworkRole::Generic,
+            );
+            lat += step_deg;
+        }
+        flush_projected_line(lines, &mut current, color, 1, LineworkRole::Generic);
+    }
+}
+
+fn basemap_line_densify_step_deg(detail: BasemapDetail) -> f64 {
+    match detail {
+        BasemapDetail::Global => 1.25,
+        BasemapDetail::Broad => 0.9,
+        BasemapDetail::Regional => 0.65,
+    }
+}
+
+fn basemap_polygon_densify_step_deg(detail: BasemapDetail) -> f64 {
+    match detail {
+        BasemapDetail::Global => 2.0,
+        BasemapDetail::Broad => 1.5,
+        BasemapDetail::Regional => 1.0,
+    }
+}
+
+fn max_projected_basemap_segment_length(bbox: (f64, f64, f64, f64)) -> f64 {
+    let width = (bbox.1 - bbox.0).abs();
+    let height = (bbox.3 - bbox.2).abs();
+    width.max(height).max(1.0) * 0.30
+}
+
+fn densified_lonlat_segment_steps(
+    lon0: f64,
+    lat0: f64,
+    lon1: f64,
+    lat1: f64,
+    max_step_deg: f64,
+) -> usize {
+    if !lon0.is_finite()
+        || !lat0.is_finite()
+        || !lon1.is_finite()
+        || !lat1.is_finite()
+        || !max_step_deg.is_finite()
+        || max_step_deg <= 0.0
+    {
+        return 1;
+    }
+    let lon_span = wrapped_longitude_delta_deg(lon0, lon1).abs();
+    let lat_span = (lat1 - lat0).abs();
+    (lon_span.max(lat_span) / max_step_deg).ceil().max(1.0) as usize
+}
+
+fn wrapped_longitude_delta_deg(lon0: f64, lon1: f64) -> f64 {
+    let mut delta = normalize_longitude_deg(lon1) - normalize_longitude_deg(lon0);
+    if delta > 180.0 {
+        delta -= 360.0;
+    } else if delta < -180.0 {
+        delta += 360.0;
+    }
+    delta
+}
+
+fn interpolate_longitude(lon0: f64, lon1: f64, t: f64) -> f64 {
+    normalize_longitude_deg(
+        normalize_longitude_deg(lon0) + wrapped_longitude_delta_deg(lon0, lon1) * t,
+    )
+}
+
+fn push_projected_line_point(
+    lines: &mut Vec<ProjectedLineOverlay>,
+    current: &mut Vec<(f64, f64)>,
+    projector: ProjectionProjector,
+    geographic_clip: Option<GeographicBounds>,
+    bbox: (f64, f64, f64, f64),
+    max_projected_step: f64,
+    lon: f64,
+    lat: f64,
+    color: Color,
+    width: u32,
+    role: LineworkRole,
+) {
+    if geographic_clip.is_some_and(|bounds| !bounds.contains(lat, lon)) {
+        flush_projected_line(lines, current, color, width, role);
+        return;
+    }
+    let point = projector.project(lat, lon);
+    if !point.0.is_finite() || !point.1.is_finite() || !point_in_bbox(point, bbox) {
+        flush_projected_line(lines, current, color, width, role);
+        return;
+    }
+
+    if current
+        .last()
+        .is_some_and(|&previous| projected_distance(previous, point) > max_projected_step)
+    {
+        flush_projected_line(lines, current, color, width, role);
+    }
+    current.push(point);
+}
+
+fn flush_projected_line(
+    lines: &mut Vec<ProjectedLineOverlay>,
+    current: &mut Vec<(f64, f64)>,
+    color: Color,
+    width: u32,
+    role: LineworkRole,
+) {
+    if current.len() >= 2 {
+        lines.push(ProjectedLineOverlay {
+            points: std::mem::take(current),
+            color,
+            width,
+            role,
+        });
+    } else {
+        current.clear();
+    }
+}
+
+fn projected_distance(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let dx = a.0 - b.0;
+    let dy = a.1 - b.1;
+    (dx * dx + dy * dy).sqrt()
+}
+
+fn project_densified_ring(
+    projector: ProjectionProjector,
+    ring: &[(f64, f64)],
+    max_step_deg: f64,
+) -> Vec<(f64, f64)> {
+    if ring.is_empty() {
+        return Vec::new();
+    }
+    let mut projected = Vec::with_capacity(ring.len());
+    let mut previous_lonlat: Option<(f64, f64)> = None;
+    for &(lon, lat) in ring {
+        if let Some((prev_lon, prev_lat)) = previous_lonlat {
+            let steps = densified_lonlat_segment_steps(prev_lon, prev_lat, lon, lat, max_step_deg);
+            for step in 1..=steps {
+                let t = step as f64 / steps as f64;
+                let point_lon = interpolate_longitude(prev_lon, lon, t);
+                let point_lat = prev_lat + (lat - prev_lat) * t;
+                let point = projector.project(point_lat, point_lon);
+                if point.0.is_finite() && point.1.is_finite() {
+                    projected.push(point);
+                }
+            }
+        } else {
+            let point = projector.project(lat, lon);
+            if point.0.is_finite() && point.1.is_finite() {
+                projected.push(point);
+            }
+        }
+        previous_lonlat = Some((lon, lat));
+    }
+    projected
 }
 
 fn point_in_bbox(point: (f64, f64), bbox: (f64, f64, f64, f64)) -> bool {
@@ -725,6 +976,28 @@ mod tests {
         assert!(bounds.contains(0.0, 180.0));
         assert!(bounds.contains(0.0, -179.75));
         assert!(bounds.contains(0.0, 0.0));
+    }
+
+    #[test]
+    fn basemap_densification_takes_short_antimeridian_path() {
+        assert_eq!(
+            densified_lonlat_segment_steps(179.0, 0.0, -179.0, 0.0, 1.0),
+            2
+        );
+        assert!((interpolate_longitude(179.0, -179.0, 0.5).abs() - 180.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn projected_ring_densification_adds_curve_support_points() {
+        let projector = ProjectionSpec::Robinson {
+            central_meridian_deg: 0.0,
+        }
+        .build_projector(None, None, &[0.0, 10.0], &[0.0, 20.0])
+        .expect("projector");
+        let ring = vec![(0.0, 0.0), (20.0, 10.0)];
+        let projected = project_densified_ring(projector, &ring, 2.0);
+
+        assert!(projected.len() > ring.len());
     }
 
     #[test]
