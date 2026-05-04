@@ -3888,13 +3888,10 @@ fn regional_presentation_projection(bounds: (f64, f64, f64, f64)) -> rustwx_rend
             south_pole_on_projection_plane: false,
         };
     }
-    if bounds.2 < -25.0 && bounds.3 > 25.0 {
-        return rustwx_render::ProjectionSpec::Mercator {
-            latitude_of_true_scale_deg: center_lat,
-            central_meridian_deg: center_lon,
-        };
-    }
     if is_broad_continent_scale_domain(bounds) {
+        return robinson_presentation_projection(bounds);
+    }
+    if bounds.2 < -25.0 && bounds.3 > 25.0 {
         return rustwx_render::ProjectionSpec::Mercator {
             latitude_of_true_scale_deg: center_lat,
             central_meridian_deg: center_lon,
@@ -4135,31 +4132,6 @@ mod tests {
             ),
             None
         );
-    }
-
-    #[test]
-    fn adaptive_broad_regional_domains_use_rectangular_mercator_projection() {
-        let australia = presentation_projection_for_bounds(
-            Some(&GridProjection::Geographic),
-            (110.0, 180.0, -50.0, 0.0),
-            ProjectionPresentationVariant::Adaptive,
-        )
-        .expect("Australia geographic grids should get a presentation projection");
-        assert!(matches!(
-            australia,
-            rustwx_render::ProjectionSpec::Mercator { .. }
-        ));
-
-        let asia = presentation_projection_for_bounds(
-            Some(&GridProjection::Geographic),
-            (25.0, 179.999, -10.0, 82.0),
-            ProjectionPresentationVariant::Adaptive,
-        )
-        .expect("Asia geographic grids should get a presentation projection");
-        assert!(matches!(
-            asia,
-            rustwx_render::ProjectionSpec::Mercator { .. }
-        ));
     }
 
     #[test]
