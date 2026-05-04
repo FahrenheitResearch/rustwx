@@ -3547,7 +3547,7 @@ fn inverse_raster_clip_bounds(bounds: (f64, f64, f64, f64)) -> Option<Geographic
     }
     let lat_span = (bounds.3 - bounds.2).abs();
     let lon_span = longitude_bounds_span_deg(bounds);
-    if lat_span < 45.0 && lon_span < 95.0 {
+    if lat_span < 150.0 && lon_span < 300.0 {
         return None;
     }
     Some(GeographicClipBounds::new(
