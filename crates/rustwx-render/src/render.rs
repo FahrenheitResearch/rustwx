@@ -580,6 +580,46 @@ fn ellipsize_text_to_width(text: &str, max_width: u32, scale: u32, bold: bool) -
     }
 }
 
+fn fit_chrome_title_metadata(
+    title: Option<&str>,
+    metadata: Option<&str>,
+    row_width: u32,
+    row_gap: u32,
+    scale: u32,
+) -> (Option<String>, Option<String>) {
+    let row_width = row_width.max(1);
+    let metadata_width_limit = match (title, metadata) {
+        (Some(title), Some(_)) => {
+            let desired_title_width = measure_text_width(title, scale, true);
+            let title_reserve = desired_title_width.min(row_width.saturating_mul(3) / 5);
+            row_width
+                .saturating_sub(title_reserve)
+                .saturating_sub(row_gap)
+                .max(row_width / 3)
+                .max(1)
+        }
+        (None, Some(_)) => row_width,
+        _ => 0,
+    };
+    let fitted_metadata =
+        metadata.map(|text| ellipsize_text_to_width(text, metadata_width_limit, scale, false));
+    let metadata_width = fitted_metadata
+        .as_ref()
+        .map(|text| measure_text_width(text, scale, false))
+        .unwrap_or(0);
+    let title_width_limit = if metadata_width > 0 {
+        row_width
+            .saturating_sub(metadata_width)
+            .saturating_sub(row_gap)
+            .max(1)
+    } else {
+        row_width
+    };
+    let fitted_title =
+        title.map(|text| ellipsize_text_to_width(text, title_width_limit, scale, true));
+    (fitted_title, fitted_metadata)
+}
+
 fn ellipsize_text_to_width_with_factor(
     text: &str,
     max_width: u32,
@@ -684,6 +724,23 @@ fn segment_intersects_mask(mask: &RgbaImage, x0: f64, y0: f64, x1: f64, y1: f64)
         let y = y0 + (y1 - y0) * t;
         mask_contains_local_pixel(mask, x, y)
     })
+}
+
+fn build_alpha_clip_mask(img: &RgbaImage) -> Option<RgbaImage> {
+    let mut has_transparent = false;
+    let mut has_opaque = false;
+    let mut mask = RgbaImage::new(img.width(), img.height());
+    for py in 0..img.height() {
+        for px in 0..img.width() {
+            if img.get_pixel(px, py).0[3] > 0 {
+                has_opaque = true;
+                mask.put_pixel(px, py, Rgba::WHITE.to_image_rgba());
+            } else {
+                has_transparent = true;
+            }
+        }
+    }
+    (has_opaque && has_transparent).then_some(mask)
 }
 
 fn project_ring_unclipped(
@@ -1674,6 +1731,29 @@ fn clear_map_outside_local_rect(
     }
 }
 
+fn clear_map_outside_local_mask(
+    img: &mut RgbaImage,
+    layout: &Layout,
+    mask: &RgbaImage,
+    background: Rgba,
+) {
+    let clear = background.to_image_rgba();
+    let map_right = layout.map_x.saturating_add(layout.map_w).min(img.width());
+    let map_bottom = layout.map_y.saturating_add(layout.map_h).min(img.height());
+    for py in layout.map_y..map_bottom {
+        let local_y = py - layout.map_y;
+        if local_y >= mask.height() {
+            continue;
+        }
+        for px in layout.map_x..map_right {
+            let local_x = px - layout.map_x;
+            if local_x < mask.width() && mask.get_pixel(local_x, local_y).0[3] == 0 {
+                img.put_pixel(px, py, clear);
+            }
+        }
+    }
+}
+
 fn chrome_anchor_bounds(
     layout: &Layout,
     frame: Option<DomainFrame>,
@@ -2499,6 +2579,11 @@ fn draw_variable_layers(
         }
     };
     let rasterize_ms = rasterize_start.elapsed().as_millis();
+    let projection_clip_mask = if opts.inverse_projected_grid.is_some() {
+        build_alpha_clip_mask(&map_img)
+    } else {
+        None
+    };
 
     let frame_clip_rect = match opts.domain_frame {
         Some(frame) if frame.clear_outside => domain_frame_rect,
@@ -2519,6 +2604,7 @@ fn draw_variable_layers(
     });
     let domain_clip_mask =
         domain_clip_rect.map(|rect| build_rect_clip_mask(layout.map_w, layout.map_h, rect));
+    let draw_clip_mask = domain_clip_mask.as_ref().or(projection_clip_mask.as_ref());
 
     let raster_blit_start = Instant::now();
     for py in 0..layout.map_h {
@@ -2560,44 +2646,26 @@ fn draw_variable_layers(
             extent,
             &opts.projected_lines,
             opts.presentation,
-            domain_clip_mask.as_ref(),
+            draw_clip_mask,
         );
     }
     let linework_ms = linework_start.elapsed().as_millis();
 
     let point_start = Instant::now();
     if let Some(ref extent) = opts.map_extent {
-        draw_projected_points(
-            img,
-            layout,
-            extent,
-            &opts.projected_points,
-            domain_clip_mask.as_ref(),
-        );
+        draw_projected_points(img, layout, extent, &opts.projected_points, draw_clip_mask);
     }
     let point_ms = point_start.elapsed().as_millis();
 
     let contour_start = Instant::now();
     for contour in &opts.contours {
-        draw_contours(
-            img,
-            layout,
-            contour,
-            projected_pixels,
-            domain_clip_mask.as_ref(),
-        );
+        draw_contours(img, layout, contour, projected_pixels, draw_clip_mask);
     }
     let contour_ms = contour_start.elapsed().as_millis();
 
     let barb_start = Instant::now();
     for barb in &opts.barbs {
-        draw_barbs(
-            img,
-            layout,
-            barb,
-            projected_pixels,
-            domain_clip_mask.as_ref(),
-        );
+        draw_barbs(img, layout, barb, projected_pixels, draw_clip_mask);
     }
     let barb_ms = barb_start.elapsed().as_millis();
 
@@ -2608,7 +2676,7 @@ fn draw_variable_layers(
             layout,
             extent,
             &opts.projected_place_labels,
-            domain_clip_mask.as_ref(),
+            draw_clip_mask,
             domain_clip_rect,
         );
     }
@@ -2619,6 +2687,8 @@ fn draw_variable_layers(
         if frame.clear_outside {
             clear_map_outside_local_rect(img, layout, rect, canvas_background);
         }
+    } else if let Some(mask) = projection_clip_mask.as_ref() {
+        clear_map_outside_local_mask(img, layout, mask, canvas_background);
     }
     let outside_frame_clear_ms = outside_frame_clear_start.elapsed().as_millis();
 
@@ -2653,35 +2723,25 @@ fn draw_chrome_and_colorbar(
     let metadata = joined_subtitle_metadata(opts);
     let row_gap = 14u32.saturating_mul(layout.text_scale.max(1));
     let row_width = chrome_right.saturating_sub(chrome_left).max(1);
-    let metadata_width_limit = if opts.title.is_some() {
-        row_width.saturating_mul(2).checked_div(5).unwrap_or(1)
-    } else {
-        row_width
-    }
-    .max(1);
-    let fitted_metadata = metadata
-        .map(|text| ellipsize_text_to_width(&text, metadata_width_limit, layout.text_scale, false));
-    let metadata_width = fitted_metadata
-        .as_ref()
-        .map(|text| text::text_width(text, layout.text_scale) as u32)
-        .unwrap_or(0);
-    let title_width_limit = row_width
-        .saturating_sub(metadata_width)
-        .saturating_sub(if metadata_width > 0 { row_gap } else { 0 })
-        .max(1);
+    let (fitted_title, fitted_metadata) = fit_chrome_title_metadata(
+        opts.title.as_deref(),
+        metadata.as_deref(),
+        row_width,
+        row_gap,
+        layout.text_scale,
+    );
 
-    if let Some(ref t) = opts.title {
-        let title = ellipsize_text_to_width(t, title_width_limit, layout.text_scale, true);
+    if let Some(ref title) = fitted_title {
         let title_x = if fitted_metadata.is_none()
             && matches!(opts.presentation.chrome.title_anchor, TitleAnchor::Center)
         {
-            centered_text_left(&title, chrome_center, layout.text_scale, true)
+            centered_text_left(title, chrome_center, layout.text_scale, true)
         } else {
             chrome_left as i32
         };
         text::draw_text_bold(
             img,
-            &title,
+            title,
             title_x,
             title_y as i32,
             title_color,
@@ -3713,6 +3773,48 @@ mod tests {
         assert_eq!(title_y, subtitle_y);
         assert!(title_y < frame_top);
         assert!(frame_top.saturating_sub(title_y) <= max_gap);
+    }
+
+    #[test]
+    fn chrome_metadata_uses_space_left_by_short_title() {
+        let metadata = "Init 05/04 11Z | F008 | Valid 05/04 19Z | HRRR | source: nomads";
+
+        let (title, fitted_metadata) =
+            fit_chrome_title_metadata(Some("2m AGL Temperature"), Some(metadata), 940, 14, 1);
+
+        assert_eq!(title.as_deref(), Some("2m AGL Temperature"));
+        assert_eq!(fitted_metadata.as_deref(), Some(metadata));
+    }
+
+    #[test]
+    fn projected_alpha_mask_clears_linework_outside_mask() {
+        let layout = Layout {
+            map_x: 1,
+            map_y: 1,
+            map_w: 4,
+            map_h: 4,
+            cbar_x: 0,
+            cbar_y: 0,
+            cbar_w: 0,
+            cbar_h: 0,
+            title_y: 0,
+            subtitle_y: 0,
+            text_scale: 1,
+            label_gap: 1,
+        };
+        let bg = Rgba::new(244, 246, 248);
+        let mut img = RgbaImage::from_pixel(6, 6, Rgba::BLACK.to_image_rgba());
+        let mut mask = RgbaImage::new(4, 4);
+        for y in 1..3 {
+            for x in 1..3 {
+                mask.put_pixel(x, y, Rgba::WHITE.to_image_rgba());
+            }
+        }
+
+        clear_map_outside_local_mask(&mut img, &layout, &mask, bg);
+
+        assert_eq!(img.get_pixel(1, 1).0, bg.to_image_rgba().0);
+        assert_eq!(img.get_pixel(2, 2).0, Rgba::BLACK.to_image_rgba().0);
     }
 
     #[test]
