@@ -3576,11 +3576,6 @@ fn inverse_raster_clip_bounds(bounds: (f64, f64, f64, f64)) -> Option<Geographic
     if !env_flag_enabled("RUSTWX_INVERSE_RASTER_GEO_CLIP", true) {
         return None;
     }
-    let lat_span = (bounds.3 - bounds.2).abs();
-    let lon_span = longitude_bounds_span_deg(bounds);
-    if lat_span < 150.0 && lon_span < 300.0 {
-        return None;
-    }
     Some(GeographicClipBounds::new(
         bounds.0, bounds.1, bounds.2, bounds.3,
     ))
@@ -4070,6 +4065,19 @@ mod tests {
         assert!(point_in_geographic_bounds(0.0, 0.0, bounds));
         assert!(point_in_geographic_bounds(90.0, 0.0, bounds));
         assert!(point_in_geographic_bounds(179.5, 0.0, bounds));
+    }
+
+    #[test]
+    fn inverse_raster_latlon_maps_clip_regional_bounds() {
+        let bounds = (110.0, 180.0, -50.0, 0.0);
+        let inverse = inverse_raster_projection_for_grid(
+            Some(&GridProjection::Geographic),
+            bounds,
+            &sample_grid(),
+        )
+        .expect("regional regular lat/lon maps should use inverse raster");
+
+        assert!(inverse.clip_bounds.is_some());
     }
 
     #[test]
