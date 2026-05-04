@@ -449,7 +449,7 @@ mod tests {
         .linework_style(LineworkRole::Coast, Rgba::BLACK, 1);
 
         assert!(style.visible);
-        assert_eq!(style.width, 1);
+        assert_eq!(style.width, 2);
     }
 
     #[test]
@@ -667,27 +667,35 @@ fn clean_atlas_linework_style(
     fallback_width: u32,
 ) -> LineworkStyle {
     let fallback_width = fallback_width.max(1);
-    let major_width = fallback_width.clamp(1, 2);
-    let minor_width = fallback_width.clamp(1, 2);
+    let major_width = fallback_width.clamp(1, 3);
+    let minor_width = fallback_width.clamp(1, 3);
     let county_visible = !matches!(mode, ProductVisualMode::FilledMeteorology);
     let alpha = |cap: u8| fallback.a.min(cap);
     let (color, width, visible) = match role {
-        LineworkRole::Coast => (Rgba::with_alpha(30, 38, 50, alpha(142)), major_width, true),
+        LineworkRole::Coast => (
+            Rgba::with_alpha(18, 22, 28, alpha(190)),
+            major_width.max(2),
+            true,
+        ),
         LineworkRole::Lake => (
-            Rgba::with_alpha(78, 126, 162, alpha(112)),
+            Rgba::with_alpha(50, 98, 150, alpha(150)),
             minor_width,
             true,
         ),
         LineworkRole::International => {
-            (Rgba::with_alpha(66, 76, 92, alpha(122)), minor_width, true)
+            (
+                Rgba::with_alpha(20, 24, 30, alpha(184)),
+                minor_width.max(2),
+                true,
+            )
         }
         LineworkRole::State => (
-            Rgba::with_alpha(20, 24, 30, alpha(154)),
-            minor_width,
+            Rgba::with_alpha(12, 14, 18, alpha(210)),
+            minor_width.max(2),
             true,
         ),
         LineworkRole::County => (
-            Rgba::with_alpha(74, 82, 96, alpha(46)),
+            Rgba::with_alpha(46, 52, 62, alpha(76)),
             1,
             county_visible,
         ),

@@ -51,7 +51,7 @@ use crate::shared_context::{
 use crate::source::{ProductSourceRoute, direct_route_for_recipe_slug};
 use crate::spec::direct_product_specs;
 
-const OUTPUT_WIDTH: u32 = 1200;
+const OUTPUT_WIDTH: u32 = 1600;
 const OUTPUT_HEIGHT: u32 = 900;
 const CLOUD_LEVEL_COMPONENT_SLUGS: &[&str] =
     &["low_cloud_cover", "middle_cloud_cover", "high_cloud_cover"];
@@ -3417,7 +3417,7 @@ fn build_barb_layers(
         stride_x,
         stride_y,
         color: Color::BLACK,
-        width: 1,
+        width: 2,
         length_px: 20.0,
     }];
     let mut cache = barb_layer_cache

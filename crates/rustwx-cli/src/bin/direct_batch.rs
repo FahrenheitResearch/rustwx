@@ -200,8 +200,8 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         product_overrides: parse_product_overrides(&args.product_overrides)?,
         contour_mode: args.contour_mode.into(),
         native_fill_level_multiplier: args.native_fill_level_multiplier.max(1),
-        output_width: 1200,
-        output_height: 900,
+        output_width: static_output_dimension("RUSTWX_STATIC_OUTPUT_WIDTH", 1600),
+        output_height: static_output_dimension("RUSTWX_STATIC_OUTPUT_HEIGHT", 900),
         png_compression: rustwx_render::PngCompressionMode::Default,
         custom_poi_overlay: None,
         place_label_overlay: default_place_label_overlay_for_domain(
@@ -299,6 +299,14 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", timing_path.display());
     println!("{}", canonical_manifest.display());
     Ok(())
+}
+
+fn static_output_dimension(name: &str, fallback: u32) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| *value >= 320)
+        .unwrap_or(fallback)
 }
 
 fn resolve_forecast_hour(args: &Args, source: SourceId) -> Result<u16, Box<dyn std::error::Error>> {

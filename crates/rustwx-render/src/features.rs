@@ -593,24 +593,24 @@ fn build_broad_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !state.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: state,
-            color: Rgba::with_alpha(colors.state.r, colors.state.g, colors.state.b, 168),
-            width: 1,
+            color: Rgba::with_alpha(colors.state.r, colors.state.g, colors.state.b, 230),
+            width: 2,
             role: LineworkRole::State,
         });
     }
     if !nat.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: nat,
-            color: Rgba::with_alpha(colors.nat.r, colors.nat.g, colors.nat.b, 154),
-            width: 1,
+            color: Rgba::with_alpha(colors.nat.r, colors.nat.g, colors.nat.b, 210),
+            width: 2,
             role: LineworkRole::International,
         });
     }
     if !coast.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: coast,
-            color: Rgba::with_alpha(colors.coast.r, colors.coast.g, colors.coast.b, 172),
-            width: 1,
+            color: Rgba::with_alpha(colors.coast.r, colors.coast.g, colors.coast.b, 220),
+            width: 2,
             role: LineworkRole::Coast,
         });
     }
@@ -653,21 +653,33 @@ fn build_global_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     let nat =
         load_lines_from_shapefile(&root.join(format!("ne_{tag}_admin_0_boundary_lines_land.shp")))
             .unwrap_or_default();
+    let state = load_lines_from_shapefile(
+        &root.join(format!("ne_{tag}_admin_1_states_provinces_lines.shp")),
+    )
+    .unwrap_or_default();
     let colors = feature_colors(style);
-    let mut layers = Vec::with_capacity(3);
+    let mut layers = Vec::with_capacity(4);
+    if !state.is_empty() {
+        layers.push(StyledLonLatLayer {
+            lines: state,
+            color: Rgba::with_alpha(colors.state.r, colors.state.g, colors.state.b, 160),
+            width: 1,
+            role: LineworkRole::State,
+        });
+    }
     if !nat.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: nat,
-            color: Rgba::with_alpha(colors.nat.r, colors.nat.g, colors.nat.b, 82),
-            width: 1,
+            color: Rgba::with_alpha(colors.nat.r, colors.nat.g, colors.nat.b, 170),
+            width: 2,
             role: LineworkRole::International,
         });
     }
     if !coast.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: coast,
-            color: Rgba::with_alpha(colors.coast.r, colors.coast.g, colors.coast.b, 104),
-            width: 1,
+            color: Rgba::with_alpha(colors.coast.r, colors.coast.g, colors.coast.b, 190),
+            width: 2,
             role: LineworkRole::Coast,
         });
     }
