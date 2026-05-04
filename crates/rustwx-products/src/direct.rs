@@ -3417,8 +3417,8 @@ fn build_barb_layers(
         stride_x,
         stride_y,
         color: Color::BLACK,
-        width: 2,
-        length_px: 20.0,
+        width: static_barb_width(),
+        length_px: static_barb_length_px(),
     }];
     let mut cache = barb_layer_cache
         .lock()
@@ -3454,15 +3454,43 @@ fn cached_barb_strides(
     }
 
     let (visible_nx, visible_ny) = visible_grid_span(grid, bounds);
+    let density = static_barb_density_scale();
     let strides = (
-        ((visible_nx as f64 / 30.0).round() as usize).clamp(3, 128),
-        ((visible_ny as f64 / 18.0).round() as usize).clamp(3, 96),
+        ((visible_nx as f64 / (30.0 * density)).round() as usize).clamp(2, 128),
+        ((visible_ny as f64 / (18.0 * density)).round() as usize).clamp(2, 96),
     );
 
     let mut cache = barb_stride_cache
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     *cache.entry(key).or_insert(strides)
+}
+
+fn static_barb_width() -> u32 {
+    std::env::var("RUSTWX_BARB_WIDTH")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(2)
+        .clamp(1, 8)
+}
+
+fn static_barb_length_px() -> f64 {
+    std::env::var("RUSTWX_BARB_LENGTH_PX")
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(20.0)
+        .clamp(6.0, 48.0)
+}
+
+fn static_barb_density_scale() -> f64 {
+    std::env::var("RUSTWX_BARB_DENSITY")
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(1.0)
+        .clamp(0.25, 4.0)
 }
 
 pub fn build_projected_map(

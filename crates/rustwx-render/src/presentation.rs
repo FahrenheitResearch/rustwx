@@ -670,36 +670,40 @@ fn clean_atlas_linework_style(
     let major_width = fallback_width.clamp(1, 3);
     let minor_width = fallback_width.clamp(1, 3);
     let county_visible = !matches!(mode, ProductVisualMode::FilledMeteorology);
-    let alpha = |cap: u8| fallback.a.min(cap);
+    let width_boost = static_linework_width_boost();
+    let alpha_scale = static_linework_alpha_scale();
+    let boost_width = |width: u32| width.saturating_add(width_boost).clamp(1, 8);
+    let alpha = |cap: u8| {
+        let base = fallback.a.min(cap) as f32;
+        (base * alpha_scale).round().clamp(0.0, 255.0) as u8
+    };
     let (color, width, visible) = match role {
         LineworkRole::Coast => (
             Rgba::with_alpha(18, 22, 28, alpha(190)),
-            major_width.max(2),
+            boost_width(major_width.max(2)),
             true,
         ),
         LineworkRole::Lake => (
             Rgba::with_alpha(50, 98, 150, alpha(150)),
-            minor_width,
+            boost_width(minor_width),
             true,
         ),
-        LineworkRole::International => {
-            (
-                Rgba::with_alpha(20, 24, 30, alpha(184)),
-                minor_width.max(2),
-                true,
-            )
-        }
+        LineworkRole::International => (
+            Rgba::with_alpha(20, 24, 30, alpha(184)),
+            boost_width(minor_width.max(2)),
+            true,
+        ),
         LineworkRole::State => (
             Rgba::with_alpha(12, 14, 18, alpha(210)),
-            minor_width.max(2),
+            boost_width(minor_width.max(2)),
             true,
         ),
         LineworkRole::County => (
             Rgba::with_alpha(46, 52, 62, alpha(76)),
-            1,
+            boost_width(1),
             county_visible,
         ),
-        LineworkRole::Generic => (fallback, fallback_width, true),
+        LineworkRole::Generic => (fallback, boost_width(fallback_width), true),
     };
 
     LineworkStyle {
@@ -707,6 +711,23 @@ fn clean_atlas_linework_style(
         color,
         width,
     }
+}
+
+fn static_linework_width_boost() -> u32 {
+    std::env::var("RUSTWX_LINEWORK_WIDTH_BOOST")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .unwrap_or(0)
+        .clamp(0, 4)
+}
+
+fn static_linework_alpha_scale() -> f32 {
+    std::env::var("RUSTWX_LINEWORK_ALPHA_SCALE")
+        .ok()
+        .and_then(|value| value.trim().parse::<f32>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(1.0)
+        .clamp(0.25, 2.0)
 }
 
 fn clean_atlas_chrome(title_anchor: TitleAnchor) -> ChromeStyle {

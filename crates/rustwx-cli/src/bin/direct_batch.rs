@@ -74,6 +74,17 @@ struct Args {
     region: RegionPreset,
     #[arg(
         long,
+        value_name = "WEST,EAST,SOUTH,NORTH",
+        help = "Override the selected region with explicit geographic bounds"
+    )]
+    bounds: Option<String>,
+    #[arg(
+        long,
+        help = "Slug to use when --bounds is supplied; defaults to <region>_custom"
+    )]
+    domain_slug: Option<String>,
+    #[arg(
+        long,
         help = "Country crop by ISO alpha-2/alpha-3 code or normalized country name, e.g. usa, us, japan"
     )]
     country: Option<String>,
@@ -121,7 +132,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &args.date,
         args.cycle,
         args.forecast_hour.unwrap_or(0),
-        &requested_domain_slug(args.region, args.country.as_deref()),
+        &requested_domain_slug_for_args(&args),
         "direct",
     );
     let failure_out_dir = args.out_dir.clone();
@@ -185,7 +196,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         args.recipes.clone()
     };
-    let domain = domain_from_region_or_country(args.region, args.country.as_deref())?;
+    let domain = domain_for_args(args)?;
     let request = DirectBatchRequest {
         model: args.model,
         date_yyyymmdd: args.date.clone(),
@@ -307,6 +318,52 @@ fn static_output_dimension(name: &str, fallback: u32) -> u32 {
         .and_then(|value| value.trim().parse::<u32>().ok())
         .filter(|value| *value >= 320)
         .unwrap_or(fallback)
+}
+
+fn requested_domain_slug_for_args(args: &Args) -> String {
+    if args.bounds.is_some() {
+        return args
+            .domain_slug
+            .clone()
+            .unwrap_or_else(|| format!("{}_custom", args.region.slug()));
+    }
+    requested_domain_slug(args.region, args.country.as_deref())
+}
+
+fn domain_for_args(
+    args: &Args,
+) -> Result<rustwx_products::shared_context::DomainSpec, Box<dyn std::error::Error>> {
+    if let Some(bounds) = args.bounds.as_deref() {
+        if args.country.is_some() {
+            return Err("--bounds cannot be combined with --country".into());
+        }
+        let slug = requested_domain_slug_for_args(args);
+        return Ok(rustwx_products::shared_context::DomainSpec::new(
+            slug,
+            parse_bounds(bounds)?,
+        ));
+    }
+    domain_from_region_or_country(args.region, args.country.as_deref())
+}
+
+fn parse_bounds(value: &str) -> Result<(f64, f64, f64, f64), Box<dyn std::error::Error>> {
+    let parts = value
+        .split(',')
+        .map(|part| part.trim().parse::<f64>())
+        .collect::<Result<Vec<_>, _>>()?;
+    let [west, east, south, north]: [f64; 4] = parts
+        .try_into()
+        .map_err(|_| "--bounds expects exactly four comma-separated numbers")?;
+    if !west.is_finite() || !east.is_finite() || !south.is_finite() || !north.is_finite() {
+        return Err("--bounds values must be finite".into());
+    }
+    if south >= north {
+        return Err("--bounds south must be less than north".into());
+    }
+    if !(-90.0..=90.0).contains(&south) || !(-90.0..=90.0).contains(&north) {
+        return Err("--bounds latitude values must be between -90 and 90".into());
+    }
+    Ok((west, east, south, north))
 }
 
 fn resolve_forecast_hour(args: &Args, source: SourceId) -> Result<u16, Box<dyn std::error::Error>> {
