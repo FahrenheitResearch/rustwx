@@ -1715,30 +1715,12 @@ fn crop_direct_fields_for_domain(
     let mut cropped = HashMap::with_capacity(extracted.len());
     for (&selector, field) in extracted {
         let pad_cells = direct_domain_crop_pad_cells_for_field(field);
-        let mut field = crop_selected_field_for_domain(field, bounds, pad_cells)?;
-        mask_geographic_field_to_bounds(&mut field, bounds);
-        cropped.insert(selector, field);
+        cropped.insert(
+            selector,
+            crop_selected_field_for_domain(field, bounds, pad_cells)?,
+        );
     }
     Ok(cropped)
-}
-
-fn mask_geographic_field_to_bounds(field: &mut SelectedField2D, bounds: (f64, f64, f64, f64)) {
-    if is_global_scale_domain(bounds)
-        || !matches!(field.projection.as_ref(), Some(GridProjection::Geographic) | None)
-    {
-        return;
-    }
-
-    for ((value, &lat), &lon) in field
-        .values
-        .iter_mut()
-        .zip(field.grid.lat_deg.iter())
-        .zip(field.grid.lon_deg.iter())
-    {
-        if !point_in_geographic_bounds(f64::from(lon), f64::from(lat), bounds) {
-            *value = f32::NAN;
-        }
-    }
 }
 
 fn estimate_geographic_grid_spacing_deg(grid: &rustwx_core::LatLonGrid) -> Option<f64> {

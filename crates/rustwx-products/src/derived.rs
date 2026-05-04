@@ -2645,28 +2645,10 @@ fn crop_native_derived_field(
         y_end: max_y + 1,
     };
 
-    let mut cropped = NativeDerivedField {
+    Ok(NativeDerivedField {
         grid: crop_latlon_grid(&field.grid, crop)?,
         values: crop_values_f64(&field.values, field.grid.shape.nx, crop),
-    };
-    mask_native_derived_field_to_bounds(&mut cropped, bounds);
-    Ok(cropped)
-}
-
-fn mask_native_derived_field_to_bounds(
-    field: &mut NativeDerivedField,
-    bounds: (f64, f64, f64, f64),
-) {
-    for ((value, &lat), &lon) in field
-        .values
-        .iter_mut()
-        .zip(field.grid.lat_deg.iter())
-        .zip(field.grid.lon_deg.iter())
-    {
-        if !point_in_geographic_bounds(f64::from(lon), f64::from(lat), bounds) {
-            *value = f64::NAN;
-        }
-    }
+    })
 }
 
 fn point_in_geographic_bounds(lon: f64, lat: f64, bounds: (f64, f64, f64, f64)) -> bool {
