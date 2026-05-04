@@ -257,6 +257,7 @@ struct VariableLayerTiming {
     barb_ms: u128,
     outside_frame_clear_ms: u128,
     domain_clip_rect: Option<LocalRect>,
+    projection_clip_mask_present: bool,
 }
 
 thread_local! {
@@ -1754,6 +1755,49 @@ fn clear_map_outside_local_mask(
     }
 }
 
+fn local_mask_covered(mask: &RgbaImage, x: i32, y: i32) -> bool {
+    if x < 0 || y < 0 || x >= mask.width() as i32 || y >= mask.height() as i32 {
+        return false;
+    }
+    mask.get_pixel(x as u32, y as u32).0[3] > 0
+}
+
+fn draw_local_mask_outline(
+    img: &mut RgbaImage,
+    layout: &Layout,
+    mask: &RgbaImage,
+    color: Rgba,
+    width: u32,
+) {
+    let radius = width.saturating_sub(1).min(3) as i32;
+    for local_y in 0..mask.height() {
+        for local_x in 0..mask.width() {
+            if mask.get_pixel(local_x, local_y).0[3] == 0 {
+                continue;
+            }
+            let x = local_x as i32;
+            let y = local_y as i32;
+            let edge = !local_mask_covered(mask, x - 1, y)
+                || !local_mask_covered(mask, x + 1, y)
+                || !local_mask_covered(mask, x, y - 1)
+                || !local_mask_covered(mask, x, y + 1);
+            if !edge {
+                continue;
+            }
+            for dy in -radius..=radius {
+                for dx in -radius..=radius {
+                    draw::blend_pixel(
+                        img,
+                        layout.map_x as i32 + x + dx,
+                        layout.map_y as i32 + y + dy,
+                        color,
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn chrome_anchor_bounds(
     layout: &Layout,
     frame: Option<DomainFrame>,
@@ -2689,6 +2733,9 @@ fn draw_variable_layers(
         }
     } else if let Some(mask) = projection_clip_mask.as_ref() {
         clear_map_outside_local_mask(img, layout, mask, canvas_background);
+        if let Some(frame) = opts.presentation.chrome.frame_color {
+            draw_local_mask_outline(img, layout, mask, frame, 1);
+        }
     }
     let outside_frame_clear_ms = outside_frame_clear_start.elapsed().as_millis();
 
@@ -2702,6 +2749,7 @@ fn draw_variable_layers(
         barb_ms,
         outside_frame_clear_ms,
         domain_clip_rect,
+        projection_clip_mask_present: projection_clip_mask.is_some(),
     }
 }
 
@@ -2712,6 +2760,7 @@ fn draw_chrome_and_colorbar(
     projected_pixels_ref: Option<&[Option<(f64, f64)>]>,
     domain_frame_rect: Option<LocalRect>,
     domain_clip_rect: Option<LocalRect>,
+    projection_clip_mask_present: bool,
     _has_title: bool,
 ) -> (u128, u128) {
     let chrome_start = Instant::now();
@@ -2759,22 +2808,25 @@ fn draw_chrome_and_colorbar(
         );
     }
     if let Some(frame) = opts.presentation.chrome.frame_color {
-        let map_right = layout.map_x + layout.map_w.saturating_sub(1);
-        let map_bottom = layout.map_y + layout.map_h.saturating_sub(1);
-        for px in layout.map_x..=map_right.min(img.width().saturating_sub(1)) {
-            if layout.map_y < img.height() {
-                img.put_pixel(px, layout.map_y, frame.to_image_rgba());
+        let draw_rectangular_frame = !projection_clip_mask_present || opts.domain_frame.is_some();
+        if draw_rectangular_frame {
+            let map_right = layout.map_x + layout.map_w.saturating_sub(1);
+            let map_bottom = layout.map_y + layout.map_h.saturating_sub(1);
+            for px in layout.map_x..=map_right.min(img.width().saturating_sub(1)) {
+                if layout.map_y < img.height() {
+                    img.put_pixel(px, layout.map_y, frame.to_image_rgba());
+                }
+                if map_bottom < img.height() {
+                    img.put_pixel(px, map_bottom, frame.to_image_rgba());
+                }
             }
-            if map_bottom < img.height() {
-                img.put_pixel(px, map_bottom, frame.to_image_rgba());
-            }
-        }
-        for py in layout.map_y..=map_bottom.min(img.height().saturating_sub(1)) {
-            if layout.map_x < img.width() {
-                img.put_pixel(layout.map_x, py, frame.to_image_rgba());
-            }
-            if map_right < img.width() {
-                img.put_pixel(map_right, py, frame.to_image_rgba());
+            for py in layout.map_y..=map_bottom.min(img.height().saturating_sub(1)) {
+                if layout.map_x < img.width() {
+                    img.put_pixel(layout.map_x, py, frame.to_image_rgba());
+                }
+                if map_right < img.width() {
+                    img.put_pixel(map_right, py, frame.to_image_rgba());
+                }
             }
         }
     }
@@ -2990,6 +3042,7 @@ fn render_to_image_profile_inner(
         projected_pixels.as_deref(),
         domain_frame_rect,
         variable_timing.domain_clip_rect,
+        variable_timing.projection_clip_mask_present,
         has_title,
     );
 
