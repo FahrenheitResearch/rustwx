@@ -1566,7 +1566,8 @@ fn render_direct_recipes(
         return Ok(Vec::new());
     }
 
-    let domain_extracted = crop_direct_fields_for_domain(extracted, request.domain.bounds)?;
+    let crop_bounds = crop_bounds_for_direct_request(request, planned, extracted);
+    let domain_extracted = crop_direct_fields_for_domain(extracted, crop_bounds)?;
     let extracted = &domain_extracted;
     let contour_layer_cache = Arc::new(Mutex::new(HashMap::new()));
     let barb_layer_cache = Arc::new(Mutex::new(HashMap::new()));
@@ -1676,6 +1677,45 @@ fn render_worker_count(recipe_count: usize) -> usize {
         .min(recipe_count)
 }
 
+fn crop_bounds_for_direct_request(
+    request: &DirectBatchRequest,
+    planned: &[PlannedDirectRecipe],
+    extracted: &HashMap<FieldSelector, SelectedField2D>,
+) -> (f64, f64, f64, f64) {
+    let Some((recipe, field)) = planned.iter().find_map(|item| {
+        let selector = item.recipe.filled.selector?;
+        extracted.get(&selector).map(|field| (item.recipe, field))
+    }) else {
+        return request.domain.bounds;
+    };
+    let overlay_only = should_render_overlay_only(field.selector, recipe.contours.is_some());
+    let visual_mode = visual_mode_for_direct_recipe(recipe, field.selector, overlay_only);
+    render_bounds_for_direct_field(
+        request.domain.bounds,
+        field,
+        visual_mode,
+        request.output_width,
+        request.output_height,
+    )
+}
+
+fn render_bounds_for_direct_field(
+    bounds: (f64, f64, f64, f64),
+    field: &SelectedField2D,
+    visual_mode: ProductVisualMode,
+    width: u32,
+    height: u32,
+) -> (f64, f64, f64, f64) {
+    let target_ratio =
+        direct_map_frame_aspect_ratio(visual_mode, width, height, field.projection.as_ref());
+    presentation_frame_bounds_for_grid(
+        field.projection.as_ref(),
+        bounds,
+        projection_presentation_variant(),
+        target_ratio,
+    )
+}
+
 fn direct_domain_crop_pad_cells_override() -> Option<usize> {
     std::env::var("RUSTWX_DOMAIN_CROP_PAD_CELLS")
         .ok()
@@ -1715,14 +1755,18 @@ fn crop_direct_fields_for_domain(
     let mut cropped = HashMap::with_capacity(extracted.len());
     for (&selector, field) in extracted {
         let mut pad_cells = direct_domain_crop_pad_cells_for_field(field);
-        if inverse_raster_projection_for_grid(field.projection.as_ref(), bounds, &field.grid)
-            .is_some()
-        {
+        let uses_inverse_raster =
+            inverse_raster_projection_for_grid(field.projection.as_ref(), bounds, &field.grid)
+                .is_some();
+        if uses_inverse_raster {
             pad_cells = pad_cells.max(inverse_raster_crop_pad_cells());
         }
+        let preserve_full_longitude_axis = uses_inverse_raster
+            && matches!(field.projection.as_ref(), Some(GridProjection::Geographic))
+            && grid_has_full_periodic_longitude_axis(&field.grid);
         cropped.insert(
             selector,
-            crop_selected_field_for_domain(field, bounds, pad_cells)?,
+            crop_selected_field_for_domain(field, bounds, pad_cells, preserve_full_longitude_axis)?,
         );
     }
     Ok(cropped)
@@ -1778,6 +1822,30 @@ fn estimate_geographic_grid_spacing_deg(grid: &rustwx_core::LatLonGrid) -> Optio
     best.is_finite().then_some(best)
 }
 
+fn grid_has_full_periodic_longitude_axis(grid: &rustwx_core::LatLonGrid) -> bool {
+    let nx = grid.shape.nx;
+    let ny = grid.shape.ny;
+    if nx < 2 || ny == 0 || grid.lon_deg.len() < nx {
+        return false;
+    }
+
+    let lon0 = grid.lon_deg[0] as f64;
+    let lon1 = grid.lon_deg[1] as f64;
+    let mut step = lon1 - lon0;
+    if step > 180.0 {
+        step -= 360.0;
+    } else if step < -180.0 {
+        step += 360.0;
+    }
+    let step = step.abs();
+    if !step.is_finite() || step < 1.0e-9 {
+        return false;
+    }
+
+    let tol = (step * 1.5).max(1.0e-6);
+    ((nx as f64 * step) - 360.0).abs() <= tol || (((nx - 1) as f64 * step) - 360.0).abs() <= tol
+}
+
 fn longitude_delta_deg(a: f64, b: f64) -> f64 {
     let mut delta = (normalize_longitude_for_bounds(b) - normalize_longitude_for_bounds(a)).abs();
     if delta > 180.0 {
@@ -1790,8 +1858,11 @@ fn crop_selected_field_for_domain(
     field: &SelectedField2D,
     bounds: (f64, f64, f64, f64),
     pad_cells: usize,
+    preserve_full_longitude_axis: bool,
 ) -> Result<SelectedField2D, Box<dyn std::error::Error>> {
-    let Some(crop) = crop_for_direct_grid(&field.grid, bounds, pad_cells)? else {
+    let Some(crop) =
+        crop_for_direct_grid(&field.grid, bounds, pad_cells, preserve_full_longitude_axis)?
+    else {
         return Ok(field.clone());
     };
     let mut cropped = SelectedField2D::new(
@@ -1810,6 +1881,7 @@ fn crop_for_direct_grid(
     grid: &rustwx_core::LatLonGrid,
     bounds: (f64, f64, f64, f64),
     pad_cells: usize,
+    preserve_full_longitude_axis: bool,
 ) -> Result<Option<GridCrop>, Box<dyn std::error::Error>> {
     let nx = grid.shape.nx;
     let ny = grid.shape.ny;
@@ -1844,8 +1916,16 @@ fn crop_for_direct_grid(
     }
 
     let crop = GridCrop {
-        x_start: min_x.saturating_sub(pad_cells),
-        x_end: (max_x + 1 + pad_cells).min(nx),
+        x_start: if preserve_full_longitude_axis {
+            0
+        } else {
+            min_x.saturating_sub(pad_cells)
+        },
+        x_end: if preserve_full_longitude_axis {
+            nx
+        } else {
+            (max_x + 1 + pad_cells).min(nx)
+        },
         y_start: min_y.saturating_sub(pad_cells),
         y_end: (max_y + 1 + pad_cells).min(ny),
     };
@@ -2140,6 +2220,19 @@ fn render_direct_recipe(
         let overlay_only = !earth2_suppresses_companion_overlays(request.earth2_ensemble)
             && should_render_overlay_only(filled_selector, item.recipe.contours.is_some());
         let visual_mode = visual_mode_for_direct_recipe(item.recipe, filled_selector, overlay_only);
+        let target_ratio = direct_map_frame_aspect_ratio(
+            visual_mode,
+            request.output_width,
+            request.output_height,
+            filled.projection.as_ref(),
+        );
+        let render_bounds = render_bounds_for_direct_field(
+            request.domain.bounds,
+            filled,
+            visual_mode,
+            request.output_width,
+            request.output_height,
+        );
         let cache_key = (
             request.output_width,
             request.output_height,
@@ -2165,12 +2258,7 @@ fn render_direct_recipe(
                 &filled.grid.lon_deg,
                 filled.projection.as_ref(),
                 request.domain.bounds,
-                direct_map_frame_aspect_ratio(
-                    visual_mode,
-                    request.output_width,
-                    request.output_height,
-                    filled.projection.as_ref(),
-                ),
+                target_ratio,
             )?;
             projected_map_cache
                 .lock()
@@ -2186,7 +2274,7 @@ fn render_direct_recipe(
             filled,
             extracted,
             projected,
-            request.domain.bounds,
+            render_bounds,
             request.output_width,
             request.output_height,
             contour_layer_cache,
@@ -2213,7 +2301,7 @@ fn render_direct_recipe(
             apply_custom_poi_overlay(
                 &mut render_request,
                 overlay,
-                request.domain.bounds,
+                render_bounds,
                 &filled.grid.lat_deg,
                 &filled.grid.lon_deg,
                 filled.projection.as_ref(),
@@ -2336,6 +2424,12 @@ fn render_direct_composite_panel(
         spec.panel_height,
         visual_mode_cache_key(ProductVisualMode::PanelMember),
     );
+    let panel_target_ratio = direct_map_frame_aspect_ratio(
+        ProductVisualMode::PanelMember,
+        spec.panel_width,
+        spec.panel_height,
+        first_field.projection.as_ref(),
+    );
     let projected = if let Some(projected) = shared_context.and_then(|ctx| {
         ctx.projected_map(spec.panel_width, spec.panel_height)
             .cloned()
@@ -2356,12 +2450,7 @@ fn render_direct_composite_panel(
             &first_field.grid.lon_deg,
             first_field.projection.as_ref(),
             request.domain.bounds,
-            direct_map_frame_aspect_ratio(
-                ProductVisualMode::PanelMember,
-                spec.panel_width,
-                spec.panel_height,
-                first_field.projection.as_ref(),
-            ),
+            panel_target_ratio,
         )?;
         projected_map_cache
             .lock()
@@ -2384,12 +2473,19 @@ fn render_direct_composite_panel(
         let filled = extracted
             .get(&selector)
             .ok_or_else(|| format!("missing component selector {:?}", selector))?;
+        let panel_render_bounds = render_bounds_for_direct_field(
+            request.domain.bounds,
+            filled,
+            ProductVisualMode::PanelMember,
+            spec.panel_width,
+            spec.panel_height,
+        );
         let (mut panel_request, panel_timing) = build_render_request(
             component_recipe,
             filled,
             extracted,
             projected.clone(),
-            request.domain.bounds,
+            panel_render_bounds,
             spec.panel_width,
             spec.panel_height,
             contour_layer_cache,
@@ -2411,7 +2507,7 @@ fn render_direct_composite_panel(
             apply_custom_poi_overlay(
                 &mut panel_request,
                 overlay,
-                request.domain.bounds,
+                panel_render_bounds,
                 &filled.grid.lat_deg,
                 &filled.grid.lon_deg,
                 filled.projection.as_ref(),
@@ -3512,24 +3608,29 @@ pub fn build_projected_map_with_projection(
     bounds: (f64, f64, f64, f64),
     target_ratio: f64,
 ) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
-    let mut options = rustwx_render::ProjectedMapBuildOptions::from_bounds(bounds, target_ratio);
     let variant = projection_presentation_variant();
-    if let Some(presentation_projection) =
-        presentation_projection_for_bounds(projection, bounds, variant)
-    {
+    let presentation_projection = presentation_projection_for_bounds(projection, bounds, variant);
+    let frame_bounds = presentation_frame_bounds_for_projection(
+        bounds,
+        presentation_projection.as_ref(),
+        target_ratio,
+    );
+    let mut options =
+        rustwx_render::ProjectedMapBuildOptions::from_bounds(frame_bounds, target_ratio);
+    if let Some(presentation_projection) = presentation_projection {
         let reference_latitude =
-            reference_latitude_for_projection_variant(variant, projection, bounds);
+            reference_latitude_for_projection_variant(variant, projection, frame_bounds);
         options = options.with_projection(presentation_projection);
         if let Some(reference_latitude) = reference_latitude {
             options.domain.reference_latitude_deg = Some(reference_latitude);
         }
     }
-    options = options.with_basemap_detail(basemap_detail_for_bounds(bounds));
-    options.domain.pad_fraction = presentation_pad_fraction_for_bounds(bounds);
+    options = options.with_basemap_detail(basemap_detail_for_bounds(frame_bounds));
+    options.domain.pad_fraction = presentation_pad_fraction_for_bounds(frame_bounds);
     let mut projected =
         rustwx_render::build_projected_map_with_options(lat_deg, lon_deg, &options)?;
     projected.inverse_raster_projection =
-        inverse_raster_projection_for_latlon_mesh(projection, bounds, lat_deg, lon_deg);
+        inverse_raster_projection_for_latlon_mesh(projection, frame_bounds, lat_deg, lon_deg);
     Ok(projected)
 }
 
@@ -3555,8 +3656,13 @@ fn inverse_raster_projection_for_latlon_mesh(
     let variant = projection_presentation_variant();
     let projection =
         presentation_projection_for_bounds(Some(&GridProjection::Geographic), bounds, variant)?;
+    let reference_longitude_deg = match projection {
+        rustwx_render::ProjectionSpec::Geographic => Some(center_longitude_for_bounds(bounds)),
+        _ => None,
+    };
     match projection {
         rustwx_render::ProjectionSpec::AlbersEqualArea { .. }
+        | rustwx_render::ProjectionSpec::Geographic
         | rustwx_render::ProjectionSpec::LambertConformal { .. }
         | rustwx_render::ProjectionSpec::Mercator { .. }
         | rustwx_render::ProjectionSpec::Robinson { .. } => Some(InverseRasterProjection {
@@ -3566,6 +3672,7 @@ fn inverse_raster_projection_for_latlon_mesh(
                 Some(&GridProjection::Geographic),
                 bounds,
             ),
+            reference_longitude_deg,
             clip_bounds: inverse_raster_clip_bounds(bounds),
         }),
         _ => None,
@@ -3701,6 +3808,7 @@ fn presentation_pad_fraction_for_bounds(bounds: (f64, f64, f64, f64)) -> f64 {
 enum ProjectionPresentationVariant {
     Adaptive,
     AlbersEqualArea,
+    RectangularGeographic,
     Mercator,
     PivotalLambert,
     Robinson,
@@ -3720,6 +3828,9 @@ fn projection_presentation_variant() -> ProjectionPresentationVariant {
             |value| match normalize_projection_variant_name(&value).as_str() {
                 "albers" | "albersequalarea" | "aea" => {
                     ProjectionPresentationVariant::AlbersEqualArea
+                }
+                "rectangular" | "geographic" | "platecarree" | "crop" => {
+                    ProjectionPresentationVariant::RectangularGeographic
                 }
                 "mercator" | "webmap" | "webmercator" => ProjectionPresentationVariant::Mercator,
                 "pivotallambert" | "pivotal" => ProjectionPresentationVariant::PivotalLambert,
@@ -3759,18 +3870,96 @@ fn regional_latlon_presentation_projection(
 ) -> rustwx_render::ProjectionSpec {
     match variant {
         ProjectionPresentationVariant::AlbersEqualArea => conus_albers_presentation_projection(),
+        ProjectionPresentationVariant::RectangularGeographic => {
+            rustwx_render::ProjectionSpec::Geographic
+        }
         ProjectionPresentationVariant::Mercator => {
             regional_mercator_presentation_projection(bounds)
         }
         ProjectionPresentationVariant::PivotalLambert if is_conus_lambert_candidate(bounds) => {
             pivotal_lambert_conus_projection()
         }
-        ProjectionPresentationVariant::Robinson => robinson_presentation_projection(bounds),
-        _ if is_conus_lambert_candidate(bounds) => pivotal_lambert_conus_projection(),
-        _ if is_north_america_projection_candidate(bounds) => {
+        ProjectionPresentationVariant::PivotalLambert
+            if is_north_america_projection_candidate(bounds) =>
+        {
             north_america_lambert_presentation_projection()
         }
+        ProjectionPresentationVariant::Robinson => robinson_presentation_projection(bounds),
+        ProjectionPresentationVariant::Adaptive
+            if should_default_to_rectangular_geographic(bounds) =>
+        {
+            rustwx_render::ProjectionSpec::Geographic
+        }
         _ => regional_presentation_projection(bounds),
+    }
+}
+
+fn should_default_to_rectangular_geographic(bounds: (f64, f64, f64, f64)) -> bool {
+    !is_global_scale_domain(bounds) && bounds.3 > -55.0 && bounds.2 < 84.0
+}
+
+fn presentation_frame_bounds_for_projection(
+    bounds: (f64, f64, f64, f64),
+    projection: Option<&rustwx_render::ProjectionSpec>,
+    target_ratio: f64,
+) -> (f64, f64, f64, f64) {
+    if !matches!(projection, Some(rustwx_render::ProjectionSpec::Geographic))
+        || is_global_scale_domain(bounds)
+    {
+        return bounds;
+    }
+    expand_geographic_bounds_to_aspect(bounds, target_ratio)
+}
+
+fn presentation_frame_bounds_for_grid(
+    native_projection: Option<&GridProjection>,
+    bounds: (f64, f64, f64, f64),
+    variant: ProjectionPresentationVariant,
+    target_ratio: f64,
+) -> (f64, f64, f64, f64) {
+    let presentation_projection =
+        presentation_projection_for_bounds(native_projection, bounds, variant);
+    presentation_frame_bounds_for_projection(bounds, presentation_projection.as_ref(), target_ratio)
+}
+
+fn expand_geographic_bounds_to_aspect(
+    bounds: (f64, f64, f64, f64),
+    target_ratio: f64,
+) -> (f64, f64, f64, f64) {
+    let safe_ratio = target_ratio.max(1.0e-6);
+    let mut south = bounds.2.min(bounds.3).clamp(-89.5, 89.5);
+    let mut north = bounds.2.max(bounds.3).clamp(-89.5, 89.5);
+    if north <= south {
+        south = (south - 0.5).clamp(-89.5, 89.0);
+        north = (north + 0.5).clamp(-89.0, 89.5);
+    }
+    let lat_span = (north - south).max(1.0e-6);
+    let lon_span = longitude_bounds_span_deg(bounds).max(1.0e-6);
+    let current_ratio = lon_span / lat_span;
+    if current_ratio < safe_ratio {
+        let wanted_lon_span = (lat_span * safe_ratio).min(360.0);
+        let center = center_longitude_for_bounds(bounds);
+        let west = normalize_longitude_for_bounds(center - wanted_lon_span / 2.0);
+        let east_unwrapped = center + wanted_lon_span / 2.0;
+        let east = if east_unwrapped > 180.0 {
+            east_unwrapped
+        } else {
+            normalize_longitude_for_bounds(east_unwrapped)
+        };
+        (west, east, south, north)
+    } else {
+        let wanted_lat_span = lon_span / safe_ratio;
+        let center = ((south + north) / 2.0).clamp(-89.0, 89.0);
+        south = (center - wanted_lat_span / 2.0).clamp(-89.5, 89.5);
+        north = (center + wanted_lat_span / 2.0).clamp(-89.5, 89.5);
+        if north - south < wanted_lat_span {
+            if south <= -89.5 {
+                north = (south + wanted_lat_span).clamp(-89.5, 89.5);
+            } else if north >= 89.5 {
+                south = (north - wanted_lat_span).clamp(-89.5, 89.5);
+            }
+        }
+        (bounds.0, bounds.1, south, north)
     }
 }
 
@@ -4078,6 +4267,10 @@ mod tests {
         .expect("regional regular lat/lon maps should use inverse raster");
 
         assert!(inverse.clip_bounds.is_some());
+        assert_eq!(
+            inverse.reference_longitude_deg,
+            Some(center_longitude_for_bounds(bounds))
+        );
     }
 
     #[test]
@@ -4197,6 +4390,92 @@ mod tests {
                 central_meridian_deg
             } if central_meridian_deg == 0.0
         ));
+    }
+
+    #[test]
+    fn rectangular_variant_uses_geographic_regionally_and_robinson_globally() {
+        let europe_bounds = (-25.0, 45.0, 34.0, 72.0);
+        let europe_projection = presentation_projection_for_bounds(
+            Some(&GridProjection::Geographic),
+            europe_bounds,
+            ProjectionPresentationVariant::RectangularGeographic,
+        )
+        .expect("regional geographic grids should get a presentation projection");
+        assert_eq!(europe_projection, rustwx_render::ProjectionSpec::Geographic);
+
+        let global_projection = presentation_projection_for_bounds(
+            Some(&GridProjection::Geographic),
+            (-180.0, 179.999, -90.0, 90.0),
+            ProjectionPresentationVariant::RectangularGeographic,
+        )
+        .expect("global geographic grids should get a presentation projection");
+        assert!(matches!(
+            global_projection,
+            rustwx_render::ProjectionSpec::Robinson {
+                central_meridian_deg
+            } if central_meridian_deg == 0.0
+        ));
+    }
+
+    #[test]
+    fn adaptive_geographic_regions_are_rectangular_except_global_and_polar() {
+        assert!(matches!(
+            presentation_projection_for_bounds(
+                Some(&GridProjection::Geographic),
+                (-180.0, 179.999, -90.0, 90.0),
+                ProjectionPresentationVariant::Adaptive,
+            )
+            .unwrap(),
+            rustwx_render::ProjectionSpec::Robinson { .. }
+        ));
+
+        for bounds in [
+            (-127.0, -66.0, 23.0, 51.5),
+            (-170.0, -50.0, 5.0, 84.0),
+            (-25.0, 45.0, 34.0, 72.0),
+            (-20.0, 55.0, -35.0, 38.0),
+            (-82.0, -34.0, -56.0, 13.0),
+            (25.0, 179.999, -10.0, 82.0),
+            (110.0, 180.0, -50.0, 0.0),
+        ] {
+            assert_eq!(
+                presentation_projection_for_bounds(
+                    Some(&GridProjection::Geographic),
+                    bounds,
+                    ProjectionPresentationVariant::Adaptive,
+                )
+                .unwrap(),
+                rustwx_render::ProjectionSpec::Geographic,
+                "bounds {bounds:?} should default to rectangular geographic"
+            );
+        }
+
+        assert!(matches!(
+            presentation_projection_for_bounds(
+                Some(&GridProjection::Geographic),
+                (-180.0, 179.999, -90.0, -60.0),
+                ProjectionPresentationVariant::Adaptive,
+            )
+            .unwrap(),
+            rustwx_render::ProjectionSpec::PolarStereographic { .. }
+        ));
+    }
+
+    #[test]
+    fn rectangular_variant_expands_tall_bounds_to_target_aspect() {
+        let bounds = (110.0, 180.0, -50.0, 0.0);
+        let expanded = presentation_frame_bounds_for_grid(
+            Some(&GridProjection::Geographic),
+            bounds,
+            ProjectionPresentationVariant::RectangularGeographic,
+            16.0 / 9.0,
+        );
+
+        assert!((expanded.3 - expanded.2 - 50.0).abs() < 1.0e-6);
+        assert!(
+            longitude_bounds_span_deg(expanded) > longitude_bounds_span_deg(bounds),
+            "expanded bounds should widen the crop for a 16:9 rectangular map"
+        );
     }
 
     /// Test-only equivalent of the legacy `build_direct_fetch_request`

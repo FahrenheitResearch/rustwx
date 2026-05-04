@@ -444,7 +444,7 @@ fn with_render_state_profile<T>(
                         .projection
                         .build_projector(
                             inverse.reference_latitude_deg,
-                            None,
+                            inverse.reference_longitude_deg,
                             &request.field.grid.lat_deg,
                             &request.field.grid.lon_deg,
                         )

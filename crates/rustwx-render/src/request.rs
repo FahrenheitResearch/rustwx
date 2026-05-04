@@ -351,6 +351,8 @@ pub struct ProjectedDomain {
 pub struct InverseRasterProjection {
     pub projection: ProjectionSpec,
     pub reference_latitude_deg: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_longitude_deg: Option<f64>,
     #[serde(default)]
     pub clip_bounds: Option<GeographicClipBounds>,
 }

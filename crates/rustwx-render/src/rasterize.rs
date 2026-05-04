@@ -204,7 +204,8 @@ struct RegularLatLonAxes {
     lat_step: f64,
     lon0: f64,
     lon_step: f64,
-    lon_span: f64,
+    periodic_lon: bool,
+    period_points: f64,
 }
 
 impl RegularLatLonAxes {
@@ -216,7 +217,6 @@ impl RegularLatLonAxes {
         let lat_last = lat_deg[(ny - 1) * nx];
         let lon0 = lon_deg[0];
         let lon1 = lon_deg[1];
-        let lon_last = lon_deg[nx - 1];
         let lat_step = (lat_last - lat0) / (ny - 1) as f64;
         let lon_step = normalize_axis_lon_delta(lon1 - lon0);
         if !lat_step.is_finite()
@@ -226,7 +226,10 @@ impl RegularLatLonAxes {
         {
             return None;
         }
-        let lon_span = (lon_step.abs() * nx as f64).max((lon_last - lon0).abs());
+        let step = lon_step.abs();
+        let tol = (step * 1.5).max(1.0e-6);
+        let no_duplicate_full = ((nx as f64 * step) - 360.0).abs() <= tol;
+        let duplicate_endpoint_full = (((nx - 1) as f64 * step) - 360.0).abs() <= tol;
         Some(Self {
             nx,
             ny,
@@ -234,7 +237,12 @@ impl RegularLatLonAxes {
             lat_step,
             lon0,
             lon_step,
-            lon_span,
+            periodic_lon: no_duplicate_full || duplicate_endpoint_full,
+            period_points: if duplicate_endpoint_full && !no_duplicate_full {
+                (nx - 1) as f64
+            } else {
+                nx as f64
+            },
         })
     }
 }
@@ -249,28 +257,15 @@ fn sample_regular_latlon_grid(
         return None;
     }
     let gy = (lat - axes.lat0) / axes.lat_step;
-    let adjusted_lon = adjust_longitude_to_axis(lon, *axes);
-    let mut gx = (adjusted_lon - axes.lon0) / axes.lon_step;
     if gy < 0.0 || gy > (axes.ny - 1) as f64 {
         return None;
     }
-    let periodic_lon = axes.lon_span >= 300.0;
-    if periodic_lon {
-        let period = axes.nx as f64;
-        while gx < 0.0 {
-            gx += period;
-        }
-        while gx >= period {
-            gx -= period;
-        }
-    } else if gx < 0.0 || gx > (axes.nx - 1) as f64 {
-        return None;
-    }
+    let gx = grid_x_for_axis_lon(lon, *axes)?;
 
     let i0 = (gx.floor() as usize).min(axes.nx - 1);
     let j0 = gy.floor() as usize;
-    let i1 = if periodic_lon {
-        (i0 + 1) % axes.nx
+    let i1 = if axes.periodic_lon {
+        ((i0 + 1) as f64).rem_euclid(axes.period_points) as usize
     } else {
         (i0 + 1).min(axes.nx - 1)
     };
@@ -288,7 +283,11 @@ fn sample_regular_latlon_grid(
     ))
 }
 
-fn adjust_longitude_to_axis(lon: f64, axes: RegularLatLonAxes) -> f64 {
+fn grid_x_for_axis_lon(lon: f64, axes: RegularLatLonAxes) -> Option<f64> {
+    if axes.periodic_lon {
+        return Some(((lon - axes.lon0) / axes.lon_step).rem_euclid(axes.period_points));
+    }
+
     let mut adjusted = normalize_longitude_deg(lon);
     let axis_center = axes.lon0 + axes.lon_step * (axes.nx - 1) as f64 / 2.0;
     while adjusted - axis_center > 180.0 {
@@ -297,21 +296,9 @@ fn adjust_longitude_to_axis(lon: f64, axes: RegularLatLonAxes) -> f64 {
     while adjusted - axis_center < -180.0 {
         adjusted += 360.0;
     }
-    if axes.lon_span >= 300.0 {
-        let min_lon = axes
-            .lon0
-            .min(axes.lon0 + axes.lon_step * (axes.nx - 1) as f64);
-        let max_lon = axes
-            .lon0
-            .max(axes.lon0 + axes.lon_step * (axes.nx - 1) as f64);
-        while adjusted < min_lon {
-            adjusted += 360.0;
-        }
-        while adjusted > max_lon {
-            adjusted -= 360.0;
-        }
-    }
-    adjusted
+
+    let gx = (adjusted - axes.lon0) / axes.lon_step;
+    (gx >= 0.0 && gx <= (axes.nx - 1) as f64).then_some(gx)
 }
 
 fn normalize_axis_lon_delta(delta: f64) -> f64 {
@@ -672,7 +659,7 @@ fn feather_projected_raster_edges(img: &mut RgbaImage) {
 
 #[cfg(test)]
 mod tests {
-    use super::rasterize_projected_grid;
+    use super::{RegularLatLonAxes, rasterize_projected_grid, sample_regular_latlon_grid};
     use crate::color::Rgba;
     use crate::colormap::{Extend, LeveledColormap};
 
@@ -698,5 +685,48 @@ mod tests {
             image.pixels().all(|px| px.0[3] == 0),
             "mixed-validity projected cells should remain masked instead of bleeding a nearby finite value",
         );
+    }
+
+    #[test]
+    fn partial_wide_longitude_crop_is_not_periodic() {
+        let nx = 321;
+        let ny = 2;
+        let row_lon = (0..nx).map(|i| -140.0 + i as f64).collect::<Vec<_>>();
+        let lon = row_lon
+            .iter()
+            .copied()
+            .chain(row_lon.iter().copied())
+            .collect::<Vec<_>>();
+        let lat = vec![-10.0; nx]
+            .into_iter()
+            .chain(vec![0.0; nx])
+            .collect::<Vec<_>>();
+        let data = vec![1.0; nx * ny];
+
+        let axes = RegularLatLonAxes::from_grid(&lat, &lon, ny, nx).unwrap();
+        assert!(!axes.periodic_lon);
+        assert!(sample_regular_latlon_grid(&data, &axes, -5.0, -170.0).is_none());
+    }
+
+    #[test]
+    fn full_0_360_axis_samples_negative_longitudes_periodically() {
+        let nx = 360;
+        let ny = 2;
+        let row_lon = (0..nx).map(|i| i as f64).collect::<Vec<_>>();
+        let lon = row_lon
+            .iter()
+            .copied()
+            .chain(row_lon.iter().copied())
+            .collect::<Vec<_>>();
+        let lat = vec![0.0; nx]
+            .into_iter()
+            .chain(vec![1.0; nx])
+            .collect::<Vec<_>>();
+        let data = lon.clone();
+
+        let axes = RegularLatLonAxes::from_grid(&lat, &lon, ny, nx).unwrap();
+        assert!(axes.periodic_lon);
+        let value = sample_regular_latlon_grid(&data, &axes, 0.5, -170.0).unwrap();
+        assert!((value - 190.0).abs() < 1.0);
     }
 }
