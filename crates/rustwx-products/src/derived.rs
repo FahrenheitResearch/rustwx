@@ -1,6 +1,6 @@
 use crate::custom_poi::{CustomPoiOverlay, apply_custom_poi_overlay};
 use crate::direct::{
-    build_projected_map, build_projected_map_with_projection,
+    build_projected_map, build_projected_map_with_projection, inverse_raster_projection_for_grid,
     model_data_domain_frame_for_projection,
 };
 use rayon::prelude::*;
@@ -2638,17 +2638,31 @@ fn crop_native_derived_field(
         return Ok(field.clone());
     }
 
+    let pad_cells =
+        if inverse_raster_projection_for_grid(None, bounds, &field.grid).is_some() {
+            inverse_raster_crop_pad_cells()
+        } else {
+            0
+        };
     let crop = GridCrop {
-        x_start: min_x,
-        x_end: max_x + 1,
-        y_start: min_y,
-        y_end: max_y + 1,
+        x_start: min_x.saturating_sub(pad_cells),
+        x_end: (max_x + 1 + pad_cells).min(nx),
+        y_start: min_y.saturating_sub(pad_cells),
+        y_end: (max_y + 1 + pad_cells).min(ny),
     };
 
     Ok(NativeDerivedField {
         grid: crop_latlon_grid(&field.grid, crop)?,
         values: crop_values_f64(&field.values, field.grid.shape.nx, crop),
     })
+}
+
+fn inverse_raster_crop_pad_cells() -> usize {
+    std::env::var("RUSTWX_INVERSE_RASTER_CROP_PAD_CELLS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(1000)
 }
 
 fn point_in_geographic_bounds(lon: f64, lat: f64, bounds: (f64, f64, f64, f64)) -> bool {
@@ -5787,6 +5801,8 @@ fn render_derived_output_recipe(
         request: mut render_request,
     } = render_artifact;
     render_request.domain_frame = model_data_domain_frame_for_projection(projection);
+    render_request.inverse_raster_projection =
+        inverse_raster_projection_for_grid(projection, request.domain.bounds, grid_ref);
     let title = derived_title_for_request(request, recipe.title());
     render_request.title = Some(title.clone());
     if let Some(overlay) = request.custom_poi_overlay.as_ref() {
@@ -5941,6 +5957,7 @@ mod tests {
             },
             lines: Vec::new(),
             polygons: Vec::new(),
+            inverse_raster_projection: None,
         }
     }
 

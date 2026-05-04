@@ -48,8 +48,8 @@ pub use render::{
 };
 pub use request::{
     ChromeScale, Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, DomainFrame,
-    ExtendMode, Field2D, GridShape, LatLonGrid, MapRenderRequest, ProductKey, ProductMaturity,
-    ProductSemanticFlag, ProductSemantics, ProjectedDomain, ProjectedExtent,
+    ExtendMode, Field2D, GridShape, InverseRasterProjection, LatLonGrid, MapRenderRequest,
+    ProductKey, ProductMaturity, ProductSemanticFlag, ProductSemantics, ProjectedDomain, ProjectedExtent,
     ProjectedLabelPlacement, ProjectedLineOverlay, ProjectedMarkerShape, ProjectedPlaceLabel,
     ProjectedPlaceLabelPriority, ProjectedPlaceLabelStyle, ProjectedPointOverlay,
     ProjectedPolygonFill, RgbaGridField, WindBarbLayer, WindBarbStyle,
@@ -70,8 +70,9 @@ pub use crate::colormap::{
 };
 use crate::colormap::{Extend, LeveledColormap};
 use crate::overlay::{
-    BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPlaceLabelOverlay,
-    ProjectedPointOverlay as RenderProjectedPointOverlay, ProjectedPolygon, ProjectedPolyline,
+    BarbOverlay, ContourOverlay, InverseProjectedGrid, MapExtent, ProjectedGrid,
+    ProjectedPlaceLabelOverlay, ProjectedPointOverlay as RenderProjectedPointOverlay,
+    ProjectedPolygon, ProjectedPolyline,
 };
 use crate::render::{
     RenderOpts, center_horizontal_canvas_content, encode_rgba_png_profile_with_options,
@@ -183,6 +184,10 @@ impl RenderScratch {
         if let Some(grid) = opts.projected_grid.take() {
             self.reclaim_f64_buffer(grid.x);
             self.reclaim_f64_buffer(grid.y);
+        }
+        if let Some(grid) = opts.inverse_projected_grid.take() {
+            self.reclaim_f64_buffer(grid.lat_deg);
+            self.reclaim_f64_buffer(grid.lon_deg);
         }
 
         for line in opts.projected_lines.drain(..) {
@@ -427,6 +432,26 @@ fn with_render_state_profile<T>(
         });
         let projected_grid_ms = projected_grid_start.elapsed().as_millis();
 
+        let inverse_projected_grid = request
+            .inverse_raster_projection
+            .as_ref()
+            .and_then(|inverse| {
+                let projector = inverse
+                    .projection
+                    .build_projector(
+                        inverse.reference_latitude_deg,
+                        None,
+                        &request.field.grid.lat_deg,
+                        &request.field.grid.lon_deg,
+                    )
+                    .ok()?;
+                Some(InverseProjectedGrid {
+                    projector,
+                    lat_deg: scratch.fill_f64_from_f32(&request.field.grid.lat_deg),
+                    lon_deg: scratch.fill_f64_from_f32(&request.field.grid.lon_deg),
+                })
+            });
+
         let rgba_grid = request.rgba_grid.as_ref().map(|field| {
             field
                 .pixels
@@ -574,6 +599,7 @@ fn with_render_state_profile<T>(
                 y_max: domain.extent.y_max,
             }),
             projected_grid,
+            inverse_projected_grid,
             rgba_grid,
             projected_polygons,
             projected_data_polygons,
@@ -818,6 +844,7 @@ mod tests {
             projected_domain: None,
             projected_polygons: Vec::new(),
             projected_data_polygons: Vec::new(),
+            inverse_raster_projection: None,
             projected_place_labels: Vec::new(),
             projected_points: Vec::new(),
             projected_lines: Vec::new(),
@@ -881,6 +908,7 @@ mod tests {
             projected_domain: None,
             projected_polygons: Vec::new(),
             projected_data_polygons: Vec::new(),
+            inverse_raster_projection: None,
             projected_place_labels: Vec::new(),
             projected_points: Vec::new(),
             projected_lines: Vec::new(),

@@ -3,8 +3,8 @@ use crate::colorbar;
 use crate::colormap::LeveledColormap;
 use crate::draw;
 use crate::overlay::{
-    BarbOverlay, ContourOverlay, MapExtent, ProjectedGrid, ProjectedPlaceLabelOverlay,
-    ProjectedPointOverlay, ProjectedPolygon, ProjectedPolyline,
+    BarbOverlay, ContourOverlay, InverseProjectedGrid, MapExtent, ProjectedGrid,
+    ProjectedPlaceLabelOverlay, ProjectedPointOverlay, ProjectedPolygon, ProjectedPolyline,
 };
 use crate::presentation::{ProductVisualMode, RenderPresentation, TitleAnchor};
 use crate::rasterize;
@@ -49,6 +49,7 @@ pub struct RenderOpts {
     pub domain_frame: Option<DomainFrame>,
     pub map_extent: Option<MapExtent>,
     pub projected_grid: Option<ProjectedGrid>,
+    pub(crate) inverse_projected_grid: Option<InverseProjectedGrid>,
     pub rgba_grid: Option<Vec<Rgba>>,
     /// Filled polygons (lat/lon-derived). Drawn BEFORE the data raster so the
     /// data overlays on top; ordering within the list is bottom-to-top.
@@ -145,6 +146,7 @@ impl Default for RenderOpts {
             domain_frame: None,
             map_extent: None,
             projected_grid: None,
+            inverse_projected_grid: None,
             rgba_grid: None,
             projected_polygons: vec![],
             projected_data_polygons: vec![],
@@ -2453,8 +2455,13 @@ fn draw_variable_layers(
     }
 
     let rasterize_start = Instant::now();
-    let map_img = match (opts.rgba_grid.as_deref(), projected_pixels) {
-        (Some(rgba_grid), Some(pixel_points)) => rasterize::rasterize_projected_rgba_grid(
+    let map_img = match (
+        opts.rgba_grid.as_deref(),
+        projected_pixels,
+        opts.inverse_projected_grid.as_ref(),
+        opts.map_extent.as_ref(),
+    ) {
+        (Some(rgba_grid), Some(pixel_points), _, _) => rasterize::rasterize_projected_rgba_grid(
             rgba_grid,
             ny,
             nx,
@@ -2462,10 +2469,22 @@ fn draw_variable_layers(
             layout.map_w,
             layout.map_h,
         ),
-        (Some(rgba_grid), None) => {
+        (Some(rgba_grid), _, _, _) => {
             rasterize::rasterize_rgba_grid(rgba_grid, ny, nx, layout.map_w, layout.map_h)
         }
-        (None, Some(pixel_points)) => rasterize::rasterize_projected_grid(
+        (None, _, Some(inverse), Some(extent)) => rasterize::rasterize_inverse_projected_grid(
+            data,
+            ny,
+            nx,
+            &inverse.lat_deg,
+            &inverse.lon_deg,
+            inverse.projector,
+            extent,
+            &opts.cmap,
+            layout.map_w,
+            layout.map_h,
+        ),
+        (None, Some(pixel_points), _, _) => rasterize::rasterize_projected_grid(
             data,
             ny,
             nx,
@@ -2474,7 +2493,7 @@ fn draw_variable_layers(
             layout.map_w,
             layout.map_h,
         ),
-        (None, None) => {
+        (None, None, _, _) => {
             rasterize::rasterize_grid(data, ny, nx, &opts.cmap, layout.map_w, layout.map_h)
         }
     };
@@ -3187,6 +3206,7 @@ mod tests {
                 y_max: 1.0,
             }),
             projected_grid: Some(sample_projected_grid()),
+            inverse_projected_grid: None,
             rgba_grid: None,
             projected_polygons: Vec::new(),
             projected_data_polygons: Vec::new(),

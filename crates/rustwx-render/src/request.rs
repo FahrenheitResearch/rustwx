@@ -2,6 +2,7 @@ use crate::RustwxRenderError;
 use crate::colormap::{LegendControls, LegendMode, LevelDensity, RenderDensity};
 use crate::presentation::{LineworkRole, PolygonRole, ProductVisualMode};
 use crate::projected_map::{ProjectedBasemap, ProjectedMap};
+use crate::projection::ProjectionSpec;
 use rustwx_core as core;
 use serde::{Deserialize, Serialize};
 
@@ -347,6 +348,12 @@ pub struct ProjectedDomain {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InverseRasterProjection {
+    pub projection: ProjectionSpec,
+    pub reference_latitude_deg: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectedLineOverlay {
     pub points: Vec<(f64, f64)>,
     pub color: Color,
@@ -633,6 +640,8 @@ pub struct MapRenderRequest {
     #[serde(default)]
     pub projected_data_polygons: Vec<ProjectedPolygonFill>,
     #[serde(default)]
+    pub inverse_raster_projection: Option<InverseRasterProjection>,
+    #[serde(default)]
     pub projected_place_labels: Vec<ProjectedPlaceLabel>,
     #[serde(default)]
     pub projected_points: Vec<ProjectedPointOverlay>,
@@ -671,6 +680,7 @@ impl MapRenderRequest {
             projected_domain: None,
             projected_polygons: Vec::new(),
             projected_data_polygons: Vec::new(),
+            inverse_raster_projection: None,
             projected_place_labels: Vec::new(),
             projected_points: Vec::new(),
             projected_lines: Vec::new(),
@@ -814,6 +824,7 @@ impl MapRenderRequest {
         self.projected_domain = Some(projected.domain());
         self.projected_lines = projected.lines.clone();
         self.projected_polygons = projected.polygons.clone();
+        self.inverse_raster_projection = projected.inverse_raster_projection.clone();
         self
     }
 
@@ -1242,6 +1253,7 @@ mod tests {
                 color: Color::WHITE,
                 role: PolygonRole::Generic,
             }],
+            inverse_raster_projection: None,
         };
 
         let request =

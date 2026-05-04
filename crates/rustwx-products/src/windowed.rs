@@ -2587,6 +2587,7 @@ mod tests {
             },
             lines: Vec::new(),
             polygons: Vec::new(),
+            inverse_raster_projection: None,
         };
 
         let render_request = build_windowed_render_request(
@@ -2675,6 +2676,7 @@ mod tests {
             },
             lines: Vec::new(),
             polygons: Vec::new(),
+            inverse_raster_projection: None,
         };
 
         let render_request = build_windowed_render_request(

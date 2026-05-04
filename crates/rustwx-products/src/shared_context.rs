@@ -324,6 +324,7 @@ mod tests {
                 },
                 lines: Vec::<ProjectedLineOverlay>::new(),
                 polygons: Vec::<ProjectedPolygonFill>::new(),
+                inverse_raster_projection: None,
             },
         );
         assert!(context.contains_size(700, 520));

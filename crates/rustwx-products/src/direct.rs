@@ -20,8 +20,8 @@ use rustwx_render::{
         winds_palette_segments, WeatherPalette,
     },
     BasemapDetail, ChromeScale, Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame,
-    ExtendMode, LegendControls, LegendMode, LevelDensity, MapRenderRequest, PanelGridLayout,
-    PanelPadding, PngCompressionMode, PngWriteOptions, ProductVisualMode,
+    ExtendMode, InverseRasterProjection, LegendControls, LegendMode, LevelDensity,
+    MapRenderRequest, PanelGridLayout, PanelPadding, PngCompressionMode, PngWriteOptions, ProductVisualMode,
     ProjectedContourLineStyle, ProjectedDomain, ProjectedMap, RenderDensity, RenderImageTiming,
     RenderStateTiming, WindBarbLayer,
 };
@@ -1714,13 +1714,26 @@ fn crop_direct_fields_for_domain(
 ) -> Result<HashMap<FieldSelector, SelectedField2D>, Box<dyn std::error::Error>> {
     let mut cropped = HashMap::with_capacity(extracted.len());
     for (&selector, field) in extracted {
-        let pad_cells = direct_domain_crop_pad_cells_for_field(field);
+        let mut pad_cells = direct_domain_crop_pad_cells_for_field(field);
+        if inverse_raster_projection_for_grid(field.projection.as_ref(), bounds, &field.grid)
+            .is_some()
+        {
+            pad_cells = pad_cells.max(inverse_raster_crop_pad_cells());
+        }
         cropped.insert(
             selector,
             crop_selected_field_for_domain(field, bounds, pad_cells)?,
         );
     }
     Ok(cropped)
+}
+
+fn inverse_raster_crop_pad_cells() -> usize {
+    std::env::var("RUSTWX_INVERSE_RASTER_CROP_PAD_CELLS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(1000)
 }
 
 fn estimate_geographic_grid_spacing_deg(grid: &rustwx_core::LatLonGrid) -> Option<f64> {
@@ -2538,6 +2551,7 @@ fn build_render_request(
     });
     request.projected_lines = projected.lines;
     request.projected_polygons = projected.polygons;
+    request.inverse_raster_projection = projected.inverse_raster_projection;
     let contour_prepare_start = Instant::now();
     if !suppress_companion_overlays {
         if overlay_only {
@@ -3481,7 +3495,98 @@ pub fn build_projected_map_with_projection(
     }
     options = options.with_basemap_detail(basemap_detail_for_bounds(bounds));
     options.domain.pad_fraction = presentation_pad_fraction_for_bounds(bounds);
-    rustwx_render::build_projected_map_with_options(lat_deg, lon_deg, &options)
+    let mut projected = rustwx_render::build_projected_map_with_options(lat_deg, lon_deg, &options)?;
+    projected.inverse_raster_projection =
+        inverse_raster_projection_for_latlon_mesh(projection, bounds, lat_deg, lon_deg);
+    Ok(projected)
+}
+
+pub(crate) fn inverse_raster_projection_for_grid(
+    projection: Option<&GridProjection>,
+    bounds: (f64, f64, f64, f64),
+    grid: &rustwx_core::LatLonGrid,
+) -> Option<InverseRasterProjection> {
+    inverse_raster_projection_for_latlon_mesh(projection, bounds, &grid.lat_deg, &grid.lon_deg)
+}
+
+fn inverse_raster_projection_for_latlon_mesh(
+    projection: Option<&GridProjection>,
+    bounds: (f64, f64, f64, f64),
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+) -> Option<InverseRasterProjection> {
+    if is_global_scale_domain(bounds) {
+        return None;
+    }
+    let regular_latlon = matches!(projection, Some(GridProjection::Geographic))
+        || (projection.is_none() && rectilinear_latlon_mesh_for_inverse(lat_deg, lon_deg));
+    if !regular_latlon {
+        return None;
+    }
+    let variant = projection_presentation_variant();
+    let projection = presentation_projection_for_bounds(Some(&GridProjection::Geographic), bounds, variant)?;
+    match projection {
+        rustwx_render::ProjectionSpec::AlbersEqualArea { .. }
+        | rustwx_render::ProjectionSpec::LambertConformal { .. }
+        | rustwx_render::ProjectionSpec::Mercator { .. } => Some(InverseRasterProjection {
+            projection,
+            reference_latitude_deg: reference_latitude_for_projection_variant(
+                variant,
+                Some(&GridProjection::Geographic),
+                bounds,
+            ),
+        }),
+        _ => None,
+    }
+}
+
+fn rectilinear_latlon_mesh_for_inverse(lat_deg: &[f32], lon_deg: &[f32]) -> bool {
+    if lat_deg.len() != lon_deg.len() || lat_deg.len() < 9 {
+        return false;
+    }
+    let len = lat_deg.len();
+    let mut nx = 0usize;
+    for idx in 1..len {
+        if (lat_deg[idx] - lat_deg[0]).abs() > 1.0e-4 {
+            nx = idx;
+            break;
+        }
+    }
+    if nx < 2 || len % nx != 0 {
+        return false;
+    }
+    let ny = len / nx;
+    if ny < 2 {
+        return false;
+    }
+    let sample_rows = [0, ny / 2, ny - 1];
+    let sample_cols = [0, nx / 2, nx - 1];
+    for &row in &sample_rows {
+        let row_offset = row * nx;
+        let row_lat = lat_deg[row_offset];
+        for &col in &sample_cols {
+            if (lat_deg[row_offset + col] - row_lat).abs() > 1.0e-3 {
+                return false;
+            }
+        }
+    }
+    for &col in &sample_cols {
+        let col_lon = lon_deg[col];
+        for &row in &sample_rows {
+            if longitude_delta_abs_deg(lon_deg[row * nx + col], col_lon) > 1.0e-3 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn longitude_delta_abs_deg(a: f32, b: f32) -> f32 {
+    let mut delta = (a - b).abs();
+    while delta > 180.0 {
+        delta = (delta - 360.0).abs();
+    }
+    delta
 }
 
 pub fn model_data_domain_frame_for_projection(

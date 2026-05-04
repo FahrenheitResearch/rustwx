@@ -7,7 +7,8 @@ use crate::features::{
 };
 use crate::projection::{ProjectionProjector, ProjectionSpec};
 use crate::request::{
-    Color, ProjectedDomain, ProjectedExtent, ProjectedLineOverlay, ProjectedPolygonFill,
+    Color, InverseRasterProjection, ProjectedDomain, ProjectedExtent, ProjectedLineOverlay,
+    ProjectedPolygonFill,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -17,6 +18,7 @@ pub struct ProjectedMap {
     pub extent: ProjectedExtent,
     pub lines: Vec<ProjectedLineOverlay>,
     pub polygons: Vec<ProjectedPolygonFill>,
+    pub inverse_raster_projection: Option<InverseRasterProjection>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -308,6 +310,7 @@ pub fn build_projected_map_with_options(
         extent,
         lines: basemap.lines,
         polygons: basemap.polygons,
+        inverse_raster_projection: None,
     })
 }
 
@@ -784,6 +787,7 @@ mod tests {
                 color: Color::WHITE,
                 role: crate::presentation::PolygonRole::Generic,
             }],
+            inverse_raster_projection: None,
         };
 
         let (domain, basemap) = projected.split();

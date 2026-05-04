@@ -1,5 +1,7 @@
 use crate::color::Rgba;
 use crate::colormap::LeveledColormap;
+use crate::overlay::MapExtent;
+use crate::projection::ProjectionProjector;
 use image::RgbaImage;
 
 /// Rasterize a 2D grid into an RGBA image using bilinear sampling.
@@ -97,6 +99,54 @@ pub fn rasterize_projected_grid(
     img
 }
 
+pub(crate) fn rasterize_inverse_projected_grid(
+    data: &[f64],
+    ny: usize,
+    nx: usize,
+    lat_deg: &[f64],
+    lon_deg: &[f64],
+    projector: ProjectionProjector,
+    extent: &MapExtent,
+    cmap: &LeveledColormap,
+    img_w: u32,
+    img_h: u32,
+) -> RgbaImage {
+    let mut img = RgbaImage::new(img_w, img_h);
+    if ny < 2
+        || nx < 2
+        || data.len() != ny * nx
+        || lat_deg.len() != ny * nx
+        || lon_deg.len() != ny * nx
+    {
+        return img;
+    }
+
+    let Some(axes) = RegularLatLonAxes::from_grid(lat_deg, lon_deg, ny, nx) else {
+        return img;
+    };
+
+    let x_den = img_w.saturating_sub(1).max(1) as f64;
+    let y_den = img_h.saturating_sub(1).max(1) as f64;
+    for py in 0..img_h {
+        let y = extent.y_max - (py as f64 / y_den) * (extent.y_max - extent.y_min);
+        for px in 0..img_w {
+            let x = extent.x_min + (px as f64 / x_den) * (extent.x_max - extent.x_min);
+            let Some((lat, lon)) = projector.unproject(x, y) else {
+                continue;
+            };
+            let Some(value) = sample_regular_latlon_grid(data, &axes, lat, lon) else {
+                continue;
+            };
+            let color = cmap.map(value);
+            let rgba = color.to_image_rgba();
+            if rgba.0[3] > 0 {
+                img.put_pixel(px, py, rgba);
+            }
+        }
+    }
+    img
+}
+
 pub fn rasterize_rgba_grid(
     pixels: &[Rgba],
     ny: usize,
@@ -139,6 +189,127 @@ pub fn rasterize_rgba_grid(
     }
 
     img
+}
+
+#[derive(Clone, Copy)]
+struct RegularLatLonAxes {
+    nx: usize,
+    ny: usize,
+    lat0: f64,
+    lat_step: f64,
+    lon0: f64,
+    lon_step: f64,
+    lon_span: f64,
+}
+
+impl RegularLatLonAxes {
+    fn from_grid(lat_deg: &[f64], lon_deg: &[f64], ny: usize, nx: usize) -> Option<Self> {
+        if nx < 2 || ny < 2 {
+            return None;
+        }
+        let lat0 = lat_deg[0];
+        let lat_last = lat_deg[(ny - 1) * nx];
+        let lon0 = lon_deg[0];
+        let lon1 = lon_deg[1];
+        let lon_last = lon_deg[nx - 1];
+        let lat_step = (lat_last - lat0) / (ny - 1) as f64;
+        let lon_step = normalize_axis_lon_delta(lon1 - lon0);
+        if !lat_step.is_finite()
+            || !lon_step.is_finite()
+            || lat_step.abs() < 1.0e-9
+            || lon_step.abs() < 1.0e-9
+        {
+            return None;
+        }
+        let lon_span = (lon_step.abs() * nx as f64).max((lon_last - lon0).abs());
+        Some(Self {
+            nx,
+            ny,
+            lat0,
+            lat_step,
+            lon0,
+            lon_step,
+            lon_span,
+        })
+    }
+}
+
+fn sample_regular_latlon_grid(
+    data: &[f64],
+    axes: &RegularLatLonAxes,
+    lat: f64,
+    lon: f64,
+) -> Option<f64> {
+    if !lat.is_finite() || !lon.is_finite() {
+        return None;
+    }
+    let gy = (lat - axes.lat0) / axes.lat_step;
+    let adjusted_lon = adjust_longitude_to_axis(lon, *axes);
+    let gx = (adjusted_lon - axes.lon0) / axes.lon_step;
+    if gx < 0.0
+        || gy < 0.0
+        || gx > (axes.nx - 1) as f64
+        || gy > (axes.ny - 1) as f64
+    {
+        return None;
+    }
+    let i0 = gx.floor() as usize;
+    let j0 = gy.floor() as usize;
+    let i1 = (i0 + 1).min(axes.nx - 1);
+    let j1 = (j0 + 1).min(axes.ny - 1);
+    let fx = gx - i0 as f64;
+    let fy = gy - j0 as f64;
+    let idx = |j: usize, i: usize| j * axes.nx + i;
+    Some(bilinear(
+        data[idx(j0, i0)],
+        data[idx(j0, i1)],
+        data[idx(j1, i0)],
+        data[idx(j1, i1)],
+        fx,
+        fy,
+    ))
+}
+
+fn adjust_longitude_to_axis(lon: f64, axes: RegularLatLonAxes) -> f64 {
+    let mut adjusted = normalize_longitude_deg(lon);
+    let axis_center = axes.lon0 + axes.lon_step * (axes.nx - 1) as f64 / 2.0;
+    while adjusted - axis_center > 180.0 {
+        adjusted -= 360.0;
+    }
+    while adjusted - axis_center < -180.0 {
+        adjusted += 360.0;
+    }
+    if axes.lon_span >= 300.0 {
+        let min_lon = axes.lon0.min(axes.lon0 + axes.lon_step * (axes.nx - 1) as f64);
+        let max_lon = axes.lon0.max(axes.lon0 + axes.lon_step * (axes.nx - 1) as f64);
+        while adjusted < min_lon {
+            adjusted += 360.0;
+        }
+        while adjusted > max_lon {
+            adjusted -= 360.0;
+        }
+    }
+    adjusted
+}
+
+fn normalize_axis_lon_delta(delta: f64) -> f64 {
+    if delta > 180.0 {
+        delta - 360.0
+    } else if delta < -180.0 {
+        delta + 360.0
+    } else {
+        delta
+    }
+}
+
+fn normalize_longitude_deg(mut lon: f64) -> f64 {
+    while lon < -180.0 {
+        lon += 360.0;
+    }
+    while lon >= 180.0 {
+        lon -= 360.0;
+    }
+    lon
 }
 
 pub fn rasterize_projected_rgba_grid(

@@ -288,6 +288,21 @@ impl LambertConformal {
         (x, y)
     }
 
+    fn unproject(self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let rho = (x * x + (self.rho0 - y).powi(2)).sqrt();
+        if !rho.is_finite() || rho <= 0.0 || self.n.abs() < 1.0e-12 || self.f.abs() < 1.0e-12 {
+            return None;
+        }
+        let theta = x.atan2(self.rho0 - y);
+        let ratio = R_EARTH * self.f / rho;
+        if ratio <= 0.0 || !ratio.is_finite() {
+            return None;
+        }
+        let phi = 2.0 * ratio.powf(1.0 / self.n).atan() - PI / 2.0;
+        let lon = self.stand_lon_deg + theta / self.n * RAD2DEG;
+        Some((phi * RAD2DEG, normalize_longitude_deg(lon)))
+    }
+
     pub fn spec(self) -> ProjectionSpec {
         ProjectionSpec::LambertConformal {
             standard_parallel_1_deg: self.truelat1_deg,
@@ -312,6 +327,16 @@ impl GeographicProjection {
             normalize_longitude_deg(lon - self.central_meridian_deg),
             stabilize_latitude(lat),
         )
+    }
+
+    fn unproject(self, x: f64, y: f64) -> Option<(f64, f64)> {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        Some((
+            stabilize_latitude(y),
+            normalize_longitude_deg(x + self.central_meridian_deg),
+        ))
     }
 }
 
@@ -393,6 +418,21 @@ impl AlbersEqualAreaProjection {
         (x, y)
     }
 
+    fn unproject(self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let rho = (x * x + (self.rho0 - y).powi(2)).sqrt();
+        if !rho.is_finite() || rho <= 0.0 || self.n.abs() < 1.0e-12 {
+            return None;
+        }
+        let theta = x.atan2(self.rho0 - y);
+        let arg = (self.c - (rho * self.n / R_EARTH).powi(2)) / (2.0 * self.n);
+        if !arg.is_finite() || !(-1.0..=1.0).contains(&arg) {
+            return None;
+        }
+        let lat = arg.asin() * RAD2DEG;
+        let lon = self.central_meridian_deg + theta / self.n * RAD2DEG;
+        Some((lat, normalize_longitude_deg(lon)))
+    }
+
     fn rho(phi: f64, n: f64, c: f64) -> f64 {
         R_EARTH * (c - 2.0 * n * phi.sin()).max(0.0).sqrt() / n
     }
@@ -455,6 +495,15 @@ impl MercatorProjection {
         let y = R_EARTH * self.scale * ((PI / 4.0 + phi / 2.0).tan()).ln();
         (x, y)
     }
+
+    fn unproject(self, x: f64, y: f64) -> Option<(f64, f64)> {
+        if !x.is_finite() || !y.is_finite() || self.scale <= 0.0 {
+            return None;
+        }
+        let lon = self.central_meridian_deg + x / (R_EARTH * self.scale) * RAD2DEG;
+        let lat = (2.0 * (y / (R_EARTH * self.scale)).exp().atan() - PI / 2.0) * RAD2DEG;
+        Some((stabilize_latitude(lat), normalize_longitude_deg(lon)))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -476,6 +525,16 @@ impl ProjectionProjector {
             Self::LambertConformal(projector) => projector.project(lat, lon),
             Self::PolarStereographic(projector) => projector.project(lat, lon),
             Self::Mercator(projector) => projector.project(lat, lon),
+        }
+    }
+
+    pub(crate) fn unproject(self, x: f64, y: f64) -> Option<(f64, f64)> {
+        match self {
+            Self::Geographic(projector) => projector.unproject(x, y),
+            Self::AlbersEqualArea(projector) => projector.unproject(x, y),
+            Self::LambertConformal(projector) => projector.unproject(x, y),
+            Self::Mercator(projector) => projector.unproject(x, y),
+            Self::Robinson(_) | Self::PolarStereographic(_) => None,
         }
     }
 }
