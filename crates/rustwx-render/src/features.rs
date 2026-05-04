@@ -559,9 +559,9 @@ fn build_broad_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !state.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: state,
-            color: Rgba::with_alpha(colors.state.r, colors.state.g, colors.state.b, 180),
+            color: Rgba::with_alpha(colors.state.r, colors.state.g, colors.state.b, 150),
             width: 1,
-            role: LineworkRole::State,
+            role: LineworkRole::Generic,
         });
     }
     if !nat.is_empty() {
