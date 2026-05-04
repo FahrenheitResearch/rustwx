@@ -561,7 +561,7 @@ fn build_broad_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !state.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: state,
-            color: Rgba::with_alpha(colors.state.r, colors.state.g, colors.state.b, 150),
+            color: Rgba::with_alpha(colors.state.r, colors.state.g, colors.state.b, 120),
             width: 1,
             role: LineworkRole::State,
         });
@@ -569,7 +569,7 @@ fn build_broad_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !nat.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: nat,
-            color: Rgba::with_alpha(colors.nat.r, colors.nat.g, colors.nat.b, 210),
+            color: Rgba::with_alpha(colors.nat.r, colors.nat.g, colors.nat.b, 190),
             width: 1,
             role: LineworkRole::International,
         });
@@ -577,7 +577,7 @@ fn build_broad_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !coast.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: coast,
-            color: Rgba::with_alpha(colors.coast.r, colors.coast.g, colors.coast.b, 220),
+            color: Rgba::with_alpha(colors.coast.r, colors.coast.g, colors.coast.b, 210),
             width: 1,
             role: LineworkRole::Coast,
         });
@@ -585,7 +585,7 @@ fn build_broad_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !lakes.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: lakes,
-            color: Rgba::with_alpha(colors.lake.r, colors.lake.g, colors.lake.b, 210),
+            color: Rgba::with_alpha(colors.lake.r, colors.lake.g, colors.lake.b, 170),
             width: 1,
             role: LineworkRole::Lake,
         });
@@ -626,7 +626,7 @@ fn build_global_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !nat.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: nat,
-            color: Rgba::with_alpha(colors.nat.r, colors.nat.g, colors.nat.b, 225),
+            color: Rgba::with_alpha(colors.nat.r, colors.nat.g, colors.nat.b, 185),
             width: 1,
             role: LineworkRole::International,
         });
@@ -634,7 +634,7 @@ fn build_global_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !coast.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: coast,
-            color: Rgba::with_alpha(colors.coast.r, colors.coast.g, colors.coast.b, 225),
+            color: Rgba::with_alpha(colors.coast.r, colors.coast.g, colors.coast.b, 200),
             width: 1,
             role: LineworkRole::Coast,
         });
@@ -642,7 +642,7 @@ fn build_global_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !lakes.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: lakes,
-            color: Rgba::with_alpha(colors.lake.r, colors.lake.g, colors.lake.b, 200),
+            color: Rgba::with_alpha(colors.lake.r, colors.lake.g, colors.lake.b, 155),
             width: 1,
             role: LineworkRole::Lake,
         });
@@ -709,15 +709,15 @@ fn feature_widths(style: BasemapStyle) -> FeatureWidths {
 // Design target: weathermodels.com ECMWF / NOAA Blend reference look — cool-beige
 // land, pale cool-blue ocean, thin crisp dark linework.
 pub const BASEMAP_LAND_FILL: Rgba = Rgba {
-    r: 226,
-    g: 224,
-    b: 214,
+    r: 232,
+    g: 230,
+    b: 220,
     a: 255,
 };
 pub const BASEMAP_OCEAN_FILL: Rgba = Rgba {
-    r: 204,
-    g: 218,
-    b: 232,
+    r: 211,
+    g: 224,
+    b: 237,
     a: 255,
 };
 const BASEMAP_COAST_CORE: Rgba = Rgba {

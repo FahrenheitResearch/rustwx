@@ -12,7 +12,7 @@ use crate::runtime::{
 };
 use crate::shared_context::{
     DomainSpec, ProjectedMap, model_time_subtitle_with_lead_label, source_subtitle,
-    static_supersample_factor,
+    static_chrome_scale, static_supersample_factor, static_title_with_suffix,
 };
 use crate::windowed_decoder::{
     HrrrApcpDecode, HrrrSurfaceSnapshotDecode, HrrrUhDecode, HrrrWind10mMaxDecode,
@@ -24,8 +24,8 @@ use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId
 use rustwx_models::{LatestRun, resolve_canonical_bundle_product};
 use rustwx_render::map_frame_aspect_ratio;
 use rustwx_render::{
-    ChromeScale, DomainFrame, LegendControls, LegendMode, LevelDensity, MapRenderRequest,
-    PngCompressionMode, PngWriteOptions, ProductVisualMode, RenderDensity, WeatherProduct,
+    DomainFrame, LegendControls, LegendMode, LevelDensity, MapRenderRequest, PngCompressionMode,
+    PngWriteOptions, ProductVisualMode, RenderDensity, WeatherProduct,
     save_png_profile_with_options,
 };
 use serde::{Deserialize, Serialize};
@@ -1798,7 +1798,7 @@ fn build_windowed_render_request(
     };
     render_request.width = request.output_width;
     render_request.height = request.output_height;
-    render_request.title = Some(computed.title.clone());
+    render_request.title = Some(static_title_with_suffix(computed.title.clone()));
     let hour_label = windowed_display_hour_label(product, &computed.metadata, forecast_hour);
     render_request.subtitle_left = Some(model_time_subtitle_with_lead_label(
         model,
@@ -1808,7 +1808,7 @@ fn build_windowed_render_request(
         hour_label,
     ));
     render_request.subtitle_right = Some(source_subtitle(source));
-    render_request.chrome_scale = ChromeScale::Fixed(1.25);
+    render_request.chrome_scale = static_chrome_scale();
     render_request.render_density = RenderDensity {
         fill: LevelDensity::default(),
         palette_multiplier: 1,
@@ -2604,7 +2604,7 @@ mod tests {
 
         assert_eq!(render_request.width, 1200);
         assert_eq!(render_request.height, 900);
-        assert_eq!(render_request.chrome_scale, ChromeScale::Fixed(1.25));
+        assert_eq!(render_request.chrome_scale, ChromeScale::Fixed(1.0));
         assert_eq!(render_request.supersample_factor, 2);
         assert_eq!(
             render_request.subtitle_left.as_deref(),

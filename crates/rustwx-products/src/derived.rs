@@ -16,10 +16,10 @@ use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId,
 };
 use rustwx_render::{
-    ChromeScale, Color, ColorScale, DerivedProductStyle, DiscreteColorScale, DomainFrame,
-    ExtendMode, LevelDensity, MapRenderRequest, PngCompressionMode, PngWriteOptions,
-    ProductVisualMode, ProjectedContourLineStyle, ProjectedDomain, ProjectedExtent, ProjectedMap,
-    RenderImageTiming, RenderStateTiming, WeatherPalette, WeatherProduct, WindBarbLayer,
+    Color, ColorScale, DerivedProductStyle, DiscreteColorScale, DomainFrame, ExtendMode,
+    LevelDensity, MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode,
+    ProjectedContourLineStyle, ProjectedDomain, ProjectedExtent, ProjectedMap, RenderImageTiming,
+    RenderStateTiming, WeatherPalette, WeatherProduct, WindBarbLayer,
     build_projected_contour_geometry_profile, densify_discrete_scale, map_frame_aspect_ratio,
     save_png_profile_with_options, weather::temperature_palette_cropped_f,
 };
@@ -55,7 +55,7 @@ use crate::severe::{
 };
 use crate::shared_context::{
     DomainSpec, WeatherPanelField, build_weather_map_request, model_time_subtitle, source_subtitle,
-    static_supersample_factor,
+    static_chrome_scale, static_supersample_factor, static_title_with_suffix,
 };
 use crate::source::{ProductSourceMode, ProductSourceRoute};
 use crate::thermo_native::{
@@ -1316,15 +1316,15 @@ fn dataset_token_from_product(product: &str) -> Option<&str> {
 fn derived_title_for_model(model: ModelId, base_title: &str) -> String {
     if model == ModelId::WrfGdex {
         let dataset = dataset_token_from_product("d612005-hist2d").unwrap_or("d612005");
-        format!("{base_title} ({dataset})")
+        static_title_with_suffix(format!("{base_title} ({dataset})"))
     } else {
-        base_title.to_string()
+        static_title_with_suffix(base_title)
     }
 }
 
 fn derived_title_for_request(request: &DerivedBatchRequest, base_title: &str) -> String {
     if request.model != ModelId::WrfGdex {
-        return base_title.to_string();
+        return static_title_with_suffix(base_title);
     }
 
     let dataset = request
@@ -1338,7 +1338,7 @@ fn derived_title_for_request(request: &DerivedBatchRequest, base_title: &str) ->
                 .and_then(dataset_token_from_product)
         })
         .unwrap_or("d612005");
-    format!("{base_title} ({dataset})")
+    static_title_with_suffix(format!("{base_title} ({dataset})"))
 }
 
 fn is_gdex_dataset_token(token: &str) -> bool {
@@ -4406,7 +4406,7 @@ fn build_render_artifact_with_contour_mode(
 
     request.width = output_width;
     request.height = output_height;
-    request.chrome_scale = ChromeScale::Fixed(1.25);
+    request.chrome_scale = static_chrome_scale();
     request.supersample_factor = static_supersample_factor();
     request.domain_frame = Some(DomainFrame::model_data_default());
     request.title = Some(derived_title_for_model(model, recipe.title()));
@@ -4760,7 +4760,7 @@ fn build_render_artifact_with_contour_mode_profiled(
 
     request.width = output_width;
     request.height = output_height;
-    request.chrome_scale = ChromeScale::Fixed(1.25);
+    request.chrome_scale = static_chrome_scale();
     request.supersample_factor = static_supersample_factor();
     request.domain_frame = Some(DomainFrame::model_data_default());
     request.title = Some(derived_title_for_model(model, recipe.title()));
@@ -5047,7 +5047,7 @@ fn render_derived_heavy_recipe(
         Some(subtitle_left),
         Some(heavy_ecape_subtitle_right(recipe, source)),
     )?;
-    render_request.chrome_scale = ChromeScale::Fixed(1.25);
+    render_request.chrome_scale = static_chrome_scale();
     render_request.title = Some(derived_title_for_request(request, recipe.title()));
     maybe_apply_native_contour_fill_for_mode(
         recipe,

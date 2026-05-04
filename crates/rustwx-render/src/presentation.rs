@@ -640,13 +640,17 @@ fn clean_atlas_polygon_style(
         | ProductVisualMode::PanelMember
         | ProductVisualMode::ComparisonPanel
         | ProductVisualMode::FilledMeteorology => match role {
-            PolygonRole::Ocean | PolygonRole::Land => PolygonStyle {
-                visible: false,
-                color: Rgba::TRANSPARENT,
+            PolygonRole::Ocean => PolygonStyle {
+                visible: true,
+                color: Rgba::new(235, 242, 248),
+            },
+            PolygonRole::Land => PolygonStyle {
+                visible: true,
+                color: Rgba::new(249, 249, 245),
             },
             PolygonRole::Lake => PolygonStyle {
                 visible: true,
-                color: Rgba::new(232, 240, 246),
+                color: Rgba::new(226, 237, 245),
             },
             PolygonRole::Generic => PolygonStyle {
                 visible: true,
@@ -666,12 +670,19 @@ fn clean_atlas_linework_style(
     let major_width = fallback_width.clamp(1, 2);
     let minor_width = fallback_width.clamp(1, 2);
     let county_visible = !matches!(mode, ProductVisualMode::FilledMeteorology);
+    let alpha = |cap: u8| fallback.a.min(cap);
     let (color, width, visible) = match role {
-        LineworkRole::Coast => (Rgba::with_alpha(9, 14, 22, 220), major_width, true),
-        LineworkRole::Lake => (Rgba::with_alpha(33, 86, 142, 185), minor_width, true),
-        LineworkRole::International => (Rgba::with_alpha(36, 44, 56, 198), minor_width, true),
-        LineworkRole::State => (Rgba::with_alpha(78, 88, 104, 118), minor_width, true),
-        LineworkRole::County => (Rgba::with_alpha(142, 150, 160, 55), 1, county_visible),
+        LineworkRole::Coast => (Rgba::with_alpha(12, 17, 24, alpha(215)), major_width, true),
+        LineworkRole::Lake => (Rgba::with_alpha(38, 88, 142, alpha(180)), minor_width, true),
+        LineworkRole::International => {
+            (Rgba::with_alpha(42, 50, 62, alpha(190)), minor_width, true)
+        }
+        LineworkRole::State => (Rgba::with_alpha(82, 92, 108, alpha(112)), minor_width, true),
+        LineworkRole::County => (
+            Rgba::with_alpha(142, 150, 160, alpha(48)),
+            1,
+            county_visible,
+        ),
         LineworkRole::Generic => (fallback, fallback_width, true),
     };
 
@@ -687,7 +698,7 @@ fn clean_atlas_chrome(title_anchor: TitleAnchor) -> ChromeStyle {
         title_anchor,
         title_color: Rgba::new(16, 22, 30),
         subtitle_color: Rgba::new(70, 78, 90),
-        frame_color: Some(Rgba::with_alpha(34, 42, 52, 170)),
+        frame_color: Some(Rgba::with_alpha(34, 42, 52, 155)),
     }
 }
 
@@ -702,11 +713,11 @@ fn clean_atlas_colorbar() -> ColorbarPresentation {
 
 fn clean_atlas_layout() -> LayoutMetrics {
     LayoutMetrics {
-        margin_x: 24,
-        title_h: 52,
-        footer_h: 42,
+        margin_x: 22,
+        title_h: 46,
+        footer_h: 40,
         colorbar_h: 14,
-        colorbar_gap: 13,
+        colorbar_gap: 12,
         colorbar_margin_x: 112,
     }
 }

@@ -3,9 +3,9 @@ use image::DynamicImage;
 use rustwx_core::{Field2D, LatLonGrid, ModelId, ProductKey, SourceId};
 pub use rustwx_render::ProjectedMap;
 use rustwx_render::{
-    Color, DomainFrame, MapRenderRequest, PanelGridLayout, PanelPadding, ProductVisualMode,
-    ProjectedDomain, WeatherProduct, draw_centered_text_line, map_frame_aspect_ratio_for_mode,
-    render_panel_grid,
+    ChromeScale, Color, DomainFrame, MapRenderRequest, PanelGridLayout, PanelPadding,
+    ProductVisualMode, ProjectedDomain, WeatherProduct, draw_centered_text_line,
+    map_frame_aspect_ratio_for_mode, render_panel_grid,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -213,6 +213,30 @@ pub(crate) fn static_supersample_factor() -> u32 {
         .and_then(|value| value.parse::<u32>().ok())
         .filter(|&value| value > 0)
         .unwrap_or(2)
+}
+
+pub(crate) fn static_chrome_scale() -> ChromeScale {
+    let scale = std::env::var("RUSTWX_CHROME_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(1.0)
+        .clamp(0.75, 2.0);
+    ChromeScale::Fixed(scale)
+}
+
+pub(crate) fn static_title_with_suffix(title: impl Into<String>) -> String {
+    let mut title = title.into();
+    let Some(suffix) = std::env::var("RUSTWX_TITLE_SUFFIX")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return title;
+    };
+    title.push_str(" (");
+    title.push_str(&suffix);
+    title.push(')');
+    title
 }
 
 pub fn build_weather_map_request(

@@ -13,13 +13,13 @@ use rustwx_models::{
     latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan,
 };
 use rustwx_render::{
-    BasemapDetail, ChromeScale, Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame,
-    ExtendMode, GeographicClipBounds, InverseRasterProjection, LegendControls, LegendMode,
-    LevelDensity, MapRenderRequest, PanelGridLayout, PanelPadding, PngCompressionMode,
-    PngWriteOptions, ProductVisualMode, ProjectedContourLineStyle, ProjectedDomain, ProjectedMap,
-    RenderDensity, RenderImageTiming, RenderStateTiming, WindBarbLayer,
-    build_projected_contour_geometry_profile, densify_discrete_scale, draw_centered_text_line,
-    render_panel_grid, save_png_profile_with_options, save_rgba_png_profile_with_options,
+    BasemapDetail, Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode,
+    GeographicClipBounds, InverseRasterProjection, LegendControls, LegendMode, LevelDensity,
+    MapRenderRequest, PanelGridLayout, PanelPadding, PngCompressionMode, PngWriteOptions,
+    ProductVisualMode, ProjectedContourLineStyle, ProjectedDomain, ProjectedMap, RenderDensity,
+    RenderImageTiming, RenderStateTiming, WindBarbLayer, build_projected_contour_geometry_profile,
+    densify_discrete_scale, draw_centered_text_line, render_panel_grid,
+    save_png_profile_with_options, save_rgba_png_profile_with_options,
     weather::{
         WeatherPalette, dewpoint_palette_params, temperature_palette_cropped_f, weather_palette,
         winds_palette_segments,
@@ -45,8 +45,8 @@ use crate::runtime::{
     BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
 };
 use crate::shared_context::{
-    DomainSpec, ProjectedMapProvider, model_time_subtitle, source_subtitle,
-    static_supersample_factor,
+    DomainSpec, ProjectedMapProvider, model_time_subtitle, source_subtitle, static_chrome_scale,
+    static_supersample_factor, static_title_with_suffix,
 };
 use crate::source::{ProductSourceRoute, direct_route_for_recipe_slug};
 use crate::spec::direct_product_specs;
@@ -1388,7 +1388,7 @@ fn direct_title_for_request(
         }
     }
     if request.model != ModelId::WrfGdex {
-        return title;
+        return static_title_with_suffix(title);
     }
 
     let dataset = planned_product
@@ -1406,7 +1406,7 @@ fn direct_title_for_request(
                 .find_map(|product| dataset_token_from_product(product))
         })
         .unwrap_or("d612005");
-    format!("{title} ({dataset})")
+    static_title_with_suffix(format!("{title} ({dataset})"))
 }
 
 fn direct_title_for_planned_product(
@@ -2523,10 +2523,10 @@ fn build_render_request(
         )
     };
     request.visual_mode = visual_mode;
-    request.title = Some(recipe.title.to_string());
+    request.title = Some(static_title_with_suffix(recipe.title));
     request.width = output_width;
     request.height = output_height;
-    request.chrome_scale = ChromeScale::Fixed(1.25);
+    request.chrome_scale = static_chrome_scale();
     request.render_density = RenderDensity {
         fill: LevelDensity::default(),
         palette_multiplier: 1,

@@ -6,9 +6,9 @@ use rustwx_core::{CycleSpec, FieldSelector, ModelId, ModelRunRequest, SelectedFi
 use rustwx_io::{FetchRequest, extract_fields_partial_from_model_bytes, fetch_bytes_with_cache};
 use rustwx_models::{LatestRun, plot_recipe, plot_recipe_fetch_plan};
 use rustwx_render::{
-    ChromeScale, Color, ColorScale, DiscreteColorScale, ExtendMode, LegendControls, LegendMode,
-    LevelDensity, MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode,
-    RenderDensity, map_frame_aspect_ratio_for_mode, save_png_profile_with_options,
+    Color, ColorScale, DiscreteColorScale, ExtendMode, LegendControls, LegendMode, LevelDensity,
+    MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode, RenderDensity,
+    map_frame_aspect_ratio_for_mode, save_png_profile_with_options,
 };
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +17,7 @@ use crate::direct::{
     render_direct_recipe_from_selected_fields,
 };
 use crate::places::PlaceLabelOverlay;
-use crate::shared_context::DomainSpec;
+use crate::shared_context::{DomainSpec, static_chrome_scale, static_title_with_suffix};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -455,7 +455,11 @@ fn render_spread_or_probability_map(
         _ => spread_scale(&core.values),
     };
     let mut render_request = MapRenderRequest::new(core.into(), scale);
-    render_request.title = Some(format!("{} ensemble {}", recipe_title, request.stat.slug()));
+    render_request.title = Some(static_title_with_suffix(format!(
+        "{} ensemble {}",
+        recipe_title,
+        request.stat.slug()
+    )));
     render_request.subtitle_left = Some(format!(
         "{} {}Z F{:03}  {}  n={}",
         request.date_yyyymmdd,
@@ -467,7 +471,7 @@ fn render_spread_or_probability_map(
     render_request.subtitle_right = Some(format!("source: {}", latest.source));
     render_request.width = request.output_width;
     render_request.height = request.output_height;
-    render_request.chrome_scale = ChromeScale::Fixed(1.25);
+    render_request.chrome_scale = static_chrome_scale();
     render_request.render_density = RenderDensity {
         fill: LevelDensity::default(),
         palette_multiplier: 1,
