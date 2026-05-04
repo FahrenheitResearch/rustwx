@@ -682,12 +682,12 @@ fn clean_atlas_linework_style(
             (Rgba::with_alpha(66, 76, 92, alpha(122)), minor_width, true)
         }
         LineworkRole::State => (
-            Rgba::with_alpha(118, 128, 142, alpha(58)),
+            Rgba::with_alpha(20, 24, 30, alpha(154)),
             minor_width,
             true,
         ),
         LineworkRole::County => (
-            Rgba::with_alpha(164, 172, 184, alpha(24)),
+            Rgba::with_alpha(74, 82, 96, alpha(46)),
             1,
             county_visible,
         ),

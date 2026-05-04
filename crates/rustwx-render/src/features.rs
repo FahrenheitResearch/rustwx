@@ -593,7 +593,7 @@ fn build_broad_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !state.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: state,
-            color: Rgba::with_alpha(colors.state.r, colors.state.g, colors.state.b, 78),
+            color: Rgba::with_alpha(colors.state.r, colors.state.g, colors.state.b, 168),
             width: 1,
             role: LineworkRole::State,
         });
@@ -601,7 +601,7 @@ fn build_broad_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !nat.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: nat,
-            color: Rgba::with_alpha(colors.nat.r, colors.nat.g, colors.nat.b, 132),
+            color: Rgba::with_alpha(colors.nat.r, colors.nat.g, colors.nat.b, 154),
             width: 1,
             role: LineworkRole::International,
         });
@@ -609,7 +609,7 @@ fn build_broad_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !coast.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: coast,
-            color: Rgba::with_alpha(colors.coast.r, colors.coast.g, colors.coast.b, 150),
+            color: Rgba::with_alpha(colors.coast.r, colors.coast.g, colors.coast.b, 172),
             width: 1,
             role: LineworkRole::Coast,
         });
@@ -764,13 +764,13 @@ const BASEMAP_NAT_CORE: Rgba = Rgba {
     b: 96,
     a: 255,
 };
-// State borders: a touch darker than the land fill but still calm — decorative
-// context, not structural features.
+// State borders should read as black linework without becoming as dominant as
+// coastlines or national borders.
 const BASEMAP_STATE_CORE: Rgba = Rgba {
-    r: 132,
-    g: 138,
-    b: 146,
-    a: 190,
+    r: 20,
+    g: 24,
+    b: 30,
+    a: 255,
 };
 const BASEMAP_COAST_WIDTH: u32 = 2;
 const BASEMAP_NAT_WIDTH: u32 = 1;
@@ -813,9 +813,9 @@ const WHITE_NAT_CORE: Rgba = Rgba {
     a: 255,
 };
 const WHITE_STATE_CORE: Rgba = Rgba {
-    r: 70,
-    g: 78,
-    b: 92,
+    r: 20,
+    g: 24,
+    b: 30,
     a: 255,
 };
 // County lines are the most common element in NWS-style CONUS maps: thin,
