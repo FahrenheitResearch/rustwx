@@ -283,19 +283,19 @@ fn compute_layout(
     let chrome_scale = resolve_chrome_scale(total_w, total_h, chrome_scale);
     let metrics = scaled_layout_metrics(presentation.layout, chrome_scale);
     let text_scale = text_scale_from_chrome(chrome_scale);
-    let title_line_h = match presentation.chrome.title_anchor {
-        TitleAnchor::Center => text::bold_line_height(text_scale),
-        TitleAnchor::Left => text::regular_line_height(text_scale),
-    };
+    let title_line_h = text::bold_line_height(text_scale);
     let subtitle_line_h = text::regular_line_height(text_scale);
     let label_gap = scale_u32(12, chrome_scale).max(subtitle_line_h.saturating_add(6));
+    let header_row_gap = scale_u32(3, chrome_scale);
     let header_top_pad = scale_u32(5, chrome_scale);
     let header_bottom_pad = scale_u32(5, chrome_scale);
     let map_x = metrics.margin_x.min(total_w.saturating_sub(1));
     let title_h = if has_title {
         metrics.title_h.max(
             header_top_pad
-                .saturating_add(title_line_h.max(subtitle_line_h))
+                .saturating_add(title_line_h)
+                .saturating_add(header_row_gap)
+                .saturating_add(subtitle_line_h)
                 .saturating_add(header_bottom_pad),
         )
     } else {
@@ -352,7 +352,13 @@ fn compute_layout(
         cbar_w,
         cbar_h,
         title_y: if has_title { header_top_pad } else { 0 },
-        subtitle_y: if has_title { header_top_pad } else { 0 },
+        subtitle_y: if has_title {
+            header_top_pad
+                .saturating_add(title_line_h)
+                .saturating_add(header_row_gap)
+        } else {
+            0
+        },
         text_scale,
         label_gap,
     }
@@ -585,39 +591,13 @@ fn fit_chrome_title_metadata(
     title: Option<&str>,
     metadata: Option<&str>,
     row_width: u32,
-    row_gap: u32,
+    _row_gap: u32,
     scale: u32,
 ) -> (Option<String>, Option<String>) {
     let row_width = row_width.max(1);
-    let metadata_width_limit = match (title, metadata) {
-        (Some(title), Some(_)) => {
-            let desired_title_width = measure_text_width(title, scale, true);
-            let title_reserve = desired_title_width.min(row_width.saturating_mul(3) / 5);
-            row_width
-                .saturating_sub(title_reserve)
-                .saturating_sub(row_gap)
-                .max(row_width / 3)
-                .max(1)
-        }
-        (None, Some(_)) => row_width,
-        _ => 0,
-    };
+    let fitted_title = title.map(|text| ellipsize_text_to_width(text, row_width, scale, true));
     let fitted_metadata =
-        metadata.map(|text| ellipsize_text_to_width(text, metadata_width_limit, scale, false));
-    let metadata_width = fitted_metadata
-        .as_ref()
-        .map(|text| measure_text_width(text, scale, false))
-        .unwrap_or(0);
-    let title_width_limit = if metadata_width > 0 {
-        row_width
-            .saturating_sub(metadata_width)
-            .saturating_sub(row_gap)
-            .max(1)
-    } else {
-        row_width
-    };
-    let fitted_title =
-        title.map(|text| ellipsize_text_to_width(text, title_width_limit, scale, true));
+        metadata.map(|text| ellipsize_text_to_width(text, row_width, scale, false));
     (fitted_title, fitted_metadata)
 }
 
@@ -1826,11 +1806,13 @@ fn chrome_anchor_rows(
     if matches!(frame, Some(frame) if frame.chrome_follows_frame) {
         if let Some(rect) = frame_rect {
             let frame_top = layout.map_y + rect.min_y;
-            let row_h = text::bold_line_height(layout.text_scale)
-                .max(text::regular_line_height(layout.text_scale));
-            let row_gap = 8u32.saturating_mul(layout.text_scale.max(1));
-            let row_y = frame_top.saturating_sub(row_h.saturating_add(row_gap));
-            return (row_y, row_y);
+            let title_h = text::bold_line_height(layout.text_scale);
+            let subtitle_h = text::regular_line_height(layout.text_scale);
+            let bottom_gap = 5u32.saturating_mul(layout.text_scale.max(1));
+            let row_gap = 2u32.saturating_mul(layout.text_scale.max(1));
+            let subtitle_y = frame_top.saturating_sub(subtitle_h.saturating_add(bottom_gap));
+            let title_y = subtitle_y.saturating_sub(title_h.saturating_add(row_gap));
+            return (title_y, subtitle_y);
         }
     }
 
@@ -3820,10 +3802,11 @@ mod tests {
         let (title_y, subtitle_y) = chrome_anchor_rows(&layout, Some(frame), Some(rect));
         let frame_top = layout.map_y + rect.min_y;
         let max_gap = text::bold_line_height(layout.text_scale)
-            .max(text::regular_line_height(layout.text_scale))
+            .saturating_add(text::regular_line_height(layout.text_scale))
             .saturating_add(8u32.saturating_mul(layout.text_scale.max(1)));
 
-        assert_eq!(title_y, subtitle_y);
+        assert!(title_y <= subtitle_y);
+        assert!(subtitle_y < frame_top);
         assert!(title_y < frame_top);
         assert!(frame_top.saturating_sub(title_y) <= max_gap);
     }
@@ -4069,9 +4052,9 @@ mod tests {
             ChromeScale::Fixed(1.0),
         );
 
-        assert_eq!(layout.map_y, 42);
+        assert_eq!(layout.map_y, 64);
         assert_eq!(layout.title_y, 5);
-        assert_eq!(layout.subtitle_y, 5);
+        assert!(layout.subtitle_y > layout.title_y);
         assert_eq!(layout.cbar_y + layout.cbar_h, 892);
     }
 

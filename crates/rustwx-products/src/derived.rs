@@ -4406,7 +4406,7 @@ fn build_render_artifact_with_contour_mode(
 
     request.width = output_width;
     request.height = output_height;
-    request.chrome_scale = ChromeScale::Fixed(1.5);
+    request.chrome_scale = ChromeScale::Fixed(1.25);
     request.supersample_factor = static_supersample_factor();
     request.domain_frame = Some(DomainFrame::model_data_default());
     request.title = Some(derived_title_for_model(model, recipe.title()));
@@ -4760,7 +4760,7 @@ fn build_render_artifact_with_contour_mode_profiled(
 
     request.width = output_width;
     request.height = output_height;
-    request.chrome_scale = ChromeScale::Fixed(1.5);
+    request.chrome_scale = ChromeScale::Fixed(1.25);
     request.supersample_factor = static_supersample_factor();
     request.domain_frame = Some(DomainFrame::model_data_default());
     request.title = Some(derived_title_for_model(model, recipe.title()));
@@ -5047,7 +5047,7 @@ fn render_derived_heavy_recipe(
         Some(subtitle_left),
         Some(heavy_ecape_subtitle_right(recipe, source)),
     )?;
-    render_request.chrome_scale = ChromeScale::Fixed(1.5);
+    render_request.chrome_scale = ChromeScale::Fixed(1.25);
     render_request.title = Some(derived_title_for_request(request, recipe.title()));
     maybe_apply_native_contour_fill_for_mode(
         recipe,

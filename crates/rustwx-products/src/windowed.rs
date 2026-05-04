@@ -1808,7 +1808,7 @@ fn build_windowed_render_request(
         hour_label,
     ));
     render_request.subtitle_right = Some(source_subtitle(source));
-    render_request.chrome_scale = ChromeScale::Fixed(1.5);
+    render_request.chrome_scale = ChromeScale::Fixed(1.25);
     render_request.render_density = RenderDensity {
         fill: LevelDensity::default(),
         palette_multiplier: 1,
@@ -2604,7 +2604,7 @@ mod tests {
 
         assert_eq!(render_request.width, 1200);
         assert_eq!(render_request.height, 900);
-        assert_eq!(render_request.chrome_scale, ChromeScale::Fixed(1.5));
+        assert_eq!(render_request.chrome_scale, ChromeScale::Fixed(1.25));
         assert_eq!(render_request.supersample_factor, 2);
         assert_eq!(
             render_request.subtitle_left.as_deref(),

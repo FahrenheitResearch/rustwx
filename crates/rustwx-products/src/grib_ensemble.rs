@@ -467,7 +467,7 @@ fn render_spread_or_probability_map(
     render_request.subtitle_right = Some(format!("source: {}", latest.source));
     render_request.width = request.output_width;
     render_request.height = request.output_height;
-    render_request.chrome_scale = ChromeScale::Fixed(1.5);
+    render_request.chrome_scale = ChromeScale::Fixed(1.25);
     render_request.render_density = RenderDensity {
         fill: LevelDensity::default(),
         palette_multiplier: 1,

@@ -2526,7 +2526,7 @@ fn build_render_request(
     request.title = Some(recipe.title.to_string());
     request.width = output_width;
     request.height = output_height;
-    request.chrome_scale = ChromeScale::Fixed(1.5);
+    request.chrome_scale = ChromeScale::Fixed(1.25);
     request.render_density = RenderDensity {
         fill: LevelDensity::default(),
         palette_multiplier: 1,
@@ -3542,7 +3542,7 @@ fn inverse_raster_projection_for_latlon_mesh(
 }
 
 fn inverse_raster_clip_bounds(bounds: (f64, f64, f64, f64)) -> Option<GeographicClipBounds> {
-    if !env_flag_enabled("RUSTWX_INVERSE_RASTER_GEO_CLIP", false) {
+    if !env_flag_enabled("RUSTWX_INVERSE_RASTER_GEO_CLIP", true) {
         return None;
     }
     Some(GeographicClipBounds::new(

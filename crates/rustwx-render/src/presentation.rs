@@ -667,11 +667,11 @@ fn clean_atlas_linework_style(
     let minor_width = fallback_width.clamp(1, 2);
     let county_visible = !matches!(mode, ProductVisualMode::FilledMeteorology);
     let (color, width, visible) = match role {
-        LineworkRole::Coast => (Rgba::with_alpha(9, 14, 22, 235), major_width, true),
-        LineworkRole::Lake => (Rgba::with_alpha(33, 86, 142, 205), minor_width, true),
-        LineworkRole::International => (Rgba::with_alpha(36, 44, 56, 218), minor_width, true),
-        LineworkRole::State => (Rgba::with_alpha(78, 88, 104, 150), minor_width, true),
-        LineworkRole::County => (Rgba::with_alpha(142, 150, 160, 70), 1, county_visible),
+        LineworkRole::Coast => (Rgba::with_alpha(9, 14, 22, 220), major_width, true),
+        LineworkRole::Lake => (Rgba::with_alpha(33, 86, 142, 185), minor_width, true),
+        LineworkRole::International => (Rgba::with_alpha(36, 44, 56, 198), minor_width, true),
+        LineworkRole::State => (Rgba::with_alpha(78, 88, 104, 118), minor_width, true),
+        LineworkRole::County => (Rgba::with_alpha(142, 150, 160, 55), 1, county_visible),
         LineworkRole::Generic => (fallback, fallback_width, true),
     };
 
