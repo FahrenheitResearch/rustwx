@@ -3713,7 +3713,7 @@ fn regional_latlon_presentation_projection(
         ProjectionPresentationVariant::Robinson => robinson_presentation_projection(bounds),
         _ if is_conus_lambert_candidate(bounds) => pivotal_lambert_conus_projection(),
         _ if is_north_america_projection_candidate(bounds) => {
-            north_america_albers_presentation_projection()
+            north_america_lambert_presentation_projection()
         }
         _ => regional_presentation_projection(bounds),
     }
@@ -3736,12 +3736,11 @@ fn pivotal_lambert_conus_projection() -> rustwx_render::ProjectionSpec {
     }
 }
 
-fn north_america_albers_presentation_projection() -> rustwx_render::ProjectionSpec {
-    rustwx_render::ProjectionSpec::AlbersEqualArea {
-        standard_parallel_1_deg: 20.0,
+fn north_america_lambert_presentation_projection() -> rustwx_render::ProjectionSpec {
+    rustwx_render::ProjectionSpec::LambertConformal {
+        standard_parallel_1_deg: 25.0,
         standard_parallel_2_deg: 60.0,
         central_meridian_deg: -100.0,
-        latitude_of_origin_deg: 40.0,
     }
 }
 
