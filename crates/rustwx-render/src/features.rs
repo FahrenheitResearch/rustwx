@@ -636,9 +636,9 @@ fn load_styled_global_features_for(style: BasemapStyle) -> Vec<StyledLonLatLayer
 }
 
 fn build_global_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
-    let Some((root, tag)) = checked_in_natural_earth_110m_root()
-        .map(|root| (root, "110m"))
-        .or_else(|| checked_in_natural_earth_10m_root().map(|root| (root, "10m")))
+    let Some((root, tag)) = checked_in_natural_earth_10m_root()
+        .map(|root| (root, "10m"))
+        .or_else(|| checked_in_natural_earth_110m_root().map(|root| (root, "110m")))
     else {
         return build_broad_features(style)
             .into_iter()
@@ -658,7 +658,7 @@ fn build_global_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !nat.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: nat,
-            color: Rgba::with_alpha(colors.nat.r, colors.nat.g, colors.nat.b, 118),
+            color: Rgba::with_alpha(colors.nat.r, colors.nat.g, colors.nat.b, 82),
             width: 1,
             role: LineworkRole::International,
         });
@@ -666,7 +666,7 @@ fn build_global_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !coast.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: coast,
-            color: Rgba::with_alpha(colors.coast.r, colors.coast.g, colors.coast.b, 138),
+            color: Rgba::with_alpha(colors.coast.r, colors.coast.g, colors.coast.b, 104),
             width: 1,
             role: LineworkRole::Coast,
         });
@@ -674,7 +674,7 @@ fn build_global_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !lakes.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: lakes,
-            color: Rgba::with_alpha(colors.lake.r, colors.lake.g, colors.lake.b, 88),
+            color: Rgba::with_alpha(colors.lake.r, colors.lake.g, colors.lake.b, 62),
             width: 1,
             role: LineworkRole::Lake,
         });
@@ -741,36 +741,36 @@ fn feature_widths(style: BasemapStyle) -> FeatureWidths {
 // Design target: weathermodels.com ECMWF / NOAA Blend reference look — cool-beige
 // land, pale cool-blue ocean, thin crisp dark linework.
 pub const BASEMAP_LAND_FILL: Rgba = Rgba {
-    r: 232,
-    g: 230,
-    b: 220,
+    r: 238,
+    g: 237,
+    b: 230,
     a: 255,
 };
 pub const BASEMAP_OCEAN_FILL: Rgba = Rgba {
-    r: 211,
-    g: 224,
-    b: 237,
+    r: 224,
+    g: 234,
+    b: 242,
     a: 255,
 };
 const BASEMAP_COAST_CORE: Rgba = Rgba {
-    r: 22,
-    g: 28,
-    b: 36,
+    r: 32,
+    g: 40,
+    b: 50,
     a: 255,
 };
 const BASEMAP_NAT_CORE: Rgba = Rgba {
-    r: 58,
-    g: 64,
-    b: 76,
+    r: 74,
+    g: 82,
+    b: 96,
     a: 255,
 };
 // State borders: a touch darker than the land fill but still calm — decorative
 // context, not structural features.
 const BASEMAP_STATE_CORE: Rgba = Rgba {
-    r: 118,
-    g: 118,
-    b: 118,
-    a: 220,
+    r: 132,
+    g: 138,
+    b: 146,
+    a: 190,
 };
 const BASEMAP_COAST_WIDTH: u32 = 2;
 const BASEMAP_NAT_WIDTH: u32 = 1;

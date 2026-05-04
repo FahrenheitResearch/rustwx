@@ -588,7 +588,7 @@ fn build_projected_basemap(
 }
 
 fn subtle_graticule_enabled(detail: BasemapDetail) -> bool {
-    if !matches!(detail, BasemapDetail::Global) {
+    if matches!(detail, BasemapDetail::Regional) {
         return false;
     }
     std::env::var("RUSTWX_BASEMAP_GRATICULE")
@@ -609,7 +609,11 @@ fn append_graticule_lines(
     geographic_clip: Option<GeographicBounds>,
     detail: BasemapDetail,
 ) {
-    let color = Color::rgba(32, 40, 52, 42);
+    let color = match detail {
+        BasemapDetail::Global => Color::rgba(42, 52, 66, 30),
+        BasemapDetail::Broad => Color::rgba(42, 52, 66, 24),
+        BasemapDetail::Regional => Color::rgba(42, 52, 66, 0),
+    };
     let step_deg = match detail {
         BasemapDetail::Global => 2.0,
         BasemapDetail::Broad => 1.0,
@@ -617,7 +621,12 @@ fn append_graticule_lines(
     };
     let max_projected_step = max_projected_basemap_segment_length(bbox);
 
-    for lat in [-60.0, -30.0, 0.0, 30.0, 60.0] {
+    let latitude_lines: &[f64] = match detail {
+        BasemapDetail::Global => &[-60.0, -30.0, 0.0, 30.0, 60.0],
+        BasemapDetail::Broad => &[-60.0, -40.0, -20.0, 0.0, 20.0, 40.0, 60.0, 80.0],
+        BasemapDetail::Regional => &[],
+    };
+    for &lat in latitude_lines {
         let mut current = Vec::new();
         let mut lon = -180.0;
         while lon <= 180.0 {
@@ -639,7 +648,12 @@ fn append_graticule_lines(
         flush_projected_line(lines, &mut current, color, 1, LineworkRole::Generic);
     }
 
-    for lon in (-150..=150).step_by(30) {
+    let lon_step = match detail {
+        BasemapDetail::Global => 30,
+        BasemapDetail::Broad => 20,
+        BasemapDetail::Regional => 30,
+    };
+    for lon in (-180..=180).step_by(lon_step) {
         let mut current = Vec::new();
         let mut lat = -80.0;
         while lat <= 80.0 {

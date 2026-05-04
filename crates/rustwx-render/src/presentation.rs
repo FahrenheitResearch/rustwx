@@ -161,7 +161,7 @@ impl RenderPresentation {
             return;
         }
 
-        self.canvas_background = Rgba::new(244, 246, 248);
+        self.canvas_background = Rgba::new(246, 248, 250);
         self.chrome = clean_atlas_chrome(self.chrome.title_anchor);
         self.colorbar = clean_atlas_colorbar();
         self.layout = if matches!(
@@ -175,18 +175,18 @@ impl RenderPresentation {
 
         match self.mode {
             ProductVisualMode::UpperAirAnalysis => {
-                self.map_background = Rgba::new(239, 241, 240);
+                self.map_background = Rgba::new(242, 244, 243);
             }
             ProductVisualMode::OverlayAnalysis => {
-                self.map_background = Rgba::new(249, 250, 251);
+                self.map_background = Rgba::new(250, 251, 252);
             }
             ProductVisualMode::SevereDiagnostic => {
-                self.map_background = Rgba::new(250, 251, 250);
+                self.map_background = Rgba::new(251, 252, 251);
             }
             ProductVisualMode::FilledMeteorology
             | ProductVisualMode::PanelMember
             | ProductVisualMode::ComparisonPanel => {
-                self.map_background = Rgba::new(248, 249, 247);
+                self.map_background = Rgba::new(249, 250, 248);
             }
         }
     }
@@ -672,22 +672,22 @@ fn clean_atlas_linework_style(
     let county_visible = !matches!(mode, ProductVisualMode::FilledMeteorology);
     let alpha = |cap: u8| fallback.a.min(cap);
     let (color, width, visible) = match role {
-        LineworkRole::Coast => (Rgba::with_alpha(26, 32, 42, alpha(165)), major_width, true),
+        LineworkRole::Coast => (Rgba::with_alpha(30, 38, 50, alpha(142)), major_width, true),
         LineworkRole::Lake => (
-            Rgba::with_alpha(70, 116, 156, alpha(128)),
+            Rgba::with_alpha(78, 126, 162, alpha(112)),
             minor_width,
             true,
         ),
         LineworkRole::International => {
-            (Rgba::with_alpha(54, 62, 76, alpha(145)), minor_width, true)
+            (Rgba::with_alpha(66, 76, 92, alpha(122)), minor_width, true)
         }
         LineworkRole::State => (
-            Rgba::with_alpha(100, 110, 126, alpha(76)),
+            Rgba::with_alpha(118, 128, 142, alpha(58)),
             minor_width,
             true,
         ),
         LineworkRole::County => (
-            Rgba::with_alpha(154, 162, 172, alpha(34)),
+            Rgba::with_alpha(164, 172, 184, alpha(24)),
             1,
             county_visible,
         ),
@@ -705,36 +705,36 @@ fn clean_atlas_chrome(title_anchor: TitleAnchor) -> ChromeStyle {
     ChromeStyle {
         title_anchor,
         title_color: Rgba::new(16, 22, 30),
-        subtitle_color: Rgba::new(70, 78, 90),
-        frame_color: Some(Rgba::with_alpha(34, 42, 52, 155)),
+        subtitle_color: Rgba::new(82, 92, 106),
+        frame_color: Some(Rgba::with_alpha(46, 56, 68, 118)),
     }
 }
 
 fn clean_atlas_colorbar() -> ColorbarPresentation {
     ColorbarPresentation {
-        frame_color: Rgba::new(62, 70, 82),
-        divider_color: Rgba::with_alpha(255, 255, 255, 90),
-        tick_color: Rgba::new(62, 70, 82),
-        label_color: Rgba::new(28, 34, 42),
+        frame_color: Rgba::new(76, 86, 100),
+        divider_color: Rgba::with_alpha(255, 255, 255, 82),
+        tick_color: Rgba::new(76, 86, 100),
+        label_color: Rgba::new(44, 52, 64),
     }
 }
 
 fn clean_atlas_layout() -> LayoutMetrics {
     LayoutMetrics {
-        margin_x: 22,
-        title_h: 46,
-        footer_h: 40,
-        colorbar_h: 14,
-        colorbar_gap: 12,
-        colorbar_margin_x: 112,
+        margin_x: 18,
+        title_h: 44,
+        footer_h: 36,
+        colorbar_h: 12,
+        colorbar_gap: 10,
+        colorbar_margin_x: 104,
     }
 }
 
 fn clean_atlas_compact_layout() -> LayoutMetrics {
     LayoutMetrics {
         margin_x: 10,
-        title_h: 40,
-        footer_h: 30,
+        title_h: 36,
+        footer_h: 28,
         colorbar_h: 11,
         colorbar_gap: 9,
         colorbar_margin_x: 50,

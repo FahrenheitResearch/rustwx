@@ -219,7 +219,7 @@ pub(crate) fn static_chrome_scale() -> ChromeScale {
     let scale = std::env::var("RUSTWX_CHROME_SCALE")
         .ok()
         .and_then(|value| value.parse::<f32>().ok())
-        .unwrap_or(1.0)
+        .unwrap_or(0.9)
         .clamp(0.75, 2.0);
     ChromeScale::Fixed(scale)
 }
