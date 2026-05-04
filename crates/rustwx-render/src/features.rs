@@ -244,7 +244,8 @@ pub fn load_styled_basemap_polygons_for_detail(
 ) -> Vec<StyledLonLatPolygonLayer> {
     match detail {
         BasemapDetail::Regional => load_styled_conus_polygons_for(style),
-        BasemapDetail::Broad | BasemapDetail::Global => load_styled_broad_polygons_for(style),
+        BasemapDetail::Broad => load_styled_broad_polygons_for(style),
+        BasemapDetail::Global => load_styled_global_polygons_for(style),
     }
 }
 
@@ -256,6 +257,16 @@ fn load_styled_broad_polygons_for(style: BasemapStyle) -> Vec<StyledLonLatPolygo
         BasemapStyle::White => &WHITE,
     };
     cache.get_or_init(|| build_broad_polygons(style)).clone()
+}
+
+fn load_styled_global_polygons_for(style: BasemapStyle) -> Vec<StyledLonLatPolygonLayer> {
+    static FILLED: OnceLock<Vec<StyledLonLatPolygonLayer>> = OnceLock::new();
+    static WHITE: OnceLock<Vec<StyledLonLatPolygonLayer>> = OnceLock::new();
+    let cache = match style {
+        BasemapStyle::Filled => &FILLED,
+        BasemapStyle::White => &WHITE,
+    };
+    cache.get_or_init(|| build_global_polygons(style)).clone()
 }
 
 fn build_conus_polygons(style: BasemapStyle) -> Vec<StyledLonLatPolygonLayer> {
@@ -530,6 +541,27 @@ fn build_broad_polygons(style: BasemapStyle) -> Vec<StyledLonLatPolygonLayer> {
     broad
 }
 
+fn build_global_polygons(style: BasemapStyle) -> Vec<StyledLonLatPolygonLayer> {
+    let (land_fill, _, _) = match style {
+        BasemapStyle::Filled => (BASEMAP_LAND_FILL, BASEMAP_OCEAN_FILL, BASEMAP_OCEAN_FILL),
+        BasemapStyle::White => (WHITE_LAND_FILL, WHITE_OCEAN_FILL, WHITE_LAKES_FILL),
+    };
+
+    if let Some(root) = checked_in_natural_earth_110m_root() {
+        let countries = load_polygons_from_shapefile(&root.join("ne_110m_admin_0_countries.shp"))
+            .unwrap_or_default();
+        if !countries.is_empty() {
+            return vec![StyledLonLatPolygonLayer {
+                polygons: countries,
+                color: land_fill,
+                role: PolygonRole::Land,
+            }];
+        }
+    }
+
+    build_broad_polygons(style)
+}
+
 fn build_broad_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     let Some((root, tag)) = checked_in_natural_earth_10m_root()
         .map(|root| (root, "10m"))
@@ -561,7 +593,7 @@ fn build_broad_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !state.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: state,
-            color: Rgba::with_alpha(colors.state.r, colors.state.g, colors.state.b, 120),
+            color: Rgba::with_alpha(colors.state.r, colors.state.g, colors.state.b, 78),
             width: 1,
             role: LineworkRole::State,
         });
@@ -569,7 +601,7 @@ fn build_broad_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !nat.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: nat,
-            color: Rgba::with_alpha(colors.nat.r, colors.nat.g, colors.nat.b, 190),
+            color: Rgba::with_alpha(colors.nat.r, colors.nat.g, colors.nat.b, 132),
             width: 1,
             role: LineworkRole::International,
         });
@@ -577,7 +609,7 @@ fn build_broad_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !coast.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: coast,
-            color: Rgba::with_alpha(colors.coast.r, colors.coast.g, colors.coast.b, 210),
+            color: Rgba::with_alpha(colors.coast.r, colors.coast.g, colors.coast.b, 150),
             width: 1,
             role: LineworkRole::Coast,
         });
@@ -585,7 +617,7 @@ fn build_broad_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !lakes.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: lakes,
-            color: Rgba::with_alpha(colors.lake.r, colors.lake.g, colors.lake.b, 170),
+            color: Rgba::with_alpha(colors.lake.r, colors.lake.g, colors.lake.b, 105),
             width: 1,
             role: LineworkRole::Lake,
         });
@@ -604,9 +636,9 @@ fn load_styled_global_features_for(style: BasemapStyle) -> Vec<StyledLonLatLayer
 }
 
 fn build_global_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
-    let Some((root, tag)) = checked_in_natural_earth_10m_root()
-        .map(|root| (root, "10m"))
-        .or_else(|| checked_in_natural_earth_110m_root().map(|root| (root, "110m")))
+    let Some((root, tag)) = checked_in_natural_earth_110m_root()
+        .map(|root| (root, "110m"))
+        .or_else(|| checked_in_natural_earth_10m_root().map(|root| (root, "10m")))
     else {
         return build_broad_features(style)
             .into_iter()
@@ -626,7 +658,7 @@ fn build_global_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !nat.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: nat,
-            color: Rgba::with_alpha(colors.nat.r, colors.nat.g, colors.nat.b, 185),
+            color: Rgba::with_alpha(colors.nat.r, colors.nat.g, colors.nat.b, 118),
             width: 1,
             role: LineworkRole::International,
         });
@@ -634,7 +666,7 @@ fn build_global_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !coast.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: coast,
-            color: Rgba::with_alpha(colors.coast.r, colors.coast.g, colors.coast.b, 200),
+            color: Rgba::with_alpha(colors.coast.r, colors.coast.g, colors.coast.b, 138),
             width: 1,
             role: LineworkRole::Coast,
         });
@@ -642,7 +674,7 @@ fn build_global_features(style: BasemapStyle) -> Vec<StyledLonLatLayer> {
     if !lakes.is_empty() {
         layers.push(StyledLonLatLayer {
             lines: lakes,
-            color: Rgba::with_alpha(colors.lake.r, colors.lake.g, colors.lake.b, 155),
+            color: Rgba::with_alpha(colors.lake.r, colors.lake.g, colors.lake.b, 88),
             width: 1,
             role: LineworkRole::Lake,
         });

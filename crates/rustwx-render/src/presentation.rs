@@ -621,15 +621,15 @@ fn clean_atlas_polygon_style(
         ProductVisualMode::UpperAirAnalysis => match role {
             PolygonRole::Ocean => PolygonStyle {
                 visible: true,
-                color: Rgba::new(235, 241, 246),
+                color: Rgba::new(238, 243, 247),
             },
             PolygonRole::Land => PolygonStyle {
                 visible: true,
-                color: Rgba::new(231, 229, 222),
+                color: Rgba::new(245, 245, 240),
             },
             PolygonRole::Lake => PolygonStyle {
                 visible: true,
-                color: Rgba::new(226, 237, 245),
+                color: Rgba::new(228, 238, 246),
             },
             PolygonRole::Generic => PolygonStyle {
                 visible: true,
@@ -642,15 +642,15 @@ fn clean_atlas_polygon_style(
         | ProductVisualMode::FilledMeteorology => match role {
             PolygonRole::Ocean => PolygonStyle {
                 visible: true,
-                color: Rgba::new(235, 242, 248),
+                color: Rgba::new(238, 244, 249),
             },
             PolygonRole::Land => PolygonStyle {
                 visible: true,
-                color: Rgba::new(249, 249, 245),
+                color: Rgba::new(250, 250, 246),
             },
             PolygonRole::Lake => PolygonStyle {
                 visible: true,
-                color: Rgba::new(226, 237, 245),
+                color: Rgba::new(229, 239, 247),
             },
             PolygonRole::Generic => PolygonStyle {
                 visible: true,
@@ -672,14 +672,22 @@ fn clean_atlas_linework_style(
     let county_visible = !matches!(mode, ProductVisualMode::FilledMeteorology);
     let alpha = |cap: u8| fallback.a.min(cap);
     let (color, width, visible) = match role {
-        LineworkRole::Coast => (Rgba::with_alpha(12, 17, 24, alpha(215)), major_width, true),
-        LineworkRole::Lake => (Rgba::with_alpha(38, 88, 142, alpha(180)), minor_width, true),
+        LineworkRole::Coast => (Rgba::with_alpha(26, 32, 42, alpha(165)), major_width, true),
+        LineworkRole::Lake => (
+            Rgba::with_alpha(70, 116, 156, alpha(128)),
+            minor_width,
+            true,
+        ),
         LineworkRole::International => {
-            (Rgba::with_alpha(42, 50, 62, alpha(190)), minor_width, true)
+            (Rgba::with_alpha(54, 62, 76, alpha(145)), minor_width, true)
         }
-        LineworkRole::State => (Rgba::with_alpha(82, 92, 108, alpha(112)), minor_width, true),
+        LineworkRole::State => (
+            Rgba::with_alpha(100, 110, 126, alpha(76)),
+            minor_width,
+            true,
+        ),
         LineworkRole::County => (
-            Rgba::with_alpha(142, 150, 160, alpha(48)),
+            Rgba::with_alpha(154, 162, 172, alpha(34)),
             1,
             county_visible,
         ),
