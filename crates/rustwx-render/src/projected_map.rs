@@ -462,7 +462,32 @@ fn projected_geographic_frame_bounds(
         include_projected_point(&mut projected, projector.project(lat, bounds.east_deg));
     }
 
+    // Full-world and near-global frames cannot be represented safely by only
+    // sampling the geographic rectangle perimeter. At the antimeridian,
+    // normalized -180 and +180 can collapse onto the same projected side, and
+    // projections such as Robinson reach their widest x extent around the
+    // equator rather than along the north/south frame edges. Sample the
+    // interior grid so the fitted projected frame is centered on the real map
+    // silhouette instead of being biased toward one seam side.
+    if should_sample_geographic_frame_interior(bounds) {
+        let lat_segments = 72usize;
+        let lon_segments = 180usize;
+        for lat_step in 0..=lat_segments {
+            let lat_t = lat_step as f64 / lat_segments as f64;
+            let lat = bounds.south_deg + (bounds.north_deg - bounds.south_deg) * lat_t;
+            for lon_step in 0..=lon_segments {
+                let lon_t = lon_step as f64 / lon_segments as f64;
+                let lon = normalize_longitude_deg(west + (east - west) * lon_t);
+                include_projected_point(&mut projected, projector.project(lat, lon));
+            }
+        }
+    }
+
     projected.is_valid().then_some(projected)
+}
+
+fn should_sample_geographic_frame_interior(bounds: GeographicBounds) -> bool {
+    bounds.longitude_span_deg() >= 300.0 || (bounds.north_deg - bounds.south_deg).abs() >= 120.0
 }
 
 fn include_projected_point(bounds: &mut ProjectedBounds, point: (f64, f64)) {
@@ -990,6 +1015,36 @@ mod tests {
         assert!(bounds.contains(0.0, 180.0));
         assert!(bounds.contains(0.0, -179.75));
         assert!(bounds.contains(0.0, 0.0));
+    }
+
+    #[test]
+    fn global_robinson_frame_is_centered_on_world_silhouette() {
+        let mut lat = Vec::new();
+        let mut lon = Vec::new();
+        for row_lat in [-85.0_f32, -60.0, -30.0, 0.0, 30.0, 60.0, 85.0] {
+            for col_lon in (-180..=180).step_by(30) {
+                lat.push(row_lat);
+                lon.push(col_lon as f32);
+            }
+        }
+
+        let domain = build_projected_domain(
+            &lat,
+            &lon,
+            &ProjectedDomainBuildOptions::from_bounds((-180.0, 180.0, -85.0, 85.0), 16.0 / 9.0)
+                .with_projection(ProjectionSpec::Robinson {
+                    central_meridian_deg: 0.0,
+                }),
+        )
+        .expect("global Robinson domain should build");
+
+        let center_x = (domain.extent.x_min + domain.extent.x_max) / 2.0;
+        let width = domain.extent.x_max - domain.extent.x_min;
+        assert!(
+            center_x.abs() < width * 0.01,
+            "global Robinson frame should be centered, got extent {:?}",
+            domain.extent
+        );
     }
 
     #[test]

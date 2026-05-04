@@ -83,6 +83,18 @@ pub struct RenderImageTiming {
     pub downsample_ms: u128,
     pub postprocess_ms: u128,
     pub total_ms: u128,
+    #[serde(default)]
+    pub map_w: u32,
+    #[serde(default)]
+    pub map_h: u32,
+    #[serde(default)]
+    pub has_projected_grid: bool,
+    #[serde(default)]
+    pub has_inverse_raster: bool,
+    #[serde(default)]
+    pub projection_clip_mask_present: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain_clip_rect: Option<[u32; 4]>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -459,13 +471,31 @@ pub fn map_frame_aspect_ratio_for_mode(
     has_cbar: bool,
     has_title: bool,
 ) -> f64 {
+    map_frame_aspect_ratio_for_mode_with_chrome_scale(
+        mode,
+        total_w,
+        total_h,
+        has_cbar,
+        has_title,
+        ChromeScale::default(),
+    )
+}
+
+pub fn map_frame_aspect_ratio_for_mode_with_chrome_scale(
+    mode: ProductVisualMode,
+    total_w: u32,
+    total_h: u32,
+    has_cbar: bool,
+    has_title: bool,
+    chrome_scale: ChromeScale,
+) -> f64 {
     let layout = compute_layout(
         total_w,
         total_h,
         has_cbar,
         has_title,
         RenderPresentation::for_mode_from_env(mode),
-        ChromeScale::default(),
+        chrome_scale,
     );
     layout.map_w as f64 / (layout.map_h.max(1) as f64)
 }
@@ -478,13 +508,33 @@ pub fn map_frame_aspect_ratio_for_mode_with_domain_frame(
     has_title: bool,
     has_domain_frame: bool,
 ) -> f64 {
+    map_frame_aspect_ratio_for_mode_with_domain_frame_and_chrome_scale(
+        mode,
+        total_w,
+        total_h,
+        has_cbar,
+        has_title,
+        has_domain_frame,
+        ChromeScale::default(),
+    )
+}
+
+pub fn map_frame_aspect_ratio_for_mode_with_domain_frame_and_chrome_scale(
+    mode: ProductVisualMode,
+    total_w: u32,
+    total_h: u32,
+    has_cbar: bool,
+    has_title: bool,
+    has_domain_frame: bool,
+    chrome_scale: ChromeScale,
+) -> f64 {
     let layout = compute_effective_layout(
         total_w,
         total_h,
         has_cbar,
         has_title,
         RenderPresentation::for_mode_from_env(mode),
-        ChromeScale::default(),
+        chrome_scale,
         has_domain_frame,
     );
     layout.map_w as f64 / (layout.map_h.max(1) as f64)
@@ -1541,6 +1591,21 @@ fn build_rect_clip_mask(map_w: u32, map_h: u32, rect: LocalRect) -> RgbaImage {
     mask
 }
 
+fn intersect_alpha_clip_masks(a: &RgbaImage, b: &RgbaImage) -> RgbaImage {
+    let width = a.width().min(b.width());
+    let height = a.height().min(b.height());
+    let mut mask = RgbaImage::new(width, height);
+    for py in 0..height {
+        for px in 0..width {
+            let alpha = a.get_pixel(px, py).0[3].min(b.get_pixel(px, py).0[3]);
+            if alpha > 0 {
+                mask.put_pixel(px, py, image::Rgba([255, 255, 255, alpha]));
+            }
+        }
+    }
+    mask
+}
+
 fn draw_local_rect_outline(
     img: &mut RgbaImage,
     layout: &Layout,
@@ -1641,16 +1706,14 @@ fn compute_projected_domain_frame_rect(
 fn scale_render_opts_for_supersample(opts: &RenderOpts, factor: u32) -> RenderOpts {
     let factor = factor.max(1);
     let mut scaled = opts.clone();
+    let resolved_chrome_scale = resolve_chrome_scale(opts.width, opts.height, opts.chrome_scale);
     scaled.width = scaled.width.saturating_mul(factor);
     scaled.height = scaled.height.saturating_mul(factor);
     if let Some(frame) = scaled.domain_frame.as_mut() {
         frame.inset_px = frame.inset_px.saturating_mul(factor);
         frame.outline_width = frame.outline_width.max(1).saturating_mul(factor);
     }
-    match &mut scaled.chrome_scale {
-        ChromeScale::Fixed(scale) => *scale *= factor as f32,
-        ChromeScale::Auto { .. } => {}
-    }
+    scaled.chrome_scale = ChromeScale::Fixed(resolved_chrome_scale * factor as f32);
     for line in &mut scaled.projected_lines {
         line.width = line.width.max(1).saturating_mul(factor);
     }
@@ -2630,12 +2693,19 @@ fn draw_variable_layers(
     });
     let domain_clip_mask =
         domain_clip_rect.map(|rect| build_rect_clip_mask(layout.map_w, layout.map_h, rect));
-    let draw_clip_mask = domain_clip_mask.as_ref().or(projection_clip_mask.as_ref());
+    let combined_clip_mask = match (domain_clip_mask.as_ref(), projection_clip_mask.as_ref()) {
+        (Some(domain), Some(projection)) => Some(intersect_alpha_clip_masks(domain, projection)),
+        _ => None,
+    };
+    let draw_clip_mask = combined_clip_mask
+        .as_ref()
+        .or(domain_clip_mask.as_ref())
+        .or(projection_clip_mask.as_ref());
 
     let raster_blit_start = Instant::now();
     for py in 0..layout.map_h {
         for px in 0..layout.map_w {
-            if let Some(mask) = domain_clip_mask.as_ref() {
+            if let Some(mask) = draw_clip_mask {
                 if mask.get_pixel(px, py).0[3] == 0 {
                     continue;
                 }
@@ -2709,7 +2779,12 @@ fn draw_variable_layers(
     let label_ms = label_start.elapsed().as_millis();
 
     let outside_frame_clear_start = Instant::now();
-    if let (Some(frame), Some(rect)) = (opts.domain_frame, domain_frame_rect) {
+    if let Some(mask) = combined_clip_mask.as_ref() {
+        clear_map_outside_local_mask(img, layout, mask, canvas_background);
+        if let Some(frame) = opts.presentation.chrome.frame_color {
+            draw_local_mask_outline(img, layout, mask, frame, 1);
+        }
+    } else if let (Some(frame), Some(rect)) = (opts.domain_frame, domain_frame_rect) {
         if frame.clear_outside {
             clear_map_outside_local_rect(img, layout, rect, canvas_background);
         }
@@ -3044,6 +3119,14 @@ fn render_to_image_profile_inner(
         downsample_ms: 0,
         postprocess_ms: 0,
         total_ms: total_start.elapsed().as_millis(),
+        map_w: layout.map_w,
+        map_h: layout.map_h,
+        has_projected_grid: opts.projected_grid.is_some(),
+        has_inverse_raster: opts.inverse_projected_grid.is_some(),
+        projection_clip_mask_present: variable_timing.projection_clip_mask_present,
+        domain_clip_rect: variable_timing
+            .domain_clip_rect
+            .map(|rect| [rect.min_x, rect.max_x, rect.min_y, rect.max_y]),
     };
 
     (img, timing)
@@ -3069,6 +3152,13 @@ pub fn render_to_image_profile(
     timing.downsample_ms = downsample_start.elapsed().as_millis();
     timing.postprocess_ms = timing.downsample_ms;
     timing.total_ms = total_start.elapsed().as_millis();
+    timing.map_w = timing.map_w / factor;
+    timing.map_h = timing.map_h / factor;
+    if let Some(rect) = timing.domain_clip_rect.as_mut() {
+        for value in rect {
+            *value /= factor;
+        }
+    }
     (image, timing)
 }
 

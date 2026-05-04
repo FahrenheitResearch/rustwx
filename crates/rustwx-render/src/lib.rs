@@ -43,7 +43,9 @@ pub use projection::{LambertConformal, ProjectionSpec};
 pub use render::{
     PngCompressionMode, PngWriteOptions, RenderImageTiming, RenderPngTiming,
     map_frame_aspect_ratio, map_frame_aspect_ratio_for_mode,
-    map_frame_aspect_ratio_for_mode_with_domain_frame, render_to_image_profile,
+    map_frame_aspect_ratio_for_mode_with_chrome_scale,
+    map_frame_aspect_ratio_for_mode_with_domain_frame,
+    map_frame_aspect_ratio_for_mode_with_domain_frame_and_chrome_scale, render_to_image_profile,
     render_to_png_profile as profile_render_to_png,
 };
 pub use request::{

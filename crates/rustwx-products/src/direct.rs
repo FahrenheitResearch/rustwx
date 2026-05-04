@@ -1901,6 +1901,9 @@ fn point_in_geographic_bounds(lon: f64, lat: f64, bounds: (f64, f64, f64, f64)) 
     if !lon.is_finite() || !lat.is_finite() || lat < bounds.2 || lat > bounds.3 {
         return false;
     }
+    if longitude_bounds_span_deg(bounds) >= 359.0 {
+        return true;
+    }
     let west = normalize_longitude_for_bounds(bounds.0);
     let east = normalize_longitude_for_bounds(bounds.1);
     let lon = normalize_longitude_for_bounds(lon);
@@ -3659,13 +3662,14 @@ fn direct_map_frame_aspect_ratio(
     height: u32,
     projection: Option<&GridProjection>,
 ) -> f64 {
-    rustwx_render::map_frame_aspect_ratio_for_mode_with_domain_frame(
+    rustwx_render::map_frame_aspect_ratio_for_mode_with_domain_frame_and_chrome_scale(
         visual_mode,
         width,
         height,
         true,
         true,
         model_data_domain_frame_for_projection(projection).is_some(),
+        static_chrome_scale(),
     )
 }
 
@@ -4055,6 +4059,17 @@ mod tests {
     fn global_scale_domain_detection_handles_dateline_bounds() {
         assert!(is_global_scale_domain((-180.0, 179.999, -90.0, 90.0)));
         assert!(!is_global_scale_domain((-125.0, -66.0, 24.0, 50.0)));
+    }
+
+    #[test]
+    fn full_world_geographic_bounds_include_all_longitudes() {
+        let bounds = (-180.0, 180.0, -90.0, 90.0);
+
+        assert!(point_in_geographic_bounds(-179.5, 0.0, bounds));
+        assert!(point_in_geographic_bounds(-90.0, 0.0, bounds));
+        assert!(point_in_geographic_bounds(0.0, 0.0, bounds));
+        assert!(point_in_geographic_bounds(90.0, 0.0, bounds));
+        assert!(point_in_geographic_bounds(179.5, 0.0, bounds));
     }
 
     #[test]

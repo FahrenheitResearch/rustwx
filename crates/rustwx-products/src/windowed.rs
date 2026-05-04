@@ -2427,6 +2427,7 @@ fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustwx_render::ChromeScale;
 
     #[test]
     fn plan_windowed_products_blocks_short_forecast_hours() {
@@ -2604,7 +2605,7 @@ mod tests {
 
         assert_eq!(render_request.width, 1200);
         assert_eq!(render_request.height, 900);
-        assert_eq!(render_request.chrome_scale, ChromeScale::Fixed(1.0));
+        assert_eq!(render_request.chrome_scale, ChromeScale::Fixed(0.9));
         assert_eq!(render_request.supersample_factor, 2);
         assert_eq!(
             render_request.subtitle_left.as_deref(),
