@@ -18,6 +18,32 @@ impl Default for ProductVisualMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StaticPlotStyle {
+    #[default]
+    Default,
+    CleanAtlas,
+}
+
+impl StaticPlotStyle {
+    pub fn from_env() -> Self {
+        std::env::var("RUSTWX_PLOT_STYLE")
+            .ok()
+            .and_then(|value| Self::parse(&value))
+            .unwrap_or_default()
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase().replace('-', "_");
+        match normalized.as_str() {
+            "" | "default" | "classic" | "baseline" | "standard" => Some(Self::Default),
+            "clean" | "atlas" | "clean_atlas" | "pivotal" => Some(Self::CleanAtlas),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LineworkRole {
@@ -98,6 +124,7 @@ pub struct ColorbarPresentation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderPresentation {
     pub mode: ProductVisualMode,
+    pub plot_style: StaticPlotStyle,
     pub canvas_background: Rgba,
     pub map_background: Rgba,
     pub domain_boundary: Option<LineworkStyle>,
@@ -108,17 +135,67 @@ pub struct RenderPresentation {
 
 impl RenderPresentation {
     pub fn for_mode(mode: ProductVisualMode) -> Self {
-        match mode {
+        Self::for_mode_with_style(mode, StaticPlotStyle::Default)
+    }
+
+    pub fn for_mode_from_env(mode: ProductVisualMode) -> Self {
+        Self::for_mode_with_style(mode, StaticPlotStyle::from_env())
+    }
+
+    pub fn for_mode_with_style(mode: ProductVisualMode, plot_style: StaticPlotStyle) -> Self {
+        let mut presentation = match mode {
             ProductVisualMode::FilledMeteorology => filled_meteorology(),
             ProductVisualMode::UpperAirAnalysis => upper_air_analysis(),
             ProductVisualMode::OverlayAnalysis => overlay_analysis(),
             ProductVisualMode::SevereDiagnostic => severe_diagnostic(),
             ProductVisualMode::PanelMember => panel_member(),
             ProductVisualMode::ComparisonPanel => comparison_panel(),
+        };
+        presentation.plot_style = plot_style;
+        presentation.apply_static_plot_style();
+        presentation
+    }
+
+    fn apply_static_plot_style(&mut self) {
+        if self.plot_style != StaticPlotStyle::CleanAtlas {
+            return;
+        }
+
+        self.canvas_background = Rgba::new(244, 246, 248);
+        self.chrome = clean_atlas_chrome(self.chrome.title_anchor);
+        self.colorbar = clean_atlas_colorbar();
+        self.layout = if matches!(
+            self.mode,
+            ProductVisualMode::PanelMember | ProductVisualMode::ComparisonPanel
+        ) {
+            clean_atlas_compact_layout()
+        } else {
+            clean_atlas_layout()
+        };
+
+        match self.mode {
+            ProductVisualMode::UpperAirAnalysis => {
+                self.map_background = Rgba::new(239, 241, 240);
+            }
+            ProductVisualMode::OverlayAnalysis => {
+                self.map_background = Rgba::new(249, 250, 251);
+            }
+            ProductVisualMode::SevereDiagnostic => {
+                self.map_background = Rgba::new(250, 251, 250);
+            }
+            ProductVisualMode::FilledMeteorology
+            | ProductVisualMode::PanelMember
+            | ProductVisualMode::ComparisonPanel => {
+                self.map_background = Rgba::new(248, 249, 247);
+            }
         }
     }
 
     pub fn polygon_style(self, role: PolygonRole, fallback: Rgba) -> PolygonStyle {
+        if self.plot_style == StaticPlotStyle::CleanAtlas {
+            return clean_atlas_polygon_style(self.mode, role, fallback);
+        }
+
         match self.mode {
             ProductVisualMode::OverlayAnalysis => match role {
                 PolygonRole::Ocean => PolygonStyle {
@@ -223,6 +300,10 @@ impl RenderPresentation {
         fallback: Rgba,
         fallback_width: u32,
     ) -> LineworkStyle {
+        if self.plot_style == StaticPlotStyle::CleanAtlas {
+            return clean_atlas_linework_style(self.mode, role, fallback, fallback_width);
+        }
+
         let (color, width, visible) = match self.mode {
             ProductVisualMode::OverlayAnalysis => match role {
                 LineworkRole::Coast => (Rgba::with_alpha(24, 28, 34, 210), 2, true),
@@ -272,6 +353,27 @@ impl RenderPresentation {
         }
     }
 
+    pub fn domain_frame_style(self, requested: Rgba, requested_width: u32) -> LineworkStyle {
+        if self.plot_style != StaticPlotStyle::CleanAtlas {
+            return LineworkStyle {
+                visible: true,
+                color: requested,
+                width: requested_width.max(1),
+            };
+        }
+
+        let width = if requested_width <= 4 {
+            requested_width.max(1).min(2)
+        } else {
+            requested_width
+        };
+        LineworkStyle {
+            visible: true,
+            color: Rgba::with_alpha(18, 24, 32, 235),
+            width,
+        }
+    }
+
     pub fn contour_color(self, requested: Rgba) -> Rgba {
         match self.mode {
             ProductVisualMode::UpperAirAnalysis | ProductVisualMode::OverlayAnalysis => {
@@ -306,6 +408,49 @@ impl RenderPresentation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn static_plot_style_parses_clean_atlas_aliases() {
+        assert_eq!(
+            StaticPlotStyle::parse("clean_atlas"),
+            Some(StaticPlotStyle::CleanAtlas)
+        );
+        assert_eq!(
+            StaticPlotStyle::parse("pivotal"),
+            Some(StaticPlotStyle::CleanAtlas)
+        );
+        assert_eq!(
+            StaticPlotStyle::parse("default"),
+            Some(StaticPlotStyle::Default)
+        );
+        assert_eq!(StaticPlotStyle::parse("unknown"), None);
+    }
+
+    #[test]
+    fn clean_atlas_uses_broader_chrome_spacing() {
+        let default = RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology);
+        let clean = RenderPresentation::for_mode_with_style(
+            ProductVisualMode::FilledMeteorology,
+            StaticPlotStyle::CleanAtlas,
+        );
+
+        assert_eq!(clean.plot_style, StaticPlotStyle::CleanAtlas);
+        assert!(clean.layout.title_h > default.layout.title_h);
+        assert!(clean.layout.footer_h > default.layout.footer_h);
+        assert!(clean.chrome.frame_color.is_some());
+    }
+
+    #[test]
+    fn clean_atlas_respects_broad_basemap_line_widths() {
+        let style = RenderPresentation::for_mode_with_style(
+            ProductVisualMode::FilledMeteorology,
+            StaticPlotStyle::CleanAtlas,
+        )
+        .linework_style(LineworkRole::Coast, Rgba::BLACK, 1);
+
+        assert!(style.visible);
+        assert_eq!(style.width, 1);
+    }
 
     #[test]
     fn filled_meteorology_keeps_lake_linework_visible() {
@@ -381,6 +526,7 @@ fn compact_layout() -> LayoutMetrics {
 fn filled_meteorology() -> RenderPresentation {
     RenderPresentation {
         mode: ProductVisualMode::FilledMeteorology,
+        plot_style: StaticPlotStyle::Default,
         canvas_background: Rgba::new(247, 248, 250),
         map_background: Rgba::new(250, 250, 247),
         domain_boundary: None,
@@ -393,6 +539,7 @@ fn filled_meteorology() -> RenderPresentation {
 fn upper_air_analysis() -> RenderPresentation {
     RenderPresentation {
         mode: ProductVisualMode::UpperAirAnalysis,
+        plot_style: StaticPlotStyle::Default,
         canvas_background: Rgba::new(246, 247, 249),
         map_background: Rgba::new(238, 235, 227),
         domain_boundary: None,
@@ -405,6 +552,7 @@ fn upper_air_analysis() -> RenderPresentation {
 fn overlay_analysis() -> RenderPresentation {
     RenderPresentation {
         mode: ProductVisualMode::OverlayAnalysis,
+        plot_style: StaticPlotStyle::Default,
         canvas_background: Rgba::WHITE,
         map_background: Rgba::WHITE,
         domain_boundary: None,
@@ -417,6 +565,7 @@ fn overlay_analysis() -> RenderPresentation {
 fn severe_diagnostic() -> RenderPresentation {
     RenderPresentation {
         mode: ProductVisualMode::SevereDiagnostic,
+        plot_style: StaticPlotStyle::Default,
         canvas_background: Rgba::new(247, 248, 249),
         map_background: Rgba::new(252, 253, 251),
         domain_boundary: None,
@@ -429,6 +578,7 @@ fn severe_diagnostic() -> RenderPresentation {
 fn panel_member() -> RenderPresentation {
     RenderPresentation {
         mode: ProductVisualMode::PanelMember,
+        plot_style: StaticPlotStyle::Default,
         canvas_background: Rgba::new(246, 247, 249),
         map_background: Rgba::new(250, 250, 247),
         domain_boundary: None,
@@ -442,4 +592,132 @@ fn comparison_panel() -> RenderPresentation {
     let mut presentation = panel_member();
     presentation.mode = ProductVisualMode::ComparisonPanel;
     presentation
+}
+
+fn clean_atlas_polygon_style(
+    mode: ProductVisualMode,
+    role: PolygonRole,
+    fallback: Rgba,
+) -> PolygonStyle {
+    match mode {
+        ProductVisualMode::OverlayAnalysis => match role {
+            PolygonRole::Ocean => PolygonStyle {
+                visible: true,
+                color: Rgba::new(239, 245, 249),
+            },
+            PolygonRole::Land => PolygonStyle {
+                visible: true,
+                color: Rgba::new(250, 250, 246),
+            },
+            PolygonRole::Lake => PolygonStyle {
+                visible: true,
+                color: Rgba::new(231, 240, 247),
+            },
+            PolygonRole::Generic => PolygonStyle {
+                visible: true,
+                color: fallback,
+            },
+        },
+        ProductVisualMode::UpperAirAnalysis => match role {
+            PolygonRole::Ocean => PolygonStyle {
+                visible: true,
+                color: Rgba::new(235, 241, 246),
+            },
+            PolygonRole::Land => PolygonStyle {
+                visible: true,
+                color: Rgba::new(231, 229, 222),
+            },
+            PolygonRole::Lake => PolygonStyle {
+                visible: true,
+                color: Rgba::new(226, 237, 245),
+            },
+            PolygonRole::Generic => PolygonStyle {
+                visible: true,
+                color: fallback,
+            },
+        },
+        ProductVisualMode::SevereDiagnostic
+        | ProductVisualMode::PanelMember
+        | ProductVisualMode::ComparisonPanel
+        | ProductVisualMode::FilledMeteorology => match role {
+            PolygonRole::Ocean | PolygonRole::Land => PolygonStyle {
+                visible: false,
+                color: Rgba::TRANSPARENT,
+            },
+            PolygonRole::Lake => PolygonStyle {
+                visible: true,
+                color: Rgba::new(232, 240, 246),
+            },
+            PolygonRole::Generic => PolygonStyle {
+                visible: true,
+                color: fallback,
+            },
+        },
+    }
+}
+
+fn clean_atlas_linework_style(
+    mode: ProductVisualMode,
+    role: LineworkRole,
+    fallback: Rgba,
+    fallback_width: u32,
+) -> LineworkStyle {
+    let fallback_width = fallback_width.max(1);
+    let major_width = fallback_width.clamp(1, 2);
+    let minor_width = fallback_width.clamp(1, 2);
+    let county_visible = !matches!(mode, ProductVisualMode::FilledMeteorology);
+    let (color, width, visible) = match role {
+        LineworkRole::Coast => (Rgba::with_alpha(12, 18, 26, 232), major_width, true),
+        LineworkRole::Lake => (Rgba::with_alpha(37, 82, 132, 215), minor_width, true),
+        LineworkRole::International => (Rgba::with_alpha(54, 62, 74, 220), minor_width, true),
+        LineworkRole::State => (Rgba::with_alpha(42, 50, 62, 205), minor_width, true),
+        LineworkRole::County => (Rgba::with_alpha(142, 150, 160, 105), 1, county_visible),
+        LineworkRole::Generic => (fallback, fallback_width, true),
+    };
+
+    LineworkStyle {
+        visible,
+        color,
+        width,
+    }
+}
+
+fn clean_atlas_chrome(title_anchor: TitleAnchor) -> ChromeStyle {
+    ChromeStyle {
+        title_anchor,
+        title_color: Rgba::new(16, 22, 30),
+        subtitle_color: Rgba::new(70, 78, 90),
+        frame_color: Some(Rgba::with_alpha(34, 42, 52, 170)),
+    }
+}
+
+fn clean_atlas_colorbar() -> ColorbarPresentation {
+    ColorbarPresentation {
+        frame_color: Rgba::new(62, 70, 82),
+        divider_color: Rgba::with_alpha(255, 255, 255, 90),
+        tick_color: Rgba::new(62, 70, 82),
+        label_color: Rgba::new(28, 34, 42),
+    }
+}
+
+fn clean_atlas_layout() -> LayoutMetrics {
+    LayoutMetrics {
+        margin_x: 24,
+        title_h: 52,
+        footer_h: 42,
+        colorbar_h: 14,
+        colorbar_gap: 13,
+        colorbar_margin_x: 112,
+    }
+}
+
+fn clean_atlas_compact_layout() -> LayoutMetrics {
+    LayoutMetrics {
+        margin_x: 10,
+        title_h: 40,
+        footer_h: 30,
+        colorbar_h: 11,
+        colorbar_gap: 9,
+        colorbar_margin_x: 50,
+    }
 }

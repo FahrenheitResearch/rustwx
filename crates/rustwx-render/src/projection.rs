@@ -22,6 +22,15 @@ const GEOGRAPHIC_INFERENCE_MIN_LON_SPAN_DEG: f64 = 300.0;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProjectionSpec {
     Geographic,
+    Robinson {
+        central_meridian_deg: f64,
+    },
+    AlbersEqualArea {
+        standard_parallel_1_deg: f64,
+        standard_parallel_2_deg: f64,
+        central_meridian_deg: f64,
+        latitude_of_origin_deg: f64,
+    },
     LambertConformal {
         standard_parallel_1_deg: f64,
         standard_parallel_2_deg: f64,
@@ -85,6 +94,24 @@ impl ProjectionSpec {
                     central_meridian_deg: center_lon,
                 }))
             }
+            Self::Robinson {
+                central_meridian_deg,
+            } => Ok(ProjectionProjector::Robinson(RobinsonProjection::new(
+                central_meridian_deg,
+            ))),
+            Self::AlbersEqualArea {
+                standard_parallel_1_deg,
+                standard_parallel_2_deg,
+                central_meridian_deg,
+                latitude_of_origin_deg,
+            } => Ok(ProjectionProjector::AlbersEqualArea(
+                AlbersEqualAreaProjection::new(
+                    standard_parallel_1_deg,
+                    standard_parallel_2_deg,
+                    central_meridian_deg,
+                    latitude_of_origin_deg,
+                ),
+            )),
             Self::LambertConformal {
                 standard_parallel_1_deg,
                 standard_parallel_2_deg,
@@ -163,6 +190,8 @@ impl From<ProjectionSpec> for core::GridProjection {
     fn from(value: ProjectionSpec) -> Self {
         match value {
             ProjectionSpec::Geographic => Self::Geographic,
+            ProjectionSpec::Robinson { .. } => Self::Geographic,
+            ProjectionSpec::AlbersEqualArea { .. } => Self::Geographic,
             ProjectionSpec::LambertConformal {
                 standard_parallel_1_deg,
                 standard_parallel_2_deg,
@@ -287,6 +316,89 @@ impl GeographicProjection {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub(crate) struct RobinsonProjection {
+    central_meridian_deg: f64,
+}
+
+impl RobinsonProjection {
+    fn new(central_meridian_deg: f64) -> Self {
+        Self {
+            central_meridian_deg,
+        }
+    }
+
+    fn project(self, lat: f64, lon: f64) -> (f64, f64) {
+        const ROBINSON_X: [f64; 19] = [
+            1.0000, 0.9986, 0.9954, 0.9900, 0.9822, 0.9730, 0.9600, 0.9427, 0.9216, 0.8962, 0.8679,
+            0.8350, 0.7986, 0.7597, 0.7186, 0.6732, 0.6213, 0.5722, 0.5322,
+        ];
+        const ROBINSON_Y: [f64; 19] = [
+            0.0000, 0.0620, 0.1240, 0.1860, 0.2480, 0.3100, 0.3720, 0.4340, 0.4958, 0.5571, 0.6176,
+            0.6769, 0.7346, 0.7903, 0.8435, 0.8936, 0.9394, 0.9761, 1.0000,
+        ];
+
+        let lat = stabilize_latitude(lat);
+        let lon = normalize_longitude_deg(lon - self.central_meridian_deg);
+        let abs_lat = lat.abs().min(90.0);
+        let band = (abs_lat / 5.0).floor().min(17.0) as usize;
+        let t = (abs_lat - (band as f64 * 5.0)) / 5.0;
+        let interp = |table: &[f64; 19]| table[band] + (table[band + 1] - table[band]) * t;
+        let x = R_EARTH * 0.8487 * interp(&ROBINSON_X) * lon * DEG2RAD;
+        let y = R_EARTH * 1.3523 * interp(&ROBINSON_Y) * lat.signum();
+        (x, y)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AlbersEqualAreaProjection {
+    n: f64,
+    c: f64,
+    rho0: f64,
+    central_meridian_deg: f64,
+}
+
+impl AlbersEqualAreaProjection {
+    fn new(
+        standard_parallel_1_deg: f64,
+        standard_parallel_2_deg: f64,
+        central_meridian_deg: f64,
+        latitude_of_origin_deg: f64,
+    ) -> Self {
+        let phi1 = stabilize_reference_latitude(standard_parallel_1_deg) * DEG2RAD;
+        let phi2 = stabilize_reference_latitude(standard_parallel_2_deg) * DEG2RAD;
+        let phi0 = stabilize_latitude(latitude_of_origin_deg) * DEG2RAD;
+        let mut n = 0.5 * (phi1.sin() + phi2.sin());
+        if n.abs() < 1.0e-8 {
+            n = phi1.sin();
+        }
+        if n.abs() < 1.0e-8 {
+            n = (10.0 * DEG2RAD).sin();
+        }
+        let c = phi1.cos().powi(2) + 2.0 * n * phi1.sin();
+        let rho0 = Self::rho(phi0, n, c);
+        Self {
+            n,
+            c,
+            rho0,
+            central_meridian_deg,
+        }
+    }
+
+    fn project(self, lat: f64, lon: f64) -> (f64, f64) {
+        let phi = stabilize_latitude(lat) * DEG2RAD;
+        let theta = self.n * normalize_longitude_deg(lon - self.central_meridian_deg) * DEG2RAD;
+        let rho = Self::rho(phi, self.n, self.c);
+        let x = rho * theta.sin();
+        let y = self.rho0 - rho * theta.cos();
+        (x, y)
+    }
+
+    fn rho(phi: f64, n: f64, c: f64) -> f64 {
+        R_EARTH * (c - 2.0 * n * phi.sin()).max(0.0).sqrt() / n
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct PolarStereographic {
     central_meridian_deg: f64,
     south_pole_on_projection_plane: bool,
@@ -348,6 +460,8 @@ impl MercatorProjection {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ProjectionProjector {
     Geographic(GeographicProjection),
+    Robinson(RobinsonProjection),
+    AlbersEqualArea(AlbersEqualAreaProjection),
     LambertConformal(LambertConformal),
     PolarStereographic(PolarStereographic),
     Mercator(MercatorProjection),
@@ -357,6 +471,8 @@ impl ProjectionProjector {
     pub(crate) fn project(self, lat: f64, lon: f64) -> (f64, f64) {
         match self {
             Self::Geographic(projector) => projector.project(lat, lon),
+            Self::Robinson(projector) => projector.project(lat, lon),
+            Self::AlbersEqualArea(projector) => projector.project(lat, lon),
             Self::LambertConformal(projector) => projector.project(lat, lon),
             Self::PolarStereographic(projector) => projector.project(lat, lon),
             Self::Mercator(projector) => projector.project(lat, lon),
@@ -622,6 +738,19 @@ mod tests {
     }
 
     #[test]
+    fn robinson_projection_softens_global_pole_width() {
+        let spec = ProjectionSpec::Robinson {
+            central_meridian_deg: 0.0,
+        };
+        let projector = spec
+            .build_projector(None, None, &[0.0], &[0.0])
+            .expect("robinson projector");
+        let (equator_x, _) = projector.project(0.0, 90.0);
+        let (high_lat_x, _) = projector.project(80.0, 90.0);
+        assert!(high_lat_x.abs() < equator_x.abs());
+    }
+
+    #[test]
     fn minimal_longitude_span_handles_antimeridian_domains() {
         let lon = vec![176.0, 179.0, -179.0, -178.0];
         let span = minimal_longitude_span_deg(&lon).expect("finite span");
@@ -650,6 +779,12 @@ mod tests {
                 standard_parallel_1_deg: 33.0,
                 standard_parallel_2_deg: 45.0,
                 central_meridian_deg: -97.0,
+            },
+            ProjectionSpec::AlbersEqualArea {
+                standard_parallel_1_deg: 29.5,
+                standard_parallel_2_deg: 45.5,
+                central_meridian_deg: -96.0,
+                latitude_of_origin_deg: 23.0,
             },
             ProjectionSpec::Mercator {
                 latitude_of_true_scale_deg: 25.0,

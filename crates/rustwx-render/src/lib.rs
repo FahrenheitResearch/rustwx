@@ -23,14 +23,17 @@ pub use contour_fill::{
 };
 pub use error::RustwxRenderError;
 pub use features::{
-    BasemapStyle, StyledLonLatLayer, StyledLonLatPolygonLayer, checked_in_natural_earth_110m_root,
-    load_styled_basemap_features, load_styled_basemap_features_for, load_styled_basemap_polygons,
+    BasemapDetail, BasemapStyle, StyledLonLatLayer, StyledLonLatPolygonLayer,
+    checked_in_natural_earth_110m_root, load_styled_basemap_features,
+    load_styled_basemap_features_for, load_styled_basemap_polygons,
     load_styled_basemap_polygons_for, load_styled_conus_features_for,
     load_styled_conus_polygons_for,
 };
 pub use image::RgbaImage;
 pub use panel::{PanelGridLayout, PanelPadding, compose_panel_images, render_panel_grid};
-pub use presentation::{LineworkRole, PolygonRole, ProductVisualMode, RenderPresentation};
+pub use presentation::{
+    LineworkRole, PolygonRole, ProductVisualMode, RenderPresentation, StaticPlotStyle,
+};
 pub use projected_map::{
     GeographicBounds, ProjectedBasemap, ProjectedBasemapBuildOptions, ProjectedDomainBuildOptions,
     ProjectedFrameSource, ProjectedMap, ProjectedMapBuildOptions, build_projected_domain,
@@ -79,6 +82,18 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Instant;
+
+fn trim_vertical_canvas_whitespace_enabled() -> bool {
+    std::env::var("RUSTWX_TRIM_VERTICAL_WHITESPACE")
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RustRenderer;
@@ -248,8 +263,11 @@ impl RustRenderer {
                 } else {
                     image
                 };
-                let trimmed =
-                    trim_vertical_canvas_whitespace(&image, opts.presentation.canvas_background);
+                let trimmed = if trim_vertical_canvas_whitespace_enabled() {
+                    trim_vertical_canvas_whitespace(&image, opts.presentation.canvas_background)
+                } else {
+                    image
+                };
                 let trim_ms = trim_start.elapsed().as_millis();
                 image_timing.postprocess_ms = image_timing.postprocess_ms.saturating_add(trim_ms);
                 image_timing.total_ms = image_timing.total_ms.saturating_add(trim_ms);
@@ -374,7 +392,7 @@ fn with_render_state_profile<T>(
     } else {
         request.visual_mode
     };
-    let presentation = RenderPresentation::for_mode(visual_mode);
+    let presentation = RenderPresentation::for_mode_from_env(visual_mode);
     let cmap = if overlay_only {
         blank_fill_colormap()
     } else {

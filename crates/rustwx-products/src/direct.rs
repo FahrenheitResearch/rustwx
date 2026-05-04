@@ -1,7 +1,7 @@
 use crate::derived::NativeContourRenderMode;
 use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, CanonicalField, CycleSpec, FieldSelector,
-    ModelId, SelectedField2D, SourceId, VerticalSelector,
+    GridProjection, ModelId, SelectedField2D, SourceId, VerticalSelector,
 };
 use rustwx_io::{
     earth2_archive::{Earth2EnsembleSelector, Earth2EnsembleStat},
@@ -9,21 +9,21 @@ use rustwx_io::{
     store_cached_selected_field,
 };
 use rustwx_models::{
-    LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
-    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan,
+    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan, LatestRun,
+    ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
 };
 use rustwx_render::{
-    ChromeScale, Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode,
-    LegendControls, LegendMode, LevelDensity, MapRenderRequest, PanelGridLayout, PanelPadding,
-    PngCompressionMode, PngWriteOptions, ProductVisualMode, ProjectedContourLineStyle,
-    ProjectedDomain, ProjectedMap, RenderDensity, RenderImageTiming, RenderStateTiming,
-    WindBarbLayer, build_projected_contour_geometry_profile, densify_discrete_scale,
-    draw_centered_text_line, map_frame_aspect_ratio_for_mode, render_panel_grid,
-    save_png_profile_with_options, save_rgba_png_profile_with_options,
+    build_projected_contour_geometry_profile, densify_discrete_scale, draw_centered_text_line,
+    render_panel_grid, save_png_profile_with_options, save_rgba_png_profile_with_options,
     weather::{
-        WeatherPalette, dewpoint_palette_params, temperature_palette_cropped_f, weather_palette,
-        winds_palette_segments,
+        dewpoint_palette_params, temperature_palette_cropped_f, weather_palette,
+        winds_palette_segments, WeatherPalette,
     },
+    BasemapDetail, ChromeScale, Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame,
+    ExtendMode, LegendControls, LegendMode, LevelDensity, MapRenderRequest, PanelGridLayout,
+    PanelPadding, PngCompressionMode, PngWriteOptions, ProductVisualMode,
+    ProjectedContourLineStyle, ProjectedDomain, ProjectedMap, RenderDensity, RenderImageTiming,
+    RenderStateTiming, WindBarbLayer,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -33,22 +33,22 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
-use crate::custom_poi::{CustomPoiOverlay, apply_custom_poi_overlay};
-use crate::gridded::{GridCrop, crop_latlon_grid, crop_values_f32};
+use crate::custom_poi::{apply_custom_poi_overlay, CustomPoiOverlay};
+use crate::gridded::{crop_latlon_grid, crop_values_f32, GridCrop};
 use crate::places::PlaceLabelOverlay;
 use crate::planner::{ExecutionPlan, ExecutionPlanBuilder};
 use crate::publication::{
-    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
-    fetch_identity_from_cached_result_with_aliases,
+    artifact_identity_from_path, fetch_identity_from_cached_result_with_aliases,
+    ArtifactContentIdentity, PublishedFetchIdentity,
 };
 use crate::runtime::{
-    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
+    load_execution_plan, BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet,
 };
 use crate::shared_context::{
-    DomainSpec, ProjectedMapProvider, model_time_subtitle, source_subtitle,
-    static_supersample_factor,
+    model_time_subtitle, source_subtitle, static_supersample_factor, DomainSpec,
+    ProjectedMapProvider,
 };
-use crate::source::{ProductSourceRoute, direct_route_for_recipe_slug};
+use crate::source::{direct_route_for_recipe_slug, ProductSourceRoute};
 use crate::spec::direct_product_specs;
 
 const OUTPUT_WIDTH: u32 = 1200;
@@ -1566,11 +1566,7 @@ fn render_direct_recipes(
         return Ok(Vec::new());
     }
 
-    let domain_extracted = crop_direct_fields_for_domain(
-        extracted,
-        request.domain.bounds,
-        direct_domain_crop_pad_cells(),
-    )?;
+    let domain_extracted = crop_direct_fields_for_domain(extracted, request.domain.bounds)?;
     let extracted = &domain_extracted;
     let contour_layer_cache = Arc::new(Mutex::new(HashMap::new()));
     let barb_layer_cache = Arc::new(Mutex::new(HashMap::new()));
@@ -1680,26 +1676,101 @@ fn render_worker_count(recipe_count: usize) -> usize {
         .min(recipe_count)
 }
 
-fn direct_domain_crop_pad_cells() -> usize {
+fn direct_domain_crop_pad_cells_override() -> Option<usize> {
     std::env::var("RUSTWX_DOMAIN_CROP_PAD_CELLS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(6)
+}
+
+fn direct_domain_crop_pad_cells_for_field(field: &SelectedField2D) -> usize {
+    let base = direct_domain_crop_pad_cells_override().unwrap_or(6);
+    if !matches!(field.projection.as_ref(), Some(GridProjection::Geographic)) {
+        return base;
+    }
+
+    let variant = projection_presentation_variant();
+    let pad_deg = std::env::var("RUSTWX_GEOGRAPHIC_DOMAIN_CROP_PAD_DEG")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(match variant {
+            ProjectionPresentationVariant::PivotalLambert => PIVOTAL_GEOGRAPHIC_CROP_PAD_DEG,
+            _ => 12.0,
+        });
+    let Some(spacing_deg) = estimate_geographic_grid_spacing_deg(&field.grid) else {
+        return base.max(24);
+    };
+    let cells = (pad_deg / spacing_deg.max(1.0e-6)).ceil() as usize;
+    let max_cells = match variant {
+        ProjectionPresentationVariant::PivotalLambert => 128,
+        _ => 96,
+    };
+    base.max(cells.clamp(12, max_cells))
 }
 
 fn crop_direct_fields_for_domain(
     extracted: &HashMap<FieldSelector, SelectedField2D>,
     bounds: (f64, f64, f64, f64),
-    pad_cells: usize,
 ) -> Result<HashMap<FieldSelector, SelectedField2D>, Box<dyn std::error::Error>> {
     let mut cropped = HashMap::with_capacity(extracted.len());
     for (&selector, field) in extracted {
+        let pad_cells = direct_domain_crop_pad_cells_for_field(field);
         cropped.insert(
             selector,
             crop_selected_field_for_domain(field, bounds, pad_cells)?,
         );
     }
     Ok(cropped)
+}
+
+fn estimate_geographic_grid_spacing_deg(grid: &rustwx_core::LatLonGrid) -> Option<f64> {
+    let nx = grid.shape.nx;
+    let ny = grid.shape.ny;
+    if nx < 2 && ny < 2 {
+        return None;
+    }
+
+    let mut best = f64::INFINITY;
+    let row_candidates = [0usize, ny / 2, ny.saturating_sub(1)];
+    for y in row_candidates {
+        if y >= ny || nx < 2 {
+            continue;
+        }
+        let offset = y * nx;
+        for x in 0..nx - 1 {
+            let a = grid.lon_deg[offset + x] as f64;
+            let b = grid.lon_deg[offset + x + 1] as f64;
+            let delta = longitude_delta_deg(a, b);
+            if delta.is_finite() && delta > 0.0 && delta < best {
+                best = delta;
+            }
+        }
+    }
+
+    let col_candidates = [0usize, nx / 2, nx.saturating_sub(1)];
+    for x in col_candidates {
+        if x >= nx || ny < 2 {
+            continue;
+        }
+        for y in 0..ny - 1 {
+            let a = grid.lat_deg[y * nx + x] as f64;
+            let b = grid.lat_deg[(y + 1) * nx + x] as f64;
+            let delta = (b - a).abs();
+            if delta.is_finite() && delta > 0.0 && delta < best {
+                best = delta;
+            }
+        }
+    }
+
+    best.is_finite().then_some(best)
+}
+
+fn longitude_delta_deg(a: f64, b: f64) -> f64 {
+    let mut delta = (normalize_longitude_for_bounds(b) - normalize_longitude_for_bounds(a)).abs();
+    if delta > 180.0 {
+        delta = 360.0 - delta;
+    }
+    delta
 }
 
 fn crop_selected_field_for_domain(
@@ -1944,7 +2015,12 @@ fn build_prepared_projected_maps(
             5 => ProductVisualMode::ComparisonPanel,
             _ => ProductVisualMode::FilledMeteorology,
         };
-        let target_ratio = map_frame_aspect_ratio_for_mode(visual_mode, width, height, true, true);
+        let target_ratio = direct_map_frame_aspect_ratio(
+            visual_mode,
+            width,
+            height,
+            sample_field.projection.as_ref(),
+        );
         let geometry_key = (width, height, target_ratio.to_bits());
         let projected = if let Some(projected) = by_geometry.get(&geometry_key) {
             projected.clone()
@@ -2073,12 +2149,11 @@ fn render_direct_recipe(
                 &filled.grid.lon_deg,
                 filled.projection.as_ref(),
                 request.domain.bounds,
-                map_frame_aspect_ratio_for_mode(
+                direct_map_frame_aspect_ratio(
                     visual_mode,
                     request.output_width,
                     request.output_height,
-                    true,
-                    true,
+                    filled.projection.as_ref(),
                 ),
             )?;
             projected_map_cache
@@ -2265,12 +2340,11 @@ fn render_direct_composite_panel(
             &first_field.grid.lon_deg,
             first_field.projection.as_ref(),
             request.domain.bounds,
-            map_frame_aspect_ratio_for_mode(
+            direct_map_frame_aspect_ratio(
                 ProductVisualMode::PanelMember,
                 spec.panel_width,
                 spec.panel_height,
-                true,
-                true,
+                first_field.projection.as_ref(),
             ),
         )?;
         projected_map_cache
@@ -2456,7 +2530,7 @@ fn build_render_request(
         };
     }
     request.supersample_factor = static_supersample_factor();
-    request.domain_frame = Some(DomainFrame::model_data_default());
+    request.domain_frame = model_data_domain_frame_for_projection(filled.projection.as_ref());
     request.projected_domain = Some(ProjectedDomain {
         x: projected.projected_x,
         y: projected.projected_y,
@@ -3383,7 +3457,7 @@ pub fn build_projected_map(
     bounds: (f64, f64, f64, f64),
     target_ratio: f64,
 ) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
-    rustwx_render::build_projected_map(lat_deg, lon_deg, bounds, target_ratio)
+    build_projected_map_with_projection(lat_deg, lon_deg, None, bounds, target_ratio)
 }
 
 pub fn build_projected_map_with_projection(
@@ -3394,16 +3468,287 @@ pub fn build_projected_map_with_projection(
     target_ratio: f64,
 ) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
     let mut options = rustwx_render::ProjectedMapBuildOptions::from_bounds(bounds, target_ratio);
-    if let Some(projection) = projection.cloned() {
-        options = options.with_projection(projection);
+    let variant = projection_presentation_variant();
+    if let Some(presentation_projection) =
+        presentation_projection_for_bounds(projection, bounds, variant)
+    {
+        let reference_latitude =
+            reference_latitude_for_projection_variant(variant, projection, bounds);
+        options = options.with_projection(presentation_projection);
+        if let Some(reference_latitude) = reference_latitude {
+            options.domain.reference_latitude_deg = Some(reference_latitude);
+        }
     }
+    options = options.with_basemap_detail(basemap_detail_for_bounds(bounds));
+    options.domain.pad_fraction = presentation_pad_fraction_for_bounds(bounds);
     rustwx_render::build_projected_map_with_options(lat_deg, lon_deg, &options)
+}
+
+pub fn model_data_domain_frame_for_projection(
+    projection: Option<&GridProjection>,
+) -> Option<DomainFrame> {
+    match projection {
+        Some(GridProjection::Geographic) | None => None,
+        Some(_) => Some(DomainFrame::model_data_default()),
+    }
+}
+
+fn direct_map_frame_aspect_ratio(
+    visual_mode: ProductVisualMode,
+    width: u32,
+    height: u32,
+    projection: Option<&GridProjection>,
+) -> f64 {
+    rustwx_render::map_frame_aspect_ratio_for_mode_with_domain_frame(
+        visual_mode,
+        width,
+        height,
+        true,
+        true,
+        model_data_domain_frame_for_projection(projection).is_some(),
+    )
+}
+
+fn basemap_detail_for_bounds(bounds: (f64, f64, f64, f64)) -> BasemapDetail {
+    let lat_span = (bounds.3 - bounds.2).abs();
+    let lon_span = longitude_bounds_span_deg(bounds);
+    if lat_span >= 45.0 || lon_span >= 65.0 {
+        BasemapDetail::Broad
+    } else {
+        BasemapDetail::Regional
+    }
+}
+
+fn presentation_pad_fraction_for_bounds(bounds: (f64, f64, f64, f64)) -> f64 {
+    if let Ok(value) = std::env::var("RUSTWX_PRESENTATION_PAD_FRACTION") {
+        if let Ok(parsed) = value.trim().parse::<f64>() {
+            return parsed.clamp(0.0, 0.25);
+        }
+    }
+    let lat_span = (bounds.3 - bounds.2).abs();
+    let lon_span = longitude_bounds_span_deg(bounds);
+    if is_global_scale_domain(bounds) {
+        0.06
+    } else if lat_span >= 45.0 || lon_span >= 65.0 {
+        0.045
+    } else {
+        0.025
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectionPresentationVariant {
+    Adaptive,
+    AlbersEqualArea,
+    Mercator,
+    PivotalLambert,
+    Robinson,
+}
+
+const PIVOTAL_CONUS_STANDARD_PARALLEL_1_DEG: f64 = 33.0;
+const PIVOTAL_CONUS_STANDARD_PARALLEL_2_DEG: f64 = 45.0;
+const PIVOTAL_CONUS_CENTRAL_MERIDIAN_DEG: f64 = -96.0;
+const PIVOTAL_CONUS_REFERENCE_LATITUDE_DEG: f64 = 39.0;
+const PIVOTAL_GEOGRAPHIC_CROP_PAD_DEG: f64 = 18.0;
+
+fn projection_presentation_variant() -> ProjectionPresentationVariant {
+    std::env::var("RUSTWX_PROJECTION_VARIANT")
+        .ok()
+        .map(
+            |value| match normalize_projection_variant_name(&value).as_str() {
+                "albers" | "albersequalarea" | "aea" => {
+                    ProjectionPresentationVariant::AlbersEqualArea
+                }
+                "mercator" | "webmap" | "webmercator" => ProjectionPresentationVariant::Mercator,
+                "pivotallambert" | "pivotal" => ProjectionPresentationVariant::PivotalLambert,
+                "robinson" | "atlas" => ProjectionPresentationVariant::Robinson,
+                _ => ProjectionPresentationVariant::Adaptive,
+            },
+        )
+        .unwrap_or(ProjectionPresentationVariant::Adaptive)
+}
+
+fn normalize_projection_variant_name(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace(['-', '_'], "")
+}
+
+fn presentation_projection_for_bounds(
+    native_projection: Option<&GridProjection>,
+    bounds: (f64, f64, f64, f64),
+    variant: ProjectionPresentationVariant,
+) -> Option<rustwx_render::ProjectionSpec> {
+    if is_global_scale_domain(bounds) {
+        return Some(rustwx_render::ProjectionSpec::Robinson {
+            central_meridian_deg: center_longitude_for_bounds(bounds),
+        });
+    }
+
+    match native_projection {
+        Some(GridProjection::Geographic) | None => {
+            Some(regional_latlon_presentation_projection(bounds, variant))
+        }
+        Some(projection) => Some(projection.clone().into()),
+    }
+}
+
+fn regional_latlon_presentation_projection(
+    bounds: (f64, f64, f64, f64),
+    variant: ProjectionPresentationVariant,
+) -> rustwx_render::ProjectionSpec {
+    match variant {
+        ProjectionPresentationVariant::AlbersEqualArea => conus_albers_presentation_projection(),
+        ProjectionPresentationVariant::Mercator => {
+            regional_mercator_presentation_projection(bounds)
+        }
+        ProjectionPresentationVariant::PivotalLambert if is_conus_lambert_candidate(bounds) => {
+            pivotal_lambert_conus_projection()
+        }
+        ProjectionPresentationVariant::Robinson => robinson_presentation_projection(bounds),
+        _ => regional_presentation_projection(bounds),
+    }
+}
+
+fn conus_albers_presentation_projection() -> rustwx_render::ProjectionSpec {
+    rustwx_render::ProjectionSpec::AlbersEqualArea {
+        standard_parallel_1_deg: 29.5,
+        standard_parallel_2_deg: 45.5,
+        central_meridian_deg: -96.0,
+        latitude_of_origin_deg: 23.0,
+    }
+}
+
+fn pivotal_lambert_conus_projection() -> rustwx_render::ProjectionSpec {
+    rustwx_render::ProjectionSpec::LambertConformal {
+        standard_parallel_1_deg: PIVOTAL_CONUS_STANDARD_PARALLEL_1_DEG,
+        standard_parallel_2_deg: PIVOTAL_CONUS_STANDARD_PARALLEL_2_DEG,
+        central_meridian_deg: PIVOTAL_CONUS_CENTRAL_MERIDIAN_DEG,
+    }
+}
+
+fn regional_mercator_presentation_projection(
+    bounds: (f64, f64, f64, f64),
+) -> rustwx_render::ProjectionSpec {
+    if bounds.3 <= -55.0 || bounds.2 >= 55.0 {
+        return regional_presentation_projection(bounds);
+    }
+
+    rustwx_render::ProjectionSpec::Mercator {
+        latitude_of_true_scale_deg: ((bounds.2 + bounds.3) / 2.0).clamp(-85.0, 85.0),
+        central_meridian_deg: center_longitude_for_bounds(bounds),
+    }
+}
+
+fn reference_latitude_for_projection_variant(
+    variant: ProjectionPresentationVariant,
+    native_projection: Option<&GridProjection>,
+    bounds: (f64, f64, f64, f64),
+) -> Option<f64> {
+    match (variant, native_projection) {
+        (
+            ProjectionPresentationVariant::PivotalLambert,
+            Some(GridProjection::Geographic) | None,
+        ) if !is_global_scale_domain(bounds) && is_conus_lambert_candidate(bounds) => {
+            Some(PIVOTAL_CONUS_REFERENCE_LATITUDE_DEG)
+        }
+        _ => None,
+    }
+}
+
+fn is_conus_lambert_candidate(bounds: (f64, f64, f64, f64)) -> bool {
+    let west = normalize_longitude_for_bounds(bounds.0);
+    let east = normalize_longitude_for_bounds(bounds.1);
+    if west > east {
+        return false;
+    }
+
+    let lat_span = (bounds.3 - bounds.2).abs();
+    let lon_span = longitude_bounds_span_deg(bounds);
+    bounds.2 >= 20.0
+        && bounds.3 <= 56.0
+        && west >= -132.0
+        && east <= -60.0
+        && lat_span >= 5.0
+        && lat_span <= 38.0
+        && lon_span >= 8.0
+        && lon_span <= 75.0
+}
+
+fn regional_presentation_projection(bounds: (f64, f64, f64, f64)) -> rustwx_render::ProjectionSpec {
+    let center_lat = ((bounds.2 + bounds.3) / 2.0).clamp(-85.0, 85.0);
+    let center_lon = center_longitude_for_bounds(bounds);
+    let lat_span = (bounds.3 - bounds.2).abs();
+
+    if bounds.3 <= -55.0 {
+        return rustwx_render::ProjectionSpec::PolarStereographic {
+            true_latitude_deg: -71.0,
+            central_meridian_deg: center_lon,
+            south_pole_on_projection_plane: true,
+        };
+    }
+    if bounds.2 >= 55.0 {
+        return rustwx_render::ProjectionSpec::PolarStereographic {
+            true_latitude_deg: 71.0,
+            central_meridian_deg: center_lon,
+            south_pole_on_projection_plane: false,
+        };
+    }
+    if is_broad_continent_scale_domain(bounds) {
+        return robinson_presentation_projection(bounds);
+    }
+    if bounds.2 < -25.0 && bounds.3 > 25.0 {
+        return rustwx_render::ProjectionSpec::Mercator {
+            latitude_of_true_scale_deg: center_lat,
+            central_meridian_deg: center_lon,
+        };
+    }
+
+    let inset = (lat_span / 6.0).clamp(2.0, 12.0);
+    let sp1 = stabilize_presentation_parallel(bounds.2 + inset);
+    let sp2 = stabilize_presentation_parallel(bounds.3 - inset);
+    rustwx_render::ProjectionSpec::LambertConformal {
+        standard_parallel_1_deg: sp1,
+        standard_parallel_2_deg: if (sp2 - sp1).abs() < 0.25 { sp1 } else { sp2 },
+        central_meridian_deg: center_lon,
+    }
+}
+
+fn is_broad_continent_scale_domain(bounds: (f64, f64, f64, f64)) -> bool {
+    let lat_span = (bounds.3 - bounds.2).abs();
+    let lon_span = longitude_bounds_span_deg(bounds);
+    !is_conus_lambert_candidate(bounds) && (lat_span >= 50.0 || lon_span >= 90.0)
+}
+
+fn robinson_presentation_projection(bounds: (f64, f64, f64, f64)) -> rustwx_render::ProjectionSpec {
+    rustwx_render::ProjectionSpec::Robinson {
+        central_meridian_deg: center_longitude_for_bounds(bounds),
+    }
+}
+
+fn center_longitude_for_bounds(bounds: (f64, f64, f64, f64)) -> f64 {
+    if longitude_bounds_span_deg(bounds) >= 359.0 {
+        return 0.0;
+    }
+    let west = normalize_longitude_for_bounds(bounds.0);
+    let mut east = normalize_longitude_for_bounds(bounds.1);
+    if east < west {
+        east += 360.0;
+    }
+    normalize_longitude_for_bounds((west + east) / 2.0)
+}
+
+fn stabilize_presentation_parallel(lat_deg: f64) -> f64 {
+    let lat = lat_deg.clamp(-80.0, 80.0);
+    if lat.abs() < 1.0 {
+        10.0_f64.copysign(if lat < 0.0 { -1.0 } else { 1.0 })
+    } else {
+        lat
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustwx_core::{GridShape, LatLonGrid, SelectedField2D};
+    use rustwx_core::{GridProjection, GridShape, LatLonGrid, SelectedField2D};
 
     fn sample_grid() -> LatLonGrid {
         LatLonGrid::new(
@@ -3515,6 +3860,125 @@ mod tests {
         assert!(!is_global_scale_domain((-125.0, -66.0, 24.0, 50.0)));
     }
 
+    #[test]
+    fn pivotal_lambert_variant_uses_fixed_conus_projection_for_geographic_grids() {
+        let bounds = (-127.0, -66.0, 23.0, 51.5);
+        let projection = presentation_projection_for_bounds(
+            Some(&GridProjection::Geographic),
+            bounds,
+            ProjectionPresentationVariant::PivotalLambert,
+        )
+        .expect("CONUS geographic grids should get a presentation projection");
+
+        assert_eq!(
+            projection,
+            rustwx_render::ProjectionSpec::LambertConformal {
+                standard_parallel_1_deg: PIVOTAL_CONUS_STANDARD_PARALLEL_1_DEG,
+                standard_parallel_2_deg: PIVOTAL_CONUS_STANDARD_PARALLEL_2_DEG,
+                central_meridian_deg: PIVOTAL_CONUS_CENTRAL_MERIDIAN_DEG,
+            }
+        );
+        assert_eq!(
+            reference_latitude_for_projection_variant(
+                ProjectionPresentationVariant::PivotalLambert,
+                Some(&GridProjection::Geographic),
+                bounds,
+            ),
+            Some(PIVOTAL_CONUS_REFERENCE_LATITUDE_DEG)
+        );
+    }
+
+    #[test]
+    fn pivotal_lambert_variant_keeps_global_geographic_grids_on_robinson() {
+        let bounds = (-180.0, 179.999, -90.0, 90.0);
+        let projection = presentation_projection_for_bounds(
+            Some(&GridProjection::Geographic),
+            bounds,
+            ProjectionPresentationVariant::PivotalLambert,
+        )
+        .expect("global geographic grids should get a presentation projection");
+
+        assert!(matches!(
+            projection,
+            rustwx_render::ProjectionSpec::Robinson {
+                central_meridian_deg
+            } if central_meridian_deg == 0.0
+        ));
+        assert_eq!(
+            reference_latitude_for_projection_variant(
+                ProjectionPresentationVariant::PivotalLambert,
+                Some(&GridProjection::Geographic),
+                bounds,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn albers_variant_uses_conus_equal_area_regionally_and_robinson_globally() {
+        let conus_bounds = (-127.0, -66.0, 23.0, 51.5);
+        let conus_projection = presentation_projection_for_bounds(
+            Some(&GridProjection::Geographic),
+            conus_bounds,
+            ProjectionPresentationVariant::AlbersEqualArea,
+        )
+        .expect("CONUS geographic grids should get a presentation projection");
+
+        assert_eq!(
+            conus_projection,
+            rustwx_render::ProjectionSpec::AlbersEqualArea {
+                standard_parallel_1_deg: 29.5,
+                standard_parallel_2_deg: 45.5,
+                central_meridian_deg: -96.0,
+                latitude_of_origin_deg: 23.0,
+            }
+        );
+
+        let global_projection = presentation_projection_for_bounds(
+            Some(&GridProjection::Geographic),
+            (-180.0, 179.999, -90.0, 90.0),
+            ProjectionPresentationVariant::AlbersEqualArea,
+        )
+        .expect("global geographic grids should get a presentation projection");
+
+        assert!(matches!(
+            global_projection,
+            rustwx_render::ProjectionSpec::Robinson {
+                central_meridian_deg
+            } if central_meridian_deg == 0.0
+        ));
+    }
+
+    #[test]
+    fn mercator_variant_uses_mercator_regionally_and_robinson_globally() {
+        let conus_bounds = (-127.0, -66.0, 23.0, 51.5);
+        let conus_projection = presentation_projection_for_bounds(
+            Some(&GridProjection::Geographic),
+            conus_bounds,
+            ProjectionPresentationVariant::Mercator,
+        )
+        .expect("CONUS geographic grids should get a presentation projection");
+
+        assert!(matches!(
+            conus_projection,
+            rustwx_render::ProjectionSpec::Mercator { .. }
+        ));
+
+        let global_projection = presentation_projection_for_bounds(
+            Some(&GridProjection::Geographic),
+            (-180.0, 179.999, -90.0, 90.0),
+            ProjectionPresentationVariant::Mercator,
+        )
+        .expect("global geographic grids should get a presentation projection");
+
+        assert!(matches!(
+            global_projection,
+            rustwx_render::ProjectionSpec::Robinson {
+                central_meridian_deg
+            } if central_meridian_deg == 0.0
+        ));
+    }
+
     /// Test-only equivalent of the legacy `build_direct_fetch_request`
     /// helper. Tests still want to assert that direct's fetch identity
     /// stays consistent across HRRR's nat→sfc routing and product
@@ -3600,28 +4064,20 @@ mod tests {
             groups[0].fetch_mode,
             PlotRecipeFetchMode::WholeFileStructuredExtract
         );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500))
-        );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700))
-        );
-        assert!(
-            groups[0]
-                .variable_patterns
-                .iter()
-                .any(|pattern| pattern.contains("500 mb"))
-        );
-        assert!(
-            groups[0]
-                .variable_patterns
-                .iter()
-                .any(|pattern| pattern.contains("700 mb"))
-        );
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500)));
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700)));
+        assert!(groups[0]
+            .variable_patterns
+            .iter()
+            .any(|pattern| pattern.contains("500 mb")));
+        assert!(groups[0]
+            .variable_patterns
+            .iter()
+            .any(|pattern| pattern.contains("700 mb")));
     }
 
     #[test]
@@ -3894,18 +4350,14 @@ mod tests {
         let groups = group_direct_fetches(&request, &planned);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].product, "sfc");
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::entire_atmosphere(
-                    CanonicalField::LowCloudCover
-                ))
-        );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow))
-        );
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::entire_atmosphere(
+                CanonicalField::LowCloudCover
+            )));
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow)));
     }
 
     #[test]

@@ -358,11 +358,32 @@ fn acquire_fetch_cache_lock(
 }
 
 fn is_stale_fetch_cache_lock(lock_path: &Path) -> bool {
+    if fetch_cache_lock_pid_is_dead(lock_path) {
+        return true;
+    }
+
     fs::metadata(lock_path)
         .and_then(|metadata| metadata.modified())
         .ok()
         .and_then(|modified| modified.elapsed().ok())
         .is_some_and(|age| age > FETCH_CACHE_LOCK_STALE_AFTER)
+}
+
+fn fetch_cache_lock_pid_is_dead(lock_path: &Path) -> bool {
+    let Ok(contents) = fs::read_to_string(lock_path) else {
+        return false;
+    };
+    let Some(pid) = contents.split_whitespace().find_map(|part| {
+        part.strip_prefix("pid=")
+            .and_then(|raw| raw.parse::<u32>().ok())
+    }) else {
+        return false;
+    };
+    if pid == std::process::id() {
+        return false;
+    }
+    let proc_root = Path::new("/proc");
+    proc_root.exists() && !proc_root.join(pid.to_string()).exists()
 }
 
 pub fn extract_field_from_bytes(

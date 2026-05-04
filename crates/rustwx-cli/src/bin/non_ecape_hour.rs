@@ -330,6 +330,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             .collect()
     };
     let wxstore_request = wxstore_request_for_args(args, &cache_root, source)?;
+    let (output_width, output_height) = static_output_size_for_model(args.model);
 
     if wxstore_request.is_some() {
         let build_domain_slug = selected_domains_slug(args, &domains);
@@ -351,8 +352,8 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             pressure_product_override: args.pressure_product.clone(),
             allow_large_heavy_domain: args.allow_large_heavy_domain,
             windowed_products,
-            output_width: 1200,
-            output_height: 900,
+            output_width,
+            output_height,
             png_compression,
             custom_poi_overlay: None,
             place_label_overlay: default_place_label_overlay_for_domain(
@@ -400,8 +401,8 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             pressure_product_override: args.pressure_product.clone(),
             allow_large_heavy_domain: args.allow_large_heavy_domain,
             windowed_products,
-            output_width: 1200,
-            output_height: 900,
+            output_width,
+            output_height,
             png_compression,
             custom_poi_overlay: None,
             place_label_overlay: default_place_label_overlay_for_domain(
@@ -441,8 +442,8 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             pressure_product_override: args.pressure_product.clone(),
             allow_large_heavy_domain: args.allow_large_heavy_domain,
             windowed_products,
-            output_width: 1200,
-            output_height: 900,
+            output_width,
+            output_height,
             png_compression,
             custom_poi_overlay: None,
             place_label_overlay: default_place_label_overlay_for_domain(
@@ -592,6 +593,25 @@ fn selected_domains_slug(args: &Args, domains: &[DomainSpec]) -> String {
     } else {
         domain_set_slug(args.domain_set).to_string()
     }
+}
+
+fn static_output_dimension(name: &str, fallback: u32) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| *value >= 320)
+        .unwrap_or(fallback)
+}
+
+fn static_output_size_for_model(model: ModelId) -> (u32, u32) {
+    let (default_width, default_height) = match model {
+        ModelId::Hrrr | ModelId::Rap => (1200, 900),
+        _ => (1600, 900),
+    };
+    (
+        static_output_dimension("RUSTWX_STATIC_OUTPUT_WIDTH", default_width),
+        static_output_dimension("RUSTWX_STATIC_OUTPUT_HEIGHT", default_height),
+    )
 }
 
 fn domain(region: RegionPreset) -> DomainSpec {

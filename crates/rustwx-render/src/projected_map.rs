@@ -2,7 +2,8 @@ use std::error::Error;
 
 use crate::MapExtent;
 use crate::features::{
-    BasemapStyle, load_styled_basemap_features_for, load_styled_basemap_polygons_for,
+    BasemapDetail, BasemapStyle, load_styled_basemap_features_for_detail,
+    load_styled_basemap_polygons_for_detail,
 };
 use crate::projection::{ProjectionProjector, ProjectionSpec};
 use crate::request::{
@@ -193,6 +194,7 @@ impl ProjectedDomainBuildOptions {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ProjectedBasemapBuildOptions {
     pub style: BasemapStyle,
+    pub detail: BasemapDetail,
     pub polygon_pad_fraction: f64,
     pub line_pad_fraction: f64,
 }
@@ -201,6 +203,7 @@ impl Default for ProjectedBasemapBuildOptions {
     fn default() -> Self {
         Self {
             style: BasemapStyle::Filled,
+            detail: BasemapDetail::Regional,
             polygon_pad_fraction: 0.50,
             line_pad_fraction: 0.10,
         }
@@ -241,6 +244,13 @@ impl ProjectedMapBuildOptions {
     pub fn with_basemap_style(mut self, style: BasemapStyle) -> Self {
         let mut basemap = self.basemap.unwrap_or_default();
         basemap.style = style;
+        self.basemap = Some(basemap);
+        self
+    }
+
+    pub fn with_basemap_detail(mut self, detail: BasemapDetail) -> Self {
+        let mut basemap = self.basemap.unwrap_or_default();
+        basemap.detail = detail;
         self.basemap = Some(basemap);
         self
     }
@@ -419,7 +429,7 @@ fn build_projected_basemap(
     let polygon_bbox = expanded_bbox(extent, options.polygon_pad_fraction.max(0.0));
 
     let mut lines = Vec::new();
-    for layer in load_styled_basemap_features_for(options.style) {
+    for layer in load_styled_basemap_features_for_detail(options.style, options.detail) {
         let color = Color::rgba(layer.color.r, layer.color.g, layer.color.b, layer.color.a);
         for line in layer.lines {
             let mut current = Vec::<(f64, f64)>::with_capacity(line.len());
@@ -450,7 +460,7 @@ fn build_projected_basemap(
     }
 
     let mut polygons = Vec::new();
-    for layer in load_styled_basemap_polygons_for(options.style) {
+    for layer in load_styled_basemap_polygons_for_detail(options.style, options.detail) {
         let color = Color::rgba(layer.color.r, layer.color.g, layer.color.b, layer.color.a);
         for polygon in layer.polygons {
             let rings: Vec<Vec<(f64, f64)>> = polygon

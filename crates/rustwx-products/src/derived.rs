@@ -1,5 +1,8 @@
 use crate::custom_poi::{CustomPoiOverlay, apply_custom_poi_overlay};
-use crate::direct::{build_projected_map, build_projected_map_with_projection};
+use crate::direct::{
+    build_projected_map, build_projected_map_with_projection,
+    model_data_domain_frame_for_projection,
+};
 use rayon::prelude::*;
 use rustwx_calc::{
     CalcError, EcapeVolumeInputs, FixedStpInputs, GridShape as CalcGridShape, SurfaceInputs,
@@ -5783,6 +5786,7 @@ fn render_derived_output_recipe(
         field: _,
         request: mut render_request,
     } = render_artifact;
+    render_request.domain_frame = model_data_domain_frame_for_projection(projection);
     let title = derived_title_for_request(request, recipe.title());
     render_request.title = Some(title.clone());
     if let Some(overlay) = request.custom_poi_overlay.as_ref() {

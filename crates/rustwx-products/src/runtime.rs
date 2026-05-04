@@ -547,39 +547,43 @@ fn build_fetch_request(
         .iter()
         .filter(|bundle| bundle.fetch_key() == *key)
         .collect();
-    let variable_patterns = sharing_bundles
-        .iter()
-        .map(|bundle| {
-            let mut patterns = crate::gridded::bundle_fetch_variable_patterns(
-                bundle.id.model,
-                bundle.id.bundle,
-                bundle.resolved.native_product.as_str(),
-            );
-            for alias in &bundle.aliases {
-                for pattern in &alias.variable_patterns {
-                    if !patterns.contains(pattern) {
-                        patterns.push(pattern.clone());
+    let variable_patterns = if key.source == SourceId::Nomads {
+        Vec::new()
+    } else {
+        sharing_bundles
+            .iter()
+            .map(|bundle| {
+                let mut patterns = crate::gridded::bundle_fetch_variable_patterns(
+                    bundle.id.model,
+                    bundle.id.bundle,
+                    bundle.resolved.native_product.as_str(),
+                );
+                for alias in &bundle.aliases {
+                    for pattern in &alias.variable_patterns {
+                        if !patterns.contains(pattern) {
+                            patterns.push(pattern.clone());
+                        }
                     }
                 }
-            }
-            patterns
-        })
-        // Indexed subsetting is only safe when every consumer that
-        // shares this physical GRIB explicitly declares a safe subset.
-        // If even one bundle on the fetch key lacks a subset contract,
-        // keep the whole-file path so we don't truncate sibling lanes.
-        .try_fold(Vec::<String>::new(), |mut merged, patterns| {
-            if patterns.is_empty() {
-                return None;
-            }
-            for pattern in patterns {
-                if !merged.contains(&pattern) {
-                    merged.push(pattern);
+                patterns
+            })
+            // Indexed subsetting is only safe when every consumer that
+            // shares this physical GRIB explicitly declares a safe subset.
+            // If even one bundle on the fetch key lacks a subset contract,
+            // keep the whole-file path so we don't truncate sibling lanes.
+            .try_fold(Vec::<String>::new(), |mut merged, patterns| {
+                if patterns.is_empty() {
+                    return None;
                 }
-            }
-            Some(merged)
-        })
-        .unwrap_or_default();
+                for pattern in patterns {
+                    if !merged.contains(&pattern) {
+                        merged.push(pattern);
+                    }
+                }
+                Some(merged)
+            })
+            .unwrap_or_default()
+    };
     Ok(FetchRequest {
         request: ModelRunRequest::new(
             key.model,

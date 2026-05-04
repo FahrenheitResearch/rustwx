@@ -6,14 +6,16 @@ use rustwx_core::{CycleSpec, FieldSelector, ModelId, ModelRunRequest, SelectedFi
 use rustwx_io::{FetchRequest, extract_fields_partial_from_model_bytes, fetch_bytes_with_cache};
 use rustwx_models::{LatestRun, plot_recipe, plot_recipe_fetch_plan};
 use rustwx_render::{
-    ChromeScale, Color, ColorScale, DiscreteColorScale, DomainFrame, ExtendMode, LegendControls,
-    LegendMode, LevelDensity, MapRenderRequest, PngCompressionMode, PngWriteOptions,
-    ProductVisualMode, RenderDensity, map_frame_aspect_ratio_for_mode,
-    save_png_profile_with_options,
+    ChromeScale, Color, ColorScale, DiscreteColorScale, ExtendMode, LegendControls, LegendMode,
+    LevelDensity, MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode,
+    RenderDensity, map_frame_aspect_ratio_for_mode, save_png_profile_with_options,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::direct::{DirectBatchRequest, render_direct_recipe_from_selected_fields};
+use crate::direct::{
+    DirectBatchRequest, model_data_domain_frame_for_projection,
+    render_direct_recipe_from_selected_fields,
+};
 use crate::places::PlaceLabelOverlay;
 use crate::shared_context::DomainSpec;
 
@@ -192,14 +194,20 @@ pub fn run_grib_ensemble_render(
             request.forecast_hour,
             product.clone(),
         )?;
+        // NOMADS production paths are full-GRIB only; non-empty patterns would
+        // create recipe-specific cache keys and miss the already cached member GRIB.
+        let variable_patterns = if request.source == SourceId::Nomads {
+            Vec::new()
+        } else {
+            plan.idx_patterns()
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        };
         let fetch = FetchRequest {
             request: model_request,
             source_override: Some(request.source),
-            variable_patterns: plan
-                .idx_patterns()
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
+            variable_patterns,
             earth2_ensemble: None,
         };
         let fetched = fetch_bytes_with_cache(&fetch, &request.cache_root, request.use_cache)?;
@@ -470,7 +478,7 @@ fn render_spread_or_probability_map(
     };
     render_request.supersample_factor = 2;
     render_request.visual_mode = visual_mode;
-    render_request.domain_frame = Some(DomainFrame::model_data_default());
+    render_request.domain_frame = model_data_domain_frame_for_projection(field.projection.as_ref());
     render_request.apply_projected_map(&projected);
 
     let output_path = request.out_dir.join(format!(

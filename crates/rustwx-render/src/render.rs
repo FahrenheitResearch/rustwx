@@ -153,7 +153,9 @@ impl Default for RenderOpts {
             projected_lines: vec![],
             contours: vec![],
             barbs: vec![],
-            presentation: RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology),
+            presentation: RenderPresentation::for_mode_from_env(
+                ProductVisualMode::FilledMeteorology,
+            ),
         }
     }
 }
@@ -453,7 +455,7 @@ pub fn map_frame_aspect_ratio_for_mode(
         total_h,
         has_cbar,
         has_title,
-        RenderPresentation::for_mode(mode),
+        RenderPresentation::for_mode_from_env(mode),
         ChromeScale::default(),
     );
     layout.map_w as f64 / (layout.map_h.max(1) as f64)
@@ -472,7 +474,7 @@ pub fn map_frame_aspect_ratio_for_mode_with_domain_frame(
         total_h,
         has_cbar,
         has_title,
-        RenderPresentation::for_mode(mode),
+        RenderPresentation::for_mode_from_env(mode),
         ChromeScale::default(),
         has_domain_frame,
     );
@@ -2478,7 +2480,11 @@ fn draw_variable_layers(
     };
     let rasterize_ms = rasterize_start.elapsed().as_millis();
 
-    let domain_clip_rect = domain_frame_rect.or_else(|| {
+    let frame_clip_rect = match opts.domain_frame {
+        Some(frame) if frame.clear_outside => domain_frame_rect,
+        _ => None,
+    };
+    let domain_clip_rect = frame_clip_rect.or_else(|| {
         opts.presentation
             .domain_boundary
             .and_then(|domain_boundary| {
@@ -2695,13 +2701,12 @@ fn draw_chrome_and_colorbar(
 
     if let Some(frame) = opts.domain_frame {
         if let Some(rect) = domain_frame_rect {
-            draw_local_rect_outline(
-                img,
-                layout,
-                rect,
-                frame.outline_color.into(),
-                frame.outline_width,
-            );
+            let frame_style = opts
+                .presentation
+                .domain_frame_style(frame.outline_color.into(), frame.outline_width);
+            if frame_style.visible {
+                draw_local_rect_outline(img, layout, rect, frame_style.color, frame_style.width);
+            }
         }
     }
 
