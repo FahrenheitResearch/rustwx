@@ -3516,9 +3516,6 @@ fn inverse_raster_projection_for_latlon_mesh(
     lat_deg: &[f32],
     lon_deg: &[f32],
 ) -> Option<InverseRasterProjection> {
-    if is_global_scale_domain(bounds) {
-        return None;
-    }
     let regular_latlon = matches!(projection, Some(GridProjection::Geographic))
         || (projection.is_none() && rectilinear_latlon_mesh_for_inverse(lat_deg, lon_deg));
     if !regular_latlon {
@@ -3530,7 +3527,8 @@ fn inverse_raster_projection_for_latlon_mesh(
     match projection {
         rustwx_render::ProjectionSpec::AlbersEqualArea { .. }
         | rustwx_render::ProjectionSpec::LambertConformal { .. }
-        | rustwx_render::ProjectionSpec::Mercator { .. } => Some(InverseRasterProjection {
+        | rustwx_render::ProjectionSpec::Mercator { .. }
+        | rustwx_render::ProjectionSpec::Robinson { .. } => Some(InverseRasterProjection {
             projection,
             reference_latitude_deg: reference_latitude_for_projection_variant(
                 variant,

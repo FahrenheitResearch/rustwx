@@ -10,6 +10,14 @@ const DEG2RAD: f64 = PI / 180.0;
 const RAD2DEG: f64 = 180.0 / PI;
 const GEOGRAPHIC_INFERENCE_MIN_LAT_SPAN_DEG: f64 = 100.0;
 const GEOGRAPHIC_INFERENCE_MIN_LON_SPAN_DEG: f64 = 300.0;
+const ROBINSON_X: [f64; 19] = [
+    1.0000, 0.9986, 0.9954, 0.9900, 0.9822, 0.9730, 0.9600, 0.9427, 0.9216, 0.8962, 0.8679, 0.8350,
+    0.7986, 0.7597, 0.7186, 0.6732, 0.6213, 0.5722, 0.5322,
+];
+const ROBINSON_Y: [f64; 19] = [
+    0.0000, 0.0620, 0.1240, 0.1860, 0.2480, 0.3100, 0.3720, 0.4340, 0.4958, 0.5571, 0.6176, 0.6769,
+    0.7346, 0.7903, 0.8435, 0.8936, 0.9394, 0.9761, 1.0000,
+];
 
 /// Lightweight, render-local projection metadata.
 ///
@@ -353,15 +361,6 @@ impl RobinsonProjection {
     }
 
     fn project(self, lat: f64, lon: f64) -> (f64, f64) {
-        const ROBINSON_X: [f64; 19] = [
-            1.0000, 0.9986, 0.9954, 0.9900, 0.9822, 0.9730, 0.9600, 0.9427, 0.9216, 0.8962, 0.8679,
-            0.8350, 0.7986, 0.7597, 0.7186, 0.6732, 0.6213, 0.5722, 0.5322,
-        ];
-        const ROBINSON_Y: [f64; 19] = [
-            0.0000, 0.0620, 0.1240, 0.1860, 0.2480, 0.3100, 0.3720, 0.4340, 0.4958, 0.5571, 0.6176,
-            0.6769, 0.7346, 0.7903, 0.8435, 0.8936, 0.9394, 0.9761, 1.0000,
-        ];
-
         let lat = stabilize_latitude(lat);
         let lon = normalize_longitude_deg(lon - self.central_meridian_deg);
         let abs_lat = lat.abs().min(90.0);
@@ -371,6 +370,43 @@ impl RobinsonProjection {
         let x = R_EARTH * 0.8487 * interp(&ROBINSON_X) * lon * DEG2RAD;
         let y = R_EARTH * 1.3523 * interp(&ROBINSON_Y) * lat.signum();
         (x, y)
+    }
+
+    fn unproject(self, x: f64, y: f64) -> Option<(f64, f64)> {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let scaled_y = (y / (R_EARTH * 1.3523)).abs();
+        if scaled_y > 1.0 + 1.0e-9 {
+            return None;
+        }
+        let mut band = 17usize;
+        for idx in 0..18 {
+            if scaled_y <= ROBINSON_Y[idx + 1] + 1.0e-12 {
+                band = idx;
+                break;
+            }
+        }
+        let y0 = ROBINSON_Y[band];
+        let y1 = ROBINSON_Y[band + 1];
+        let t = if (y1 - y0).abs() > 1.0e-12 {
+            ((scaled_y - y0) / (y1 - y0)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let lat_abs = ((band as f64) + t) * 5.0;
+        let x_scale = ROBINSON_X[band] + (ROBINSON_X[band + 1] - ROBINSON_X[band]) * t;
+        if x_scale <= 0.0 {
+            return None;
+        }
+        let lon_delta = x / (R_EARTH * 0.8487 * x_scale) * RAD2DEG;
+        if lon_delta.abs() > 180.0 + 1.0e-6 {
+            return None;
+        }
+        Some((
+            lat_abs.copysign(y),
+            normalize_longitude_deg(self.central_meridian_deg + lon_delta),
+        ))
     }
 }
 
@@ -534,7 +570,8 @@ impl ProjectionProjector {
             Self::AlbersEqualArea(projector) => projector.unproject(x, y),
             Self::LambertConformal(projector) => projector.unproject(x, y),
             Self::Mercator(projector) => projector.unproject(x, y),
-            Self::Robinson(_) | Self::PolarStereographic(_) => None,
+            Self::Robinson(projector) => projector.unproject(x, y),
+            Self::PolarStereographic(_) => None,
         }
     }
 }
