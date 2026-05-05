@@ -555,9 +555,89 @@ pub fn extract_fields_partial_from_model_bytes_with_earth2_selector(
         _ => {
             let grib =
                 Grib2File::from_bytes(bytes).map_err(|err| IoError::Grib(err.to_string()))?;
-            extract_fields_from_grib2_partial(&grib, selectors)
+            let mut partial = extract_fields_from_grib2_partial(&grib, selectors)?;
+            if model == ModelId::Nbm {
+                synthesize_nbm_10m_wind_components_from_speed_direction(&grib, &mut partial)?;
+            }
+            Ok(partial)
         }
     }
+}
+
+fn synthesize_nbm_10m_wind_components_from_speed_direction(
+    grib: &Grib2File,
+    partial: &mut PartialExtraction,
+) -> Result<(), IoError> {
+    let u_selector = FieldSelector::height_agl(CanonicalField::UWind, 10);
+    let v_selector = FieldSelector::height_agl(CanonicalField::VWind, 10);
+    let needs_u = partial.missing.contains(&u_selector);
+    let needs_v = partial.missing.contains(&v_selector);
+    if !needs_u && !needs_v {
+        return Ok(());
+    }
+
+    let speed_selector = StructuredMessageSelector {
+        parameters: PARAMETER_WIND_SPEED,
+        level: LevelMatch::HeightAboveGroundMeters(10),
+        units: "m/s",
+    };
+    let direction_selector = StructuredMessageSelector {
+        parameters: PARAMETER_WIND_DIRECTION,
+        level: LevelMatch::HeightAboveGroundMeters(10),
+        units: "deg",
+    };
+    let Some(speed_message) = grib
+        .messages
+        .iter()
+        .find(|message| speed_selector.matches(message))
+    else {
+        return Ok(());
+    };
+    let Some(direction_message) = grib
+        .messages
+        .iter()
+        .find(|message| direction_selector.matches(message))
+    else {
+        return Ok(());
+    };
+
+    let speed = build_selected_field(speed_message, u_selector, speed_selector.units)?;
+    let direction = build_selected_field(direction_message, v_selector, direction_selector.units)?;
+    if speed.grid.shape != direction.grid.shape || speed.values.len() != direction.values.len() {
+        return Ok(());
+    }
+
+    let mut u_values = Vec::with_capacity(speed.values.len());
+    let mut v_values = Vec::with_capacity(speed.values.len());
+    for (speed_ms, direction_deg) in speed.values.iter().zip(direction.values.iter()) {
+        if speed_ms.is_finite() && direction_deg.is_finite() {
+            let theta = f64::from(*direction_deg).to_radians();
+            u_values.push((-f64::from(*speed_ms) * theta.sin()) as f32);
+            v_values.push((-f64::from(*speed_ms) * theta.cos()) as f32);
+        } else {
+            u_values.push(f32::NAN);
+            v_values.push(f32::NAN);
+        }
+    }
+
+    if needs_u {
+        let mut u = SelectedField2D::new(u_selector, "m/s", speed.grid.clone(), u_values)?;
+        if let Some(projection) = speed.projection.clone() {
+            u = u.with_projection(projection);
+        }
+        partial.extracted.push(u);
+    }
+    if needs_v {
+        let mut v = SelectedField2D::new(v_selector, "m/s", speed.grid.clone(), v_values)?;
+        if let Some(projection) = speed.projection.clone() {
+            v = v.with_projection(projection);
+        }
+        partial.extracted.push(v);
+    }
+    partial
+        .missing
+        .retain(|selector| *selector != u_selector && *selector != v_selector);
+    Ok(())
 }
 
 fn should_decode_aifs_as_earth2(bytes: &[u8], preferred_path: Option<&Path>) -> bool {
@@ -1002,6 +1082,16 @@ const PARAMETER_VGRD: &[ParameterCode] = &[ParameterCode {
     discipline: 0,
     category: 2,
     number: 3,
+}];
+const PARAMETER_WIND_DIRECTION: &[ParameterCode] = &[ParameterCode {
+    discipline: 0,
+    category: 2,
+    number: 0,
+}];
+const PARAMETER_WIND_SPEED: &[ParameterCode] = &[ParameterCode {
+    discipline: 0,
+    category: 2,
+    number: 1,
 }];
 const PARAMETER_WIND_GUST: &[ParameterCode] = &[ParameterCode {
     discipline: 0,
@@ -2457,6 +2547,62 @@ mod tests {
         assert_eq!(field.grid.shape.ny, 1);
         assert_eq!(field.grid.lon_deg, vec![-99.0, -98.0]);
         assert_eq!(field.values, vec![255.0, 256.5]);
+    }
+
+    #[test]
+    fn nbm_speed_direction_messages_synthesize_10m_uv_components() {
+        let direction = ieee_f32_message(
+            PARAMETER_WIND_DIRECTION[0],
+            103,
+            10.0,
+            &[0.0, 90.0, 180.0, 270.0],
+            261.0,
+            264.0,
+        );
+        let speed = ieee_f32_message(
+            PARAMETER_WIND_SPEED[0],
+            103,
+            10.0,
+            &[10.0, 10.0, 10.0, 10.0],
+            261.0,
+            264.0,
+        );
+        let grib = Grib2File {
+            messages: vec![direction, speed],
+        };
+        let u_selector = FieldSelector::height_agl(CanonicalField::UWind, 10);
+        let v_selector = FieldSelector::height_agl(CanonicalField::VWind, 10);
+
+        let mut partial = extract_fields_from_grib2_partial(&grib, &[u_selector, v_selector])
+            .expect("standard U/V messages are absent but partial extraction should soft-fail");
+        assert_eq!(partial.missing, vec![u_selector, v_selector]);
+
+        synthesize_nbm_10m_wind_components_from_speed_direction(&grib, &mut partial).unwrap();
+        assert!(partial.missing.is_empty());
+
+        let u = partial
+            .extracted
+            .iter()
+            .find(|field| field.selector == u_selector)
+            .expect("synthesized U component");
+        let v = partial
+            .extracted
+            .iter()
+            .find(|field| field.selector == v_selector)
+            .expect("synthesized V component");
+
+        assert_component_values(&u.values, &[0.0, -10.0, 0.0, 10.0]);
+        assert_component_values(&v.values, &[-10.0, 0.0, 10.0, 0.0]);
+    }
+
+    fn assert_component_values(actual: &[f32], expected: &[f32]) {
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected.iter()) {
+            assert!(
+                (*actual - *expected).abs() < 1.0e-4,
+                "actual={actual} expected={expected}"
+            );
+        }
     }
 
     #[test]
