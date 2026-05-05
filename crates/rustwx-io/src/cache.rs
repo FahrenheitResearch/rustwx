@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const FETCH_METADATA_SCHEMA_VERSION: u32 = 2;
 const GRID_PAYLOAD_SCHEMA_VERSION: u32 = 2;
-const FIELD_PAYLOAD_SCHEMA_VERSION: u32 = 1;
+const FIELD_PAYLOAD_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CachedFetchMetadata {

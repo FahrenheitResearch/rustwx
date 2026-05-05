@@ -1487,6 +1487,7 @@ fn build_selected_field(
         return Err(IoError::MissingGridCoordinates { selector });
     }
     let mut values = unpack_message(message).map_err(|err| IoError::Grib(err.to_string()))?;
+    normalize_alternating_i_scan_rows(&mut values, nx, ny, message.grid.scan_mode);
     if message.grid.scan_mode & 0x40 != 0 {
         flip_rows(&mut lat, nx, ny);
         flip_rows(&mut lon, nx, ny);
@@ -1563,6 +1564,32 @@ fn normalize_and_rotate_longitude_rows(
     }
 }
 
+fn normalize_alternating_i_scan_rows(values: &mut [f64], nx: usize, ny: usize, scan_mode: u8) {
+    if nx == 0 || ny == 0 || values.len() != nx * ny {
+        return;
+    }
+    if scan_mode & 0x20 != 0 {
+        // Adjacent points consecutive in j are not represented by the row-major
+        // canonical grid used downstream. No supported production model uses it.
+        return;
+    }
+
+    let base_i_negative = scan_mode & 0x80 != 0;
+    let alternating_i = scan_mode & 0x10 != 0;
+    if !base_i_negative && !alternating_i {
+        return;
+    }
+
+    for row in 0..ny {
+        let row_i_negative = base_i_negative ^ (alternating_i && row % 2 == 1);
+        if !row_i_negative {
+            continue;
+        }
+        let start = row * nx;
+        values[start..start + nx].reverse();
+    }
+}
+
 fn first_longitude_wrap(lon_row: &[f64]) -> Option<usize> {
     lon_row
         .windows(2)
@@ -1583,6 +1610,35 @@ mod tests {
 4:143210:d=2026041420:UGRD:10 m above ground:anl:
 5:200000:d=2026041420:VGRD:10 m above ground:anl:
 ";
+
+    #[test]
+    fn alternating_i_scan_rows_are_normalized_to_row_major_order() {
+        let mut values = vec![
+            1.0, 2.0, 3.0, 4.0, //
+            8.0, 7.0, 6.0, 5.0, //
+            9.0, 10.0, 11.0, 12.0,
+        ];
+
+        normalize_alternating_i_scan_rows(&mut values, 4, 3, 0x50);
+
+        assert_eq!(
+            values,
+            vec![
+                1.0, 2.0, 3.0, 4.0, //
+                5.0, 6.0, 7.0, 8.0, //
+                9.0, 10.0, 11.0, 12.0,
+            ]
+        );
+    }
+
+    #[test]
+    fn plain_i_scan_rows_are_left_unchanged() {
+        let mut values = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+
+        normalize_alternating_i_scan_rows(&mut values, 3, 2, 0x40);
+
+        assert_eq!(values, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
 
     fn ieee_f32_message(
         parameter: ParameterCode,
