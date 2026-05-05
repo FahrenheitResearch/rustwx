@@ -340,11 +340,16 @@ fn levels_from_pressure(pressure: &PressureFields) -> VolumeResult<Vec<u16>> {
                 "invalid pressure level {level}"
             )));
         }
-        levels.push(level.round() as u16);
+        let rounded = level.round() as u16;
+        if rounded > 0 {
+            levels.push(rounded);
+        }
     }
-    if levels.windows(2).any(|pair| pair[0] <= pair[1]) {
+    levels.sort_unstable_by(|left, right| right.cmp(left));
+    levels.dedup();
+    if levels.is_empty() {
         return Err(VolumeStoreError::InvalidManifest(
-            "pressure levels must be strictly descending".to_string(),
+            "no integer pressure levels remain after rounding".to_string(),
         ));
     }
     Ok(levels)
@@ -464,6 +469,37 @@ mod tests {
             snow_kgkg_3d: None,
             graupel_kgkg_3d: None,
         }
+    }
+
+    fn pressure_with_levels(hour: u8, nx: usize, ny: usize, levels: Vec<f64>) -> PressureFields {
+        let mut pressure = pressure(hour, nx, ny);
+        pressure.pressure_levels_hpa = levels.clone();
+        let grid_len = nx * ny;
+        let rewrite = |values: &mut Vec<f64>| {
+            values.clear();
+            for (level_index, _) in levels.iter().enumerate() {
+                for index in 0..grid_len {
+                    values.push(f64::from(hour) * 10.0 + level_index as f64 * 100.0 + index as f64);
+                }
+            }
+        };
+        rewrite(&mut pressure.temperature_c_3d);
+        rewrite(&mut pressure.qvapor_kgkg_3d);
+        rewrite(&mut pressure.u_ms_3d);
+        rewrite(&mut pressure.v_ms_3d);
+        rewrite(&mut pressure.gh_m_3d);
+        pressure
+    }
+
+    #[test]
+    fn levels_from_pressure_normalizes_ascending_model_order() {
+        let pressure = pressure_with_levels(0, 2, 2, vec![0.4, 100.0, 500.0, 850.0, 1000.0, 1000.0]);
+        assert_eq!(
+            levels_from_pressure(&pressure).unwrap(),
+            vec![1000, 850, 500, 100]
+        );
+        let plane = pressure_plane(&pressure, "TMP", 1000, 4).unwrap();
+        assert_eq!(plane[0], 400.0);
     }
 
     #[test]

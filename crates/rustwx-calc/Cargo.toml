@@ -11,3 +11,11 @@ thiserror.workspace = true
 rayon.workspace = true
 rustwx-core = { path = "../rustwx-core" }
 metrust = { path = "../../vendor/metrust" }
+
+# CUDA acceleration — feature-gated. When enabled, hot elementwise paths
+# in severe.rs / derived.rs swap to GPU kernels via rustwx-cuda.
+rustwx-cuda = { path = "../../rustwx-production-cuda/crates/rustwx-cuda", optional = true }
+
+[features]
+default = []
+cuda = ["dep:rustwx-cuda"]

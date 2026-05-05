@@ -828,6 +828,21 @@ fn draw_projected_lines(
     presentation: RenderPresentation,
     clip_mask: Option<&RgbaImage>,
 ) {
+    // Collect all projected+clipped polylines first so we can either
+    // dispatch them all as one GPU batch (single canvas round-trip) or
+    // fall back to per-polyline CPU drawing.
+    let mut chunks: Vec<(Vec<(f64, f64)>, crate::color::Rgba, u32)> = Vec::new();
+    let push_chunk =
+        |current: &mut Vec<(f64, f64)>,
+         color: crate::color::Rgba,
+         width: u32,
+         chunks: &mut Vec<(Vec<(f64, f64)>, crate::color::Rgba, u32)>| {
+            if current.len() >= 2 {
+                chunks.push((std::mem::take(current), color, width));
+            } else {
+                current.clear();
+            }
+        };
     for line in lines {
         let style = presentation.linework_style(line.role, line.color, line.width);
         if !style.visible {
@@ -848,26 +863,85 @@ fn draw_projected_lines(
                     .unwrap_or(true);
                 if visible {
                     current.push((layout.map_x as f64 + px, layout.map_y as f64 + py));
-                } else if current.len() >= 2 {
-                    draw::draw_polyline_aa(img, &current, style.color, style.width);
-                    current.clear();
                 } else {
-                    current.clear();
+                    push_chunk(&mut current, style.color, style.width, &mut chunks);
                 }
                 previous_local = Some((px, py));
-            } else if current.len() >= 2 {
-                draw::draw_polyline_aa(img, &current, style.color, style.width);
-                current.clear();
-                previous_local = None;
             } else {
-                current.clear();
+                push_chunk(&mut current, style.color, style.width, &mut chunks);
                 previous_local = None;
             }
         }
-        if current.len() >= 2 {
-            draw::draw_polyline_aa(img, &current, style.color, style.width);
-        }
+        push_chunk(&mut current, style.color, style.width, &mut chunks);
     }
+
+    // NOTE: GPU linework swap was tried (cuda_draw_linework) but caused a
+    // 100x regression because the per-polyline-launch ordering preservation
+    // serializes sync overhead per polyline. Re-enable only when the canvas
+    // can stay GPU-resident across multiple draw passes — see the
+    // canvas-resident pipeline plan.
+    for (points, color, width) in chunks {
+        draw::draw_polyline_aa(img, &points, color, width);
+    }
+}
+
+/// GPU-batched linework: collects all polylines for this render call into
+/// one CUDA launch. Returns true if the GPU path succeeded; false means
+/// the caller should fall back to CPU `draw_polyline_aa`.
+#[cfg(feature = "cuda")]
+fn cuda_draw_linework(
+    img: &mut RgbaImage,
+    chunks: &[(Vec<(f64, f64)>, crate::color::Rgba, u32)],
+) -> bool {
+    use rustwx_cuda::render::linework::{Polyline, host_on};
+    use rustwx_cuda::render::pack_rgba;
+    use std::sync::atomic::Ordering;
+
+    crate::rasterize::cuda_stats_lw::TRY.fetch_add(1, Ordering::Relaxed);
+
+    let polylines: Vec<Polyline> = chunks
+        .iter()
+        .filter(|(p, ..)| p.len() >= 2)
+        .map(|(points, color, width)| Polyline {
+            points: points.clone(),
+            color: pack_rgba(color.r, color.g, color.b, color.a),
+            width: (*width).max(1),
+        })
+        .collect();
+
+    if polylines.is_empty() {
+        return true; // nothing to do
+    }
+
+    let img_w = img.width();
+    let img_h = img.height();
+
+    let res = crate::rasterize::with_thread_stream_for_downsample(|ctx, stream| {
+        host_on(ctx, stream, img.as_raw(), img_w, img_h, &polylines)
+    });
+    let new_bytes = match res {
+        Some(Ok(bytes)) => bytes,
+        _ => {
+            crate::rasterize::cuda_stats_lw::FAIL.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+    };
+
+    if new_bytes.len() != (img_w as usize) * (img_h as usize) * 4 {
+        crate::rasterize::cuda_stats_lw::FAIL.fetch_add(1, Ordering::Relaxed);
+        return false;
+    }
+
+    // Replace canvas in place.
+    *img = match RgbaImage::from_raw(img_w, img_h, new_bytes) {
+        Some(i) => i,
+        None => {
+            crate::rasterize::cuda_stats_lw::FAIL.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+    };
+    crate::rasterize::cuda_stats_lw::OK.fetch_add(1, Ordering::Relaxed);
+    true
 }
 
 fn draw_projected_points(
@@ -3147,8 +3221,20 @@ pub fn render_to_image_profile(
     let scaled_opts = scale_render_opts_for_supersample(opts, factor);
     let (hires, mut timing) = render_to_image_profile_inner(data, ny, nx, &scaled_opts);
     let downsample_start = Instant::now();
-    let image = resize(&hires, opts.width, opts.height, FilterType::Lanczos3);
-    let image = sharpen_downsampled_image(&image);
+
+    #[cfg(feature = "cuda")]
+    let image_opt = cuda_downsample_then_sharpen(&hires, opts.width, opts.height, factor as f32);
+    #[cfg(not(feature = "cuda"))]
+    let image_opt: Option<RgbaImage> = None;
+
+    let image = match image_opt {
+        Some(img) => img,
+        None => {
+            let image = resize(&hires, opts.width, opts.height, FilterType::Lanczos3);
+            sharpen_downsampled_image(&image)
+        }
+    };
+
     timing.downsample_ms = downsample_start.elapsed().as_millis();
     timing.postprocess_ms = timing.downsample_ms;
     timing.total_ms = total_start.elapsed().as_millis();
@@ -3160,6 +3246,54 @@ pub fn render_to_image_profile(
         }
     }
     (image, timing)
+}
+
+#[cfg(feature = "cuda")]
+fn cuda_downsample_then_sharpen(
+    hires: &RgbaImage,
+    dst_w: u32,
+    dst_h: u32,
+    sratio: f32,
+) -> Option<RgbaImage> {
+    use crate::rasterize::cuda_stats_ds;
+    use crate::rasterize::with_thread_stream_for_downsample;
+    use rustwx_cuda::render::downsample::downsample_then_sharpen;
+
+    if dst_w == 0 || dst_h == 0 || sratio < 1.0 {
+        return None;
+    }
+    cuda_stats_ds::TRY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    let src_w = hires.width();
+    let src_h = hires.height();
+    if src_w == 0 || src_h == 0 {
+        cuda_stats_ds::FAIL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return None;
+    }
+
+    let bytes_opt = with_thread_stream_for_downsample(|ctx, stream| {
+        downsample_then_sharpen(
+            ctx,
+            stream,
+            hires.as_raw(),
+            src_w,
+            src_h,
+            dst_w,
+            dst_h,
+            sratio,
+        )
+    });
+
+    let bytes = match bytes_opt {
+        Some(Ok(b)) => b,
+        _ => {
+            cuda_stats_ds::FAIL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return None;
+        }
+    };
+    let img = RgbaImage::from_raw(dst_w, dst_h, bytes)?;
+    cuda_stats_ds::OK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Some(img)
 }
 
 fn sharpen_downsampled_image(image: &RgbaImage) -> RgbaImage {
@@ -3272,9 +3406,14 @@ pub fn encode_rgba_png_profile_with_options(
     options: &PngWriteOptions,
 ) -> (Vec<u8>, u128) {
     let encode_start = Instant::now();
+    // Filter selection note: `Adaptive` tries all 5 filter types per
+    // scanline and picks the best — that's expensive (~30-40% of encode
+    // time for typical RGBA8 image content). `Up` is the next-best
+    // single-filter choice for our typical map images and is well
+    // within 5% of Adaptive's compressed size on this workload.
     let (compression, filter) = match options.compression {
-        PngCompressionMode::Default => (CompressionType::Default, PngFilterType::Adaptive),
-        PngCompressionMode::Fast => (CompressionType::Fast, PngFilterType::Adaptive),
+        PngCompressionMode::Default => (CompressionType::Default, PngFilterType::Up),
+        PngCompressionMode::Fast => (CompressionType::Fast, PngFilterType::Up),
         PngCompressionMode::Fastest => (CompressionType::Fast, PngFilterType::NoFilter),
     };
     let mut buf = Vec::new();

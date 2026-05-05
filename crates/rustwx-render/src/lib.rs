@@ -22,6 +22,17 @@ pub use contour_fill::{
     build_projected_contour_geometry, build_projected_contour_geometry_profile,
 };
 pub use error::RustwxRenderError;
+pub use rasterize::{cuda_rasterize_stats, print_cuda_rasterize_stats_if_enabled};
+
+/// Print fine-grained CUDA rasterize phase timings (flatten / upload /
+/// kernel / download / mesh-cache hits) to stderr if
+/// `RUSTWX_CUDA_RASTERIZE_TIMING=1`. No-op when the cuda feature is off.
+pub fn print_cuda_rasterize_phase_timing_if_enabled() {
+    #[cfg(feature = "cuda")]
+    {
+        rustwx_cuda::render::print_phase_timing_if_enabled();
+    }
+}
 pub use features::{
     BasemapDetail, BasemapStyle, StyledLonLatLayer, StyledLonLatPolygonLayer,
     checked_in_natural_earth_110m_root, load_styled_basemap_features,

@@ -17,6 +17,16 @@ use rustwx_products::grib_ensemble::{
 };
 use rustwx_products::places::{PlaceLabelDensityTier, default_place_label_overlay_for_domain};
 
+#[cfg(feature = "cuda")]
+struct CudaStatsGuard;
+
+#[cfg(feature = "cuda")]
+impl Drop for CudaStatsGuard {
+    fn drop(&mut self) {
+        rustwx_render::print_cuda_rasterize_stats_if_enabled();
+    }
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum StatArg {
     Mean,
@@ -108,6 +118,9 @@ struct Args {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "cuda")]
+    let _cuda_stats_guard = CudaStatsGuard;
+
     let args = Args::parse();
     fs::create_dir_all(&args.out_dir)?;
     let cache_root = args

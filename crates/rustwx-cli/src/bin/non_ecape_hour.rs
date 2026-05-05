@@ -213,6 +213,12 @@ struct Args {
     direct_recipes: Vec<String>,
     #[arg(long = "derived-recipe", value_delimiter = ',', num_args = 1..)]
     derived_recipes: Vec<String>,
+    #[arg(long, default_value_t = false)]
+    skip_derived: bool,
+    #[arg(long, default_value_t = false)]
+    skip_windowed: bool,
+    #[arg(long, default_value_t = false, help = "Run only direct recipe products; disables derived and windowed products")]
+    direct_only: bool,
     #[arg(long = "product-override", value_delimiter = ',', num_args = 0..)]
     product_overrides: Vec<String>,
     #[arg(long)]
@@ -306,10 +312,17 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         default_non_ecape_product_sets(args.model);
     let direct_recipe_slugs = if args.direct_recipes.is_empty() {
         default_direct
+    } else if recipe_list_disabled(&args.direct_recipes) {
+        Vec::new()
     } else {
         args.direct_recipes.clone()
     };
-    let derived_recipe_slugs = if args.derived_recipes.is_empty() {
+    let derived_recipe_slugs = if args.direct_only
+        || args.skip_derived
+        || recipe_list_disabled(&args.derived_recipes)
+    {
+        Vec::new()
+    } else if args.derived_recipes.is_empty() {
         default_derived
     } else {
         args.derived_recipes.clone()
@@ -320,7 +333,9 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         .cloned()
         .ok_or("domain selection produced zero domains")?;
     let direct_product_overrides = build_direct_product_overrides(args)?;
-    let windowed_products = if args.windowed_products.is_empty() {
+    let windowed_products = if args.direct_only || args.skip_windowed {
+        Vec::new()
+    } else if args.windowed_products.is_empty() {
         default_windowed
     } else {
         args.windowed_products
@@ -475,6 +490,14 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", report_path.display());
     }
     Ok(())
+}
+
+fn recipe_list_disabled(values: &[String]) -> bool {
+    values.len() == 1
+        && matches!(
+            values[0].trim().to_ascii_lowercase().as_str(),
+            "none" | "off" | "false" | "skip" | "disabled" | "empty"
+        )
 }
 
 fn wxstore_request_for_args(

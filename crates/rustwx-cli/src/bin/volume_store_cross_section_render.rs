@@ -916,9 +916,9 @@ fn routes_from_args(args: &Args) -> Result<Vec<RouteSpec>> {
     }
 
     let start_lat = required_arg(args.start_lat, "--start-lat")?;
-    let start_lon = required_arg(args.start_lon, "--start-lon")?;
+    let start_lon = normalize_longitude(required_arg(args.start_lon, "--start-lon")?);
     let end_lat = required_arg(args.end_lat, "--end-lat")?;
-    let end_lon = required_arg(args.end_lon, "--end-lon")?;
+    let end_lon = normalize_longitude(required_arg(args.end_lon, "--end-lon")?);
     validate_coordinate(start_lat, start_lon, "start")?;
     validate_coordinate(end_lat, end_lon, "end")?;
     if (start_lat - end_lat).abs() < 1.0e-6 && (start_lon - end_lon).abs() < 1.0e-6 {
@@ -955,6 +955,13 @@ fn validate_coordinate(lat: f64, lon: f64, label: &str) -> Result<()> {
         return Err(anyhow!("{label} longitude {lon} is outside [-180, 180]"));
     }
     Ok(())
+}
+
+fn normalize_longitude(lon: f64) -> f64 {
+    if !lon.is_finite() {
+        return lon;
+    }
+    ((lon + 180.0).rem_euclid(360.0)) - 180.0
 }
 
 fn sanitize_route_id(value: &str) -> String {

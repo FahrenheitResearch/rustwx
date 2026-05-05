@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rustwx-cuda-core",
+    "crates/rustwx-cuda-thermo",
+    "crates/rustwx-cuda-wind",
+    "crates/rustwx-cuda-grid",
+    "crates/rustwx-cuda-severe",
+    "crates/rustwx-cuda-render",
+    "crates/rustwx-cuda",
+    "crates/rustwx-cuda-bench",
+    "vendor/wx-core",
+    "vendor/wx-math",
+    "vendor/wx-field",
+    "vendor/wx-radar",
+    "vendor/ecape-rs",
+    "vendor/metrust",
+    # sharprs / grib-core / netcrust deliberately excluded — not needed by the
+    # CUDA crates and they reference external assets outside the vendored tree.
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+rust-version = "1.75"
+
+[workspace.dependencies]
+cudarc = { version = "0.19", default-features = false, features = ["std", "driver", "nvrtc", "fallback-dynamic-loading", "cuda-version-from-build-system"] }
+thiserror = "1"
+once_cell = "1"
+parking_lot = "0.12"
+
+# CPU reference for verification harness
+metrust = { path = "vendor/metrust" }
+wx-math = { path = "vendor/wx-math" }
+wx-core = { path = "vendor/wx-core" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = false
+
+[profile.bench]
+opt-level = 3
+lto = "thin"
+debug = true

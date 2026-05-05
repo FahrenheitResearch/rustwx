@@ -250,8 +250,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &failure_slug,
             err.to_string(),
         );
+        rustwx_render::print_cuda_rasterize_stats_if_enabled();
+        rustwx_render::print_cuda_rasterize_phase_timing_if_enabled();
         return Err(err);
     }
+    rustwx_render::print_cuda_rasterize_stats_if_enabled();
+    rustwx_render::print_cuda_rasterize_phase_timing_if_enabled();
     Ok(())
 }
 

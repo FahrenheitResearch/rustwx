@@ -1,0 +1,12 @@
+[package]
+name = "rustwx-cuda-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "GPU context, kernel cache, and shared types for rustwx-production-cuda"
+
+[dependencies]
+cudarc = { workspace = true }
+thiserror = { workspace = true }
+once_cell = { workspace = true }
+parking_lot = { workspace = true }

@@ -24,12 +24,14 @@ use std::time::Instant;
 
 #[derive(Debug, Clone, Parser)]
 #[command(
-    name = "hrrr-pressure-volume-store",
-    about = "Build and smoke-profile a real HRRR cropped pressure VolumeStore"
+    name = "pressure-volume-store",
+    about = "Build and smoke-profile a cropped pressure VolumeStore for a supported model"
 )]
 struct Args {
     #[arg(long, default_value = "hrrr")]
     model: ModelId,
+    #[arg(long, default_value = "regional")]
+    domain: String,
     #[arg(long)]
     date: String,
     #[arg(long)]
@@ -38,6 +40,8 @@ struct Args {
     start_hour: u16,
     #[arg(long, default_value_t = 1)]
     end_hour: u16,
+    #[arg(long, help = "Forecast hours to build, e.g. 0,3,6 or 0-18. Overrides start/end.")]
+    hours: Option<String>,
     #[arg(long, default_value = "aws")]
     source: SourceId,
     #[arg(long, default_value_t = -125.0)]
@@ -210,6 +214,7 @@ fn main() -> Result<()> {
     if args.chunk_t != 1 {
         bail!("live pressure VolumeStore currently requires --chunk-t 1");
     }
+    let forecast_hours = forecast_hours_from_args(&args)?;
     let load_parallelism = effective_load_parallelism(&args)?;
     if !args.no_cache {
         ensure_dir(&args.cache_dir).map_err(|err| anyhow!(err.to_string()))?;
@@ -221,9 +226,6 @@ fn main() -> Result<()> {
             .with_context(|| format!("remove old store {}", store_dir.display()))?;
     }
 
-    let forecast_hours = (args.start_hour..=args.end_hour)
-        .map(|hour| hour as u8)
-        .collect::<Vec<_>>();
     let request_args = args.clone();
     let first_hour = *forecast_hours.first().expect("validated non-empty hours");
     let first = load_hour(&args, first_hour)?;
@@ -262,8 +264,8 @@ fn main() -> Result<()> {
 
     let build = write_pressure_volume_from_provider(
         &store_dir,
-        "hrrr",
-        "california",
+        provider.args.model.to_string(),
+        provider.args.domain.clone(),
         cycle_iso(&provider.args.date, provider.args.cycle),
         first.grid,
         ChunkShape {
@@ -420,6 +422,57 @@ fn effective_load_parallelism(args: &Args) -> Result<usize> {
     Ok(value)
 }
 
+fn forecast_hours_from_args(args: &Args) -> Result<Vec<u8>> {
+    let hours = if let Some(spec) = args.hours.as_deref() {
+        parse_hour_spec(spec)?
+    } else {
+        if args.end_hour < args.start_hour {
+            bail!("--end-hour must be >= --start-hour");
+        }
+        (args.start_hour..=args.end_hour).collect::<Vec<_>>()
+    };
+    let mut out = Vec::with_capacity(hours.len());
+    for hour in hours {
+        if hour > u16::from(u8::MAX) {
+            bail!("VolumeStore forecast hours are currently u8, got {hour}");
+        }
+        out.push(hour as u8);
+    }
+    out.sort_unstable();
+    out.dedup();
+    if out.is_empty() {
+        bail!("at least one forecast hour is required");
+    }
+    Ok(out)
+}
+
+fn parse_hour_spec(spec: &str) -> Result<Vec<u16>> {
+    let mut hours = Vec::new();
+    for token in spec.split(',').map(str::trim).filter(|token| !token.is_empty()) {
+        if let Some((start, end)) = token.split_once('-') {
+            let start = start
+                .trim()
+                .parse::<u16>()
+                .with_context(|| format!("invalid start hour '{start}'"))?;
+            let end = end
+                .trim()
+                .parse::<u16>()
+                .with_context(|| format!("invalid end hour '{end}'"))?;
+            if end < start {
+                bail!("invalid hour range '{token}'");
+            }
+            hours.extend(start..=end);
+        } else {
+            hours.push(
+                token
+                    .parse::<u16>()
+                    .with_context(|| format!("invalid forecast hour '{token}'"))?,
+            );
+        }
+    }
+    Ok(hours)
+}
+
 fn load_hour(args: &Args, forecast_hour: u8) -> Result<LoadedHour> {
     let started = Instant::now();
     let loaded = load_model_timestep_from_parts_cropped(
@@ -476,7 +529,15 @@ fn levels_from_pressure(pressure: &PressureFields) -> Result<Vec<u16>> {
         if !level.is_finite() || *level <= 0.0 || *level > f64::from(u16::MAX) {
             bail!("invalid pressure level {level}");
         }
-        levels.push(level.round() as u16);
+        let rounded = level.round() as u16;
+        if rounded > 0 {
+            levels.push(rounded);
+        }
+    }
+    levels.sort_unstable_by(|left, right| right.cmp(left));
+    levels.dedup();
+    if levels.is_empty() {
+        bail!("no integer pressure levels remain after rounding");
     }
     Ok(levels)
 }

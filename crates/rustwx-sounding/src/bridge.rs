@@ -173,7 +173,7 @@ impl SoundingColumn {
             dewpoint_c: profile.dwpc.clone(),
             u_ms: profile.u.iter().map(|value| value * KTS_TO_MS).collect(),
             v_ms: profile.v.iter().map(|value| value * KTS_TO_MS).collect(),
-            omega_pa_s: if profile.omeg.iter().any(|value| value.is_finite()) {
+            omega_pa_s: if profile.omeg.iter().any(|value: &f64| value.is_finite()) {
                 profile.omeg.clone()
             } else {
                 Vec::new()

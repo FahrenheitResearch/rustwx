@@ -15,3 +15,11 @@ rustwx-contour = { path = "../rustwx-contour" }
 font8x8 = "0.3"
 rusttype = "0.9"
 shapefile = "0.7"
+
+# CUDA acceleration — feature-gated. When enabled, hot rasterization paths
+# in rasterize.rs swap to GPU kernels via rustwx-cuda-render.
+rustwx-cuda = { path = "../../rustwx-production-cuda/crates/rustwx-cuda", optional = true }
+
+[features]
+default = []
+cuda = ["dep:rustwx-cuda"]

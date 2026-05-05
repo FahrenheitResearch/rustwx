@@ -16,6 +16,7 @@ members = [
     "crates/rustwx-wrf",
 ]
 exclude = [
+    "rustwx-production-cuda",
     "vendor/ecape-rs",
     "vendor/grib-core",
     "vendor/metrust",

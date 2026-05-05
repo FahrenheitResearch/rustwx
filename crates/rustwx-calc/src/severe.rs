@@ -6,6 +6,45 @@ use crate::error::CalcError;
 
 const ZEROCNK: f64 = 273.15;
 
+// ---------------------------------------------------------------------------
+// CUDA hot-path swaps. Each helper returns `Some(out)` if the GPU path
+// succeeded and `None` if anything went wrong (no CUDA, kernel error,
+// length mismatch); callers fall through to the CPU iterator in that case.
+//
+// Threshold: skip CUDA for tiny grids where PCIe upload dominates compute.
+// At ~50K cells the GPU still wins; below that the iterator is faster.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "cuda")]
+const CUDA_MIN_CELLS: usize = 50_000;
+
+#[cfg(feature = "cuda")]
+fn cuda_stp_fixed(cape: &[f64], lcl: &[f64], srh: &[f64], shear: &[f64]) -> Option<Vec<f64>> {
+    if cape.len() < CUDA_MIN_CELLS {
+        return None;
+    }
+    let ctx = rustwx_cuda::core::global().ok()?;
+    rustwx_cuda::severe::stp::host(&ctx, cape, lcl, srh, shear).ok()
+}
+
+#[cfg(feature = "cuda")]
+fn cuda_ehi(cape: &[f64], srh: &[f64]) -> Option<Vec<f64>> {
+    if cape.len() < CUDA_MIN_CELLS {
+        return None;
+    }
+    let ctx = rustwx_cuda::core::global().ok()?;
+    rustwx_cuda::severe::ehi::host(&ctx, cape, srh).ok()
+}
+
+#[cfg(feature = "cuda")]
+fn cuda_scp(mucape: &[f64], srh_3km: &[f64], shear_06: &[f64]) -> Option<Vec<f64>> {
+    if mucape.len() < CUDA_MIN_CELLS {
+        return None;
+    }
+    let ctx = rustwx_cuda::core::global().ok()?;
+    rustwx_cuda::severe::scp::host(&ctx, mucape, srh_3km, shear_06).ok()
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct WindGridInputs<'a> {
     pub shape: VolumeShape,
@@ -231,6 +270,15 @@ pub fn compute_wind_diagnostics_bundle(
 /// once 0-6 km shear reaches 30 m/s.
 pub fn compute_stp_fixed(inputs: FixedStpInputs<'_>) -> Result<Vec<f64>, CalcError> {
     validate_fixed_stp_inputs(inputs)?;
+    #[cfg(feature = "cuda")]
+    if let Some(out) = cuda_stp_fixed(
+        inputs.sbcape_jkg,
+        inputs.lcl_m,
+        inputs.srh_1km_m2s2,
+        inputs.shear_6km_ms,
+    ) {
+        return Ok(out);
+    }
     Ok(inputs
         .sbcape_jkg
         .iter()
@@ -320,6 +368,10 @@ pub fn compute_effective_severe(
 
 pub fn compute_ehi(grid: GridShape, cape_jkg: &[f64], srh: &[f64]) -> Result<Vec<f64>, CalcError> {
     validate_grid_fields(grid, &[("cape_jkg", cape_jkg), ("srh", srh)])?;
+    #[cfg(feature = "cuda")]
+    if let Some(out) = cuda_ehi(cape_jkg, srh) {
+        return Ok(out);
+    }
     Ok(cape_jkg
         .iter()
         .zip(srh.iter())
@@ -335,6 +387,14 @@ pub fn compute_ehi(grid: GridShape, cape_jkg: &[f64], srh: &[f64]) -> Result<Vec
 /// reaches 20 m/s.
 pub fn compute_scp_effective(inputs: EffectiveScpInputs<'_>) -> Result<Vec<f64>, CalcError> {
     validate_effective_scp_inputs(inputs)?;
+    #[cfg(feature = "cuda")]
+    if let Some(out) = cuda_scp(
+        inputs.mucape_jkg,
+        inputs.effective_srh_m2s2,
+        inputs.effective_bulk_wind_difference_ms,
+    ) {
+        return Ok(out);
+    }
     Ok(inputs
         .mucape_jkg
         .iter()

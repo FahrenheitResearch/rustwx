@@ -543,6 +543,18 @@ impl MercatorProjection {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+pub(crate) struct InverseProjectionKernelParams {
+    pub(crate) kind: i32,
+    pub(crate) p0: f64,
+    pub(crate) p1: f64,
+    pub(crate) p2: f64,
+    pub(crate) p3: f64,
+    pub(crate) p4: f64,
+    pub(crate) p5: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum ProjectionProjector {
     Geographic(GeographicProjection),
     Robinson(RobinsonProjection),
@@ -573,6 +585,60 @@ impl ProjectionProjector {
             Self::Robinson(projector) => projector.unproject(x, y),
             Self::PolarStereographic(_) => None,
         }
+    }
+
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+    pub(crate) fn inverse_kernel_params(self) -> Option<InverseProjectionKernelParams> {
+        let params = match self {
+            // kind values are mirrored by kernels/render/rasterize_inverse_projected_grid.cu.
+            Self::Geographic(projector) => InverseProjectionKernelParams {
+                kind: 0,
+                p0: projector.central_meridian_deg,
+                p1: 0.0,
+                p2: 0.0,
+                p3: 0.0,
+                p4: 0.0,
+                p5: 0.0,
+            },
+            Self::Robinson(projector) => InverseProjectionKernelParams {
+                kind: 1,
+                p0: projector.central_meridian_deg,
+                p1: 0.0,
+                p2: 0.0,
+                p3: 0.0,
+                p4: 0.0,
+                p5: 0.0,
+            },
+            Self::AlbersEqualArea(projector) => InverseProjectionKernelParams {
+                kind: 2,
+                p0: projector.n,
+                p1: projector.c,
+                p2: projector.rho0,
+                p3: projector.central_meridian_deg,
+                p4: 0.0,
+                p5: 0.0,
+            },
+            Self::LambertConformal(projector) => InverseProjectionKernelParams {
+                kind: 3,
+                p0: projector.n,
+                p1: projector.f,
+                p2: projector.rho0,
+                p3: projector.stand_lon_deg,
+                p4: 0.0,
+                p5: 0.0,
+            },
+            Self::Mercator(projector) => InverseProjectionKernelParams {
+                kind: 4,
+                p0: projector.central_meridian_deg,
+                p1: projector.scale,
+                p2: 0.0,
+                p3: 0.0,
+                p4: 0.0,
+                p5: 0.0,
+            },
+            Self::PolarStereographic(_) => return None,
+        };
+        Some(params)
     }
 }
 

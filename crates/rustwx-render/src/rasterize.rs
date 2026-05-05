@@ -5,6 +5,458 @@ use crate::projection::ProjectionProjector;
 use crate::request::GeographicClipBounds;
 use image::RgbaImage;
 
+/// Below this output-pixel count, the per-call CUDA upload + launch overhead
+/// is not worth the saved CPU work. Tuned so a 224x224 panel still goes GPU.
+#[cfg(feature = "cuda")]
+const CUDA_MIN_PIXELS: usize = 50_000;
+
+/// Hard counters proving whether the CUDA path actually ran. Set
+/// `RUSTWX_CUDA_RASTERIZE_DEBUG=1` to have the binary print them at exit.
+#[cfg(feature = "cuda")]
+pub(crate) mod cuda_stats {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    pub static GRID_TRY: AtomicUsize = AtomicUsize::new(0);
+    pub static GRID_OK: AtomicUsize = AtomicUsize::new(0);
+    pub static GRID_FAIL: AtomicUsize = AtomicUsize::new(0);
+    pub static GRID_BELOW_THRESHOLD: AtomicUsize = AtomicUsize::new(0);
+    pub static PG_TRY: AtomicUsize = AtomicUsize::new(0);
+    pub static PG_OK: AtomicUsize = AtomicUsize::new(0);
+    pub static PG_FAIL: AtomicUsize = AtomicUsize::new(0);
+    pub static PG_BELOW_THRESHOLD: AtomicUsize = AtomicUsize::new(0);
+    pub static INV_TRY: AtomicUsize = AtomicUsize::new(0);
+    pub static INV_OK: AtomicUsize = AtomicUsize::new(0);
+    pub static INV_FAIL: AtomicUsize = AtomicUsize::new(0);
+    pub static INV_BELOW_THRESHOLD: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn snapshot() -> [(&'static str, usize); 12] {
+        [
+            (
+                "rasterize_grid: cuda attempts",
+                GRID_TRY.load(Ordering::Relaxed),
+            ),
+            ("rasterize_grid: cuda OK", GRID_OK.load(Ordering::Relaxed)),
+            (
+                "rasterize_grid: cuda FAIL (fell back to CPU)",
+                GRID_FAIL.load(Ordering::Relaxed),
+            ),
+            (
+                "rasterize_grid: skipped (below threshold)",
+                GRID_BELOW_THRESHOLD.load(Ordering::Relaxed),
+            ),
+            (
+                "rasterize_projected_grid: cuda attempts",
+                PG_TRY.load(Ordering::Relaxed),
+            ),
+            (
+                "rasterize_projected_grid: cuda OK",
+                PG_OK.load(Ordering::Relaxed),
+            ),
+            (
+                "rasterize_projected_grid: cuda FAIL (fell back to CPU)",
+                PG_FAIL.load(Ordering::Relaxed),
+            ),
+            (
+                "rasterize_projected_grid: skipped (below threshold)",
+                PG_BELOW_THRESHOLD.load(Ordering::Relaxed),
+            ),
+            (
+                "rasterize_inverse_projected_grid: cuda attempts",
+                INV_TRY.load(Ordering::Relaxed),
+            ),
+            (
+                "rasterize_inverse_projected_grid: cuda OK",
+                INV_OK.load(Ordering::Relaxed),
+            ),
+            (
+                "rasterize_inverse_projected_grid: cuda FAIL (fell back to CPU)",
+                INV_FAIL.load(Ordering::Relaxed),
+            ),
+            (
+                "rasterize_inverse_projected_grid: skipped (below threshold)",
+                INV_BELOW_THRESHOLD.load(Ordering::Relaxed),
+            ),
+        ]
+    }
+
+    pub fn print_if_enabled() {
+        if std::env::var("RUSTWX_CUDA_RASTERIZE_DEBUG").ok().as_deref() == Some("1") {
+            eprintln!("[rustwx-cuda rasterize counters]");
+            for (label, value) in snapshot() {
+                eprintln!("  {label}: {value}");
+            }
+            super::cuda_stats_ds::print_if_enabled();
+            rustwx_cuda::render::print_phase_timing_if_enabled();
+        }
+    }
+}
+
+/// Counters for the GPU downsample+sharpen swap.
+#[cfg(feature = "cuda")]
+pub(crate) mod cuda_stats_ds {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    pub static TRY: AtomicUsize = AtomicUsize::new(0);
+    pub static OK: AtomicUsize = AtomicUsize::new(0);
+    pub static FAIL: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn print_if_enabled() {
+        eprintln!(
+            "  downsample+sharpen: cuda attempts={} OK={} FAIL={}",
+            TRY.load(Ordering::Relaxed),
+            OK.load(Ordering::Relaxed),
+            FAIL.load(Ordering::Relaxed),
+        );
+        super::cuda_stats_lw::print_if_enabled();
+    }
+}
+
+/// Counters for the GPU linework swap.
+#[cfg(feature = "cuda")]
+pub(crate) mod cuda_stats_lw {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    pub static TRY: AtomicUsize = AtomicUsize::new(0);
+    pub static OK: AtomicUsize = AtomicUsize::new(0);
+    pub static FAIL: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn print_if_enabled() {
+        eprintln!(
+            "  linework: cuda attempts={} OK={} FAIL={}",
+            TRY.load(Ordering::Relaxed),
+            OK.load(Ordering::Relaxed),
+            FAIL.load(Ordering::Relaxed),
+        );
+    }
+}
+
+/// Re-export of the per-thread stream cache for use by the downsample
+/// swap site in `render.rs`.
+#[cfg(feature = "cuda")]
+pub(crate) fn with_thread_stream_for_downsample<R>(
+    f: impl FnOnce(
+        &rustwx_cuda::core::ContextHandle,
+        &std::sync::Arc<rustwx_cuda::core::cudarc::driver::CudaStream>,
+    ) -> R,
+) -> Option<R> {
+    with_thread_stream(f)
+}
+
+/// Public counter snapshot — lets a CLI binary print the numbers at exit.
+#[cfg(feature = "cuda")]
+pub fn cuda_rasterize_stats() -> [(&'static str, usize); 12] {
+    cuda_stats::snapshot()
+}
+
+/// Print the CUDA rasterize counters to stderr if `RUSTWX_CUDA_RASTERIZE_DEBUG=1`.
+#[cfg(feature = "cuda")]
+pub fn print_cuda_rasterize_stats_if_enabled() {
+    cuda_stats::print_if_enabled();
+}
+
+#[cfg(not(feature = "cuda"))]
+pub fn cuda_rasterize_stats() -> [(&'static str, usize); 0] {
+    []
+}
+
+#[cfg(not(feature = "cuda"))]
+pub fn print_cuda_rasterize_stats_if_enabled() {}
+
+#[cfg(feature = "cuda")]
+fn cuda_pack_cmap(cmap: &LeveledColormap) -> (Vec<u32>, Option<u32>, Option<u32>) {
+    use rustwx_cuda::render::pack_rgba;
+    let colors_packed: Vec<u32> = cmap
+        .colors
+        .iter()
+        .map(|c| pack_rgba(c.r, c.g, c.b, c.a))
+        .collect();
+    let under_color = cmap.under_color.map(|c| pack_rgba(c.r, c.g, c.b, c.a));
+    let over_color = cmap.over_color.map(|c| pack_rgba(c.r, c.g, c.b, c.a));
+    (colors_packed, under_color, over_color)
+}
+
+/// Each rayon worker thread caches its own non-default CUDA stream the
+/// first time it does GPU work. Multiple non-default streams run
+/// concurrently on the device — the whole point of this cache is to keep
+/// the GPU saturated when many threads issue kernels in parallel, instead
+/// of all of them queuing on the shared default stream.
+///
+/// `new_stream()` calls `bind_to_thread()` internally; on rare timing the
+/// driver returns NOT_INITIALIZED for newly-spawned rayon workers. We
+/// explicitly bind first, retry once, and fall back to the shared default
+/// stream rather than dropping the call to CPU. Falling back to default
+/// keeps correctness; only the per-thread concurrency benefit is lost for
+/// that specific call.
+#[cfg(feature = "cuda")]
+fn with_thread_stream<R>(
+    f: impl FnOnce(
+        &rustwx_cuda::core::ContextHandle,
+        &std::sync::Arc<rustwx_cuda::core::cudarc::driver::CudaStream>,
+    ) -> R,
+) -> Option<R> {
+    use rustwx_cuda::core::cudarc::driver::CudaStream;
+    use std::cell::RefCell;
+    use std::sync::Arc;
+
+    thread_local! {
+        static THREAD_STREAM: RefCell<Option<(rustwx_cuda::core::ContextHandle, Arc<CudaStream>)>> =
+            const { RefCell::new(None) };
+    }
+
+    THREAD_STREAM.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            let ctx = rustwx_cuda::core::global().ok()?;
+            // Bind the primary context to this OS thread before any stream
+            // creation. cudarc's `new_stream` does this internally too, but
+            // doing it explicitly avoids a NOT_INITIALIZED race we've seen
+            // when a rayon worker is spawned mid-pipeline.
+            let _ = ctx.cuda().bind_to_thread();
+            let stream = match ctx.new_stream() {
+                Ok(s) => s,
+                Err(_) => {
+                    // One retry after explicit bind.
+                    let _ = ctx.cuda().bind_to_thread();
+                    match ctx.new_stream() {
+                        Ok(s) => s,
+                        // Last-resort fallback: default stream. Loses
+                        // concurrency on this thread but the call still
+                        // runs on the GPU.
+                        Err(_) => Arc::clone(ctx.stream()),
+                    }
+                }
+            };
+            *slot = Some((ctx, stream));
+        }
+        let (ctx, stream) = slot.as_ref().unwrap();
+        Some(f(ctx, stream))
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn cuda_rasterize_grid(
+    data: &[f64],
+    ny: usize,
+    nx: usize,
+    cmap: &LeveledColormap,
+    img_w: u32,
+    img_h: u32,
+) -> Option<RgbaImage> {
+    use rustwx_cuda::render::{ColormapHostView, rasterize_grid as cu_rg};
+    use std::sync::atomic::Ordering;
+
+    cuda_stats::GRID_TRY.fetch_add(1, Ordering::Relaxed);
+
+    let bytes = with_thread_stream(|ctx, stream| {
+        let (colors_packed, under_color, over_color) = cuda_pack_cmap(cmap);
+        let view = ColormapHostView {
+            levels: &cmap.levels,
+            colors_packed: &colors_packed,
+            under_color,
+            over_color,
+            mask_below: cmap.mask_below,
+        };
+        cu_rg::host_on(ctx, stream, data, ny, nx, view, img_w, img_h)
+    });
+
+    let bytes = match bytes {
+        Some(Ok(b)) => b,
+        _ => {
+            cuda_stats::GRID_FAIL.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+    };
+    let img = RgbaImage::from_raw(img_w, img_h, bytes)?;
+    cuda_stats::GRID_OK.fetch_add(1, Ordering::Relaxed);
+    Some(img)
+}
+
+#[cfg(feature = "cuda")]
+fn cuda_rasterize_projected_grid(
+    data: &[f64],
+    ny: usize,
+    nx: usize,
+    pixel_points: &[Option<(f64, f64)>],
+    cmap: &LeveledColormap,
+    img_w: u32,
+    img_h: u32,
+) -> Option<RgbaImage> {
+    use rustwx_cuda::render::{ColormapHostView, rasterize_projected_grid as cu_pg};
+    use std::sync::atomic::Ordering;
+
+    cuda_stats::PG_TRY.fetch_add(1, Ordering::Relaxed);
+
+    let bytes = with_thread_stream(|ctx, stream| {
+        let (colors_packed, under_color, over_color) = cuda_pack_cmap(cmap);
+        let view = ColormapHostView {
+            levels: &cmap.levels,
+            colors_packed: &colors_packed,
+            under_color,
+            over_color,
+            mask_below: cmap.mask_below,
+        };
+        cu_pg::host_on(ctx, stream, data, ny, nx, pixel_points, view, img_w, img_h)
+    });
+
+    let bytes = match bytes {
+        Some(Ok(b)) => b,
+        Some(Err(e)) => {
+            if std::env::var("RUSTWX_CUDA_RASTERIZE_DEBUG").ok().as_deref() == Some("1") {
+                eprintln!(
+                    "[cuda_rasterize_projected_grid] host_on Err ny={ny} nx={nx} img={img_w}x{img_h} ppl={} datal={}: {e:?}",
+                    pixel_points.len(),
+                    data.len()
+                );
+            }
+            cuda_stats::PG_FAIL.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        None => {
+            if std::env::var("RUSTWX_CUDA_RASTERIZE_DEBUG").ok().as_deref() == Some("1") {
+                eprintln!("[cuda_rasterize_projected_grid] thread-stream init returned None");
+            }
+            cuda_stats::PG_FAIL.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+    };
+    let bytes_len = bytes.len();
+    let img = match RgbaImage::from_raw(img_w, img_h, bytes) {
+        Some(i) => i,
+        None => {
+            if std::env::var("RUSTWX_CUDA_RASTERIZE_DEBUG").ok().as_deref() == Some("1") {
+                eprintln!(
+                    "[cuda_rasterize_projected_grid] RgbaImage::from_raw None: img={img_w}x{img_h} bytes_len={bytes_len}"
+                );
+            }
+            cuda_stats::PG_FAIL.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+    };
+    cuda_stats::PG_OK.fetch_add(1, Ordering::Relaxed);
+    Some(img)
+}
+
+#[cfg(feature = "cuda")]
+fn cuda_rasterize_inverse_projected_grid(
+    data: &[f64],
+    ny: usize,
+    nx: usize,
+    axes: RegularLatLonAxes,
+    projector: ProjectionProjector,
+    clip_bounds: Option<GeographicClipBounds>,
+    extent: &MapExtent,
+    cmap: &LeveledColormap,
+    img_w: u32,
+    img_h: u32,
+) -> Option<RgbaImage> {
+    use rustwx_cuda::render::{ColormapHostView, rasterize_inverse_projected_grid as cu_inv};
+    use std::sync::atomic::Ordering;
+
+    let projection_params = projector.inverse_kernel_params()?;
+    cuda_stats::INV_TRY.fetch_add(1, Ordering::Relaxed);
+
+    let bytes = with_thread_stream(|ctx, stream| {
+        let (colors_packed, under_color, over_color) = cuda_pack_cmap(cmap);
+        let view = ColormapHostView {
+            levels: &cmap.levels,
+            colors_packed: &colors_packed,
+            under_color,
+            over_color,
+            mask_below: cmap.mask_below,
+        };
+        let cu_axes = cu_inv::RegularLatLonAxesHost {
+            nx: axes.nx as i32,
+            ny: axes.ny as i32,
+            lat0: axes.lat0,
+            lat_step: axes.lat_step,
+            lon0: axes.lon0,
+            lon_step: axes.lon_step,
+            periodic_lon: axes.periodic_lon,
+            period_points: axes.period_points,
+        };
+        let cu_projection = cu_inv::InverseProjectionHost {
+            kind: projection_params.kind,
+            p0: projection_params.p0,
+            p1: projection_params.p1,
+            p2: projection_params.p2,
+            p3: projection_params.p3,
+            p4: projection_params.p4,
+            p5: projection_params.p5,
+        };
+        let cu_clip = clip_bounds.map_or(
+            cu_inv::ClipBoundsHost {
+                has_clip: false,
+                west_deg: 0.0,
+                east_deg: 0.0,
+                south_deg: 0.0,
+                north_deg: 0.0,
+            },
+            |bounds| cu_inv::ClipBoundsHost {
+                has_clip: true,
+                west_deg: bounds.west_deg,
+                east_deg: bounds.east_deg,
+                south_deg: bounds.south_deg,
+                north_deg: bounds.north_deg,
+            },
+        );
+        let cu_extent = cu_inv::MapExtentHost {
+            x_min: extent.x_min,
+            x_max: extent.x_max,
+            y_min: extent.y_min,
+            y_max: extent.y_max,
+        };
+        cu_inv::host_on(
+            ctx,
+            stream,
+            data,
+            ny,
+            nx,
+            cu_axes,
+            cu_projection,
+            cu_clip,
+            cu_extent,
+            view,
+            img_w,
+            img_h,
+        )
+    });
+
+    let bytes = match bytes {
+        Some(Ok(b)) => b,
+        Some(Err(e)) => {
+            if std::env::var("RUSTWX_CUDA_RASTERIZE_DEBUG").ok().as_deref() == Some("1") {
+                eprintln!(
+                    "[cuda_rasterize_inverse_projected_grid] host_on Err ny={ny} nx={nx} img={img_w}x{img_h} datal={}: {e:?}",
+                    data.len()
+                );
+            }
+            cuda_stats::INV_FAIL.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        None => {
+            if std::env::var("RUSTWX_CUDA_RASTERIZE_DEBUG").ok().as_deref() == Some("1") {
+                eprintln!(
+                    "[cuda_rasterize_inverse_projected_grid] thread-stream init returned None"
+                );
+            }
+            cuda_stats::INV_FAIL.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+    };
+    let bytes_len = bytes.len();
+    let img = match RgbaImage::from_raw(img_w, img_h, bytes) {
+        Some(i) => i,
+        None => {
+            if std::env::var("RUSTWX_CUDA_RASTERIZE_DEBUG").ok().as_deref() == Some("1") {
+                eprintln!(
+                    "[cuda_rasterize_inverse_projected_grid] RgbaImage::from_raw None: img={img_w}x{img_h} bytes_len={bytes_len}"
+                );
+            }
+            cuda_stats::INV_FAIL.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+    };
+    cuda_stats::INV_OK.fetch_add(1, Ordering::Relaxed);
+    Some(img)
+}
+
 /// Rasterize a 2D grid into an RGBA image using bilinear sampling.
 ///
 /// `data` is row-major `[ny][nx]`. The image maps grid row 0 to the
@@ -17,6 +469,21 @@ pub fn rasterize_grid(
     img_w: u32,
     img_h: u32,
 ) -> RgbaImage {
+    #[cfg(feature = "cuda")]
+    {
+        use std::sync::atomic::Ordering;
+        let n_pix = (img_w as usize).saturating_mul(img_h as usize);
+        if ny != 0 && nx != 0 && data.len() == ny * nx {
+            if n_pix >= CUDA_MIN_PIXELS {
+                if let Some(gpu_img) = cuda_rasterize_grid(data, ny, nx, cmap, img_w, img_h) {
+                    return gpu_img;
+                }
+            } else {
+                cuda_stats::GRID_BELOW_THRESHOLD.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
     let mut img = RgbaImage::new(img_w, img_h);
 
     if ny == 0 || nx == 0 {
@@ -67,6 +534,24 @@ pub fn rasterize_projected_grid(
     img_w: u32,
     img_h: u32,
 ) -> RgbaImage {
+    #[cfg(feature = "cuda")]
+    {
+        use std::sync::atomic::Ordering;
+        let n_pix = (img_w as usize).saturating_mul(img_h as usize);
+        if ny >= 2 && nx >= 2 && pixel_points.len() == ny * nx && data.len() == ny * nx {
+            if n_pix >= CUDA_MIN_PIXELS {
+                if let Some(mut gpu_img) =
+                    cuda_rasterize_projected_grid(data, ny, nx, pixel_points, cmap, img_w, img_h)
+                {
+                    feather_projected_raster_edges(&mut gpu_img);
+                    return gpu_img;
+                }
+            } else {
+                cuda_stats::PG_BELOW_THRESHOLD.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
     let mut img = RgbaImage::new(img_w, img_h);
 
     if ny < 2 || nx < 2 || pixel_points.len() != ny * nx {
@@ -126,6 +611,30 @@ pub(crate) fn rasterize_inverse_projected_grid(
     let Some(axes) = RegularLatLonAxes::from_grid(lat_deg, lon_deg, ny, nx) else {
         return img;
     };
+
+    #[cfg(feature = "cuda")]
+    {
+        use std::sync::atomic::Ordering;
+        let n_pix = (img_w as usize).saturating_mul(img_h as usize);
+        if n_pix >= CUDA_MIN_PIXELS {
+            if let Some(gpu_img) = cuda_rasterize_inverse_projected_grid(
+                data,
+                ny,
+                nx,
+                axes,
+                projector,
+                clip_bounds,
+                extent,
+                cmap,
+                img_w,
+                img_h,
+            ) {
+                return gpu_img;
+            }
+        } else {
+            cuda_stats::INV_BELOW_THRESHOLD.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 
     let x_den = img_w.saturating_sub(1).max(1) as f64;
     let y_den = img_h.saturating_sub(1).max(1) as f64;

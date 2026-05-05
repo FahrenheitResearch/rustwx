@@ -1,7 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
+use std::time::Instant;
 
+use rayon::prelude::*;
 use rustwx_core::{CycleSpec, FieldSelector, ModelId, ModelRunRequest, SelectedField2D, SourceId};
 use rustwx_io::{FetchRequest, extract_fields_partial_from_model_bytes, fetch_bytes_with_cache};
 use rustwx_models::{LatestRun, plot_recipe, plot_recipe_fetch_plan};
@@ -121,6 +123,11 @@ pub struct GribEnsembleMemberFetch {
     pub cache_hit: bool,
 }
 
+struct GribEnsembleMemberFields {
+    fields: HashMap<FieldSelector, SelectedField2D>,
+    fetch: GribEnsembleMemberFetch,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GribEnsembleRenderReport {
     pub model: ModelId,
@@ -134,6 +141,8 @@ pub struct GribEnsembleRenderReport {
     pub member_products: Vec<String>,
     pub output_path: PathBuf,
     pub member_fetches: Vec<GribEnsembleMemberFetch>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub timings_ms: BTreeMap<String, u128>,
 }
 
 fn default_output_width() -> u32 {
@@ -166,9 +175,61 @@ pub fn expand_member_template(template: &str, members: &[String]) -> Vec<String>
         .collect()
 }
 
+fn extract_ensemble_member_fields(
+    request: &GribEnsembleRenderRequest,
+    cycle: &CycleSpec,
+    product: &str,
+    variable_patterns_template: &[String],
+    selectors: &[FieldSelector],
+) -> Result<GribEnsembleMemberFields, String> {
+    let model_request = ModelRunRequest::new(
+        request.model,
+        cycle.clone(),
+        request.forecast_hour,
+        product.to_string(),
+    )
+    .map_err(|error| error.to_string())?;
+    let fetch = FetchRequest {
+        request: model_request,
+        source_override: Some(request.source),
+        variable_patterns: variable_patterns_template.to_vec(),
+        earth2_ensemble: None,
+    };
+    let fetched = fetch_bytes_with_cache(&fetch, &request.cache_root, request.use_cache)
+        .map_err(|error| error.to_string())?;
+    let partial = extract_fields_partial_from_model_bytes(
+        request.model,
+        &fetched.result.bytes,
+        Some(&fetched.bytes_path),
+        selectors,
+    )
+    .map_err(|error| error.to_string())?;
+    if !partial.missing.is_empty() {
+        return Err(format!(
+            "member product '{}' is missing selectors: {:?}",
+            product, partial.missing
+        ));
+    }
+
+    let mut fields = HashMap::new();
+    for field in partial.extracted {
+        fields.insert(field.selector, field);
+    }
+    Ok(GribEnsembleMemberFields {
+        fields,
+        fetch: GribEnsembleMemberFetch {
+            member_product: product.to_string(),
+            resolved_url: fetched.result.url.clone(),
+            bytes: fetched.result.bytes.len() as u64,
+            cache_hit: fetched.cache_hit,
+        },
+    })
+}
+
 pub fn run_grib_ensemble_render(
     request: &GribEnsembleRenderRequest,
 ) -> Result<GribEnsembleRenderReport, Box<dyn std::error::Error>> {
+    let total_start = Instant::now();
     if request.member_products.is_empty() {
         return Err("GRIB ensemble reducer needs at least one member product".into());
     }
@@ -187,59 +248,41 @@ pub fn run_grib_ensemble_render(
 
     let mut member_fields = Vec::<HashMap<FieldSelector, SelectedField2D>>::new();
     let mut member_fetches = Vec::<GribEnsembleMemberFetch>::new();
-    for product in &request.member_products {
-        let model_request = ModelRunRequest::new(
-            request.model,
-            cycle.clone(),
-            request.forecast_hour,
-            product.clone(),
-        )?;
-        // NOMADS production paths are full-GRIB only; non-empty patterns would
-        // create recipe-specific cache keys and miss the already cached member GRIB.
-        let variable_patterns = if request.source == SourceId::Nomads {
-            Vec::new()
-        } else {
-            plan.idx_patterns()
-                .into_iter()
-                .map(str::to_string)
-                .collect()
-        };
-        let fetch = FetchRequest {
-            request: model_request,
-            source_override: Some(request.source),
-            variable_patterns,
-            earth2_ensemble: None,
-        };
-        let fetched = fetch_bytes_with_cache(&fetch, &request.cache_root, request.use_cache)?;
-        let partial = extract_fields_partial_from_model_bytes(
-            request.model,
-            &fetched.result.bytes,
-            Some(&fetched.bytes_path),
-            &selectors,
-        )?;
-        if !partial.missing.is_empty() {
-            return Err(format!(
-                "member product '{}' is missing selectors: {:?}",
-                product, partial.missing
+    let member_fetch_extract_start = Instant::now();
+    // NOMADS production paths are full-GRIB only; non-empty patterns would
+    // create recipe-specific cache keys and miss the already cached member GRIB.
+    let variable_patterns_template = if request.source == SourceId::Nomads {
+        Vec::new()
+    } else {
+        plan.idx_patterns()
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    let extracted_members = request
+        .member_products
+        .par_iter()
+        .map(|product| {
+            extract_ensemble_member_fields(
+                request,
+                &cycle,
+                product,
+                &variable_patterns_template,
+                &selectors,
             )
-            .into());
-        }
-        let mut mapped = HashMap::new();
-        for field in partial.extracted {
-            mapped.insert(field.selector, field);
-        }
-        member_fetches.push(GribEnsembleMemberFetch {
-            member_product: product.clone(),
-            resolved_url: fetched.result.url.clone(),
-            bytes: fetched.result.bytes.len() as u64,
-            cache_hit: fetched.cache_hit,
-        });
-        member_fields.push(mapped);
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+    for member in extracted_members {
+        member_fetches.push(member.fetch);
+        member_fields.push(member.fields);
     }
+    let member_fetch_extract_ms = member_fetch_extract_start.elapsed().as_millis();
 
     let threshold = request.threshold.unwrap_or(f32::NAN);
     let op = request.threshold_op.unwrap_or(CompareOp::Gt);
     let mut reduced = HashMap::<FieldSelector, SelectedField2D>::new();
+    let reduce_start = Instant::now();
     for selector in selectors {
         let fields = member_fields
             .iter()
@@ -254,6 +297,7 @@ pub fn run_grib_ensemble_render(
             reduce_fields(selector, &fields, request.stat, threshold, op)?,
         );
     }
+    let reduce_ms = reduce_start.elapsed().as_millis();
 
     let latest = LatestRun {
         model: request.model,
@@ -271,6 +315,7 @@ pub fn run_grib_ensemble_render(
         request.stat.slug().to_string()
     };
 
+    let render_start = Instant::now();
     let output_path = if matches!(
         request.stat,
         GribEnsembleStat::Std | GribEnsembleStat::ProbExceed
@@ -313,6 +358,13 @@ pub fn run_grib_ensemble_render(
         )?
         .output_path
     };
+    let render_ms = render_start.elapsed().as_millis();
+
+    let mut timings_ms = BTreeMap::new();
+    timings_ms.insert("member_fetch_extract".to_string(), member_fetch_extract_ms);
+    timings_ms.insert("reduce".to_string(), reduce_ms);
+    timings_ms.insert("render".to_string(), render_ms);
+    timings_ms.insert("total".to_string(), total_start.elapsed().as_millis());
 
     Ok(GribEnsembleRenderReport {
         model: request.model,
@@ -326,6 +378,7 @@ pub fn run_grib_ensemble_render(
         member_products: request.member_products.clone(),
         output_path,
         member_fetches,
+        timings_ms,
     })
 }
 
@@ -346,46 +399,118 @@ fn reduce_fields(
     }
     let len = first.values.len();
     let mut out = Vec::with_capacity(len);
-    for idx in 0..len {
-        let mut values = fields
-            .iter()
-            .filter_map(|field| {
-                let value = field.values[idx];
-                value.is_finite().then_some(value)
-            })
-            .collect::<Vec<_>>();
-        if values.is_empty() {
-            out.push(f32::NAN);
-            continue;
+    match stat {
+        GribEnsembleStat::Mean => {
+            for idx in 0..len {
+                let mut sum = 0.0f32;
+                let mut count = 0usize;
+                for field in fields {
+                    let value = field.values[idx];
+                    if value.is_finite() {
+                        sum += value;
+                        count += 1;
+                    }
+                }
+                out.push(if count > 0 {
+                    sum / count as f32
+                } else {
+                    f32::NAN
+                });
+            }
         }
-        let value = match stat {
-            GribEnsembleStat::Mean => values.iter().sum::<f32>() / values.len() as f32,
-            GribEnsembleStat::Std => {
-                let mean = values.iter().sum::<f32>() / values.len() as f32;
-                let var = values
-                    .iter()
-                    .map(|value| {
-                        let diff = *value - mean;
-                        diff * diff
-                    })
-                    .sum::<f32>()
-                    / values.len() as f32;
-                var.sqrt()
+        GribEnsembleStat::Std => {
+            for idx in 0..len {
+                let mut sum = 0.0f32;
+                let mut count = 0usize;
+                for field in fields {
+                    let value = field.values[idx];
+                    if value.is_finite() {
+                        sum += value;
+                        count += 1;
+                    }
+                }
+                if count == 0 {
+                    out.push(f32::NAN);
+                    continue;
+                }
+                let mean = sum / count as f32;
+                let mut var_sum = 0.0f32;
+                for field in fields {
+                    let value = field.values[idx];
+                    if value.is_finite() {
+                        let diff = value - mean;
+                        var_sum += diff * diff;
+                    }
+                }
+                out.push((var_sum / count as f32).sqrt());
             }
-            GribEnsembleStat::Min => values.into_iter().fold(f32::INFINITY, f32::min),
-            GribEnsembleStat::Max => values.into_iter().fold(f32::NEG_INFINITY, f32::max),
-            GribEnsembleStat::P10 | GribEnsembleStat::P50 | GribEnsembleStat::P90 => {
-                percentile(&mut values, stat.percentile().unwrap_or(0.5))
+        }
+        GribEnsembleStat::Min => {
+            for idx in 0..len {
+                let mut value_min = f32::INFINITY;
+                let mut found = false;
+                for field in fields {
+                    let value = field.values[idx];
+                    if value.is_finite() {
+                        value_min = value_min.min(value);
+                        found = true;
+                    }
+                }
+                out.push(if found { value_min } else { f32::NAN });
             }
-            GribEnsembleStat::ProbExceed => {
-                let hits = values
-                    .iter()
-                    .filter(|value| op.compare(**value, threshold))
-                    .count();
-                hits as f32 / values.len() as f32
+        }
+        GribEnsembleStat::Max => {
+            for idx in 0..len {
+                let mut value_max = f32::NEG_INFINITY;
+                let mut found = false;
+                for field in fields {
+                    let value = field.values[idx];
+                    if value.is_finite() {
+                        value_max = value_max.max(value);
+                        found = true;
+                    }
+                }
+                out.push(if found { value_max } else { f32::NAN });
             }
-        };
-        out.push(value);
+        }
+        GribEnsembleStat::P10 | GribEnsembleStat::P50 | GribEnsembleStat::P90 => {
+            let q = stat.percentile().unwrap_or(0.5);
+            let mut values = Vec::with_capacity(fields.len());
+            for idx in 0..len {
+                values.clear();
+                for field in fields {
+                    let value = field.values[idx];
+                    if value.is_finite() {
+                        values.push(value);
+                    }
+                }
+                out.push(if values.is_empty() {
+                    f32::NAN
+                } else {
+                    percentile(&mut values, q)
+                });
+            }
+        }
+        GribEnsembleStat::ProbExceed => {
+            for idx in 0..len {
+                let mut count = 0usize;
+                let mut hits = 0usize;
+                for field in fields {
+                    let value = field.values[idx];
+                    if value.is_finite() {
+                        count += 1;
+                        if op.compare(value, threshold) {
+                            hits += 1;
+                        }
+                    }
+                }
+                out.push(if count > 0 {
+                    hits as f32 / count as f32
+                } else {
+                    f32::NAN
+                });
+            }
+        }
     }
     let units = if stat == GribEnsembleStat::ProbExceed {
         "probability"
