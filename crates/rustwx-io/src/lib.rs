@@ -425,26 +425,29 @@ pub fn extract_fields_from_grib2(
         .copied()
         .map(PreparedSelector::new)
         .collect::<Result<Vec<_>, _>>()?;
-    let mut matched = vec![None; prepared.len()];
-    let mut remaining = prepared.len();
+    let mut matched: Vec<Option<(&Grib2Message, u8)>> = vec![None; prepared.len()];
 
     for message in &grib.messages {
         for (index, prepared_selector) in prepared.iter().enumerate() {
-            if matched[index].is_none() && prepared_selector.message.matches(message) {
-                matched[index] = Some(message);
-                remaining -= 1;
+            if prepared_selector.message.matches(message) {
+                let score = prepared_selector.match_score(message);
+                let replace = matched[index]
+                    .map(|(_, best_score)| score < best_score)
+                    .unwrap_or(true);
+                if replace {
+                    matched[index] = Some((message, score));
+                }
             }
-        }
-        if remaining == 0 {
-            break;
         }
     }
 
     let mut out = Vec::with_capacity(prepared.len());
     for (prepared_selector, message) in prepared.iter().zip(matched.into_iter()) {
-        let message = message.ok_or(IoError::FieldNotFound {
-            selector: prepared_selector.selector,
-        })?;
+        let message = message
+            .map(|(message, _)| message)
+            .ok_or(IoError::FieldNotFound {
+                selector: prepared_selector.selector,
+            })?;
         out.push(build_selected_field(
             message,
             prepared_selector.selector,
@@ -483,24 +486,25 @@ pub fn extract_fields_from_grib2_partial(
         .copied()
         .map(PreparedSelector::new)
         .collect::<Result<Vec<_>, _>>()?;
-    let mut matched = vec![None; prepared.len()];
-    let mut remaining = prepared.len();
+    let mut matched: Vec<Option<(&Grib2Message, u8)>> = vec![None; prepared.len()];
 
     for message in &grib.messages {
         for (index, prepared_selector) in prepared.iter().enumerate() {
-            if matched[index].is_none() && prepared_selector.message.matches(message) {
-                matched[index] = Some(message);
-                remaining -= 1;
+            if prepared_selector.message.matches(message) {
+                let score = prepared_selector.match_score(message);
+                let replace = matched[index]
+                    .map(|(_, best_score)| score < best_score)
+                    .unwrap_or(true);
+                if replace {
+                    matched[index] = Some((message, score));
+                }
             }
-        }
-        if remaining == 0 {
-            break;
         }
     }
 
     for (prepared_selector, message) in prepared.iter().zip(matched.into_iter()) {
         match message {
-            Some(message) => extracted.push(build_selected_field(
+            Some((message, _)) => extracted.push(build_selected_field(
                 message,
                 prepared_selector.selector,
                 prepared_selector.message.units,
@@ -1109,6 +1113,11 @@ const PARAMETER_MSLP: &[ParameterCode] = &[
     ParameterCode {
         discipline: 0,
         category: 3,
+        number: 0,
+    },
+    ParameterCode {
+        discipline: 0,
+        category: 3,
         number: 1,
     },
     ParameterCode {
@@ -1226,6 +1235,35 @@ impl PreparedSelector {
             message: StructuredMessageSelector::try_from(selector)?,
         })
     }
+
+    fn match_score(self, message: &Grib2Message) -> u8 {
+        product_template_match_score(self.selector, message)
+    }
+}
+
+fn product_template_match_score(selector: FieldSelector, message: &Grib2Message) -> u8 {
+    if !selector_prefers_instantaneous_message(selector) {
+        return 0;
+    }
+
+    match message.product.template {
+        0 => 0,
+        1 => 1,
+        8 | 11 | 12 => 10,
+        _ => 20,
+    }
+}
+
+fn selector_prefers_instantaneous_message(selector: FieldSelector) -> bool {
+    !matches!(
+        selector.field,
+        CanonicalField::WindGust
+            | CanonicalField::TotalPrecipitation
+            | CanonicalField::CategoricalRain
+            | CanonicalField::CategoricalFreezingRain
+            | CanonicalField::CategoricalIcePellets
+            | CanonicalField::CategoricalSnow
+    )
 }
 
 impl TryFrom<FieldSelector> for StructuredMessageSelector {
@@ -2518,6 +2556,57 @@ mod tests {
             .unwrap();
 
         assert_eq!(field.values, vec![55.0, 65.0]);
+    }
+
+    #[test]
+    fn extract_prefers_instantaneous_temperature_over_statistical_alias() {
+        // ECMWF Open Data can carry PDT 4.8 statistical 2 m temperature
+        // messages before the instantaneous PDT 4.0 2 m temperature message.
+        // The statistical fields can be zero at f000, which becomes -273.15 C
+        // downstream if we take the first parameter/level match.
+        let mut statistical =
+            ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[0.0, 0.0], 261.0, 262.0);
+        statistical.product.template = 8;
+        statistical.product.statistical_process_type = Some(2);
+        statistical.product.statistical_time_range_unit = Some(1);
+        statistical.product.time_range_length = Some(6);
+
+        let instantaneous =
+            ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[280.0, 281.5], 261.0, 262.0);
+        let grib = Grib2File {
+            messages: vec![statistical, instantaneous],
+        };
+
+        let field = extract_field_from_grib2(
+            &grib,
+            FieldSelector::height_agl(CanonicalField::Temperature, 2),
+        )
+        .unwrap();
+
+        assert_eq!(field.values, vec![280.0, 281.5]);
+    }
+
+    #[test]
+    fn structured_selector_accepts_standard_mslp_parameter_zero() {
+        let message = ieee_f32_message(
+            PARAMETER_MSLP[0],
+            101,
+            0.0,
+            &[101000.0, 100750.0],
+            261.0,
+            262.0,
+        );
+        let grib = Grib2File {
+            messages: vec![message],
+        };
+
+        let field = extract_field_from_grib2(
+            &grib,
+            FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel),
+        )
+        .unwrap();
+
+        assert_eq!(field.values, vec![101000.0, 100750.0]);
     }
 
     #[test]
