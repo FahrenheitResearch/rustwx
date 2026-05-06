@@ -141,6 +141,30 @@ impl SurfaceTerrainStore {
             .and_then(|terrain| terrain.with_surface_height_m(surface_height_m))
             .map_err(|err| VolumeStoreError::InvalidManifest(err.to_string()))
     }
+
+    pub fn sample_grid_point(
+        &self,
+        forecast_hour: u8,
+        grid_x: f32,
+        grid_y: f32,
+        nx: usize,
+        ny: usize,
+    ) -> VolumeResult<SurfaceTerrainPoint> {
+        let psfc_pa = self
+            .psfc_by_hour
+            .get(&forecast_hour)
+            .ok_or(VolumeStoreError::MissingHour(forecast_hour))?;
+        Ok(SurfaceTerrainPoint {
+            surface_pressure_hpa: bilinear(psfc_pa, nx, ny, grid_x, grid_y).max(0.0) as f64 / 100.0,
+            surface_height_m_msl: bilinear(&self.orog_m, nx, ny, grid_x, grid_y) as f64,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SurfaceTerrainPoint {
+    pub surface_pressure_hpa: f64,
+    pub surface_height_m_msl: f64,
 }
 
 impl SurfaceTerrainManifest {

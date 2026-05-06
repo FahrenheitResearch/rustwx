@@ -36,8 +36,8 @@ pub use sampling::{
 };
 pub use terrain::{
     SURFACE_TERRAIN_FORMAT, SURFACE_TERRAIN_MANIFEST_FILE, SURFACE_TERRAIN_PAYLOAD_FILE,
-    SurfaceTerrainBuildStats, SurfaceTerrainManifest, SurfaceTerrainStore, SurfaceTerrainTimestep,
-    write_surface_terrain_store,
+    SurfaceTerrainBuildStats, SurfaceTerrainManifest, SurfaceTerrainPoint, SurfaceTerrainStore,
+    SurfaceTerrainTimestep, write_surface_terrain_store,
 };
 pub use writer::{BuildStats, VolumeFieldProvider, write_volume_store};
 
