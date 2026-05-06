@@ -84,7 +84,17 @@ pub fn host(
     color: u32,
     width: u32,
 ) -> Result<Vec<u8>> {
-    host_on(ctx, ctx.stream(), canvas, img_w, img_h, geom, levels, color, width)
+    host_on(
+        ctx,
+        ctx.stream(),
+        canvas,
+        img_w,
+        img_h,
+        geom,
+        levels,
+        color,
+        width,
+    )
 }
 
 /// Caller-supplied stream variant.
@@ -141,10 +151,7 @@ pub fn host_on(
     let canvas_u32: Vec<u32> = canvas
         .chunks_exact(4)
         .map(|c| {
-            (c[0] as u32)
-                | ((c[1] as u32) << 8)
-                | ((c[2] as u32) << 16)
-                | ((c[3] as u32) << 24)
+            (c[0] as u32) | ((c[1] as u32) << 8) | ((c[2] as u32) << 16) | ((c[3] as u32) << 24)
         })
         .collect();
 
@@ -164,11 +171,7 @@ pub fn host_on(
     let n_cells = total_cells as u32;
     let n_levels = levels.len() as u32;
     let cfg = LaunchCfg {
-        grid_dim: (
-            (n_cells + bx - 1) / bx,
-            (n_levels + by - 1) / by,
-            1,
-        ),
+        grid_dim: ((n_cells + bx - 1) / bx, (n_levels + by - 1) / by, 1),
         block_dim: (bx, by, 1),
         shared_mem_bytes: 0,
     };
@@ -314,8 +317,12 @@ mod tests {
     // so we can detect drift.
 
     fn interp_ref(
-        x0: f64, y0: f64, v0: f64,
-        x1: f64, y1: f64, v1: f64,
+        x0: f64,
+        y0: f64,
+        v0: f64,
+        x1: f64,
+        y1: f64,
+        v1: f64,
         level: f64,
     ) -> Option<(f64, f64)> {
         if !v0.is_finite() || !v1.is_finite() {
@@ -355,7 +362,10 @@ mod tests {
         img_h: u32,
         x: i32,
         y: i32,
-        sr: u8, sg: u8, sb: u8, sa: u8,
+        sr: u8,
+        sg: u8,
+        sb: u8,
+        sa: u8,
     ) {
         if x < 0 || y < 0 || x as u32 >= img_w || y as u32 >= img_h {
             return;
@@ -387,9 +397,14 @@ mod tests {
         canvas: &mut [u8],
         img_w: u32,
         img_h: u32,
-        x0: f64, y0: f64,
-        x1: f64, y1: f64,
-        sr: u8, sg: u8, sb: u8, sa: u8,
+        x0: f64,
+        y0: f64,
+        x1: f64,
+        y1: f64,
+        sr: u8,
+        sg: u8,
+        sb: u8,
+        sa: u8,
         width: u32,
     ) {
         let half_width = width.max(1) as f64 * 0.5;
@@ -654,6 +669,10 @@ mod tests {
                 max_chan_delta = d;
             }
         }
-        assert!(max_chan_delta <= 2, "max channel delta {} > 2", max_chan_delta);
+        assert!(
+            max_chan_delta <= 2,
+            "max channel delta {} > 2",
+            max_chan_delta
+        );
     }
 }

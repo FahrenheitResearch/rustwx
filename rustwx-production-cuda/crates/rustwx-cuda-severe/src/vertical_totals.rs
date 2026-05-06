@@ -2,9 +2,7 @@
 //! Matches `wx_math::composite::vertical_totals`.
 
 use cudarc::driver::{CudaSlice, PushKernelArg};
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
@@ -36,11 +34,7 @@ pub fn launch_device(
 }
 
 /// VT = T850 - T500. Inputs in deg C.
-pub fn host(
-    ctx: &ContextHandle,
-    t850: &[f64],
-    t500: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, t850: &[f64], t500: &[f64]) -> Result<Vec<f64>> {
     if t500.len() != t850.len() {
         return Err(Error::LengthMismatch {
             what: "t850 vs t500",

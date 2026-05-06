@@ -2,9 +2,7 @@
 //! `potential_temperature_kernel`. Matches `metrust::calc::thermo::potential_temperature`.
 
 use cudarc::driver::{CudaSlice, PushKernelArg};
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
@@ -31,18 +29,18 @@ pub fn launch_device(
     let cfg = launch_cfg_1d(n, 256);
     let n_i32: i32 = n as i32;
     let mut builder = ctx.stream().launch_builder(&func);
-    builder.arg(pressure).arg(temperature).arg(theta).arg(&n_i32);
+    builder
+        .arg(pressure)
+        .arg(temperature)
+        .arg(theta)
+        .arg(&n_i32);
     unsafe { builder.launch(cfg)? };
     Ok(())
 }
 
 /// Compute potential temperature elementwise on host vectors.
 /// `pressure` in hPa, `temperature` in Celsius. Returns theta in Kelvin.
-pub fn host(
-    ctx: &ContextHandle,
-    pressure: &[f64],
-    temperature: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, pressure: &[f64], temperature: &[f64]) -> Result<Vec<f64>> {
     if pressure.len() != temperature.len() {
         return Err(Error::LengthMismatch {
             what: "pressure vs temperature",

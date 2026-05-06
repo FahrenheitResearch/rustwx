@@ -4,14 +4,11 @@
 //! for monotonically increasing height profiles whose surface level is `h[0]`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/wind/storm_relative_helicity.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/wind/storm_relative_helicity.cu");
 const MODULE_KEY: &str = "wind_storm_relative_helicity";
 const FUNCTION: &str = "storm_relative_helicity_kernel";
 
@@ -34,13 +31,11 @@ pub fn host(
     storm_u: f64,
     storm_v: f64,
 ) -> Result<(Vec<f64>, Vec<f64>, Vec<f64>)> {
-    let total = ncols
-        .checked_mul(nlevels)
-        .ok_or(Error::LengthMismatch {
-            what: "ncols * nlevels overflow",
-            expected: usize::MAX,
-            got: 0,
-        })?;
+    let total = ncols.checked_mul(nlevels).ok_or(Error::LengthMismatch {
+        what: "ncols * nlevels overflow",
+        expected: usize::MAX,
+        got: 0,
+    })?;
     if u.len() != total {
         return Err(Error::LengthMismatch {
             what: "u vs ncols*nlevels",

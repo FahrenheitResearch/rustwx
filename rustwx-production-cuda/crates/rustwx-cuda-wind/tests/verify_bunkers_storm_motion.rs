@@ -39,8 +39,7 @@ fn smoke() {
     let ctx = global().expect("init CUDA context");
     let (u, v, heights) = synthetic_profile();
     let (rm_u, rm_v, lm_u, lm_v, mw_u, mw_v) =
-        bunkers_storm_motion::host(&ctx, &u, &v, &heights, NCOLS, NLEVELS)
-            .expect("kernel");
+        bunkers_storm_motion::host(&ctx, &u, &v, &heights, NCOLS, NLEVELS).expect("kernel");
     assert_eq!(rm_u.len(), NCOLS);
     assert_eq!(rm_v.len(), NCOLS);
     assert_eq!(lm_u.len(), NCOLS);

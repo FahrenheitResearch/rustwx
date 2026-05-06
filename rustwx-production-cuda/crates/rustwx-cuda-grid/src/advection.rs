@@ -2,9 +2,7 @@
 //! `advection_kernel`. Matches `wx_math::dynamics::advection`.
 
 use cudarc::driver::{CudaSlice, PushKernelArg};
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_2d,
-};
+use rustwx_cuda_core::{launch_cfg_2d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_grid_helpers;
 
@@ -60,19 +58,39 @@ pub fn host(
 ) -> Result<Vec<f64>> {
     let n = nx * ny;
     if field.len() != n {
-        return Err(Error::LengthMismatch { what: "field vs nx*ny", expected: n, got: field.len() });
+        return Err(Error::LengthMismatch {
+            what: "field vs nx*ny",
+            expected: n,
+            got: field.len(),
+        });
     }
     if u.len() != n {
-        return Err(Error::LengthMismatch { what: "u vs nx*ny", expected: n, got: u.len() });
+        return Err(Error::LengthMismatch {
+            what: "u vs nx*ny",
+            expected: n,
+            got: u.len(),
+        });
     }
     if v.len() != n {
-        return Err(Error::LengthMismatch { what: "v vs nx*ny", expected: n, got: v.len() });
+        return Err(Error::LengthMismatch {
+            what: "v vs nx*ny",
+            expected: n,
+            got: v.len(),
+        });
     }
     if dx.len() != n {
-        return Err(Error::LengthMismatch { what: "dx vs nx*ny", expected: n, got: dx.len() });
+        return Err(Error::LengthMismatch {
+            what: "dx vs nx*ny",
+            expected: n,
+            got: dx.len(),
+        });
     }
     if dy.len() != n {
-        return Err(Error::LengthMismatch { what: "dy vs nx*ny", expected: n, got: dy.len() });
+        return Err(Error::LengthMismatch {
+            what: "dy vs nx*ny",
+            expected: n,
+            got: dy.len(),
+        });
     }
 
     let field_d = DeviceVec::from_host(ctx, field)?;

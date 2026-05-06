@@ -3,14 +3,11 @@
 //! `metrust::calc::thermo::water_latent_heat_melting`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/thermo/water_latent_heat_melting.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/water_latent_heat_melting.cu");
 const MODULE_KEY: &str = "thermo_water_latent_heat_melting";
 const FUNCTION: &str = "water_latent_heat_melting_kernel";
 
@@ -31,10 +28,7 @@ pub fn host(ctx: &ContextHandle, temperature: &[f64]) -> Result<Vec<f64>> {
     let cfg = launch_cfg_1d(n, 256);
     let n_i32: i32 = n as i32;
     let mut builder = ctx.stream().launch_builder(&func);
-    builder
-        .arg(t_d.slice())
-        .arg(lf_d.slice_mut())
-        .arg(&n_i32);
+    builder.arg(t_d.slice()).arg(lf_d.slice_mut()).arg(&n_i32);
     unsafe { builder.launch(cfg)? };
 
     lf_d.copy_to_host(ctx)

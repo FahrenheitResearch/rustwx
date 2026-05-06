@@ -5,14 +5,11 @@
 //! restricts inputs to the positive branch.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/thermo/brunt_vaisala_period.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/brunt_vaisala_period.cu");
 const MODULE_KEY: &str = "thermo_brunt_vaisala_period";
 const FUNCTION: &str = "brunt_vaisala_period_kernel";
 
@@ -33,10 +30,7 @@ pub fn host(ctx: &ContextHandle, bvf: &[f64]) -> Result<Vec<f64>> {
     let cfg = launch_cfg_1d(n, 256);
     let n_i32: i32 = n as i32;
     let mut builder = ctx.stream().launch_builder(&func);
-    builder
-        .arg(b_d.slice())
-        .arg(p_d.slice_mut())
-        .arg(&n_i32);
+    builder.arg(b_d.slice()).arg(p_d.slice_mut()).arg(&n_i32);
     unsafe { builder.launch(cfg)? };
 
     p_d.copy_to_host(ctx)

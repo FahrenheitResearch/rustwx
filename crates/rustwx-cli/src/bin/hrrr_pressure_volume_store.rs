@@ -40,7 +40,10 @@ struct Args {
     start_hour: u16,
     #[arg(long, default_value_t = 1)]
     end_hour: u16,
-    #[arg(long, help = "Forecast hours to build, e.g. 0,3,6 or 0-18. Overrides start/end.")]
+    #[arg(
+        long,
+        help = "Forecast hours to build, e.g. 0,3,6 or 0-18. Overrides start/end."
+    )]
     hours: Option<String>,
     #[arg(long, default_value = "aws")]
     source: SourceId,
@@ -448,7 +451,11 @@ fn forecast_hours_from_args(args: &Args) -> Result<Vec<u8>> {
 
 fn parse_hour_spec(spec: &str) -> Result<Vec<u16>> {
     let mut hours = Vec::new();
-    for token in spec.split(',').map(str::trim).filter(|token| !token.is_empty()) {
+    for token in spec
+        .split(',')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    {
         if let Some((start, end)) = token.split_once('-') {
             let start = start
                 .trim()

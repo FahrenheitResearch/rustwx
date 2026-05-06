@@ -2,9 +2,7 @@
 //! Matches `wx_math::composite::haines_index` (returned as f64).
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
@@ -19,12 +17,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 
 /// Haines Index 2..=6 returned as f64 (always integer-valued).
 /// Inputs are 950 hPa and 850 hPa T (deg C) and 850 hPa Td (deg C).
-pub fn host(
-    ctx: &ContextHandle,
-    t950: &[f64],
-    t850: &[f64],
-    td850: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, t950: &[f64], t850: &[f64], td850: &[f64]) -> Result<Vec<f64>> {
     let n = t950.len();
     if t850.len() != n {
         return Err(Error::LengthMismatch {

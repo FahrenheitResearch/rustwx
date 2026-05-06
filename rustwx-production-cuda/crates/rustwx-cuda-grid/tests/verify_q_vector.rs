@@ -48,10 +48,26 @@ fn matches_cpu_reference() {
     for k in 0..n {
         let a1 = (gpu_q1[k] - cpu_q1[k]).abs();
         let a2 = (gpu_q2[k] - cpu_q2[k]).abs();
-        if a1 > max1 { max1 = a1; }
-        if a2 > max2 { max2 = a2; }
-        assert!(a1 < TOL, "q1 k={k} gpu={} cpu={} abs={:e}", gpu_q1[k], cpu_q1[k], a1);
-        assert!(a2 < TOL, "q2 k={k} gpu={} cpu={} abs={:e}", gpu_q2[k], cpu_q2[k], a2);
+        if a1 > max1 {
+            max1 = a1;
+        }
+        if a2 > max2 {
+            max2 = a2;
+        }
+        assert!(
+            a1 < TOL,
+            "q1 k={k} gpu={} cpu={} abs={:e}",
+            gpu_q1[k],
+            cpu_q1[k],
+            a1
+        );
+        assert!(
+            a2 < TOL,
+            "q2 k={k} gpu={} cpu={} abs={:e}",
+            gpu_q2[k],
+            cpu_q2[k],
+            a2
+        );
     }
     eprintln!("q_vector max_abs_q1={max1:e} max_abs_q2={max2:e}");
 }

@@ -155,10 +155,7 @@ pub fn host_on(
     let canvas_u32: Vec<u32> = canvas
         .chunks_exact(4)
         .map(|c| {
-            (c[0] as u32)
-                | ((c[1] as u32) << 8)
-                | ((c[2] as u32) << 16)
-                | ((c[3] as u32) << 24)
+            (c[0] as u32) | ((c[1] as u32) << 8) | ((c[2] as u32) << 16) | ((c[3] as u32) << 24)
         })
         .collect();
 
@@ -473,12 +470,7 @@ mod tests {
         // The third one shares an endpoint with itself (corner), exercising
         // the atomic-blend overlap path.
         let p1 = Polyline {
-            points: vec![
-                (12.5, 18.5),
-                (60.0, 50.0),
-                (110.25, 95.75),
-                (200.0, 150.0),
-            ],
+            points: vec![(12.5, 18.5), (60.0, 50.0), (110.25, 95.75), (200.0, 150.0)],
             color: pack_rgba(255, 255, 255, 200),
             width: 1,
         };
@@ -488,12 +480,7 @@ mod tests {
             width: 2,
         };
         let p3 = Polyline {
-            points: vec![
-                (40.0, 20.0),
-                (80.0, 60.0),
-                (40.0, 100.0),
-                (80.0, 140.0),
-            ],
+            points: vec![(40.0, 20.0), (80.0, 60.0), (40.0, 100.0), (80.0, 140.0)],
             color: pack_rgba(20, 60, 200, 160),
             width: 2,
         };
@@ -502,8 +489,8 @@ mod tests {
         let mut cpu_canvas = bg.clone();
         cpu_ref(&mut cpu_canvas, img_w, img_h, &polys);
 
-        let gpu_canvas = host(&ctx, &bg, img_w, img_h, &polys)
-            .expect("CUDA linework kernel failed");
+        let gpu_canvas =
+            host(&ctx, &bg, img_w, img_h, &polys).expect("CUDA linework kernel failed");
 
         assert_eq!(cpu_canvas.len(), gpu_canvas.len());
 

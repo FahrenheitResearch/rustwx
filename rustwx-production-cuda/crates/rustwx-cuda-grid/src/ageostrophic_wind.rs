@@ -12,9 +12,7 @@
 use std::f64::consts::PI;
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_2d,
-};
+use rustwx_cuda_core::{launch_cfg_2d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_grid_helpers;
 
@@ -49,29 +47,57 @@ pub fn host(
 ) -> Result<(Vec<f64>, Vec<f64>)> {
     let n = nx * ny;
     if u.len() != n {
-        return Err(Error::LengthMismatch { what: "u vs nx*ny", expected: n, got: u.len() });
+        return Err(Error::LengthMismatch {
+            what: "u vs nx*ny",
+            expected: n,
+            got: u.len(),
+        });
     }
     if v.len() != n {
-        return Err(Error::LengthMismatch { what: "v vs nx*ny", expected: n, got: v.len() });
+        return Err(Error::LengthMismatch {
+            what: "v vs nx*ny",
+            expected: n,
+            got: v.len(),
+        });
     }
     if height.len() != n {
-        return Err(Error::LengthMismatch { what: "height vs nx*ny", expected: n, got: height.len() });
+        return Err(Error::LengthMismatch {
+            what: "height vs nx*ny",
+            expected: n,
+            got: height.len(),
+        });
     }
     if lats.len() != n {
-        return Err(Error::LengthMismatch { what: "lats vs nx*ny", expected: n, got: lats.len() });
+        return Err(Error::LengthMismatch {
+            what: "lats vs nx*ny",
+            expected: n,
+            got: lats.len(),
+        });
     }
     if dx.len() != n {
-        return Err(Error::LengthMismatch { what: "dx vs nx*ny", expected: n, got: dx.len() });
+        return Err(Error::LengthMismatch {
+            what: "dx vs nx*ny",
+            expected: n,
+            got: dx.len(),
+        });
     }
     if dy.len() != n {
-        return Err(Error::LengthMismatch { what: "dy vs nx*ny", expected: n, got: dy.len() });
+        return Err(Error::LengthMismatch {
+            what: "dy vs nx*ny",
+            expected: n,
+            got: dy.len(),
+        });
     }
 
     let f: Vec<f64> = lats
         .iter()
         .map(|&lat| {
             let fc = coriolis_parameter(lat);
-            if fc.abs() < F_CUTOFF { 0.0 } else { fc }
+            if fc.abs() < F_CUTOFF {
+                0.0
+            } else {
+                fc
+            }
         })
         .collect();
 

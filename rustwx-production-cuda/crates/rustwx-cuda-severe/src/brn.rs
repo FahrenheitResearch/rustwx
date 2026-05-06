@@ -3,9 +3,7 @@
 //! too small).
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
@@ -19,11 +17,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 }
 
 /// BRN = CAPE / (0.5 * shear^2). Returns NaN when 0.5*shear^2 < 0.1.
-pub fn host(
-    ctx: &ContextHandle,
-    cape: &[f64],
-    shear: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, cape: &[f64], shear: &[f64]) -> Result<Vec<f64>> {
     if shear.len() != cape.len() {
         return Err(Error::LengthMismatch {
             what: "cape vs shear",

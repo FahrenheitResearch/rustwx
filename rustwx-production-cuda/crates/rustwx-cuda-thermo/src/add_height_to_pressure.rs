@@ -4,14 +4,11 @@
 //! wx_math std-atm functions; the kernel uses the same formulas).
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/thermo/add_height_to_pressure.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/add_height_to_pressure.cu");
 const MODULE_KEY: &str = "thermo_add_height_to_pressure";
 const FUNCTION: &str = "add_height_to_pressure_kernel";
 
@@ -21,11 +18,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 }
 
 /// New pressure (hPa) after a height increment (m).
-pub fn host(
-    ctx: &ContextHandle,
-    pressure: &[f64],
-    delta_height: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, pressure: &[f64], delta_height: &[f64]) -> Result<Vec<f64>> {
     if pressure.len() != delta_height.len() {
         return Err(Error::LengthMismatch {
             what: "pressure vs delta_height",

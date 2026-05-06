@@ -1,12 +1,12 @@
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use cudarc::driver::{CudaFunction, CudaModule, LaunchConfig};
-use cudarc::nvrtc::{CompileOptions, Ptx, compile_ptx_with_opts};
+use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions, Ptx};
 use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
 
@@ -108,11 +108,7 @@ pub struct KernelModule {
 }
 
 impl KernelModule {
-    pub fn load(
-        ctx: &ContextHandle,
-        module_key: &'static str,
-        cu_source: &str,
-    ) -> Result<Self> {
+    pub fn load(ctx: &ContextHandle, module_key: &'static str, cu_source: &str) -> Result<Self> {
         let module = compile_or_load_ptx(ctx, module_key, cu_source)?;
         Ok(Self { module, module_key })
     }

@@ -32,8 +32,19 @@ fn matches_cpu_reference() {
         // metrust returns g/kg; kernel returns kg/kg
         let cpu = cpu_w(p[i], t[i], rh[i]) / 1000.0;
         let abs = (gpu[i] - cpu).abs();
-        if abs > max_abs { max_abs = abs; }
-        assert!(abs < TOL, "gpu={} cpu={} diff={:e} at i={i} p={} t={} rh={}", gpu[i], cpu, abs, p[i], t[i], rh[i]);
+        if abs > max_abs {
+            max_abs = abs;
+        }
+        assert!(
+            abs < TOL,
+            "gpu={} cpu={} diff={:e} at i={i} p={} t={} rh={}",
+            gpu[i],
+            cpu,
+            abs,
+            p[i],
+            t[i],
+            rh[i]
+        );
     }
     eprintln!("max_abs={max_abs:e}");
 }

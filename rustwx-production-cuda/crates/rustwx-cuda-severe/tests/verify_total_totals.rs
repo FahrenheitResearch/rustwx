@@ -36,7 +36,9 @@ fn matches_cpu_reference() {
         assert!(
             abs < TOL,
             "gpu={} cpu={} abs_diff={:e} at i={i}",
-            gpu[i], cpu, abs
+            gpu[i],
+            cpu,
+            abs
         );
     }
     eprintln!("max_abs={max_abs:e}");

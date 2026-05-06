@@ -6,14 +6,11 @@
 //! `> -30 dBZ` per column for the two implementations to agree.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/grid/composite_reflectivity.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/grid/composite_reflectivity.cu");
 const MODULE_KEY: &str = "grid_composite_reflectivity";
 const FUNCTION: &str = "composite_reflectivity_kernel";
 
@@ -29,7 +26,11 @@ pub fn host(
     let ncols = ny * nx;
     let n_in = nz * ncols;
     if field_3d.len() != n_in {
-        return Err(Error::LengthMismatch { what: "field vs nz*ny*nx", expected: n_in, got: field_3d.len() });
+        return Err(Error::LengthMismatch {
+            what: "field vs nz*ny*nx",
+            expected: n_in,
+            got: field_3d.len(),
+        });
     }
 
     let m = KernelModule::load(ctx, MODULE_KEY, &with_constants(KERNEL_SRC))?;

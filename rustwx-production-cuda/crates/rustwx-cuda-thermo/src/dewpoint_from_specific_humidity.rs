@@ -3,14 +3,11 @@
 //! `metrust::calc::thermo::dewpoint_from_specific_humidity`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_thermo_helpers;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/thermo/dewpoint_from_specific_humidity.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/dewpoint_from_specific_humidity.cu");
 const MODULE_KEY: &str = "thermo_dewpoint_from_specific_humidity";
 const FUNCTION: &str = "dewpoint_from_specific_humidity_kernel";
 
@@ -20,11 +17,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 }
 
 /// Dewpoint (Celsius) from pressure (hPa) and specific humidity (kg/kg).
-pub fn host(
-    ctx: &ContextHandle,
-    pressure: &[f64],
-    specific_humidity: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, pressure: &[f64], specific_humidity: &[f64]) -> Result<Vec<f64>> {
     if pressure.len() != specific_humidity.len() {
         return Err(Error::LengthMismatch {
             what: "pressure vs specific_humidity",

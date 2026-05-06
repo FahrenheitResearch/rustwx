@@ -5,9 +5,7 @@
 use std::sync::Arc;
 
 use cudarc::driver::{CudaStream, PushKernelArg};
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, KernelModule, LaunchCfg, Result,
-};
+use rustwx_cuda_core::{ContextHandle, DeviceVec, KernelModule, LaunchCfg, Result};
 
 use crate::colormap::ColormapHostView;
 use crate::sources::with_constants;
@@ -260,14 +258,18 @@ mod tests {
 
                 let value = bilinear_ref(v00, v10, v01, v11, fx, fy);
                 let packed = colormap_lookup_ref(
-                    value, levels, colors_packed,
-                    under_color, over_color, mask_below,
+                    value,
+                    levels,
+                    colors_packed,
+                    under_color,
+                    over_color,
+                    mask_below,
                 );
                 let off = (py as usize * img_w as usize + px as usize) * 4;
-                out[off    ] = (packed       ) as u8;
-                out[off + 1] = (packed >>  8 ) as u8;
-                out[off + 2] = (packed >> 16 ) as u8;
-                out[off + 3] = (packed >> 24 ) as u8;
+                out[off] = (packed) as u8;
+                out[off + 1] = (packed >> 8) as u8;
+                out[off + 2] = (packed >> 16) as u8;
+                out[off + 3] = (packed >> 24) as u8;
             }
         }
         out
@@ -280,7 +282,9 @@ mod tests {
             south * (1.0 - fy) + north * fy
         } else {
             for v in [v00, v10, v01, v11] {
-                if v.is_finite() { return v; }
+                if v.is_finite() {
+                    return v;
+                }
             }
             f64::NAN
         }
@@ -294,10 +298,20 @@ mod tests {
         over_color: Option<u32>,
         mask_below: Option<f64>,
     ) -> u32 {
-        if value.is_nan() { return 0; }
-        if let Some(mb) = mask_below { if value < mb { return 0; } }
-        if levels.is_empty() || colors.is_empty() { return 0; }
-        if value < levels[0] { return under_color.unwrap_or(0); }
+        if value.is_nan() {
+            return 0;
+        }
+        if let Some(mb) = mask_below {
+            if value < mb {
+                return 0;
+            }
+        }
+        if levels.is_empty() || colors.is_empty() {
+            return 0;
+        }
+        if value < levels[0] {
+            return under_color.unwrap_or(0);
+        }
         let n_intervals = levels.len() - 1;
         let idx = levels.partition_point(|l| *l <= value);
         if idx <= n_intervals {
@@ -315,22 +329,22 @@ mod tests {
             for i in 0..nx {
                 let x = i as f64 / (nx as f64).max(1.0);
                 let y = j as f64 / (ny as f64).max(1.0);
-                v[j * nx + i] = (x * 6.28).sin() * 50.0
-                    + (y * 4.71).cos() * 30.0
-                    + (x * y * 12.0).sin() * 20.0;
+                v[j * nx + i] =
+                    (x * 6.28).sin() * 50.0 + (y * 4.71).cos() * 30.0 + (x * y * 12.0).sin() * 20.0;
             }
         }
         // sprinkle a few NaNs to exercise the masked path
         v[0] = f64::NAN;
-        if v.len() > 1234 { v[1234] = f64::NAN; }
+        if v.len() > 1234 {
+            v[1234] = f64::NAN;
+        }
         v
     }
 
     fn build_synthetic_cmap() -> (Vec<f64>, Vec<u32>, Option<u32>, Option<u32>) {
         // Asymmetric levels (irregular spacing) to exercise the binary search.
         let levels: Vec<f64> = vec![
-            -100.0, -75.0, -50.0, -30.0, -15.0, -5.0,
-              0.0,   5.0,  15.0,  30.0,  50.0,  75.0, 100.0,
+            -100.0, -75.0, -50.0, -30.0, -15.0, -5.0, 0.0, 5.0, 15.0, 30.0, 50.0, 75.0, 100.0,
         ];
         let palette: Vec<u32> = (0..(levels.len() - 1))
             .map(|k| {
@@ -396,7 +410,8 @@ mod tests {
             }
         }
         assert_eq!(
-            diff_pixels, 0,
+            diff_pixels,
+            0,
             "{} of {} pixels diverged between CPU and GPU rasterize_grid",
             diff_pixels,
             img_w as usize * img_h as usize

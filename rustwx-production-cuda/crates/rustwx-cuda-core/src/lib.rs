@@ -12,11 +12,11 @@ mod kernel;
 
 pub mod constants;
 
-pub use buffer::{DeviceVec, HostVec, require_eq};
-pub use context::{Context, ContextHandle, global};
+pub use buffer::{require_eq, DeviceVec, HostVec};
+pub use context::{global, Context, ContextHandle};
 pub use error::{Error, Result};
 pub use kernel::{
-    KernelModule, LaunchCfg, compile_or_load_ptx, function, launch_cfg_1d, launch_cfg_2d,
+    compile_or_load_ptx, function, launch_cfg_1d, launch_cfg_2d, KernelModule, LaunchCfg,
 };
 
 pub use cudarc;

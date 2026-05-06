@@ -1,5 +1,5 @@
 use clap::Parser;
-use grib_core::grib2::{unpack_message, Grib2File};
+use grib_core::grib2::{Grib2File, unpack_message};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]

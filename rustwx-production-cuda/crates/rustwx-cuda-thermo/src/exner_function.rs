@@ -2,14 +2,11 @@
 //! Matches `wx_math::thermo::exner_function`.
 
 use cudarc::driver::{CudaSlice, PushKernelArg};
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/thermo/exner_function.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/exner_function.cu");
 const MODULE_KEY: &str = "thermo_exner_function";
 const FUNCTION: &str = "exner_function_kernel";
 

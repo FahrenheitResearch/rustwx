@@ -1,9 +1,9 @@
 //! Numerical agreement test: CUDA `log_interpolate_1d` vs metrust's per-column
 //! `log_interpolate_1d`.
 
+use metrust::interpolate::log_interpolate_1d as cpu_logp;
 use rustwx_cuda_core::global;
 use rustwx_cuda_grid::log_interpolate_1d;
-use metrust::interpolate::log_interpolate_1d as cpu_logp;
 
 const TOL: f64 = 1e-10;
 const NX: usize = 64;
@@ -16,7 +16,14 @@ fn synthetic() -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let mut pressure = vec![0.0; n];
 
     // Standard pressure levels (Pa), descending with k.
-    let base = [100_000.0_f64, 85_000.0, 70_000.0, 50_000.0, 30_000.0, 20_000.0];
+    let base = [
+        100_000.0_f64,
+        85_000.0,
+        70_000.0,
+        50_000.0,
+        30_000.0,
+        20_000.0,
+    ];
 
     let nxy = NY * NX;
     for k in 0..NZ_IN {
@@ -28,7 +35,9 @@ fn synthetic() -> (Vec<f64>, Vec<f64>, Vec<f64>) {
                 let perturb = 1.0 * ((i as f64 * 0.05).sin() + (j as f64 * 0.05).cos());
                 pressure[idx] = base[k] + perturb;
                 // Field: smooth function of level + position (e.g. T in K).
-                field[idx] = 250.0 + 0.5 * (k as f64) + 2.0 * (i as f64 * 0.1).sin()
+                field[idx] = 250.0
+                    + 0.5 * (k as f64)
+                    + 2.0 * (i as f64 * 0.1).sin()
                     + 1.5 * (j as f64 * 0.1).cos();
             }
         }
@@ -69,10 +78,20 @@ fn matches_cpu_reference() {
 
     let mut max_abs = 0.0_f64;
     for k in 0..gpu.len() {
-        if cpu[k].is_nan() && gpu[k].is_nan() { continue; }
+        if cpu[k].is_nan() && gpu[k].is_nan() {
+            continue;
+        }
         let abs = (gpu[k] - cpu[k]).abs();
-        if abs > max_abs { max_abs = abs; }
-        assert!(abs < TOL, "k={k} gpu={} cpu={} abs={:e}", gpu[k], cpu[k], abs);
+        if abs > max_abs {
+            max_abs = abs;
+        }
+        assert!(
+            abs < TOL,
+            "k={k} gpu={} cpu={} abs={:e}",
+            gpu[k],
+            cpu[k],
+            abs
+        );
     }
     eprintln!("log_interpolate_1d max_abs={max_abs:e}");
 }

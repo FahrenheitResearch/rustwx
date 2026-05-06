@@ -6,14 +6,11 @@
 //! validate against the wx_math reference, which the kernel mirrors verbatim.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/thermo/height_to_pressure_std.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/height_to_pressure_std.cu");
 const MODULE_KEY: &str = "thermo_height_to_pressure_std";
 const FUNCTION: &str = "height_to_pressure_std_kernel";
 
@@ -34,10 +31,7 @@ pub fn host(ctx: &ContextHandle, height: &[f64]) -> Result<Vec<f64>> {
     let cfg = launch_cfg_1d(n, 256);
     let n_i32: i32 = n as i32;
     let mut builder = ctx.stream().launch_builder(&func);
-    builder
-        .arg(h_d.slice())
-        .arg(p_d.slice_mut())
-        .arg(&n_i32);
+    builder.arg(h_d.slice()).arg(p_d.slice_mut()).arg(&n_i32);
     unsafe { builder.launch(cfg)? };
 
     p_d.copy_to_host(ctx)

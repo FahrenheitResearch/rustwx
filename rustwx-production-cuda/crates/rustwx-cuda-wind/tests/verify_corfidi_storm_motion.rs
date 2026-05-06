@@ -41,10 +41,9 @@ fn smoke() {
     let u_llj = 12.0;
     let v_llj = 4.0;
 
-    let (up_u, up_v, dn_u, dn_v) = corfidi_storm_motion::host(
-        &ctx, &u, &v, &heights, NCOLS, NLEVELS, u_llj, v_llj,
-    )
-    .expect("kernel");
+    let (up_u, up_v, dn_u, dn_v) =
+        corfidi_storm_motion::host(&ctx, &u, &v, &heights, NCOLS, NLEVELS, u_llj, v_llj)
+            .expect("kernel");
     assert_eq!(up_u.len(), NCOLS);
     assert_eq!(dn_u.len(), NCOLS);
 

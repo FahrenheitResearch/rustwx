@@ -5,9 +5,7 @@
 //! `(z1000, z700, t700)`.
 
 use cudarc::driver::{CudaSlice, PushKernelArg};
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
@@ -34,23 +32,13 @@ pub fn launch_device(
     let cfg = launch_cfg_1d(n, 256);
     let n_i32: i32 = n as i32;
     let mut builder = ctx.stream().launch_builder(&func);
-    builder
-        .arg(z1000)
-        .arg(z700)
-        .arg(t700)
-        .arg(bi)
-        .arg(&n_i32);
+    builder.arg(z1000).arg(z700).arg(t700).arg(bi).arg(&n_i32);
     unsafe { builder.launch(cfg)? };
     Ok(())
 }
 
 /// BI = (Z700 - Z1000)/10 - T700 - 200. z in m, t in deg C.
-pub fn host(
-    ctx: &ContextHandle,
-    z1000: &[f64],
-    z700: &[f64],
-    t700: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, z1000: &[f64], z700: &[f64], t700: &[f64]) -> Result<Vec<f64>> {
     let n = z1000.len();
     if z700.len() != n {
         return Err(Error::LengthMismatch {

@@ -14,8 +14,8 @@ fn synthetic(n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         let f = (i as f64) / ((n.max(2) - 1) as f64);
         // Make stability span all three A buckets:
         //   dt = t950 - t850 in roughly [0, 12]
-        let t850_v = 10.0 + f * 5.0;        // 10..15
-        let dt = f * 12.0;                  // 0..12
+        let t850_v = 10.0 + f * 5.0; // 10..15
+        let dt = f * 12.0; // 0..12
         t950.push(t850_v + dt);
         t850.push(t850_v);
         // Moisture span all three B buckets:
@@ -43,7 +43,9 @@ fn matches_cpu_reference() {
         assert!(
             abs < TOL,
             "gpu={} cpu={} abs_diff={:e} at i={i}",
-            gpu[i], cpu, abs
+            gpu[i],
+            cpu,
+            abs
         );
     }
     eprintln!("max_abs={max_abs:e}");

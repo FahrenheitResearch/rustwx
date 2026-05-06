@@ -17,7 +17,8 @@ pub fn save_png<P: AsRef<Path>>(
     assert_eq!(field.len(), n, "field length must equal nx*ny");
 
     // Robust min/max ignoring NaN.
-    let (vmin, vmax) = field.iter()
+    let (vmin, vmax) = field
+        .iter()
         .copied()
         .filter(|v| v.is_finite())
         .fold((f64::INFINITY, f64::NEG_INFINITY), |acc, v| {
@@ -45,18 +46,19 @@ pub fn save_png<P: AsRef<Path>>(
     if let Some(parent) = path.as_ref().parent() {
         std::fs::create_dir_all(parent)?;
     }
-    img.save(path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    img.save(path)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
 }
 
 /// 5-stop viridis-like map. Cheap to compute, perceptually reasonable.
 fn viridis(t: f64) -> Rgb<u8> {
     // (t, r, g, b) stops sampled from matplotlib's viridis.
     const STOPS: [(f64, f64, f64, f64); 5] = [
-        (0.00,  68.0,   1.0,  84.0),
-        (0.25,  59.0,  82.0, 139.0),
-        (0.50,  33.0, 144.0, 141.0),
-        (0.75,  93.0, 201.0,  99.0),
-        (1.00, 253.0, 231.0,  37.0),
+        (0.00, 68.0, 1.0, 84.0),
+        (0.25, 59.0, 82.0, 139.0),
+        (0.50, 33.0, 144.0, 141.0),
+        (0.75, 93.0, 201.0, 99.0),
+        (1.00, 253.0, 231.0, 37.0),
     ];
     let mut i = 0;
     while i + 1 < STOPS.len() && t > STOPS[i + 1].0 {
@@ -64,7 +66,11 @@ fn viridis(t: f64) -> Rgb<u8> {
     }
     let (t0, r0, g0, b0) = STOPS[i];
     let (t1, r1, g1, b1) = STOPS[(i + 1).min(STOPS.len() - 1)];
-    let f = if (t1 - t0).abs() < 1e-12 { 0.0 } else { (t - t0) / (t1 - t0) };
+    let f = if (t1 - t0).abs() < 1e-12 {
+        0.0
+    } else {
+        (t - t0) / (t1 - t0)
+    };
     Rgb([
         (r0 + f * (r1 - r0)).round().clamp(0.0, 255.0) as u8,
         (g0 + f * (g1 - g0)).round().clamp(0.0, 255.0) as u8,

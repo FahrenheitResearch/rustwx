@@ -36,10 +36,8 @@ fn smoke() {
     let p_bottom = 850.0;
     let p_top = 500.0;
 
-    let (p_out, v_out, cnt) = get_layer::host(
-        &ctx, &p, &vals, NCOLS, NLEVELS, p_bottom, p_top,
-    )
-    .expect("kernel");
+    let (p_out, v_out, cnt) =
+        get_layer::host(&ctx, &p, &vals, NCOLS, NLEVELS, p_bottom, p_top).expect("kernel");
     assert_eq!(p_out.len(), NCOLS * NLEVELS);
     assert_eq!(v_out.len(), NCOLS * NLEVELS);
     assert_eq!(cnt.len(), NCOLS);

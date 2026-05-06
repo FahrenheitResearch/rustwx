@@ -8,14 +8,11 @@
 //! diverge at non-zero elevation by tens of Pa. See DIVERGENT_KERNELS.md.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/thermo/altimeter_to_sea_level_pressure.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/altimeter_to_sea_level_pressure.cu");
 const MODULE_KEY: &str = "thermo_altimeter_to_sea_level_pressure";
 const FUNCTION: &str = "altimeter_to_sea_level_pressure_kernel";
 

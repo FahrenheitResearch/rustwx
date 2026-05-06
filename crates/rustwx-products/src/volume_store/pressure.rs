@@ -493,7 +493,8 @@ mod tests {
 
     #[test]
     fn levels_from_pressure_normalizes_ascending_model_order() {
-        let pressure = pressure_with_levels(0, 2, 2, vec![0.4, 100.0, 500.0, 850.0, 1000.0, 1000.0]);
+        let pressure =
+            pressure_with_levels(0, 2, 2, vec![0.4, 100.0, 500.0, 850.0, 1000.0, 1000.0]);
         assert_eq!(
             levels_from_pressure(&pressure).unwrap(),
             vec![1000, 850, 500, 100]

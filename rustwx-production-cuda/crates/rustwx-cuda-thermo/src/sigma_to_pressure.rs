@@ -2,9 +2,7 @@
 //! `sigma_to_pressure_kernel`. Matches `metrust::calc::atmo::sigma_to_pressure`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
@@ -18,12 +16,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 }
 
 /// Pressure (hPa) from sigma, surface pressure (hPa), top pressure (hPa).
-pub fn host(
-    ctx: &ContextHandle,
-    sigma: &[f64],
-    psfc: &[f64],
-    ptop: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, sigma: &[f64], psfc: &[f64], ptop: &[f64]) -> Result<Vec<f64>> {
     let n = sigma.len();
     if psfc.len() != n {
         return Err(Error::LengthMismatch {

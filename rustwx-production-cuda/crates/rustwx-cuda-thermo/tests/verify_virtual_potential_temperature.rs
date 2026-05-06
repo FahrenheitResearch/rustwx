@@ -29,8 +29,7 @@ fn synthetic_profile(n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
 fn matches_cpu_reference() {
     let ctx = global().expect("init CUDA context");
     let (p, t, w) = synthetic_profile(8192);
-    let gpu = virtual_potential_temperature::host(&ctx, &p, &t, &w)
-        .expect("kernel");
+    let gpu = virtual_potential_temperature::host(&ctx, &p, &t, &w).expect("kernel");
     assert_eq!(gpu.len(), p.len());
 
     let mut max_abs = 0.0;
@@ -40,12 +39,19 @@ fn matches_cpu_reference() {
         let cpu = cpu_thv(p[i], t[i], w_gkg);
         let abs = (gpu[i] - cpu).abs();
         let rel = abs / cpu.abs().max(1.0);
-        if abs > max_abs { max_abs = abs; }
-        if rel > max_rel { max_rel = rel; }
+        if abs > max_abs {
+            max_abs = abs;
+        }
+        if rel > max_rel {
+            max_rel = rel;
+        }
         assert!(
             abs < TOL,
             "gpu={} cpu={} abs_diff={:e} rel_diff={:e} at i={i}",
-            gpu[i], cpu, abs, rel
+            gpu[i],
+            cpu,
+            abs,
+            rel
         );
     }
     eprintln!("max_abs={max_abs:e} max_rel={max_rel:e}");

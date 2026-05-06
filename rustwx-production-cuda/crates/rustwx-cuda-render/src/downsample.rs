@@ -7,14 +7,12 @@
 //! to the GPU, run both passes back-to-back without round-tripping, and
 //! download the final image once.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use cudarc::driver::{CudaStream, PushKernelArg};
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, KernelModule, LaunchCfg, Result,
-};
+use rustwx_cuda_core::{ContextHandle, DeviceVec, KernelModule, LaunchCfg, Result};
 
 use crate::sources::with_constants;
 
@@ -33,19 +31,40 @@ static DOWNLOAD_NS: AtomicU64 = AtomicU64::new(0);
 static N_CALLS: AtomicU64 = AtomicU64::new(0);
 
 fn timing_enabled() -> bool {
-    std::env::var("RUSTWX_CUDA_RASTERIZE_TIMING").ok().as_deref() == Some("1")
+    std::env::var("RUSTWX_CUDA_RASTERIZE_TIMING")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 pub fn print_timing_if_enabled() {
-    if !timing_enabled() { return; }
+    if !timing_enabled() {
+        return;
+    }
     let n = N_CALLS.load(Ordering::Relaxed).max(1) as f64;
     let to_ms = |ns: u64| (ns as f64 / 1_000_000.0);
     let to_per = |ns: u64| (ns as f64 / 1_000_000.0 / n);
     eprintln!("[downsample+sharpen timing — N={} calls]", n as u64);
-    eprintln!("  upload    : {:>9.2} ms total ({:>6.2} ms/call)", to_ms(UPLOAD_NS.load(Ordering::Relaxed)), to_per(UPLOAD_NS.load(Ordering::Relaxed)));
-    eprintln!("  downsample: {:>9.2} ms total ({:>6.2} ms/call)", to_ms(DOWNSAMPLE_NS.load(Ordering::Relaxed)), to_per(DOWNSAMPLE_NS.load(Ordering::Relaxed)));
-    eprintln!("  sharpen   : {:>9.2} ms total ({:>6.2} ms/call)", to_ms(SHARPEN_NS.load(Ordering::Relaxed)), to_per(SHARPEN_NS.load(Ordering::Relaxed)));
-    eprintln!("  download  : {:>9.2} ms total ({:>6.2} ms/call)", to_ms(DOWNLOAD_NS.load(Ordering::Relaxed)), to_per(DOWNLOAD_NS.load(Ordering::Relaxed)));
+    eprintln!(
+        "  upload    : {:>9.2} ms total ({:>6.2} ms/call)",
+        to_ms(UPLOAD_NS.load(Ordering::Relaxed)),
+        to_per(UPLOAD_NS.load(Ordering::Relaxed))
+    );
+    eprintln!(
+        "  downsample: {:>9.2} ms total ({:>6.2} ms/call)",
+        to_ms(DOWNSAMPLE_NS.load(Ordering::Relaxed)),
+        to_per(DOWNSAMPLE_NS.load(Ordering::Relaxed))
+    );
+    eprintln!(
+        "  sharpen   : {:>9.2} ms total ({:>6.2} ms/call)",
+        to_ms(SHARPEN_NS.load(Ordering::Relaxed)),
+        to_per(SHARPEN_NS.load(Ordering::Relaxed))
+    );
+    eprintln!(
+        "  download  : {:>9.2} ms total ({:>6.2} ms/call)",
+        to_ms(DOWNLOAD_NS.load(Ordering::Relaxed)),
+        to_per(DOWNLOAD_NS.load(Ordering::Relaxed))
+    );
 }
 
 fn ds_module(ctx: &ContextHandle) -> Result<KernelModule> {
@@ -79,9 +98,8 @@ pub fn downsample_then_sharpen(
     // Treat the byte slice as packed u32 RGBA. Safe: image crate aligns
     // RgbaImage::as_raw() to 1 byte but we read whole pixels (4 bytes)
     // at u32 alignment via the kernel; the host upload is byte-wise.
-    let src_u32: &[u32] = unsafe {
-        std::slice::from_raw_parts(src.as_ptr() as *const u32, src_pixels)
-    };
+    let src_u32: &[u32] =
+        unsafe { std::slice::from_raw_parts(src.as_ptr() as *const u32, src_pixels) };
 
     let t_up = if timing { Some(Instant::now()) } else { None };
     let src_d = DeviceVec::from_host_on(stream, src_u32)?;
@@ -138,7 +156,9 @@ pub fn downsample_then_sharpen(
     if let Some(t) = t_dl {
         DOWNLOAD_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
-    if timing { N_CALLS.fetch_add(1, Ordering::Relaxed); }
+    if timing {
+        N_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
 
     Ok(u32_vec_to_rgba_bytes(bytes_u32))
 }
@@ -234,7 +254,7 @@ pub fn downsample_then_sharpen_from_device_on(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{ImageBuffer, Rgba, imageops};
+    use image::{imageops, ImageBuffer, Rgba};
 
     /// CPU reference for the sharpen pass — applied directly to a u8
     /// buffer to avoid `imageops::filter3x3`'s generic-pixel quirks
@@ -251,7 +271,13 @@ mod tests {
             src[(yy * w + xx) as usize * 4 + c] as f32
         };
         let sat_round = |v: f32| -> u8 {
-            if v < 0.0 { 0 } else if v > 255.0 { 255 } else { (v + 0.5) as u8 }
+            if v < 0.0 {
+                0
+            } else if v > 255.0 {
+                255
+            } else {
+                (v + 0.5) as u8
+            }
         };
         for y in 0..h {
             for x in 0..w {
@@ -272,7 +298,10 @@ mod tests {
     fn downsample_sharpen_roughly_matches_cpu() {
         let ctx = match rustwx_cuda_core::global() {
             Ok(c) => c,
-            Err(e) => { eprintln!("skip: {e}"); return; }
+            Err(e) => {
+                eprintln!("skip: {e}");
+                return;
+            }
         };
         let stream = ctx.new_stream().expect("stream");
 
@@ -295,9 +324,8 @@ mod tests {
         let cpu_resized = imageops::resize(&img, dw, dh, imageops::FilterType::Lanczos3);
         let cpu_sharpen = cpu_sharpen_3x3(cpu_resized.as_raw(), dw, dh);
 
-        let gpu_bytes = downsample_then_sharpen(
-            &ctx, &stream, img.as_raw(), sw, sh, dw, dh, 2.0,
-        ).expect("gpu");
+        let gpu_bytes =
+            downsample_then_sharpen(&ctx, &stream, img.as_raw(), sw, sh, dw, dh, 2.0).expect("gpu");
 
         assert_eq!(gpu_bytes.len(), cpu_sharpen.len());
         let n = (dw * dh) as usize;
@@ -308,9 +336,11 @@ mod tests {
             if cpu_sharpen[off..off + 4] != gpu_bytes[off..off + 4] {
                 diff_pixels += 1;
                 for c in 0..4 {
-                    let d = (cpu_sharpen[off + c] as i32 - gpu_bytes[off + c] as i32)
-                        .unsigned_abs() as u8;
-                    if d > max_chan_delta { max_chan_delta = d; }
+                    let d = (cpu_sharpen[off + c] as i32 - gpu_bytes[off + c] as i32).unsigned_abs()
+                        as u8;
+                    if d > max_chan_delta {
+                        max_chan_delta = d;
+                    }
                 }
             }
         }
@@ -320,6 +350,10 @@ mod tests {
             diff_pixels, n, pct, max_chan_delta
         );
         // f32 + GPU rounding: tolerate ≤ 2/255 max channel delta.
-        assert!(max_chan_delta <= 2, "max channel delta {} > 2", max_chan_delta);
+        assert!(
+            max_chan_delta <= 2,
+            "max channel delta {} > 2",
+            max_chan_delta
+        );
     }
 }

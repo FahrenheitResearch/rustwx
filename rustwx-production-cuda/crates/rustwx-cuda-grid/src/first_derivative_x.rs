@@ -2,9 +2,7 @@
 //! `first_derivative_x_kernel`. Matches `wx_math::dynamics::gradient_x`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_2d,
-};
+use rustwx_cuda_core::{launch_cfg_2d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_grid_helpers;
 
@@ -17,19 +15,21 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
     KernelModule::load(ctx, MODULE_KEY, &src)
 }
 
-pub fn host(
-    ctx: &ContextHandle,
-    f: &[f64],
-    dx: &[f64],
-    nx: usize,
-    ny: usize,
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, f: &[f64], dx: &[f64], nx: usize, ny: usize) -> Result<Vec<f64>> {
     let n = nx * ny;
     if f.len() != n {
-        return Err(Error::LengthMismatch { what: "f vs nx*ny", expected: n, got: f.len() });
+        return Err(Error::LengthMismatch {
+            what: "f vs nx*ny",
+            expected: n,
+            got: f.len(),
+        });
     }
     if dx.len() != n {
-        return Err(Error::LengthMismatch { what: "dx vs nx*ny", expected: n, got: dx.len() });
+        return Err(Error::LengthMismatch {
+            what: "dx vs nx*ny",
+            expected: n,
+            got: dx.len(),
+        });
     }
 
     let m = module(ctx)?;

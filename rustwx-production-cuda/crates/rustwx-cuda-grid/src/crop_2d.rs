@@ -9,7 +9,7 @@
 //! For 3D volumes, call `launch_device_3d`, which loops over levels.
 
 use cudarc::driver::{CudaSlice, PushKernelArg};
-use rustwx_cuda_core::{ContextHandle, KernelModule, Result, launch_cfg_2d};
+use rustwx_cuda_core::{launch_cfg_2d, ContextHandle, KernelModule, Result};
 
 use crate::sources::with_constants;
 
@@ -40,10 +40,13 @@ pub fn launch_device(
     let off_y_i = off_y as i32;
 
     let mut b = ctx.stream().launch_builder(&func);
-    b.arg(src).arg(dst)
+    b.arg(src)
+        .arg(dst)
         .arg(&src_nx_i)
-        .arg(&dst_nx_i).arg(&dst_ny_i)
-        .arg(&off_x_i).arg(&off_y_i);
+        .arg(&dst_nx_i)
+        .arg(&dst_ny_i)
+        .arg(&off_x_i)
+        .arg(&off_y_i);
     unsafe { b.launch(cfg)? };
     Ok(())
 }
@@ -76,13 +79,16 @@ pub fn launch_device_3d(
     let off_y_i = off_y as i32;
 
     for k in 0..nz {
-        let src_view = src.slice(k * src_slab .. (k + 1) * src_slab);
-        let mut dst_view = dst.slice_mut(k * dst_slab .. (k + 1) * dst_slab);
+        let src_view = src.slice(k * src_slab..(k + 1) * src_slab);
+        let mut dst_view = dst.slice_mut(k * dst_slab..(k + 1) * dst_slab);
         let mut b = ctx.stream().launch_builder(&func);
-        b.arg(&src_view).arg(&mut dst_view)
+        b.arg(&src_view)
+            .arg(&mut dst_view)
             .arg(&src_nx_i)
-            .arg(&dst_nx_i).arg(&dst_ny_i)
-            .arg(&off_x_i).arg(&off_y_i);
+            .arg(&dst_nx_i)
+            .arg(&dst_ny_i)
+            .arg(&off_x_i)
+            .arg(&off_y_i);
         unsafe { b.launch(cfg)? };
     }
     Ok(())

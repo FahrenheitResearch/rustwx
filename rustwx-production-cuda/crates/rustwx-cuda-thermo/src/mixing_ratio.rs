@@ -1,14 +1,11 @@
 //! `w = eps * e / (p - e)` — port of met-cu's `mixing_ratio_kernel`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/thermo/mixing_ratio.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/mixing_ratio.cu");
 const MODULE_KEY: &str = "thermo_mixing_ratio";
 const FUNCTION: &str = "mixing_ratio_kernel";
 
@@ -18,11 +15,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 }
 
 /// Mixing ratio (kg/kg) from vapor pressure (hPa) and total pressure (hPa).
-pub fn host(
-    ctx: &ContextHandle,
-    vapor_pressure: &[f64],
-    pressure: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, vapor_pressure: &[f64], pressure: &[f64]) -> Result<Vec<f64>> {
     if vapor_pressure.len() != pressure.len() {
         return Err(Error::LengthMismatch {
             what: "vapor_pressure vs pressure",

@@ -217,7 +217,11 @@ struct Args {
     skip_derived: bool,
     #[arg(long, default_value_t = false)]
     skip_windowed: bool,
-    #[arg(long, default_value_t = false, help = "Run only direct recipe products; disables derived and windowed products")]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Run only direct recipe products; disables derived and windowed products"
+    )]
     direct_only: bool,
     #[arg(long = "product-override", value_delimiter = ',', num_args = 0..)]
     product_overrides: Vec<String>,
@@ -317,16 +321,14 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         args.direct_recipes.clone()
     };
-    let derived_recipe_slugs = if args.direct_only
-        || args.skip_derived
-        || recipe_list_disabled(&args.derived_recipes)
-    {
-        Vec::new()
-    } else if args.derived_recipes.is_empty() {
-        default_derived
-    } else {
-        args.derived_recipes.clone()
-    };
+    let derived_recipe_slugs =
+        if args.direct_only || args.skip_derived || recipe_list_disabled(&args.derived_recipes) {
+            Vec::new()
+        } else if args.derived_recipes.is_empty() {
+            default_derived
+        } else {
+            args.derived_recipes.clone()
+        };
     let domains = domains_for_request(args.model, args.region, &args.regions, args.domain_set)?;
     let domain = domains
         .first()

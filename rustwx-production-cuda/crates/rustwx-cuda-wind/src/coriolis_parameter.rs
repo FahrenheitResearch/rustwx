@@ -2,9 +2,7 @@
 //! `coriolis_parameter_kernel`. Matches `wx_math::dynamics::coriolis_parameter`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, KernelModule, Result};
 
 use crate::sources::with_constants;
 

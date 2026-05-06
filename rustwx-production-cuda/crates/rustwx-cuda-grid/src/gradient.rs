@@ -2,9 +2,7 @@
 //! Matches `(wx_math::dynamics::gradient_x, wx_math::dynamics::gradient_y)`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_2d,
-};
+use rustwx_cuda_core::{launch_cfg_2d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_grid_helpers;
 
@@ -28,13 +26,25 @@ pub fn host(
 ) -> Result<(Vec<f64>, Vec<f64>)> {
     let n = nx * ny;
     if f.len() != n {
-        return Err(Error::LengthMismatch { what: "f vs nx*ny", expected: n, got: f.len() });
+        return Err(Error::LengthMismatch {
+            what: "f vs nx*ny",
+            expected: n,
+            got: f.len(),
+        });
     }
     if dx.len() != n {
-        return Err(Error::LengthMismatch { what: "dx vs nx*ny", expected: n, got: dx.len() });
+        return Err(Error::LengthMismatch {
+            what: "dx vs nx*ny",
+            expected: n,
+            got: dx.len(),
+        });
     }
     if dy.len() != n {
-        return Err(Error::LengthMismatch { what: "dy vs nx*ny", expected: n, got: dy.len() });
+        return Err(Error::LengthMismatch {
+            what: "dy vs nx*ny",
+            expected: n,
+            got: dy.len(),
+        });
     }
 
     let m = module(ctx)?;

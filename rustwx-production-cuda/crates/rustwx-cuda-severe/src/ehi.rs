@@ -2,9 +2,7 @@
 //! Matches `wx_math::composite::compute_ehi`.
 
 use cudarc::driver::{CudaSlice, PushKernelArg};
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
@@ -36,11 +34,7 @@ pub fn launch_device(
 }
 
 /// Compute EHI = (CAPE * SRH) / 160000 elementwise.
-pub fn host(
-    ctx: &ContextHandle,
-    cape: &[f64],
-    srh: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, cape: &[f64], srh: &[f64]) -> Result<Vec<f64>> {
     if srh.len() != cape.len() {
         return Err(Error::LengthMismatch {
             what: "cape vs srh",

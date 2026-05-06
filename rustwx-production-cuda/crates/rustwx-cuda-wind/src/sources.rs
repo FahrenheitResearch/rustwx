@@ -1,11 +1,9 @@
 //! Kernel-source helpers — same pattern as `rustwx-cuda-thermo/src/sources.rs`.
 
-pub const CONSTANTS_CUH: &str =
-    include_str!("../../../kernels/common/constants.cuh");
+pub const CONSTANTS_CUH: &str = include_str!("../../../kernels/common/constants.cuh");
 
 #[allow(dead_code)]
-pub const THERMO_HELPERS_CUH: &str =
-    include_str!("../../../kernels/common/thermo_helpers.cuh");
+pub const THERMO_HELPERS_CUH: &str = include_str!("../../../kernels/common/thermo_helpers.cuh");
 
 pub fn with_constants(kernel_src: &str) -> String {
     let mut s = String::with_capacity(CONSTANTS_CUH.len() + kernel_src.len() + 8);

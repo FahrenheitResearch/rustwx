@@ -3,14 +3,11 @@
 //! `wx_math::thermo::saturation_mixing_ratio` after a kg/kg <-> g/kg scaling.
 
 use cudarc::driver::{CudaSlice, PushKernelArg};
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_thermo_helpers;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/thermo/saturation_mixing_ratio.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/saturation_mixing_ratio.cu");
 const MODULE_KEY: &str = "thermo_saturation_mixing_ratio";
 const FUNCTION: &str = "saturation_mixing_ratio_kernel";
 
@@ -38,11 +35,7 @@ pub fn launch_device(
 }
 
 /// Saturation mixing ratio (kg/kg) from pressure (hPa) and temperature (C).
-pub fn host(
-    ctx: &ContextHandle,
-    pressure: &[f64],
-    temperature: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, pressure: &[f64], temperature: &[f64]) -> Result<Vec<f64>> {
     if pressure.len() != temperature.len() {
         return Err(Error::LengthMismatch {
             what: "pressure vs temperature",

@@ -7,9 +7,7 @@
 //! height profiles whose surface level coincides with `bottom_m`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
@@ -35,13 +33,11 @@ pub fn host(
     bottom_m: f64,
     top_m: f64,
 ) -> Result<(Vec<f64>, Vec<f64>)> {
-    let total = ncols
-        .checked_mul(nlevels)
-        .ok_or(Error::LengthMismatch {
-            what: "ncols * nlevels overflow",
-            expected: usize::MAX,
-            got: 0,
-        })?;
+    let total = ncols.checked_mul(nlevels).ok_or(Error::LengthMismatch {
+        what: "ncols * nlevels overflow",
+        expected: usize::MAX,
+        got: 0,
+    })?;
     if u.len() != total {
         return Err(Error::LengthMismatch {
             what: "u vs ncols*nlevels",

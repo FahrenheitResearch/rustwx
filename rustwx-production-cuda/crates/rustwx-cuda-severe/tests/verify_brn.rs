@@ -11,9 +11,9 @@ fn synthetic(n: usize) -> (Vec<f64>, Vec<f64>) {
     let mut shear = Vec::with_capacity(n);
     for i in 0..n {
         let f = (i as f64) / ((n.max(2) - 1) as f64);
-        cape.push(100.0 + f * 4900.0);   // 100..5000 J/kg
-        // 0.5 * shear^2 must be >= 0.1 for finite output (matches CPU NaN branch).
-        // shear in [1.5, 40] m/s keeps denom >= 1.125.
+        cape.push(100.0 + f * 4900.0); // 100..5000 J/kg
+                                       // 0.5 * shear^2 must be >= 0.1 for finite output (matches CPU NaN branch).
+                                       // shear in [1.5, 40] m/s keeps denom >= 1.125.
         shear.push(1.5 + f * 38.5);
     }
     (cape, shear)
@@ -36,7 +36,9 @@ fn matches_cpu_reference() {
         assert!(
             abs < TOL,
             "gpu={} cpu={} abs_diff={:e} at i={i}",
-            gpu[i], cpu, abs
+            gpu[i],
+            cpu,
+            abs
         );
     }
     eprintln!("max_abs={max_abs:e}");

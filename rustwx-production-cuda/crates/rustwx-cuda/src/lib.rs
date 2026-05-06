@@ -7,4 +7,4 @@ pub use rustwx_cuda_severe as severe;
 pub use rustwx_cuda_thermo as thermo;
 pub use rustwx_cuda_wind as wind;
 
-pub use rustwx_cuda_core::{Context, ContextHandle, DeviceVec, Error, Result, global};
+pub use rustwx_cuda_core::{global, Context, ContextHandle, DeviceVec, Error, Result};

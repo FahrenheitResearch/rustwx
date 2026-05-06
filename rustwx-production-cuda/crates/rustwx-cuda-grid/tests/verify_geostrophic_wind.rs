@@ -45,10 +45,26 @@ fn matches_cpu_reference() {
     for k in 0..n {
         let au = (gpu_ug[k] - cpu_ug[k]).abs();
         let av = (gpu_vg[k] - cpu_vg[k]).abs();
-        if au > max_u { max_u = au; }
-        if av > max_v { max_v = av; }
-        assert!(au < TOL, "u k={k} gpu={} cpu={} abs={:e}", gpu_ug[k], cpu_ug[k], au);
-        assert!(av < TOL, "v k={k} gpu={} cpu={} abs={:e}", gpu_vg[k], cpu_vg[k], av);
+        if au > max_u {
+            max_u = au;
+        }
+        if av > max_v {
+            max_v = av;
+        }
+        assert!(
+            au < TOL,
+            "u k={k} gpu={} cpu={} abs={:e}",
+            gpu_ug[k],
+            cpu_ug[k],
+            au
+        );
+        assert!(
+            av < TOL,
+            "v k={k} gpu={} cpu={} abs={:e}",
+            gpu_vg[k],
+            cpu_vg[k],
+            av
+        );
     }
     eprintln!("geostrophic_wind max_abs_u={max_u:e} max_abs_v={max_v:e}");
 }

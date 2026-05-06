@@ -33,10 +33,26 @@ fn matches_cpu_reference() {
         let (cpu_p_lcl, cpu_t_lcl) = cpu_lcl(p[i], t[i], td[i]);
         let dp = (gpu_p[i] - cpu_p_lcl).abs();
         let dt = (gpu_t[i] - cpu_t_lcl).abs();
-        if dp > max_abs_p { max_abs_p = dp; }
-        if dt > max_abs_t { max_abs_t = dt; }
-        assert!(dp < TOL, "p_lcl: gpu={} cpu={} diff={:e} at i={i}", gpu_p[i], cpu_p_lcl, dp);
-        assert!(dt < TOL, "t_lcl: gpu={} cpu={} diff={:e} at i={i}", gpu_t[i], cpu_t_lcl, dt);
+        if dp > max_abs_p {
+            max_abs_p = dp;
+        }
+        if dt > max_abs_t {
+            max_abs_t = dt;
+        }
+        assert!(
+            dp < TOL,
+            "p_lcl: gpu={} cpu={} diff={:e} at i={i}",
+            gpu_p[i],
+            cpu_p_lcl,
+            dp
+        );
+        assert!(
+            dt < TOL,
+            "t_lcl: gpu={} cpu={} diff={:e} at i={i}",
+            gpu_t[i],
+            cpu_t_lcl,
+            dt
+        );
     }
     eprintln!("max_abs_p={max_abs_p:e} max_abs_t={max_abs_t:e}");
 }

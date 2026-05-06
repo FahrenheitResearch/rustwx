@@ -38,10 +38,8 @@ fn matches_cpu_reference() {
     let dx = vec![DX; n];
     let dy = vec![DY; n];
 
-    let (gpu_ua, gpu_va) = ageostrophic_wind::host(
-        &ctx, &u, &v, &height, &lats, &dx, &dy, NX, NY,
-    )
-    .expect("kernel");
+    let (gpu_ua, gpu_va) =
+        ageostrophic_wind::host(&ctx, &u, &v, &height, &lats, &dx, &dy, NX, NY).expect("kernel");
 
     // CPU: derive geostrophic wind from height + lats, then subtract.
     let (cpu_ug, cpu_vg) = cpu_gw(&height, &lats, NX, NY, DX, DY);
@@ -52,10 +50,26 @@ fn matches_cpu_reference() {
     for k in 0..n {
         let au = (gpu_ua[k] - cpu_ua[k]).abs();
         let av = (gpu_va[k] - cpu_va[k]).abs();
-        if au > max_u { max_u = au; }
-        if av > max_v { max_v = av; }
-        assert!(au < TOL, "ua k={k} gpu={} cpu={} abs={:e}", gpu_ua[k], cpu_ua[k], au);
-        assert!(av < TOL, "va k={k} gpu={} cpu={} abs={:e}", gpu_va[k], cpu_va[k], av);
+        if au > max_u {
+            max_u = au;
+        }
+        if av > max_v {
+            max_v = av;
+        }
+        assert!(
+            au < TOL,
+            "ua k={k} gpu={} cpu={} abs={:e}",
+            gpu_ua[k],
+            cpu_ua[k],
+            au
+        );
+        assert!(
+            av < TOL,
+            "va k={k} gpu={} cpu={} abs={:e}",
+            gpu_va[k],
+            cpu_va[k],
+            av
+        );
     }
     eprintln!("ageostrophic_wind max_abs_u={max_u:e} max_abs_v={max_v:e}");
 }

@@ -17,14 +17,12 @@
 //! caller's slice. (For very large canvases the upload/download cost
 //! dominates — the kernel itself is trivially memory-bound.)
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use cudarc::driver::{CudaStream, PushKernelArg};
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, KernelModule, LaunchCfg, Result,
-};
+use rustwx_cuda_core::{ContextHandle, DeviceVec, KernelModule, LaunchCfg, Result};
 
 use crate::sources::with_constants;
 
@@ -39,7 +37,10 @@ static MODULE_NS: AtomicU64 = AtomicU64::new(0);
 static N_CALLS: AtomicU64 = AtomicU64::new(0);
 
 fn timing_enabled() -> bool {
-    std::env::var("RUSTWX_CUDA_RASTERIZE_TIMING").ok().as_deref() == Some("1")
+    std::env::var("RUSTWX_CUDA_RASTERIZE_TIMING")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 /// Print accumulated per-phase timings to stderr if enabled.
@@ -51,10 +52,26 @@ pub fn print_timing_if_enabled() {
     let to_ms = |ns: u64| (ns as f64 / 1_000_000.0);
     let to_per = |ns: u64| (ns as f64 / 1_000_000.0 / n);
     eprintln!("[raster_blit timing — N={} calls]", n as u64);
-    eprintln!("  module    : {:>9.2} ms total ({:>6.2} ms/call)", to_ms(MODULE_NS.load(Ordering::Relaxed)), to_per(MODULE_NS.load(Ordering::Relaxed)));
-    eprintln!("  upload    : {:>9.2} ms total ({:>6.2} ms/call)", to_ms(UPLOAD_NS.load(Ordering::Relaxed)), to_per(UPLOAD_NS.load(Ordering::Relaxed)));
-    eprintln!("  kernel    : {:>9.2} ms total ({:>6.2} ms/call)", to_ms(KERNEL_NS.load(Ordering::Relaxed)), to_per(KERNEL_NS.load(Ordering::Relaxed)));
-    eprintln!("  download  : {:>9.2} ms total ({:>6.2} ms/call)", to_ms(DOWNLOAD_NS.load(Ordering::Relaxed)), to_per(DOWNLOAD_NS.load(Ordering::Relaxed)));
+    eprintln!(
+        "  module    : {:>9.2} ms total ({:>6.2} ms/call)",
+        to_ms(MODULE_NS.load(Ordering::Relaxed)),
+        to_per(MODULE_NS.load(Ordering::Relaxed))
+    );
+    eprintln!(
+        "  upload    : {:>9.2} ms total ({:>6.2} ms/call)",
+        to_ms(UPLOAD_NS.load(Ordering::Relaxed)),
+        to_per(UPLOAD_NS.load(Ordering::Relaxed))
+    );
+    eprintln!(
+        "  kernel    : {:>9.2} ms total ({:>6.2} ms/call)",
+        to_ms(KERNEL_NS.load(Ordering::Relaxed)),
+        to_per(KERNEL_NS.load(Ordering::Relaxed))
+    );
+    eprintln!(
+        "  download  : {:>9.2} ms total ({:>6.2} ms/call)",
+        to_ms(DOWNLOAD_NS.load(Ordering::Relaxed)),
+        to_per(DOWNLOAD_NS.load(Ordering::Relaxed))
+    );
 }
 
 fn module(ctx: &ContextHandle) -> Result<KernelModule> {
@@ -135,9 +152,8 @@ pub fn host_on(
         unsafe { std::slice::from_raw_parts(src.as_ptr() as *const u32, src_pixels) };
     let canvas_u32: &[u32] =
         unsafe { std::slice::from_raw_parts(canvas.as_ptr() as *const u32, canvas_pixels) };
-    let mask_u32: Option<&[u32]> = clip_mask.map(|m| unsafe {
-        std::slice::from_raw_parts(m.as_ptr() as *const u32, src_pixels)
-    });
+    let mask_u32: Option<&[u32]> = clip_mask
+        .map(|m| unsafe { std::slice::from_raw_parts(m.as_ptr() as *const u32, src_pixels) });
 
     // ---- upload ----
     let t_up = if timing { Some(Instant::now()) } else { None };
@@ -460,8 +476,8 @@ mod tests {
             if canvas_cpu[off..off + 4] != canvas_gpu[off..off + 4] {
                 diff_pixels += 1;
                 for c in 0..4 {
-                    let d = (canvas_cpu[off + c] as i32 - canvas_gpu[off + c] as i32)
-                        .unsigned_abs() as u8;
+                    let d = (canvas_cpu[off + c] as i32 - canvas_gpu[off + c] as i32).unsigned_abs()
+                        as u8;
                     if d > max_chan_delta {
                         max_chan_delta = d;
                     }

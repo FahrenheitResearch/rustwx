@@ -2,9 +2,7 @@
 //! Matches `metrust::calc::atmo::windchill`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
@@ -18,11 +16,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 }
 
 /// Wind chill (Celsius) from temperature (C) and wind speed (m/s).
-pub fn host(
-    ctx: &ContextHandle,
-    temperature: &[f64],
-    wind_speed: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, temperature: &[f64], wind_speed: &[f64]) -> Result<Vec<f64>> {
     if temperature.len() != wind_speed.len() {
         return Err(Error::LengthMismatch {
             what: "temperature vs wind_speed",

@@ -6,14 +6,12 @@
 //! we accept that since the field is smoothly-varying and the two
 //! interpolated values differ by far less than 1/255 in well-behaved data.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use cudarc::driver::{CudaStream, PushKernelArg};
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, KernelModule, LaunchCfg, Result,
-};
+use rustwx_cuda_core::{ContextHandle, DeviceVec, KernelModule, LaunchCfg, Result};
 
 use crate::colormap::ColormapHostView;
 use crate::sources::with_constants;
@@ -30,24 +28,54 @@ static MESH_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 static MESH_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 
 fn timing_enabled() -> bool {
-    std::env::var("RUSTWX_CUDA_RASTERIZE_TIMING").ok().as_deref() == Some("1")
+    std::env::var("RUSTWX_CUDA_RASTERIZE_TIMING")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 /// Print accumulated per-phase timings + cache hit rate to stderr if enabled.
 pub fn print_timing_if_enabled() {
-    if !timing_enabled() { return; }
+    if !timing_enabled() {
+        return;
+    }
     let n = N_CALLS.load(Ordering::Relaxed).max(1) as f64;
     let to_ms = |ns: u64| (ns as f64 / 1_000_000.0);
     let to_ms_per = |ns: u64| (ns as f64 / 1_000_000.0 / n);
     eprintln!("[rasterize_projected_grid timing — N={} calls]", n as u64);
-    eprintln!("  flatten   : {:>9.2} ms total ({:>6.2} ms/call)", to_ms(FLATTEN_NS.load(Ordering::Relaxed)), to_ms_per(FLATTEN_NS.load(Ordering::Relaxed)));
-    eprintln!("  module    : {:>9.2} ms total ({:>6.2} ms/call)", to_ms(MODULE_NS.load(Ordering::Relaxed)), to_ms_per(MODULE_NS.load(Ordering::Relaxed)));
-    eprintln!("  upload    : {:>9.2} ms total ({:>6.2} ms/call)", to_ms(UPLOAD_NS.load(Ordering::Relaxed)), to_ms_per(UPLOAD_NS.load(Ordering::Relaxed)));
-    eprintln!("  kernel    : {:>9.2} ms total ({:>6.2} ms/call)", to_ms(KERNEL_NS.load(Ordering::Relaxed)), to_ms_per(KERNEL_NS.load(Ordering::Relaxed)));
-    eprintln!("  download  : {:>9.2} ms total ({:>6.2} ms/call)", to_ms(DOWNLOAD_NS.load(Ordering::Relaxed)), to_ms_per(DOWNLOAD_NS.load(Ordering::Relaxed)));
+    eprintln!(
+        "  flatten   : {:>9.2} ms total ({:>6.2} ms/call)",
+        to_ms(FLATTEN_NS.load(Ordering::Relaxed)),
+        to_ms_per(FLATTEN_NS.load(Ordering::Relaxed))
+    );
+    eprintln!(
+        "  module    : {:>9.2} ms total ({:>6.2} ms/call)",
+        to_ms(MODULE_NS.load(Ordering::Relaxed)),
+        to_ms_per(MODULE_NS.load(Ordering::Relaxed))
+    );
+    eprintln!(
+        "  upload    : {:>9.2} ms total ({:>6.2} ms/call)",
+        to_ms(UPLOAD_NS.load(Ordering::Relaxed)),
+        to_ms_per(UPLOAD_NS.load(Ordering::Relaxed))
+    );
+    eprintln!(
+        "  kernel    : {:>9.2} ms total ({:>6.2} ms/call)",
+        to_ms(KERNEL_NS.load(Ordering::Relaxed)),
+        to_ms_per(KERNEL_NS.load(Ordering::Relaxed))
+    );
+    eprintln!(
+        "  download  : {:>9.2} ms total ({:>6.2} ms/call)",
+        to_ms(DOWNLOAD_NS.load(Ordering::Relaxed)),
+        to_ms_per(DOWNLOAD_NS.load(Ordering::Relaxed))
+    );
     let hits = MESH_CACHE_HITS.load(Ordering::Relaxed);
     let miss = MESH_CACHE_MISSES.load(Ordering::Relaxed);
-    eprintln!("  mesh cache: {} hits / {} misses (hit rate {:.1}%)", hits, miss, 100.0 * hits as f64 / (hits + miss).max(1) as f64);
+    eprintln!(
+        "  mesh cache: {} hits / {} misses (hit rate {:.1}%)",
+        hits,
+        miss,
+        100.0 * hits as f64 / (hits + miss).max(1) as f64
+    );
 }
 
 /// Global cache for projected-mesh device buffers, shared across all rayon
@@ -93,7 +121,11 @@ fn fingerprint(pp: &[Option<(f64, f64)>]) -> u64 {
     n.hash(&mut h);
     let probes = 32usize;
     for k in 0..probes {
-        let i = if probes <= 1 { 0 } else { (k * (n.saturating_sub(1))) / (probes - 1) };
+        let i = if probes <= 1 {
+            0
+        } else {
+            (k * (n.saturating_sub(1))) / (probes - 1)
+        };
         if i < n {
             match &pp[i] {
                 Some((x, y)) => {
@@ -130,7 +162,17 @@ pub fn host(
     img_w: u32,
     img_h: u32,
 ) -> Result<Vec<u8>> {
-    host_on(ctx, ctx.stream(), data, ny, nx, pixel_points, cmap, img_w, img_h)
+    host_on(
+        ctx,
+        ctx.stream(),
+        data,
+        ny,
+        nx,
+        pixel_points,
+        cmap,
+        img_w,
+        img_h,
+    )
 }
 
 /// Same as `host()` but routes all device ops through the caller-supplied
@@ -168,7 +210,9 @@ pub fn host_on(
     };
 
     let cached = if let Some(c) = cached_hit {
-        if timing { MESH_CACHE_HITS.fetch_add(1, Ordering::Relaxed); }
+        if timing {
+            MESH_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+        }
         c
     } else {
         // Miss path: take the write lock, double-check (another thread may
@@ -180,10 +224,14 @@ pub fn host_on(
             .find(|c| c.key_len == key_len && c.fingerprint == want_fp)
             .cloned()
         {
-            if timing { MESH_CACHE_HITS.fetch_add(1, Ordering::Relaxed); }
+            if timing {
+                MESH_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+            }
             c
         } else {
-            if timing { MESH_CACHE_MISSES.fetch_add(1, Ordering::Relaxed); }
+            if timing {
+                MESH_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+            }
             let t0 = if timing { Some(Instant::now()) } else { None };
             let n_grid = ny * nx;
             let mut pix_x: Vec<f64> = Vec::with_capacity(n_grid);
@@ -191,8 +239,16 @@ pub fn host_on(
             let mut valid: Vec<i32> = Vec::with_capacity(n_grid);
             for pp in pixel_points {
                 match pp {
-                    Some((x, y)) => { pix_x.push(*x); pix_y.push(*y); valid.push(1); }
-                    None         => { pix_x.push(0.0); pix_y.push(0.0); valid.push(0); }
+                    Some((x, y)) => {
+                        pix_x.push(*x);
+                        pix_y.push(*y);
+                        valid.push(1);
+                    }
+                    None => {
+                        pix_x.push(0.0);
+                        pix_y.push(0.0);
+                        valid.push(0);
+                    }
                 }
             }
             if let Some(t) = t0 {
@@ -220,7 +276,9 @@ pub fn host_on(
             });
             // Bound cache size; keep the 16 most recent unique meshes
             // (typical pipeline only ever has 1-2 active at a time).
-            if w.len() >= 16 { w.remove(0); }
+            if w.len() >= 16 {
+                w.remove(0);
+            }
             w.push(Arc::clone(&arc));
             arc
         }
@@ -306,7 +364,9 @@ pub fn host_on(
         DOWNLOAD_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    if timing { N_CALLS.fetch_add(1, Ordering::Relaxed); }
+    if timing {
+        N_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
 
     Ok(u32_vec_to_rgba_bytes(pixels_u32))
 }
@@ -722,10 +782,38 @@ mod tests {
                 let v10 = data[j * nx + i + 1];
                 let v01 = data[(j + 1) * nx + i];
                 let v11 = data[(j + 1) * nx + i + 1];
-                tri_ref(&mut out, p00, v00, p10, v10, p11, v11,
-                    levels, colors, under_color, over_color, mask_below, img_w, img_h);
-                tri_ref(&mut out, p00, v00, p11, v11, p01, v01,
-                    levels, colors, under_color, over_color, mask_below, img_w, img_h);
+                tri_ref(
+                    &mut out,
+                    p00,
+                    v00,
+                    p10,
+                    v10,
+                    p11,
+                    v11,
+                    levels,
+                    colors,
+                    under_color,
+                    over_color,
+                    mask_below,
+                    img_w,
+                    img_h,
+                );
+                tri_ref(
+                    &mut out,
+                    p00,
+                    v00,
+                    p11,
+                    v11,
+                    p01,
+                    v01,
+                    levels,
+                    colors,
+                    under_color,
+                    over_color,
+                    mask_below,
+                    img_w,
+                    img_h,
+                );
             }
         }
         out
@@ -733,21 +821,34 @@ mod tests {
 
     fn tri_ref(
         out: &mut [u8],
-        p0: (f64, f64), v0: f64,
-        p1: (f64, f64), v1: f64,
-        p2: (f64, f64), v2: f64,
-        levels: &[f64], colors: &[u32],
-        under_color: Option<u32>, over_color: Option<u32>, mask_below: Option<f64>,
-        img_w: u32, img_h: u32,
+        p0: (f64, f64),
+        v0: f64,
+        p1: (f64, f64),
+        v1: f64,
+        p2: (f64, f64),
+        v2: f64,
+        levels: &[f64],
+        colors: &[u32],
+        under_color: Option<u32>,
+        over_color: Option<u32>,
+        mask_below: Option<f64>,
+        img_w: u32,
+        img_h: u32,
     ) {
-        if !v0.is_finite() || !v1.is_finite() || !v2.is_finite() { return; }
+        if !v0.is_finite() || !v1.is_finite() || !v2.is_finite() {
+            return;
+        }
         let min_x = p0.0.min(p1.0).min(p2.0).floor().max(0.0) as i32;
         let max_x = p0.0.max(p1.0).max(p2.0).ceil().min(img_w as f64 - 1.0) as i32;
         let min_y = p0.1.min(p1.1).min(p2.1).floor().max(0.0) as i32;
         let max_y = p0.1.max(p1.1).max(p2.1).ceil().min(img_h as f64 - 1.0) as i32;
-        if min_x > max_x || min_y > max_y { return; }
+        if min_x > max_x || min_y > max_y {
+            return;
+        }
         let area = ef(p0, p1, p2);
-        if area.abs() < 1e-9 { return; }
+        if area.abs() < 1e-9 {
+            return;
+        }
         let inv_area = 1.0 / area;
         for py in min_y..=max_y {
             for px in min_x..=max_x {
@@ -755,15 +856,19 @@ mod tests {
                 let w0 = ef(p1, p2, p) * inv_area;
                 let w1 = ef(p2, p0, p) * inv_area;
                 let w2 = ef(p0, p1, p) * inv_area;
-                if w0 < -1e-6 || w1 < -1e-6 || w2 < -1e-6 { continue; }
+                if w0 < -1e-6 || w1 < -1e-6 || w2 < -1e-6 {
+                    continue;
+                }
                 let value = v0 * w0 + v1 * w1 + v2 * w2;
                 let packed = lookup(value, levels, colors, under_color, over_color, mask_below);
-                if (packed >> 24) & 0xFF == 0 { continue; }
+                if (packed >> 24) & 0xFF == 0 {
+                    continue;
+                }
                 let off = (py as usize * img_w as usize + px as usize) * 4;
-                out[off    ] = (packed       ) as u8;
-                out[off + 1] = (packed >>  8 ) as u8;
-                out[off + 2] = (packed >> 16 ) as u8;
-                out[off + 3] = (packed >> 24 ) as u8;
+                out[off] = (packed) as u8;
+                out[off + 1] = (packed >> 8) as u8;
+                out[off + 2] = (packed >> 16) as u8;
+                out[off + 3] = (packed >> 24) as u8;
             }
         }
     }
@@ -773,13 +878,27 @@ mod tests {
     }
 
     fn lookup(
-        value: f64, levels: &[f64], colors: &[u32],
-        under_color: Option<u32>, over_color: Option<u32>, mask_below: Option<f64>,
+        value: f64,
+        levels: &[f64],
+        colors: &[u32],
+        under_color: Option<u32>,
+        over_color: Option<u32>,
+        mask_below: Option<f64>,
     ) -> u32 {
-        if value.is_nan() { return 0; }
-        if let Some(mb) = mask_below { if value < mb { return 0; } }
-        if levels.is_empty() || colors.is_empty() { return 0; }
-        if value < levels[0] { return under_color.unwrap_or(0); }
+        if value.is_nan() {
+            return 0;
+        }
+        if let Some(mb) = mask_below {
+            if value < mb {
+                return 0;
+            }
+        }
+        if levels.is_empty() || colors.is_empty() {
+            return 0;
+        }
+        if value < levels[0] {
+            return under_color.unwrap_or(0);
+        }
         let n_intervals = levels.len() - 1;
         let idx = levels.partition_point(|l| *l <= value);
         if idx <= n_intervals {
@@ -849,7 +968,9 @@ mod tests {
         let under = Some(pack_rgba(0, 0, 0, 255));
         let over = Some(pack_rgba(255, 255, 255, 255));
 
-        let cpu = cpu_ref(&data, ny, nx, &pix, &levels, &colors, under, over, None, img_w, img_h);
+        let cpu = cpu_ref(
+            &data, ny, nx, &pix, &levels, &colors, under, over, None, img_w, img_h,
+        );
         let view = ColormapHostView {
             levels: &levels,
             colors_packed: &colors,
@@ -872,7 +993,9 @@ mod tests {
                 diff_pixels += 1;
                 for c in 0..4 {
                     let d = (cpu[off + c] as i32 - gpu[off + c] as i32).unsigned_abs() as u8;
-                    if d > max_chan_delta { max_chan_delta = d; }
+                    if d > max_chan_delta {
+                        max_chan_delta = d;
+                    }
                 }
             }
         }
@@ -886,7 +1009,15 @@ mod tests {
         // Bar:
         //   * <= 1% of pixels differ (only shared-edge race candidates)
         //   * <= 8/255 max channel delta (one colormap step in worst case)
-        assert!(pct <= 1.0, "{:.3}% pixels differ — exceeds 1% tolerance", pct);
-        assert!(max_chan_delta <= 8, "max channel delta {} > 8", max_chan_delta);
+        assert!(
+            pct <= 1.0,
+            "{:.3}% pixels differ — exceeds 1% tolerance",
+            pct
+        );
+        assert!(
+            max_chan_delta <= 8,
+            "max channel delta {} > 8",
+            max_chan_delta
+        );
     }
 }

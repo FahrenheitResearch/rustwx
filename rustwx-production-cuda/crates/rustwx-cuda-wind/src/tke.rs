@@ -3,9 +3,7 @@
 //! Matches `metrust::calc::wind::tke`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, LaunchCfg,
-};
+use rustwx_cuda_core::{ContextHandle, DeviceVec, Error, KernelModule, LaunchCfg, Result};
 
 use crate::sources::with_constants;
 

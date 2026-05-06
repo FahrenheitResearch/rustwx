@@ -27,16 +27,23 @@ fn synthetic_profile(n: usize) -> (Vec<f64>, Vec<f64>) {
 fn matches_cpu_reference() {
     let ctx = global().expect("init CUDA context");
     let (w, p) = synthetic_profile(8192);
-    let gpu = vapor_pressure_from_mixing_ratio::host(&ctx, &w, &p)
-        .expect("kernel");
+    let gpu = vapor_pressure_from_mixing_ratio::host(&ctx, &w, &p).expect("kernel");
     assert_eq!(gpu.len(), w.len());
 
     let mut max_abs = 0.0;
     for i in 0..w.len() {
         let cpu = cpu_e(w[i], p[i]);
         let abs = (gpu[i] - cpu).abs();
-        if abs > max_abs { max_abs = abs; }
-        assert!(abs < TOL, "gpu={} cpu={} diff={:e} at i={i}", gpu[i], cpu, abs);
+        if abs > max_abs {
+            max_abs = abs;
+        }
+        assert!(
+            abs < TOL,
+            "gpu={} cpu={} diff={:e} at i={i}",
+            gpu[i],
+            cpu,
+            abs
+        );
     }
     eprintln!("max_abs={max_abs:e}");
 }

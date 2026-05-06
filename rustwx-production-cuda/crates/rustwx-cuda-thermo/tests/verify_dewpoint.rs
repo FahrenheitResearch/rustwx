@@ -29,8 +29,17 @@ fn matches_cpu_reference() {
     for i in 0..e.len() {
         let cpu = cpu_td(e[i]);
         let abs = (gpu[i] - cpu).abs();
-        if abs > max_abs { max_abs = abs; }
-        assert!(abs < TOL, "gpu={} cpu={} diff={:e} at i={i} (e={})", gpu[i], cpu, abs, e[i]);
+        if abs > max_abs {
+            max_abs = abs;
+        }
+        assert!(
+            abs < TOL,
+            "gpu={} cpu={} diff={:e} at i={i} (e={})",
+            gpu[i],
+            cpu,
+            abs,
+            e[i]
+        );
     }
     eprintln!("max_abs={max_abs:e}");
 }

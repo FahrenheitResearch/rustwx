@@ -3,9 +3,7 @@
 //! `wx_math::composite::fosberg_fire_weather_index`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
@@ -19,12 +17,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 }
 
 /// FFWI. `t_f` (deg F), `rh` (%, 0-100), `wspd_mph` (mph). Returns [0, 100].
-pub fn host(
-    ctx: &ContextHandle,
-    t_f: &[f64],
-    rh: &[f64],
-    wspd_mph: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, t_f: &[f64], rh: &[f64], wspd_mph: &[f64]) -> Result<Vec<f64>> {
     let n = t_f.len();
     if rh.len() != n {
         return Err(Error::LengthMismatch {

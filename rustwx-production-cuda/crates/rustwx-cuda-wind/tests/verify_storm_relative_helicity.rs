@@ -56,14 +56,8 @@ fn matches_cpu_reference() {
     for c in 0..NCOLS {
         let s = c * NLEVELS;
         let e = s + NLEVELS;
-        let (pos_cpu, neg_cpu, tot_cpu) = cpu_srh(
-            &u[s..e],
-            &v[s..e],
-            &heights[s..e],
-            depth,
-            storm_u,
-            storm_v,
-        );
+        let (pos_cpu, neg_cpu, tot_cpu) =
+            cpu_srh(&u[s..e], &v[s..e], &heights[s..e], depth, storm_u, storm_v);
         let dp = (pos_gpu[c] - pos_cpu).abs();
         let dn = (neg_gpu[c] - neg_cpu).abs();
         let dt = (tot_gpu[c] - tot_cpu).abs();

@@ -8,9 +8,7 @@
 //! useful in its own right and the CUDA logic mirrors met-cu's kernel exactly.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
@@ -26,11 +24,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 /// Compute the cardinal-direction code per element. `n_directions` is provided
 /// per-element to mirror met-cu's `ElementwiseKernel` signature; pass a vector
 /// of e.g. all `16.0` for a standard 16-point compass.
-pub fn host(
-    ctx: &ContextHandle,
-    angle_deg: &[f64],
-    n_directions: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, angle_deg: &[f64], n_directions: &[f64]) -> Result<Vec<f64>> {
     if angle_deg.len() != n_directions.len() {
         return Err(Error::LengthMismatch {
             what: "angle_deg vs n_directions",

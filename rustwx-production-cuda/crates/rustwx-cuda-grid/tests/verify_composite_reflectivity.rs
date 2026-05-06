@@ -44,8 +44,16 @@ fn matches_cpu_reference() {
     let mut max_abs = 0.0_f64;
     for k in 0..gpu.len() {
         let abs = (gpu[k] - cpu[k]).abs();
-        if abs > max_abs { max_abs = abs; }
-        assert!(abs < TOL, "k={k} gpu={} cpu={} abs={:e}", gpu[k], cpu[k], abs);
+        if abs > max_abs {
+            max_abs = abs;
+        }
+        assert!(
+            abs < TOL,
+            "k={k} gpu={} cpu={} abs={:e}",
+            gpu[k],
+            cpu[k],
+            abs
+        );
     }
     eprintln!("composite_reflectivity max_abs={max_abs:e}");
 }

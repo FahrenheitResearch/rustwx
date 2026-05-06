@@ -5,9 +5,7 @@
 //! the CPU reference. Caller passes geostrophic wind for `u_geo`/`v_geo`.
 
 use cudarc::driver::{CudaSlice, PushKernelArg};
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_2d,
-};
+use rustwx_cuda_core::{launch_cfg_2d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_grid_helpers;
 
@@ -77,19 +75,39 @@ pub fn host(
 ) -> Result<(Vec<f64>, Vec<f64>)> {
     let n = nx * ny;
     if t.len() != n {
-        return Err(Error::LengthMismatch { what: "t vs nx*ny", expected: n, got: t.len() });
+        return Err(Error::LengthMismatch {
+            what: "t vs nx*ny",
+            expected: n,
+            got: t.len(),
+        });
     }
     if u_geo.len() != n {
-        return Err(Error::LengthMismatch { what: "u_geo vs nx*ny", expected: n, got: u_geo.len() });
+        return Err(Error::LengthMismatch {
+            what: "u_geo vs nx*ny",
+            expected: n,
+            got: u_geo.len(),
+        });
     }
     if v_geo.len() != n {
-        return Err(Error::LengthMismatch { what: "v_geo vs nx*ny", expected: n, got: v_geo.len() });
+        return Err(Error::LengthMismatch {
+            what: "v_geo vs nx*ny",
+            expected: n,
+            got: v_geo.len(),
+        });
     }
     if dx.len() != n {
-        return Err(Error::LengthMismatch { what: "dx vs nx*ny", expected: n, got: dx.len() });
+        return Err(Error::LengthMismatch {
+            what: "dx vs nx*ny",
+            expected: n,
+            got: dx.len(),
+        });
     }
     if dy.len() != n {
-        return Err(Error::LengthMismatch { what: "dy vs nx*ny", expected: n, got: dy.len() });
+        return Err(Error::LengthMismatch {
+            what: "dy vs nx*ny",
+            expected: n,
+            got: dy.len(),
+        });
     }
 
     let t_d = DeviceVec::from_host(ctx, t)?;

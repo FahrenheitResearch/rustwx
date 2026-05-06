@@ -2,14 +2,11 @@
 //! `virtual_temperature_kernel` (MetPy formulation).
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/thermo/virtual_temperature.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/virtual_temperature.cu");
 const MODULE_KEY: &str = "thermo_virtual_temperature";
 const FUNCTION: &str = "virtual_temperature_kernel";
 
@@ -20,11 +17,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 
 /// Virtual temperature (Celsius) from temperature (Celsius) and mixing ratio
 /// in kg/kg.
-pub fn host(
-    ctx: &ContextHandle,
-    temperature: &[f64],
-    mixing_ratio: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, temperature: &[f64], mixing_ratio: &[f64]) -> Result<Vec<f64>> {
     if temperature.len() != mixing_ratio.len() {
         return Err(Error::LengthMismatch {
             what: "temperature vs mixing_ratio",

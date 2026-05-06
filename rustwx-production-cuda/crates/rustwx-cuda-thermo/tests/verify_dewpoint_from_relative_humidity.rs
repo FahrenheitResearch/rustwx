@@ -11,8 +11,8 @@ fn synthetic(n: usize) -> (Vec<f64>, Vec<f64>) {
     let mut rh = Vec::with_capacity(n);
     for i in 0..n {
         let f = (i as f64) / ((n.max(2) - 1) as f64);
-        t.push(-30.0 + f * 70.0);   // -30..40 C
-        rh.push(5.0 + f * 90.0);    // 5..95 %
+        t.push(-30.0 + f * 70.0); // -30..40 C
+        rh.push(5.0 + f * 90.0); // 5..95 %
     }
     (t, rh)
 }
@@ -28,8 +28,18 @@ fn matches_cpu_reference() {
     for i in 0..t.len() {
         let cpu = cpu_td(t[i], rh[i]);
         let abs = (gpu[i] - cpu).abs();
-        if abs > max_abs { max_abs = abs; }
-        assert!(abs < TOL, "gpu={} cpu={} diff={:e} at i={i} t={} rh={}", gpu[i], cpu, abs, t[i], rh[i]);
+        if abs > max_abs {
+            max_abs = abs;
+        }
+        assert!(
+            abs < TOL,
+            "gpu={} cpu={} diff={:e} at i={i} t={} rh={}",
+            gpu[i],
+            cpu,
+            abs,
+            t[i],
+            rh[i]
+        );
     }
     eprintln!("max_abs={max_abs:e}");
 }

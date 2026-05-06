@@ -7,14 +7,11 @@
 //! is in the ~1e-5 relative range, well above 1e-10. See DIVERGENT_KERNELS.md.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/thermo/station_to_altimeter_pressure.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/station_to_altimeter_pressure.cu");
 const MODULE_KEY: &str = "thermo_station_to_altimeter_pressure";
 const FUNCTION: &str = "station_to_altimeter_pressure_kernel";
 
@@ -24,11 +21,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 }
 
 /// Altimeter setting (hPa) from station pressure (hPa) and elevation (m).
-pub fn host(
-    ctx: &ContextHandle,
-    station_pressure: &[f64],
-    elevation: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, station_pressure: &[f64], elevation: &[f64]) -> Result<Vec<f64>> {
     if station_pressure.len() != elevation.len() {
         return Err(Error::LengthMismatch {
             what: "station_pressure vs elevation",

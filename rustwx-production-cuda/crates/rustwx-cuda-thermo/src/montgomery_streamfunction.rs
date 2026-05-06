@@ -6,14 +6,11 @@
 //! We adopt Kelvin to match the wx_math/metrust signature.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/thermo/montgomery_streamfunction.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/montgomery_streamfunction.cu");
 const MODULE_KEY: &str = "thermo_montgomery_streamfunction";
 const FUNCTION: &str = "montgomery_streamfunction_kernel";
 
@@ -23,11 +20,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 }
 
 /// Montgomery streamfunction (J/kg) from height (m) and temperature (Kelvin).
-pub fn host(
-    ctx: &ContextHandle,
-    height: &[f64],
-    temperature_k: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, height: &[f64], temperature_k: &[f64]) -> Result<Vec<f64>> {
     if height.len() != temperature_k.len() {
         return Err(Error::LengthMismatch {
             what: "height vs temperature_k",

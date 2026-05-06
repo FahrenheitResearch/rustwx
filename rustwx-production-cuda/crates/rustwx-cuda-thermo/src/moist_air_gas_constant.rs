@@ -3,14 +3,11 @@
 //! `metrust::calc::thermo::moist_air_gas_constant`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/thermo/moist_air_gas_constant.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/moist_air_gas_constant.cu");
 const MODULE_KEY: &str = "thermo_moist_air_gas_constant";
 const FUNCTION: &str = "moist_air_gas_constant_kernel";
 
@@ -31,10 +28,7 @@ pub fn host(ctx: &ContextHandle, mixing_ratio: &[f64]) -> Result<Vec<f64>> {
     let cfg = launch_cfg_1d(n, 256);
     let n_i32: i32 = n as i32;
     let mut builder = ctx.stream().launch_builder(&func);
-    builder
-        .arg(w_d.slice())
-        .arg(r_d.slice_mut())
-        .arg(&n_i32);
+    builder.arg(w_d.slice()).arg(r_d.slice_mut()).arg(&n_i32);
     unsafe { builder.launch(cfg)? };
 
     r_d.copy_to_host(ctx)

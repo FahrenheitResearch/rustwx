@@ -2,9 +2,7 @@
 //! `vapor_pressure_from_mixing_ratio_kernel`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
@@ -19,11 +17,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 }
 
 /// Vapor pressure (hPa) from mixing ratio (kg/kg) and total pressure (hPa).
-pub fn host(
-    ctx: &ContextHandle,
-    mixing_ratio: &[f64],
-    pressure: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, mixing_ratio: &[f64], pressure: &[f64]) -> Result<Vec<f64>> {
     if mixing_ratio.len() != pressure.len() {
         return Err(Error::LengthMismatch {
             what: "mixing_ratio vs pressure",

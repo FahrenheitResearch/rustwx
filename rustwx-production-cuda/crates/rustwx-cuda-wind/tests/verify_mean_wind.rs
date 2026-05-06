@@ -38,8 +38,7 @@ fn smoke() {
     let ctx = global().expect("init CUDA context");
     let (u, v, heights) = synthetic_profile();
     let (mu, mv) =
-        mean_wind::host(&ctx, &u, &v, &heights, NCOLS, NLEVELS, 0.0, 6000.0)
-            .expect("kernel");
+        mean_wind::host(&ctx, &u, &v, &heights, NCOLS, NLEVELS, 0.0, 6000.0).expect("kernel");
     assert_eq!(mu.len(), NCOLS);
     assert_eq!(mv.len(), NCOLS);
     for c in 0..NCOLS {

@@ -14,11 +14,11 @@ fn synthetic(n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
     let mut mr = Vec::with_capacity(n);
     for i in 0..n {
         let f = (i as f64) / ((n.max(2) - 1) as f64);
-        cape.push(0.0 + f * 5000.0);     // 0..5000 J/kg, covers <1300 branch
-        shear.push(5.0 + f * 35.0);      // 5..40 m/s
-        t500.push(-30.0 + f * 25.0);     // -30..-5 C (negative as expected)
-        lr.push(4.0 + f * 5.0);          // 4..9 C/km
-        mr.push(2.0 + f * 16.0);         // 2..18 g/kg
+        cape.push(0.0 + f * 5000.0); // 0..5000 J/kg, covers <1300 branch
+        shear.push(5.0 + f * 35.0); // 5..40 m/s
+        t500.push(-30.0 + f * 25.0); // -30..-5 C (negative as expected)
+        lr.push(4.0 + f * 5.0); // 4..9 C/km
+        mr.push(2.0 + f * 16.0); // 2..18 g/kg
     }
     (cape, shear, t500, lr, mr)
 }
@@ -43,7 +43,9 @@ fn matches_cpu_reference() {
         assert!(
             abs < TOL,
             "gpu={} cpu={} abs_diff={:e} at i={i}",
-            gpu[i], cpu[i], abs
+            gpu[i],
+            cpu[i],
+            abs
         );
     }
     eprintln!("max_abs={max_abs:e}");

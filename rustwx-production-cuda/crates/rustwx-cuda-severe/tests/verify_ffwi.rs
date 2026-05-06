@@ -12,8 +12,8 @@ fn synthetic(n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let mut wspd_mph = Vec::with_capacity(n);
     for i in 0..n {
         let f = (i as f64) / ((n.max(2) - 1) as f64);
-        t_f.push(40.0 + f * 60.0);     // 40..100 F
-        rh.push(5.0 + f * 90.0);       // 5..95 % (covers all three EMC branches)
+        t_f.push(40.0 + f * 60.0); // 40..100 F
+        rh.push(5.0 + f * 90.0); // 5..95 % (covers all three EMC branches)
         wspd_mph.push(2.0 + f * 40.0); // 2..42 mph
     }
     (t_f, rh, wspd_mph)
@@ -36,7 +36,9 @@ fn matches_cpu_reference() {
         assert!(
             abs < TOL,
             "gpu={} cpu={} abs_diff={:e} at i={i}",
-            gpu[i], cpu, abs
+            gpu[i],
+            cpu,
+            abs
         );
     }
     eprintln!("max_abs={max_abs:e}");

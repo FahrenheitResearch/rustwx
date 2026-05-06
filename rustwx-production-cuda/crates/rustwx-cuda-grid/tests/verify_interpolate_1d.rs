@@ -2,9 +2,9 @@
 //! `interpolate_1d` (1-D linear interpolation across input levels to target
 //! levels, applied independently to each `(j, i)` column).
 
+use metrust::interpolate::interpolate_1d as cpu_1d;
 use rustwx_cuda_core::global;
 use rustwx_cuda_grid::interpolate_1d;
-use metrust::interpolate::interpolate_1d as cpu_1d;
 
 const TOL: f64 = 1e-10;
 const NX: usize = 64;
@@ -28,7 +28,9 @@ fn synthetic() -> (Vec<f64>, Vec<f64>, Vec<f64>) {
                 let perturb = 0.01 * ((i as f64 * 0.1).sin() + (j as f64 * 0.1).cos());
                 levels_in[idx] = base + perturb;
                 // field: smooth function of level + position
-                field[idx] = 10.0 + base * 2.0 + 0.5 * (i as f64 * 0.2).sin()
+                field[idx] = 10.0
+                    + base * 2.0
+                    + 0.5 * (i as f64 * 0.2).sin()
                     + 0.3 * (j as f64 * 0.15).cos();
             }
         }
@@ -70,10 +72,20 @@ fn matches_cpu_reference() {
 
     let mut max_abs = 0.0_f64;
     for k in 0..gpu.len() {
-        if cpu[k].is_nan() && gpu[k].is_nan() { continue; }
+        if cpu[k].is_nan() && gpu[k].is_nan() {
+            continue;
+        }
         let abs = (gpu[k] - cpu[k]).abs();
-        if abs > max_abs { max_abs = abs; }
-        assert!(abs < TOL, "k={k} gpu={} cpu={} abs={:e}", gpu[k], cpu[k], abs);
+        if abs > max_abs {
+            max_abs = abs;
+        }
+        assert!(
+            abs < TOL,
+            "k={k} gpu={} cpu={} abs={:e}",
+            gpu[k],
+            cpu[k],
+            abs
+        );
     }
     eprintln!("interpolate_1d max_abs={max_abs:e}");
 }

@@ -5,9 +5,7 @@
 //! cross-section if you need the metrust API surface.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
@@ -21,13 +19,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 }
 
 /// Compute the normal component of (u, v) onto the unit normal (nx, ny).
-pub fn host(
-    ctx: &ContextHandle,
-    u: &[f64],
-    v: &[f64],
-    nx: &[f64],
-    ny: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, u: &[f64], v: &[f64], nx: &[f64], ny: &[f64]) -> Result<Vec<f64>> {
     let n = u.len();
     if v.len() != n {
         return Err(Error::LengthMismatch {

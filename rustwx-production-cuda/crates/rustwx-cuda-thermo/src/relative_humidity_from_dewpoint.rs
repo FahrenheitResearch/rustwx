@@ -3,15 +3,11 @@
 //! Matches `wx_math::thermo::rh_from_dewpoint`.
 
 use cudarc::driver::{CudaSlice, PushKernelArg};
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_thermo_helpers;
 
-const KERNEL_SRC: &str = include_str!(
-    "../../../kernels/thermo/relative_humidity_from_dewpoint.cu"
-);
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/relative_humidity_from_dewpoint.cu");
 const MODULE_KEY: &str = "thermo_relative_humidity_from_dewpoint";
 const FUNCTION: &str = "relative_humidity_from_dewpoint_kernel";
 
@@ -39,11 +35,7 @@ pub fn launch_device(
 }
 
 /// Relative humidity (%) from temperature and dewpoint (both Celsius).
-pub fn host(
-    ctx: &ContextHandle,
-    temperature: &[f64],
-    dewpoint: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, temperature: &[f64], dewpoint: &[f64]) -> Result<Vec<f64>> {
     if temperature.len() != dewpoint.len() {
         return Err(Error::LengthMismatch {
             what: "temperature vs dewpoint",

@@ -3,14 +3,11 @@
 //! `metrust::calc::thermo::add_pressure_to_height`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/thermo/add_pressure_to_height.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/add_pressure_to_height.cu");
 const MODULE_KEY: &str = "thermo_add_pressure_to_height";
 const FUNCTION: &str = "add_pressure_to_height_kernel";
 
@@ -20,11 +17,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 }
 
 /// New height (m) after a pressure increment (hPa).
-pub fn host(
-    ctx: &ContextHandle,
-    height: &[f64],
-    delta_pressure: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, height: &[f64], delta_pressure: &[f64]) -> Result<Vec<f64>> {
     if height.len() != delta_pressure.len() {
         return Err(Error::LengthMismatch {
             what: "height vs delta_pressure",

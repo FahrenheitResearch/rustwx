@@ -394,7 +394,6 @@ pub fn host_into_device_on(
     Ok(out_d)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,9 +609,8 @@ mod tests {
                 let Some(value) = sample_regular_latlon_grid_ref(data, axes, lat, lon) else {
                     continue;
                 };
-                let packed = colormap_lookup_ref(
-                    value, levels, colors, under_color, over_color, mask_below,
-                );
+                let packed =
+                    colormap_lookup_ref(value, levels, colors, under_color, over_color, mask_below);
                 if ((packed >> 24) & 0xFF) == 0 {
                     continue;
                 }
@@ -634,9 +632,8 @@ mod tests {
             for i in 0..nx {
                 let u = i as f64 / (nx as f64).max(1.0);
                 let w = j as f64 / (ny as f64).max(1.0);
-                v[j * nx + i] = (u * 6.28).sin() * 50.0
-                    + (w * 4.71).cos() * 30.0
-                    + (u * w * 12.0).sin() * 20.0;
+                v[j * nx + i] =
+                    (u * 6.28).sin() * 50.0 + (w * 4.71).cos() * 30.0 + (u * w * 12.0).sin() * 20.0;
             }
         }
         // sprinkle NaNs across the grid to exercise the masked path
@@ -731,11 +728,23 @@ mod tests {
         };
 
         let cpu = cpu_rasterize_inverse_projected_geographic_ref(
-            &data, &axes, projection.p0, &clip, &extent, &levels, &colors, under, over, None,
-            img_w, img_h,
+            &data,
+            &axes,
+            projection.p0,
+            &clip,
+            &extent,
+            &levels,
+            &colors,
+            under,
+            over,
+            None,
+            img_w,
+            img_h,
         );
-        let gpu = host(&ctx, &data, ny, nx, axes, projection, clip, extent, view, img_w, img_h)
-            .expect("CUDA rasterize_inverse_projected_grid host call failed");
+        let gpu = host(
+            &ctx, &data, ny, nx, axes, projection, clip, extent, view, img_w, img_h,
+        )
+        .expect("CUDA rasterize_inverse_projected_grid host call failed");
 
         assert_eq!(cpu.len(), gpu.len(), "buffer length mismatch");
 
@@ -772,10 +781,7 @@ mod tests {
         if let Some((idx, c, g)) = first_diff {
             let py = idx / img_w as usize;
             let px = idx % img_w as usize;
-            eprintln!(
-                "  first diff @ ({},{}) cpu={:?} gpu={:?}",
-                px, py, c, g
-            );
+            eprintln!("  first diff @ ({},{}) cpu={:?} gpu={:?}", px, py, c, g);
         }
         assert!(
             max_delta <= 1,
@@ -889,8 +895,10 @@ mod tests {
             }
         }
 
-        let gpu = host(&ctx, &data, ny, nx, axes, projection, clip, extent, view, img_w, img_h)
-            .expect("CUDA rasterize_inverse_projected_grid host call (Mercator) failed");
+        let gpu = host(
+            &ctx, &data, ny, nx, axes, projection, clip, extent, view, img_w, img_h,
+        )
+        .expect("CUDA rasterize_inverse_projected_grid host call (Mercator) failed");
 
         assert_eq!(cpu.len(), gpu.len(), "buffer length mismatch (mercator)");
 

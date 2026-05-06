@@ -42,8 +42,16 @@ fn matches_cpu_reference() {
     let mut max_abs = 0.0;
     for k in 0..n {
         let abs = (gpu[k] - cpu[k]).abs();
-        if abs > max_abs { max_abs = abs; }
-        assert!(abs < TOL, "k={k} gpu={} cpu={} abs={:e}", gpu[k], cpu[k], abs);
+        if abs > max_abs {
+            max_abs = abs;
+        }
+        assert!(
+            abs < TOL,
+            "k={k} gpu={} cpu={} abs={:e}",
+            gpu[k],
+            cpu[k],
+            abs
+        );
     }
     eprintln!("advection max_abs={max_abs:e}");
 }

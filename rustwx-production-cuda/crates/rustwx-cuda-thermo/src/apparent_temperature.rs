@@ -6,14 +6,11 @@
 //! `78..82 F`. Same root cause as `heat_index`. See DIVERGENT_KERNELS.md.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/thermo/apparent_temperature.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/apparent_temperature.cu");
 const MODULE_KEY: &str = "thermo_apparent_temperature";
 const FUNCTION: &str = "apparent_temperature_kernel";
 

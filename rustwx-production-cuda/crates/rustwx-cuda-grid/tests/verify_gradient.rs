@@ -41,10 +41,26 @@ fn matches_cpu_reference() {
     for k in 0..n {
         let ax = (gpu_dx[k] - cpu_x[k]).abs();
         let ay = (gpu_dy[k] - cpu_y[k]).abs();
-        if ax > max_abs_x { max_abs_x = ax; }
-        if ay > max_abs_y { max_abs_y = ay; }
-        assert!(ax < TOL, "x k={k} gpu={} cpu={} abs={:e}", gpu_dx[k], cpu_x[k], ax);
-        assert!(ay < TOL, "y k={k} gpu={} cpu={} abs={:e}", gpu_dy[k], cpu_y[k], ay);
+        if ax > max_abs_x {
+            max_abs_x = ax;
+        }
+        if ay > max_abs_y {
+            max_abs_y = ay;
+        }
+        assert!(
+            ax < TOL,
+            "x k={k} gpu={} cpu={} abs={:e}",
+            gpu_dx[k],
+            cpu_x[k],
+            ax
+        );
+        assert!(
+            ay < TOL,
+            "y k={k} gpu={} cpu={} abs={:e}",
+            gpu_dy[k],
+            cpu_y[k],
+            ay
+        );
     }
     eprintln!("gradient max_abs_x={max_abs_x:e} max_abs_y={max_abs_y:e}");
 }

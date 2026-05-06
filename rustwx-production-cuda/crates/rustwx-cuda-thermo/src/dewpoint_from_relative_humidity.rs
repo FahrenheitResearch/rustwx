@@ -4,14 +4,11 @@
 //! (which wraps `wx_math::thermo::dewpoint_from_rh`).
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_thermo_helpers;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/thermo/dewpoint_from_relative_humidity.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/dewpoint_from_relative_humidity.cu");
 const MODULE_KEY: &str = "thermo_dewpoint_from_relative_humidity";
 const FUNCTION: &str = "dewpoint_from_relative_humidity_kernel";
 

@@ -2,9 +2,7 @@
 //! `wind_components_kernel`. Matches `wx_math::dynamics::wind_components`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
@@ -18,11 +16,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 }
 
 /// Compute (u, v) wind components from speed (m/s) and meteorological direction (deg).
-pub fn host(
-    ctx: &ContextHandle,
-    speed: &[f64],
-    direction: &[f64],
-) -> Result<(Vec<f64>, Vec<f64>)> {
+pub fn host(ctx: &ContextHandle, speed: &[f64], direction: &[f64]) -> Result<(Vec<f64>, Vec<f64>)> {
     if speed.len() != direction.len() {
         return Err(Error::LengthMismatch {
             what: "speed vs direction",

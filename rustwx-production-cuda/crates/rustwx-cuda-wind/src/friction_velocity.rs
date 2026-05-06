@@ -10,9 +10,7 @@
 //! `#[ignore]`d and not promoted to the suite until the divergence is measured.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, LaunchCfg,
-};
+use rustwx_cuda_core::{ContextHandle, DeviceVec, Error, KernelModule, LaunchCfg, Result};
 
 use crate::sources::with_constants;
 

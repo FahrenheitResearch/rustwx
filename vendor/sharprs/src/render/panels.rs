@@ -60,10 +60,9 @@ const COL_COLD_ADV: [u8; 4] = [60, 120, 220, 255];
 const COL_NEUTRAL_ADV: [u8; 4] = [140, 140, 140, 255];
 
 // Font metrics (matching the 7x10 bitmap font)
-const FONT_W: i32 = 7;
 const FONT_H: i32 = 10;
 #[allow(dead_code)]
-const CHAR_SPACING: i32 = 8; // FONT_W + 1
+const CHAR_SPACING: i32 = 8;
 const LINE_H: i32 = 13; // FONT_H + 3
 const TITLE_SCALE: i32 = 2;
 const TITLE_H: i32 = FONT_H * TITLE_SCALE;
@@ -723,7 +722,7 @@ pub fn draw_hazard_type_panel(
     canvas.fill_rect(rx, ry, rw, rh, COL_PANEL_BG);
     draw_panel_border(canvas, rx, ry, rw, rh);
 
-    let sep_y = draw_panel_title(canvas, "Possible Hazard Type", rx, ry, rw);
+    let sep_y = draw_panel_title(canvas, "Hazard Signal", rx, ry, rw);
 
     // Hazard label
     let label = watch.label();
@@ -737,25 +736,31 @@ pub fn draw_hazard_type_panel(
     let bar_col = [col[0], col[1], col[2], 35];
     canvas.fill_rect(rx + 2, content_top, rw - 4, content_h, bar_col);
 
-    // 3x scaled text for MAXIMUM prominence (the biggest text in the panel)
-    let scale = 3;
-    let scaled_char_w = FONT_W * scale + scale;
-    let n_chars = label.len() as i32;
-    let large_w = n_chars * scaled_char_w - scale;
-    let large_h = FONT_H * scale;
+    let guidance = "experimental guidance";
+    let guidance_scale = 1;
+    let guidance_w = Canvas::text_width_scaled(guidance, guidance_scale);
+    let guidance_x = rx + (rw - guidance_w) / 2;
+    let guidance_y = content_top + 4;
+    draw_text_scaled(
+        canvas,
+        guidance,
+        guidance_x,
+        guidance_y,
+        COL_TEXT_DIM,
+        guidance_scale,
+    );
 
-    // If text is too wide at 3x, fall back to 2x
-    let (final_scale, final_w, final_h) = if large_w > rw - 12 {
-        let s2 = 2;
-        let w2 = n_chars * (FONT_W * s2 + s2) - s2;
-        let h2 = FONT_H * s2;
-        (s2, w2, h2)
-    } else {
-        (scale, large_w, large_h)
-    };
+    let mut final_scale = 3;
+    while final_scale > 1 && Canvas::text_width_scaled(label, final_scale) > rw - 16 {
+        final_scale -= 1;
+    }
+    let final_w = Canvas::text_width_scaled(label, final_scale);
+    let final_h = FONT_H * final_scale;
 
     let lx = rx + (rw - final_w) / 2;
-    let ly = content_top + (content_h - final_h) / 2;
+    let label_area_top = guidance_y + LINE_H + 2;
+    let label_area_h = (content_top + content_h - label_area_top).max(final_h);
+    let ly = label_area_top + (label_area_h - final_h) / 2;
 
     // Draw at chosen scale with glow effect for prominence
     // Glow: draw slightly offset in a dimmer version

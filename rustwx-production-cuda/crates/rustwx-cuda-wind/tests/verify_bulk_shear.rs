@@ -46,8 +46,7 @@ fn matches_cpu_reference() {
     let top = 6000.0;
 
     let (su_gpu, sv_gpu) =
-        bulk_shear::host(&ctx, &u, &v, &heights, NCOLS, NLEVELS, bottom, top)
-            .expect("kernel");
+        bulk_shear::host(&ctx, &u, &v, &heights, NCOLS, NLEVELS, bottom, top).expect("kernel");
     assert_eq!(su_gpu.len(), NCOLS);
     assert_eq!(sv_gpu.len(), NCOLS);
 
@@ -55,8 +54,7 @@ fn matches_cpu_reference() {
     for c in 0..NCOLS {
         let s = c * NLEVELS;
         let e = s + NLEVELS;
-        let (su_cpu, sv_cpu) =
-            cpu_bulk_shear(&u[s..e], &v[s..e], &heights[s..e], bottom, top);
+        let (su_cpu, sv_cpu) = cpu_bulk_shear(&u[s..e], &v[s..e], &heights[s..e], bottom, top);
         let du = (su_gpu[c] - su_cpu).abs();
         let dv = (sv_gpu[c] - sv_cpu).abs();
         let m = du.max(dv);

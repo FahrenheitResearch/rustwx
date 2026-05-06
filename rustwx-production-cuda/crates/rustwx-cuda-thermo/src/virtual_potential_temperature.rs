@@ -4,14 +4,11 @@
 //! mixing ratio is converted to g/kg on the CPU side.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/thermo/virtual_potential_temperature.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/virtual_potential_temperature.cu");
 const MODULE_KEY: &str = "thermo_virtual_potential_temperature";
 const FUNCTION: &str = "virtual_potential_temperature_kernel";
 

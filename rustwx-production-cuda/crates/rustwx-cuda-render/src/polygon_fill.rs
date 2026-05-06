@@ -108,9 +108,7 @@ pub fn fill_polygons_host_on(
 
     // Upload canvas as packed u32. The byte layout R,G,B,A matches little-
     // endian u32 readback, so we can transmute the &mut [u8] view.
-    let canvas_u32 = unsafe {
-        std::slice::from_raw_parts(canvas.as_ptr() as *const u32, n_pixels)
-    };
+    let canvas_u32 = unsafe { std::slice::from_raw_parts(canvas.as_ptr() as *const u32, n_pixels) };
     let mut canvas_d: DeviceVec<u32> = DeviceVec::from_host_on(stream, canvas_u32)?;
 
     let m = module(ctx)?;
@@ -138,8 +136,12 @@ pub fn fill_polygons_host_on(
         for ring in poly.rings {
             for &(_, y) in ring.iter() {
                 if y.is_finite() {
-                    if y < y_min { y_min = y; }
-                    if y > y_max { y_max = y; }
+                    if y < y_min {
+                        y_min = y;
+                    }
+                    if y > y_max {
+                        y_max = y;
+                    }
                 }
             }
             let n = ring.len();
@@ -236,9 +238,7 @@ pub fn fill_polygons_host_on(
 
     let pixels_u32 = canvas_d.copy_to_host_on(stream)?;
     // Copy back into the user buffer in-place.
-    let bytes = unsafe {
-        std::slice::from_raw_parts(pixels_u32.as_ptr() as *const u8, want_bytes)
-    };
+    let bytes = unsafe { std::slice::from_raw_parts(pixels_u32.as_ptr() as *const u8, want_bytes) };
     canvas.copy_from_slice(bytes);
     Ok(())
 }
@@ -280,7 +280,12 @@ mod tests {
         let img_w_i = img_w as i32;
         let img_h_i = img_h as i32;
         let (cx0, cy0, cx1, cy1) = match clip {
-            Some((x0, y0, x1, y1)) => (x0.max(0), y0.max(0), x1.min(img_w_i - 1), y1.min(img_h_i - 1)),
+            Some((x0, y0, x1, y1)) => (
+                x0.max(0),
+                y0.max(0),
+                x1.min(img_w_i - 1),
+                y1.min(img_h_i - 1),
+            ),
             None => (0, 0, img_w_i - 1, img_h_i - 1),
         };
         if cx1 < cx0 || cy1 < cy0 {
@@ -306,22 +311,44 @@ mod tests {
         }
 
         #[derive(Clone)]
-        struct Edge { y_min: f64, y_max: f64, x: f64, dx: f64 }
+        struct Edge {
+            y_min: f64,
+            y_max: f64,
+            x: f64,
+            dx: f64,
+        }
         let mut edges: Vec<Edge> = Vec::new();
         for ring in rings {
             let n = ring.len();
-            if n < 2 { continue; }
+            if n < 2 {
+                continue;
+            }
             for i in 0..n {
                 let (ax, ay) = ring[i];
                 let (bx, by) = ring[(i + 1) % n];
-                if !ax.is_finite() || !ay.is_finite() || !bx.is_finite() || !by.is_finite() { continue; }
-                if (ay - by).abs() < 1e-9 { continue; }
-                let (lo_y, hi_y, lo_x, hi_x) = if ay < by { (ay, by, ax, bx) } else { (by, ay, bx, ax) };
+                if !ax.is_finite() || !ay.is_finite() || !bx.is_finite() || !by.is_finite() {
+                    continue;
+                }
+                if (ay - by).abs() < 1e-9 {
+                    continue;
+                }
+                let (lo_y, hi_y, lo_x, hi_x) = if ay < by {
+                    (ay, by, ax, bx)
+                } else {
+                    (by, ay, bx, ax)
+                };
                 let dx = (hi_x - lo_x) / (hi_y - lo_y);
-                edges.push(Edge { y_min: lo_y, y_max: hi_y, x: lo_x, dx });
+                edges.push(Edge {
+                    y_min: lo_y,
+                    y_max: hi_y,
+                    x: lo_x,
+                    dx,
+                });
             }
         }
-        if edges.is_empty() { return; }
+        if edges.is_empty() {
+            return;
+        }
 
         let mut xs: Vec<f64> = Vec::with_capacity(edges.len());
         for y in y0..=y1 {
@@ -332,7 +359,9 @@ mod tests {
                     xs.push(e.x + (yf - e.y_min) * e.dx);
                 }
             }
-            if xs.len() < 2 { continue; }
+            if xs.len() < 2 {
+                continue;
+            }
             xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
             let mut i = 0;
@@ -352,7 +381,9 @@ mod tests {
 
     fn blend_one(dst: &mut [u8], src: u32) {
         let sa = ((src >> 24) & 0xFF) as u8;
-        if sa == 0 { return; }
+        if sa == 0 {
+            return;
+        }
         let sr = (src & 0xFF) as u8;
         let sg = ((src >> 8) & 0xFF) as u8;
         let sb = ((src >> 16) & 0xFF) as u8;
@@ -396,27 +427,15 @@ mod tests {
         let mut canvas_cpu = canvas_gpu.clone();
 
         // Polygon 1: opaque triangle.
-        let tri: Vec<Vec<(f64, f64)>> = vec![vec![
-            (10.0, 10.0),
-            (80.0, 20.0),
-            (40.0, 70.0),
-        ]];
+        let tri: Vec<Vec<(f64, f64)>> = vec![vec![(10.0, 10.0), (80.0, 20.0), (40.0, 70.0)]];
         let tri_color = pack_rgba(220, 30, 50, 255);
 
         // Polygon 2: alpha quad with a hole — outer rectangle CCW, inner
         // rectangle CW. Even-odd fills the donut, leaving the hole.
-        let quad_outer: Vec<(f64, f64)> = vec![
-            (50.0, 30.0),
-            (110.0, 30.0),
-            (110.0, 80.0),
-            (50.0, 80.0),
-        ];
-        let quad_hole: Vec<(f64, f64)> = vec![
-            (70.0, 45.0),
-            (70.0, 65.0),
-            (95.0, 65.0),
-            (95.0, 45.0),
-        ];
+        let quad_outer: Vec<(f64, f64)> =
+            vec![(50.0, 30.0), (110.0, 30.0), (110.0, 80.0), (50.0, 80.0)];
+        let quad_hole: Vec<(f64, f64)> =
+            vec![(70.0, 45.0), (70.0, 65.0), (95.0, 65.0), (95.0, 45.0)];
         let quad: Vec<Vec<(f64, f64)>> = vec![quad_outer, quad_hole];
         let quad_color = pack_rgba(40, 200, 120, 128);
 
@@ -438,9 +457,18 @@ mod tests {
 
         // GPU
         let polys = vec![
-            PolygonInput { rings: &tri,     color_packed: tri_color },
-            PolygonInput { rings: &quad,    color_packed: quad_color },
-            PolygonInput { rings: &clipped, color_packed: clipped_color },
+            PolygonInput {
+                rings: &tri,
+                color_packed: tri_color,
+            },
+            PolygonInput {
+                rings: &quad,
+                color_packed: quad_color,
+            },
+            PolygonInput {
+                rings: &clipped,
+                color_packed: clipped_color,
+            },
         ];
         fill_polygons_host(&ctx, &mut canvas_gpu, img_w, img_h, &polys, clip)
             .expect("CUDA polygon fill failed");
@@ -453,12 +481,17 @@ mod tests {
             let off = p * 4;
             let mut local_max = 0u8;
             for c in 0..4 {
-                let d = (canvas_cpu[off + c] as i32 - canvas_gpu[off + c] as i32).unsigned_abs() as u8;
-                if d > local_max { local_max = d; }
+                let d =
+                    (canvas_cpu[off + c] as i32 - canvas_gpu[off + c] as i32).unsigned_abs() as u8;
+                if d > local_max {
+                    local_max = d;
+                }
             }
             if local_max > 0 {
                 diff_pixels += 1;
-                if local_max > max_chan_delta { max_chan_delta = local_max; }
+                if local_max > max_chan_delta {
+                    max_chan_delta = local_max;
+                }
             }
         }
         eprintln!(

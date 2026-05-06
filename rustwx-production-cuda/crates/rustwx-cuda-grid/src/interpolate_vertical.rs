@@ -9,14 +9,11 @@
 //! it cheap on GPU amortizes PCIe across whatever follows.
 
 use cudarc::driver::{CudaSlice, PushKernelArg};
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/grid/interpolate_vertical.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/grid/interpolate_vertical.cu");
 const MODULE_KEY: &str = "grid_interpolate_vertical";
 const FUNCTION: &str = "interpolate_vertical_kernel";
 

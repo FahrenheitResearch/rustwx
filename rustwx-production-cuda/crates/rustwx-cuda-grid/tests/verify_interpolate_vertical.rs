@@ -35,9 +35,8 @@ fn matches_cpu_linear() {
 
     for &target in &[850.0_f64, 700.0, 500.0, 250.0] {
         let cpu = cpu_interp(&vals, &levels, target, nx, ny, nz, false);
-        let gpu =
-            interpolate_vertical::host(&ctx, &vals, &levels, target, nx, ny, nz, false)
-                .expect("kernel");
+        let gpu = interpolate_vertical::host(&ctx, &vals, &levels, target, nx, ny, nz, false)
+            .expect("kernel");
         assert_eq!(gpu.len(), cpu.len());
         for i in 0..cpu.len() {
             let abs = (gpu[i] - cpu[i]).abs();
@@ -55,9 +54,8 @@ fn matches_cpu_log() {
 
     for &target in &[850.0_f64, 700.0, 500.0, 250.0] {
         let cpu = cpu_interp(&vals, &levels, target, nx, ny, nz, true);
-        let gpu =
-            interpolate_vertical::host(&ctx, &vals, &levels, target, nx, ny, nz, true)
-                .expect("kernel");
+        let gpu = interpolate_vertical::host(&ctx, &vals, &levels, target, nx, ny, nz, true)
+            .expect("kernel");
         for i in 0..cpu.len() {
             let abs = (gpu[i] - cpu[i]).abs();
             assert!(abs < TOL, "log target={target} idx={i} abs={abs:e}");

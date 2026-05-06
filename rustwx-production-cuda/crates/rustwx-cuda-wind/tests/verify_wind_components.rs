@@ -35,10 +35,7 @@ fn matches_cpu_reference() {
         if m > max_abs {
             max_abs = m;
         }
-        assert!(
-            du < TOL && dv < TOL,
-            "du={du:e} dv={dv:e} at i={i}"
-        );
+        assert!(du < TOL && dv < TOL, "du={du:e} dv={dv:e} at i={i}");
     }
     eprintln!("max_abs={max_abs:e}");
 }

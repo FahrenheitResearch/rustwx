@@ -3,9 +3,7 @@
 //! Wrapper takes per-element unit-tangent components `(tx, ty)` directly.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
@@ -19,13 +17,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 }
 
 /// Compute the tangential component of (u, v) along the unit tangent (tx, ty).
-pub fn host(
-    ctx: &ContextHandle,
-    u: &[f64],
-    v: &[f64],
-    tx: &[f64],
-    ty: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, u: &[f64], v: &[f64], tx: &[f64], ty: &[f64]) -> Result<Vec<f64>> {
     let n = u.len();
     if v.len() != n {
         return Err(Error::LengthMismatch {

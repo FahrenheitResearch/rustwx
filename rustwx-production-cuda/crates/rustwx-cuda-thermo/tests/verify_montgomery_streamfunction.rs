@@ -30,8 +30,16 @@ fn matches_cpu_reference() {
         // metrust signature: (theta_k, p_hpa, t_k, z_m); only t_k & z_m are used
         let cpu = cpu_psi(0.0, 0.0, t[i], z[i]);
         let abs = (gpu[i] - cpu).abs();
-        if abs > max_abs { max_abs = abs; }
-        assert!(abs < TOL, "gpu={} cpu={} diff={:e} at i={i}", gpu[i], cpu, abs);
+        if abs > max_abs {
+            max_abs = abs;
+        }
+        assert!(
+            abs < TOL,
+            "gpu={} cpu={} diff={:e} at i={i}",
+            gpu[i],
+            cpu,
+            abs
+        );
     }
     eprintln!("max_abs={max_abs:e}");
 }

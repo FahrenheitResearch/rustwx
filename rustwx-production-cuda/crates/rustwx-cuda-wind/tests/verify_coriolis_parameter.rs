@@ -30,8 +30,13 @@ fn matches_cpu_reference() {
         if abs > max_abs {
             max_abs = abs;
         }
-        assert!(abs < TOL, "abs={abs:e} at i={i} lat={} gpu={} cpu={}",
-            lats[i], gpu[i], cpu);
+        assert!(
+            abs < TOL,
+            "abs={abs:e} at i={i} lat={} gpu={} cpu={}",
+            lats[i],
+            gpu[i],
+            cpu
+        );
     }
     eprintln!("max_abs={max_abs:e}");
 }

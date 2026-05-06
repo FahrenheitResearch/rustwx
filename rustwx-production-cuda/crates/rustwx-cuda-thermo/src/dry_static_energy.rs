@@ -3,14 +3,11 @@
 //! Argument order mirrors the kernel: `(height, temperature)`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str =
-    include_str!("../../../kernels/thermo/dry_static_energy.cu");
+const KERNEL_SRC: &str = include_str!("../../../kernels/thermo/dry_static_energy.cu");
 const MODULE_KEY: &str = "thermo_dry_static_energy";
 const FUNCTION: &str = "dry_static_energy_kernel";
 
@@ -20,11 +17,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 }
 
 /// Dry static energy (J/kg). `height` (m), `temperature` (K).
-pub fn host(
-    ctx: &ContextHandle,
-    height: &[f64],
-    temperature: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, height: &[f64], temperature: &[f64]) -> Result<Vec<f64>> {
     if height.len() != temperature.len() {
         return Err(Error::LengthMismatch {
             what: "height vs temperature",

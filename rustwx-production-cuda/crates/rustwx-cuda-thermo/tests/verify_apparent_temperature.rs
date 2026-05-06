@@ -14,9 +14,7 @@ fn cpu_at(t_c: f64, rh: f64, ws_ms: f64) -> f64 {
     let t_f = t_c * 9.0 / 5.0 + 32.0;
     let wind_mph = ws_ms * 2.23694;
     if t_f >= 80.0 {
-        let mut hi_f = -42.379
-            + 2.04901523 * t_f
-            + 10.14333127 * rh
+        let mut hi_f = -42.379 + 2.04901523 * t_f + 10.14333127 * rh
             - 0.22475541 * t_f * rh
             - 0.00683783 * t_f * t_f
             - 0.05481717 * rh * rh
@@ -62,8 +60,16 @@ fn matches_cpu_reference() {
     for i in 0..t.len() {
         let cpu = cpu_at(t[i], rh[i], w[i]);
         let abs = (gpu[i] - cpu).abs();
-        if abs > max_abs { max_abs = abs; }
-        assert!(abs < TOL, "gpu={} cpu={} diff={:e} at i={i}", gpu[i], cpu, abs);
+        if abs > max_abs {
+            max_abs = abs;
+        }
+        assert!(
+            abs < TOL,
+            "gpu={} cpu={} diff={:e} at i={i}",
+            gpu[i],
+            cpu,
+            abs
+        );
     }
     eprintln!("max_abs={max_abs:e}");
 }

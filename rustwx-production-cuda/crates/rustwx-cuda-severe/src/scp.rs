@@ -3,9 +3,7 @@
 //! `metrust::calc::severe::supercell_composite_parameter`.
 
 use cudarc::driver::{CudaSlice, PushKernelArg};
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
@@ -32,24 +30,14 @@ pub fn launch_device(
     let cfg = launch_cfg_1d(n, 256);
     let n_i32: i32 = n as i32;
     let mut builder = ctx.stream().launch_builder(&func);
-    builder
-        .arg(mucape)
-        .arg(srh)
-        .arg(shear)
-        .arg(scp)
-        .arg(&n_i32);
+    builder.arg(mucape).arg(srh).arg(shear).arg(scp).arg(&n_i32);
     unsafe { builder.launch(cfg)? };
     Ok(())
 }
 
 /// Compute SCP elementwise.
 /// `mucape` (J/kg), `srh` effective layer (m^2/s^2), `shear` effective bulk shear (m/s).
-pub fn host(
-    ctx: &ContextHandle,
-    mucape: &[f64],
-    srh: &[f64],
-    shear: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, mucape: &[f64], srh: &[f64], shear: &[f64]) -> Result<Vec<f64>> {
     if srh.len() != mucape.len() {
         return Err(Error::LengthMismatch {
             what: "mucape vs srh",

@@ -27,10 +27,22 @@ fn matches_cpu_reference() {
     let mut max_abs = 0.0;
     for i in 0..h.len() {
         let cpu = cpu_addp(h[i], dp[i]);
-        if !cpu.is_finite() || !gpu[i].is_finite() { continue; }
+        if !cpu.is_finite() || !gpu[i].is_finite() {
+            continue;
+        }
         let abs = (gpu[i] - cpu).abs();
-        if abs > max_abs { max_abs = abs; }
-        assert!(abs < TOL, "gpu={} cpu={} diff={:e} at i={i} h={} dp={}", gpu[i], cpu, abs, h[i], dp[i]);
+        if abs > max_abs {
+            max_abs = abs;
+        }
+        assert!(
+            abs < TOL,
+            "gpu={} cpu={} diff={:e} at i={i} h={} dp={}",
+            gpu[i],
+            cpu,
+            abs,
+            h[i],
+            dp[i]
+        );
     }
     eprintln!("max_abs={max_abs:e}");
 }

@@ -3,15 +3,12 @@
 //! Matches `wx_math::thermo::temperature_from_potential_temperature`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_1d,
-};
+use rustwx_cuda_core::{launch_cfg_1d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
-const KERNEL_SRC: &str = include_str!(
-    "../../../kernels/thermo/temperature_from_potential_temperature.cu"
-);
+const KERNEL_SRC: &str =
+    include_str!("../../../kernels/thermo/temperature_from_potential_temperature.cu");
 const MODULE_KEY: &str = "thermo_temperature_from_potential_temperature";
 const FUNCTION: &str = "temperature_from_potential_temperature_kernel";
 
@@ -21,11 +18,7 @@ fn module(ctx: &ContextHandle) -> Result<KernelModule> {
 }
 
 /// Inverse Poisson: temperature (K) from pressure (hPa) and theta (K).
-pub fn host(
-    ctx: &ContextHandle,
-    pressure: &[f64],
-    theta: &[f64],
-) -> Result<Vec<f64>> {
+pub fn host(ctx: &ContextHandle, pressure: &[f64], theta: &[f64]) -> Result<Vec<f64>> {
     if pressure.len() != theta.len() {
         return Err(Error::LengthMismatch {
             what: "pressure vs theta",

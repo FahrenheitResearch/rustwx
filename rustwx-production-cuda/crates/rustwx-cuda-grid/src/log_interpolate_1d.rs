@@ -8,9 +8,7 @@
 //! `NaN`.
 
 use cudarc::driver::PushKernelArg;
-use rustwx_cuda_core::{
-    ContextHandle, DeviceVec, Error, KernelModule, Result, launch_cfg_2d,
-};
+use rustwx_cuda_core::{launch_cfg_2d, ContextHandle, DeviceVec, Error, KernelModule, Result};
 
 use crate::sources::with_constants;
 
@@ -32,10 +30,18 @@ pub fn host(
     let nz_out = p_target.len();
     let n_out = nz_out * slab;
     if field.len() != n_in {
-        return Err(Error::LengthMismatch { what: "field vs nz*ny*nx", expected: n_in, got: field.len() });
+        return Err(Error::LengthMismatch {
+            what: "field vs nz*ny*nx",
+            expected: n_in,
+            got: field.len(),
+        });
     }
     if pressure.len() != n_in {
-        return Err(Error::LengthMismatch { what: "pressure vs nz*ny*nx", expected: n_in, got: pressure.len() });
+        return Err(Error::LengthMismatch {
+            what: "pressure vs nz*ny*nx",
+            expected: n_in,
+            got: pressure.len(),
+        });
     }
 
     let m = KernelModule::load(ctx, MODULE_KEY, &with_constants(KERNEL_SRC))?;

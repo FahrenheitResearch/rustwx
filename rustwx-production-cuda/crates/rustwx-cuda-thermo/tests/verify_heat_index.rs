@@ -17,9 +17,7 @@ fn cpu_hi(t_c: f64, rh: f64) -> f64 {
     let hi_f = if t_f < 80.0 {
         steadman
     } else {
-        let mut hi = -42.379
-            + 2.04901523 * t_f
-            + 10.14333127 * rh
+        let mut hi = -42.379 + 2.04901523 * t_f + 10.14333127 * rh
             - 0.22475541 * t_f * rh
             - 0.00683783 * t_f * t_f
             - 0.05481717 * rh * rh
@@ -59,9 +57,18 @@ fn matches_cpu_reference() {
     for i in 0..t.len() {
         let cpu = cpu_hi(t[i], rh[i]);
         let abs = (gpu[i] - cpu).abs();
-        if abs > max_abs { max_abs = abs; }
-        assert!(abs < TOL, "gpu={} cpu={} diff={:e} at i={i} (t={}, rh={})",
-                gpu[i], cpu, abs, t[i], rh[i]);
+        if abs > max_abs {
+            max_abs = abs;
+        }
+        assert!(
+            abs < TOL,
+            "gpu={} cpu={} diff={:e} at i={i} (t={}, rh={})",
+            gpu[i],
+            cpu,
+            abs,
+            t[i],
+            rh[i]
+        );
     }
     eprintln!("max_abs={max_abs:e}");
 }
