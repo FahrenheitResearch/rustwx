@@ -1391,6 +1391,75 @@ fn is_gdex_dataset_token(token: &str) -> bool {
     token.len() > 1 && token.starts_with('d') && token[1..].chars().all(|ch| ch.is_ascii_digit())
 }
 
+fn native_stat_label_from_product(product: &str) -> Option<String> {
+    let token = product
+        .rsplit('/')
+        .next()
+        .unwrap_or(product)
+        .trim()
+        .to_ascii_lowercase();
+    let token = token
+        .strip_suffix("_3hrly")
+        .or_else(|| token.strip_suffix("_hourly"))
+        .or_else(|| token.strip_suffix("_1hrly"))
+        .unwrap_or(token.as_str());
+    let label = match token {
+        "mean" | "avg" | "avrg" => "Mean".to_string(),
+        "spread" | "sprd" => "Spread".to_string(),
+        "std" | "stddev" | "stdev" => "Std Dev".to_string(),
+        "min" | "minimum" => "Min".to_string(),
+        "max" | "maximum" => "Max".to_string(),
+        "prob" | "probability" => "Probability".to_string(),
+        value if value.len() >= 2 && value.starts_with('p') => {
+            let digits = &value[1..];
+            if digits.chars().all(|ch| ch.is_ascii_digit()) {
+                value.to_ascii_uppercase()
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
+    Some(label)
+}
+
+fn native_stat_label_for_request(
+    request: &DirectBatchRequest,
+    planned_product: Option<&str>,
+) -> Option<String> {
+    planned_product
+        .and_then(|planned| {
+            request
+                .product_overrides
+                .get(planned)
+                .and_then(|product| native_stat_label_from_product(product))
+                .or_else(|| native_stat_label_from_product(planned))
+        })
+        .or_else(|| {
+            request
+                .product_overrides
+                .values()
+                .find_map(|product| native_stat_label_from_product(product))
+        })
+}
+
+fn model_title_prefix(model: ModelId) -> String {
+    model.as_str().replace('-', " ").to_ascii_uppercase()
+}
+
+fn apply_native_stat_title_prefix(model: ModelId, stat_label: &str, base_title: &str) -> String {
+    let model_label = model_title_prefix(model);
+    let stat_prefix = format!("{model_label} {stat_label} ");
+    if base_title.starts_with(&stat_prefix) {
+        return base_title.to_string();
+    }
+    let model_prefix = format!("{model_label} ");
+    if let Some(without_model) = base_title.strip_prefix(&model_prefix) {
+        return format!("{model_label} {stat_label} {without_model}");
+    }
+    format!("{model_label} {stat_label} {base_title}")
+}
+
 fn direct_title_for_request(
     request: &DirectBatchRequest,
     planned_product: Option<&str>,
@@ -1401,6 +1470,9 @@ fn direct_title_for_request(
         if let Some(selector) = request.earth2_ensemble {
             title = format!("{title} ({})", selector.label());
         }
+    }
+    if let Some(stat_label) = native_stat_label_for_request(request, planned_product) {
+        title = apply_native_stat_title_prefix(request.model, &stat_label, &title);
     }
     if request.model != ModelId::WrfGdex {
         return static_title_with_suffix(title);
@@ -4272,6 +4344,41 @@ mod tests {
             output_suffix: None,
             earth2_ensemble: None,
         }
+    }
+
+    #[test]
+    fn native_stat_product_overrides_promote_stat_to_static_titles() {
+        let mut request = sample_direct_request(ModelId::Sref);
+        request.product_overrides.insert(
+            "ensprod/pgrb212/mean_3hrly".to_string(),
+            "ensprod/pgrb212/p50_3hrly".to_string(),
+        );
+
+        assert_eq!(
+            native_stat_label_for_request(&request, Some("ensprod/pgrb212/mean_3hrly")).as_deref(),
+            Some("P50")
+        );
+        let title = direct_title_for_planned_product(
+            &request,
+            "ensprod/pgrb212/mean_3hrly",
+            "2m Temperature + 10m Winds",
+        );
+        assert!(
+            title.starts_with("SREF P50 2m Temperature + 10m Winds"),
+            "{title}"
+        );
+    }
+
+    #[test]
+    fn native_stat_title_prefix_keeps_existing_model_prefix_first() {
+        assert_eq!(
+            apply_native_stat_title_prefix(ModelId::Sref, "Spread", "SREF 2m Dewpoint"),
+            "SREF Spread 2m Dewpoint"
+        );
+        assert_eq!(
+            apply_native_stat_title_prefix(ModelId::Sref, "Mean", "SREF Mean 2m Dewpoint"),
+            "SREF Mean 2m Dewpoint"
+        );
     }
 
     #[test]
