@@ -6,9 +6,7 @@ use crate::overlay::{
     BarbOverlay, ContourOverlay, InverseProjectedGrid, MapExtent, ProjectedGrid,
     ProjectedPlaceLabelOverlay, ProjectedPointOverlay, ProjectedPolygon, ProjectedPolyline,
 };
-use crate::presentation::{
-    LineworkPipeline, LineworkRole, ProductVisualMode, RenderPresentation, TitleAnchor,
-};
+use crate::presentation::{ProductVisualMode, RenderPresentation, TitleAnchor};
 use crate::rasterize;
 use crate::request::{
     ChromeScale, DomainFrame, ProjectedLabelPlacement, ProjectedMarkerShape,
@@ -49,7 +47,6 @@ pub struct RenderOpts {
     pub chrome_scale: ChromeScale,
     pub supersample_factor: u32,
     pub supersample_sharpen: bool,
-    pub linework_pipeline: LineworkPipeline,
     pub domain_frame: Option<DomainFrame>,
     pub map_extent: Option<MapExtent>,
     pub projected_grid: Option<ProjectedGrid>,
@@ -160,7 +157,6 @@ impl Default for RenderOpts {
             chrome_scale: ChromeScale::default(),
             supersample_factor: 1,
             supersample_sharpen: true,
-            linework_pipeline: LineworkPipeline::default(),
             domain_frame: None,
             map_extent: None,
             projected_grid: None,
@@ -826,29 +822,29 @@ fn draw_projected_polygons(
     }
 }
 
-type ProjectedLineChunk = (Vec<(f64, f64)>, crate::color::Rgba, u32);
-
-fn collect_projected_line_chunks(
+fn draw_projected_lines(
+    img: &mut RgbaImage,
     layout: &Layout,
     extent: &MapExtent,
     lines: &[ProjectedPolyline],
     presentation: RenderPresentation,
     clip_mask: Option<&RgbaImage>,
-) -> Vec<ProjectedLineChunk> {
+) {
     // Collect all projected+clipped polylines first so we can either
     // dispatch them all as one GPU batch (single canvas round-trip) or
     // fall back to per-polyline CPU drawing.
-    let mut chunks: Vec<ProjectedLineChunk> = Vec::new();
-    let push_chunk = |current: &mut Vec<(f64, f64)>,
-                      color: crate::color::Rgba,
-                      width: u32,
-                      chunks: &mut Vec<ProjectedLineChunk>| {
-        if current.len() >= 2 {
-            chunks.push((std::mem::take(current), color, width));
-        } else {
-            current.clear();
-        }
-    };
+    let mut chunks: Vec<(Vec<(f64, f64)>, crate::color::Rgba, u32)> = Vec::new();
+    let push_chunk =
+        |current: &mut Vec<(f64, f64)>,
+         color: crate::color::Rgba,
+         width: u32,
+         chunks: &mut Vec<(Vec<(f64, f64)>, crate::color::Rgba, u32)>| {
+            if current.len() >= 2 {
+                chunks.push((std::mem::take(current), color, width));
+            } else {
+                current.clear();
+            }
+        };
     for line in lines {
         let style = presentation.linework_style(line.role, line.color, line.width);
         if !style.visible {
@@ -880,175 +876,15 @@ fn collect_projected_line_chunks(
         }
         push_chunk(&mut current, style.color, style.width, &mut chunks);
     }
-    chunks
-}
 
-fn draw_line_chunks(img: &mut RgbaImage, chunks: &[ProjectedLineChunk]) {
     // NOTE: GPU linework swap was tried (cuda_draw_linework) but caused a
     // 100x regression because the per-polyline-launch ordering preservation
     // serializes sync overhead per polyline. Re-enable only when the canvas
     // can stay GPU-resident across multiple draw passes — see the
     // canvas-resident pipeline plan.
     for (points, color, width) in chunks {
-        draw::draw_polyline_aa(img, points, *color, *width);
+        draw::draw_polyline_aa(img, &points, color, width);
     }
-}
-
-fn draw_projected_lines(
-    img: &mut RgbaImage,
-    layout: &Layout,
-    extent: &MapExtent,
-    lines: &[ProjectedPolyline],
-    presentation: RenderPresentation,
-    clip_mask: Option<&RgbaImage>,
-) {
-    let chunks = collect_projected_line_chunks(layout, extent, lines, presentation, clip_mask);
-    draw_line_chunks(img, &chunks);
-}
-
-fn final_linework_role(role: LineworkRole) -> bool {
-    matches!(
-        role,
-        LineworkRole::Coast
-            | LineworkRole::Lake
-            | LineworkRole::International
-            | LineworkRole::State
-            | LineworkRole::County
-            // Some projected maps still carry political linework without
-            // semantic role tags; include them so the pipeline works on
-            // production basemap output today.
-            | LineworkRole::Generic
-    )
-}
-
-fn final_linework_clip_mask(opts: &RenderOpts, layout: &Layout) -> RgbaImage {
-    let full_rect = LocalRect {
-        min_x: 0,
-        max_x: layout.map_w.saturating_sub(1),
-        min_y: 0,
-        max_y: layout.map_h.saturating_sub(1),
-    };
-    let clip_rect = match (
-        opts.domain_frame,
-        opts.projected_grid.as_ref(),
-        opts.map_extent.as_ref(),
-    ) {
-        (Some(frame), Some(grid), Some(extent)) if frame.clear_outside => {
-            let projected_pixels = projected_grid_to_pixels_cached(grid, extent, layout);
-            compute_projected_domain_frame_rect(
-                frame,
-                grid,
-                projected_pixels.as_ref(),
-                layout.map_w,
-                layout.map_h,
-            )
-            .unwrap_or(full_rect)
-        }
-        _ => full_rect,
-    };
-    build_rect_clip_mask(layout.map_w, layout.map_h, clip_rect)
-}
-
-fn draw_linework_mask(
-    mask: &mut RgbaImage,
-    layout: &Layout,
-    extent: &MapExtent,
-    lines: &[ProjectedPolyline],
-    presentation: RenderPresentation,
-    clip_mask: Option<&RgbaImage>,
-) {
-    let chunks = collect_projected_line_chunks(layout, extent, lines, presentation, clip_mask);
-    for (points, _, width) in chunks {
-        draw::draw_polyline_aa(mask, &points, Rgba::WHITE, width.saturating_add(2).max(2));
-    }
-}
-
-fn blend_sharpened_linework(base: &mut RgbaImage, sharpened: &RgbaImage, mask: &RgbaImage) {
-    let width = base.width().min(sharpened.width()).min(mask.width());
-    let height = base.height().min(sharpened.height()).min(mask.height());
-    for y in 0..height {
-        for x in 0..width {
-            let coverage = mask.get_pixel(x, y).0[0] as f32 / 255.0;
-            if coverage <= 0.0 {
-                continue;
-            }
-            let coverage = coverage.powf(0.7).clamp(0.0, 1.0);
-            let original = base.get_pixel(x, y).0;
-            let crisp = sharpened.get_pixel(x, y).0;
-            let blended = image::Rgba([
-                (original[0] as f32 + (crisp[0] as f32 - original[0] as f32) * coverage)
-                    .round()
-                    .clamp(0.0, 255.0) as u8,
-                (original[1] as f32 + (crisp[1] as f32 - original[1] as f32) * coverage)
-                    .round()
-                    .clamp(0.0, 255.0) as u8,
-                (original[2] as f32 + (crisp[2] as f32 - original[2] as f32) * coverage)
-                    .round()
-                    .clamp(0.0, 255.0) as u8,
-                original[3],
-            ]);
-            base.put_pixel(x, y, blended);
-        }
-    }
-}
-
-fn draw_final_linework_pass(img: &mut RgbaImage, opts: &RenderOpts) -> u128 {
-    if !opts.linework_pipeline.uses_final_pass()
-        || opts.projected_lines.is_empty()
-        || opts.map_extent.is_none()
-    {
-        return 0;
-    }
-    let start = Instant::now();
-    let lines = opts
-        .projected_lines
-        .iter()
-        .filter(|line| final_linework_role(line.role))
-        .cloned()
-        .collect::<Vec<_>>();
-    if lines.is_empty() {
-        return 0;
-    }
-    let Some(extent) = opts.map_extent.as_ref() else {
-        return 0;
-    };
-    let has_title = opts.title.is_some()
-        || opts.subtitle_left.is_some()
-        || opts.subtitle_center.is_some()
-        || opts.subtitle_right.is_some();
-    let layout = compute_effective_layout(
-        opts.width,
-        opts.height,
-        opts.colorbar,
-        has_title,
-        opts.presentation,
-        opts.chrome_scale,
-        opts.domain_frame.is_some(),
-    );
-    let clip_mask = final_linework_clip_mask(opts, &layout);
-    draw_projected_lines(
-        img,
-        &layout,
-        extent,
-        &lines,
-        opts.presentation,
-        Some(&clip_mask),
-    );
-    if opts.linework_pipeline == LineworkPipeline::Heavy {
-        let mut mask =
-            RgbaImage::from_pixel(img.width(), img.height(), image::Rgba([0, 0, 0, 255]));
-        draw_linework_mask(
-            &mut mask,
-            &layout,
-            extent,
-            &lines,
-            opts.presentation,
-            Some(&clip_mask),
-        );
-        let sharpened = sharpen_downsampled_image(img);
-        blend_sharpened_linework(img, &sharpened, &mask);
-    }
-    start.elapsed().as_millis()
 }
 
 /// GPU-batched linework: collects all polylines for this render call into
@@ -3523,17 +3359,12 @@ pub fn render_to_image_profile(
     nx: usize,
     opts: &RenderOpts,
 ) -> (RgbaImage, RenderImageTiming) {
-    let total_start = Instant::now();
     let factor = opts.supersample_factor.max(1);
     if factor == 1 {
-        let (mut image, mut timing) = render_to_image_profile_inner(data, ny, nx, opts);
-        let final_linework_ms = draw_final_linework_pass(&mut image, opts);
-        timing.linework_ms = timing.linework_ms.saturating_add(final_linework_ms);
-        timing.postprocess_ms = timing.postprocess_ms.saturating_add(final_linework_ms);
-        timing.total_ms = total_start.elapsed().as_millis();
-        return (image, timing);
+        return render_to_image_profile_inner(data, ny, nx, opts);
     }
 
+    let total_start = Instant::now();
     let scaled_opts = scale_render_opts_for_supersample(opts, factor);
     let (hires, mut timing) = render_to_image_profile_inner(data, ny, nx, &scaled_opts);
     let downsample_start = Instant::now();
@@ -3547,7 +3378,7 @@ pub fn render_to_image_profile(
     #[cfg(not(feature = "cuda"))]
     let image_opt: Option<RgbaImage> = None;
 
-    let mut image = match image_opt {
+    let image = match image_opt {
         Some(img) => img,
         None => {
             let image = resize(&hires, opts.width, opts.height, FilterType::Lanczos3);
@@ -3558,12 +3389,9 @@ pub fn render_to_image_profile(
             }
         }
     };
-    let downsample_ms = downsample_start.elapsed().as_millis();
-    let final_linework_ms = draw_final_linework_pass(&mut image, opts);
 
-    timing.downsample_ms = downsample_ms;
-    timing.linework_ms = timing.linework_ms.saturating_add(final_linework_ms);
-    timing.postprocess_ms = timing.downsample_ms.saturating_add(final_linework_ms);
+    timing.downsample_ms = downsample_start.elapsed().as_millis();
+    timing.postprocess_ms = timing.downsample_ms;
     timing.total_ms = total_start.elapsed().as_millis();
     timing.map_w = timing.map_w / factor;
     timing.map_h = timing.map_h / factor;
@@ -3851,7 +3679,6 @@ mod tests {
             chrome_scale: ChromeScale::default(),
             supersample_factor: 1,
             supersample_sharpen: true,
-            linework_pipeline: LineworkPipeline::default(),
             domain_frame: None,
             map_extent: Some(MapExtent {
                 x_min: 0.0,
