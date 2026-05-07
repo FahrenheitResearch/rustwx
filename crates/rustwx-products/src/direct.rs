@@ -1108,6 +1108,8 @@ pub fn supported_direct_recipe_slugs(model: ModelId) -> Vec<String> {
 fn direct_recipe_requires_explicit_opt_in(slug: &str) -> bool {
     slug.starts_with("nbm_qmd_")
         || slug.starts_with("sref_prob_")
+        || slug.starts_with("gefs_avg_")
+        || slug.starts_with("gefs_spr_")
         || slug.starts_with("aigefs_spr_")
         || slug.starts_with("hgefs_spr_")
 }
@@ -4923,6 +4925,12 @@ mod tests {
                 .iter()
                 .any(|slug| slug.starts_with("sref_prob_"))
         );
+        let gefs_supported = supported_direct_recipe_slugs(ModelId::Gefs);
+        assert!(
+            !gefs_supported
+                .iter()
+                .any(|slug| slug.starts_with("gefs_avg_") || slug.starts_with("gefs_spr_"))
+        );
         let aigefs_supported = supported_direct_recipe_slugs(ModelId::Aigefs);
         assert!(
             !aigefs_supported
@@ -4946,6 +4954,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sref_planned[0].plan.product, "ensprod/pgrb212/prob_3hrly");
+
+        let gefs_planned = plan_direct_recipes(
+            ModelId::Gefs,
+            &["gefs_spr_2m_temperature_stddev".to_string()],
+        )
+        .unwrap();
+        assert_eq!(gefs_planned[0].plan.product, "pgrb2ap5/gespr");
 
         let aigefs_planned = plan_direct_recipes(
             ModelId::Aigefs,

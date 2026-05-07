@@ -113,6 +113,9 @@ fn recipe_maturity(slug: &str) -> ProductMaturity {
     if slug.starts_with("hgefs_spr_") {
         return ProductMaturity::Experimental;
     }
+    if slug.starts_with("gefs_avg_") || slug.starts_with("gefs_spr_") {
+        return ProductMaturity::Experimental;
+    }
     match slug {
         "simulated_ir_satellite" | "lightning_flash_density" => ProductMaturity::Experimental,
         _ => ProductMaturity::Operational,
@@ -130,6 +133,9 @@ fn recipe_flags(slug: &str) -> Vec<ProductSemanticFlag> {
         return vec![ProductSemanticFlag::ProofOriented];
     }
     if slug.starts_with("hgefs_spr_") {
+        return vec![ProductSemanticFlag::ProofOriented];
+    }
+    if slug.starts_with("gefs_avg_") || slug.starts_with("gefs_spr_") {
         return vec![ProductSemanticFlag::ProofOriented];
     }
     match slug {
@@ -837,6 +843,29 @@ const FIELD_HGEFS_SPR_500_HEIGHT_STDDEV: GribFieldSpec = field_spec(
     &["HGT:500 mb"],
 );
 
+const FIELD_GEFS_AVG_500_HEIGHT: GribFieldSpec = field_spec(
+    "gefs_mean_height_500mb",
+    "GEFS 500mb Height Mean",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(500),
+    Some(FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500).with_ensemble_mean()),
+    &["HGT:500 mb"],
+);
+
+const FIELD_GEFS_SPR_500_HEIGHT_STDDEV: GribFieldSpec = field_spec(
+    "gefs_spread_height_500mb_stddev",
+    "GEFS 500mb Height Spread",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(500),
+    Some(
+        FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500)
+            .with_ensemble_standard_deviation(),
+    ),
+    &["HGT:500 mb"],
+);
+
 const FIELD_700_HEIGHT: GribFieldSpec = field_spec(
     "height_700mb",
     "700mb Height",
@@ -1008,6 +1037,26 @@ const FIELD_500_V: GribFieldSpec = field_spec(
     GribLevelKind::IsobaricHpa,
     Some(500),
     Some(FieldSelector::isobaric(CanonicalField::VWind, 500)),
+    &["VGRD:500 mb"],
+);
+
+const FIELD_GEFS_AVG_500_U: GribFieldSpec = field_spec(
+    "gefs_mean_u_500mb",
+    "GEFS 500mb U Wind Mean",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(500),
+    Some(FieldSelector::isobaric(CanonicalField::UWind, 500).with_ensemble_mean()),
+    &["UGRD:500 mb"],
+);
+
+const FIELD_GEFS_AVG_500_V: GribFieldSpec = field_spec(
+    "gefs_mean_v_500mb",
+    "GEFS 500mb V Wind Mean",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(500),
+    Some(FieldSelector::isobaric(CanonicalField::VWind, 500).with_ensemble_mean()),
     &["VGRD:500 mb"],
 );
 
@@ -1242,6 +1291,29 @@ const FIELD_2M_TEMP: GribFieldSpec = field_spec(
     &["TMP:2 m above ground"],
 );
 
+const FIELD_GEFS_AVG_2M_TEMP: GribFieldSpec = field_spec(
+    "gefs_mean_temperature_2m_agl",
+    "GEFS 2m AGL Temperature Mean",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(FieldSelector::height_agl(CanonicalField::Temperature, 2).with_ensemble_mean()),
+    &["TMP:2 m above ground"],
+);
+
+const FIELD_GEFS_SPR_2M_TEMP_STDDEV: GribFieldSpec = field_spec(
+    "gefs_spread_temperature_2m_agl_stddev",
+    "GEFS 2m AGL Temperature Spread",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(
+        FieldSelector::height_agl(CanonicalField::Temperature, 2)
+            .with_ensemble_standard_deviation(),
+    ),
+    &["TMP:2 m above ground"],
+);
+
 const fn qmd_height_agl_stat_field_spec(
     key: &'static str,
     label: &'static str,
@@ -1452,6 +1524,26 @@ const FIELD_10M_V: GribFieldSpec = field_spec(
     GribLevelKind::HeightAboveGround,
     Some(10),
     Some(FieldSelector::height_agl(CanonicalField::VWind, 10)),
+    &["VGRD:10 m above ground"],
+);
+
+const FIELD_GEFS_AVG_10M_U: GribFieldSpec = field_spec(
+    "gefs_mean_u_10m_agl",
+    "GEFS 10m AGL U Wind Mean",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(10),
+    Some(FieldSelector::height_agl(CanonicalField::UWind, 10).with_ensemble_mean()),
+    &["UGRD:10 m above ground"],
+);
+
+const FIELD_GEFS_AVG_10M_V: GribFieldSpec = field_spec(
+    "gefs_mean_v_10m_agl",
+    "GEFS 10m AGL V Wind Mean",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(10),
+    Some(FieldSelector::height_agl(CanonicalField::VWind, 10).with_ensemble_mean()),
     &["VGRD:10 m above ground"],
 );
 
@@ -1699,6 +1791,32 @@ const FIELD_MSLP: GribFieldSpec = field_spec(
         "MSLMA:mean sea level",
         "MSLET:mean sea level",
     ],
+);
+
+const FIELD_GEFS_AVG_MSLP: GribFieldSpec = field_spec(
+    "gefs_mean_pressure_reduced_to_mean_sea_level",
+    "GEFS MSLP Mean",
+    ProductFamily::Surface,
+    GribLevelKind::MeanSeaLevel,
+    None,
+    Some(
+        FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel)
+            .with_ensemble_mean(),
+    ),
+    &["PRMSL:mean sea level"],
+);
+
+const FIELD_GEFS_SPR_MSLP_STDDEV: GribFieldSpec = field_spec(
+    "gefs_spread_pressure_reduced_to_mean_sea_level_stddev",
+    "GEFS MSLP Spread",
+    ProductFamily::Surface,
+    GribLevelKind::MeanSeaLevel,
+    None,
+    Some(
+        FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel)
+            .with_ensemble_standard_deviation(),
+    ),
+    &["PRMSL:mean sea level"],
 );
 
 const FIELD_PWAT: GribFieldSpec = field_spec(
@@ -2030,6 +2148,24 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_500_HEIGHT),
         barbs_u: Some(FIELD_500_U),
         barbs_v: Some(FIELD_500_V),
+        style: RenderStyle::WeatherHeight,
+    },
+    PlotRecipe {
+        slug: "gefs_avg_500mb_height_winds",
+        title: "GEFS 500mb Height / Winds Mean",
+        filled: FIELD_GEFS_AVG_500_HEIGHT,
+        contours: Some(FIELD_GEFS_AVG_500_HEIGHT),
+        barbs_u: Some(FIELD_GEFS_AVG_500_U),
+        barbs_v: Some(FIELD_GEFS_AVG_500_V),
+        style: RenderStyle::WeatherHeight,
+    },
+    PlotRecipe {
+        slug: "gefs_spr_500mb_height_stddev",
+        title: "GEFS 500mb Height Spread",
+        filled: FIELD_GEFS_SPR_500_HEIGHT_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
         style: RenderStyle::WeatherHeight,
     },
     PlotRecipe {
@@ -2474,6 +2610,24 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherTemperature,
     },
     PlotRecipe {
+        slug: "gefs_avg_2m_temperature_10m_winds",
+        title: "GEFS 2m AGL Temperature / 10m Winds Mean",
+        filled: FIELD_GEFS_AVG_2M_TEMP,
+        contours: Some(FIELD_GEFS_AVG_MSLP),
+        barbs_u: Some(FIELD_GEFS_AVG_10M_U),
+        barbs_v: Some(FIELD_GEFS_AVG_10M_V),
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
+        slug: "gefs_spr_2m_temperature_stddev",
+        title: "GEFS 2m AGL Temperature Spread",
+        filled: FIELD_GEFS_SPR_2M_TEMP_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
         slug: "2m_dewpoint",
         title: "2m AGL Dewpoint",
         filled: FIELD_2M_DEWPOINT,
@@ -2498,6 +2652,24 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_MSLP),
         barbs_u: Some(FIELD_10M_U),
         barbs_v: Some(FIELD_10M_V),
+        style: RenderStyle::WeatherPressure,
+    },
+    PlotRecipe {
+        slug: "gefs_avg_mslp_10m_winds",
+        title: "GEFS MSLP / 10m Winds Mean",
+        filled: FIELD_GEFS_AVG_MSLP,
+        contours: Some(FIELD_GEFS_AVG_MSLP),
+        barbs_u: Some(FIELD_GEFS_AVG_10M_U),
+        barbs_v: Some(FIELD_GEFS_AVG_10M_V),
+        style: RenderStyle::WeatherPressure,
+    },
+    PlotRecipe {
+        slug: "gefs_spr_mslp_stddev",
+        title: "GEFS MSLP Spread",
+        filled: FIELD_GEFS_SPR_MSLP_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
         style: RenderStyle::WeatherPressure,
     },
     PlotRecipe {
@@ -2893,6 +3065,12 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
         match (model, selector.product) {
             (ModelId::Nbm, _) => {}
             (ModelId::Sref, FieldProduct::Probability(_)) => {}
+            (
+                ModelId::Gefs,
+                FieldProduct::EnsembleMean
+                | FieldProduct::EnsembleStandardDeviation
+                | FieldProduct::EnsembleSpread,
+            ) => {}
             (
                 ModelId::Aigefs | ModelId::Hgefs,
                 FieldProduct::EnsembleStandardDeviation | FieldProduct::EnsembleSpread,
@@ -4664,6 +4842,11 @@ fn plot_recipe_fetch_defaults(
             )
         })
     });
+    let has_ensemble_mean_selector = fields.iter().any(|field| {
+        field
+            .selector
+            .is_some_and(|selector| matches!(selector.product, FieldProduct::EnsembleMean))
+    });
     match (model, has_native, has_surface) {
         (ModelId::Hrrr, true, _) => ("nat", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Hrrr, false, true) => ("sfc", PlotRecipeFetchPolicy::PreferIndexedSubset),
@@ -4673,6 +4856,12 @@ fn plot_recipe_fetch_defaults(
         (ModelId::HrrrAk, false, false) => ("prs", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Gfs, _, _) => ("pgrb2.0p25", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Gdas, _, _) => ("pgrb2.0p25", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Gefs, _, _) if has_ensemble_spread_selector => {
+            ("pgrb2ap5/gespr", PlotRecipeFetchPolicy::PreferIndexedSubset)
+        }
+        (ModelId::Gefs, _, _) if has_ensemble_mean_selector => {
+            ("pgrb2ap5/geavg", PlotRecipeFetchPolicy::PreferIndexedSubset)
+        }
         (ModelId::Gefs, _, _) => ("pgrb2ap5/gec00", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Aigfs, _, true) => ("sfc", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Aigfs, _, false) => ("pres", PlotRecipeFetchPolicy::PreferIndexedSubset),
@@ -4856,6 +5045,15 @@ fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<Stri
 
 fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> Option<String> {
     match (model, field.key) {
+        (model, key)
+            if (key.starts_with("gefs_mean_") || key.starts_with("gefs_spread_"))
+                && model != ModelId::Gefs =>
+        {
+            Some(format!(
+                "{} is only verified for GEFS native geavg/gespr fields right now; do not route this recipe through model '{model}'",
+                field.label
+            ))
+        }
         (model, key) if key.starts_with("aigefs_spread_") && model != ModelId::Aigefs => {
             Some(format!(
                 "{} is only verified for AI-GEFS ensstat spread fields right now; do not route this recipe through model '{model}'",
@@ -4947,6 +5145,15 @@ fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> O
 
 fn model_specific_surface_field_gap(field: &GribFieldSpec, model: ModelId) -> Option<String> {
     match (model, field.key) {
+        (model, key)
+            if (key.starts_with("gefs_mean_") || key.starts_with("gefs_spread_"))
+                && model != ModelId::Gefs =>
+        {
+            Some(format!(
+                "{} is only verified for GEFS native geavg/gespr fields right now; do not route this recipe through model '{model}'",
+                field.label
+            ))
+        }
         (model, key) if key.starts_with("aigefs_spread_") && model != ModelId::Aigefs => {
             Some(format!(
                 "{} is only verified for AI-GEFS ensstat spread fields right now; do not route this recipe through model '{model}'",
@@ -6765,6 +6972,86 @@ mod tests {
                 blockers
                     .iter()
                     .any(|blocker| blocker.reason.contains("model 'aigfs'")),
+                "{slug}"
+            );
+        }
+    }
+
+    #[test]
+    fn gefs_native_stat_recipes_use_geavg_gespr_products_and_exact_selectors() {
+        let cases = [
+            (
+                "gefs_avg_2m_temperature_10m_winds",
+                "pgrb2ap5/geavg",
+                vec![
+                    FieldSelector::height_agl(CanonicalField::Temperature, 2).with_ensemble_mean(),
+                    FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel)
+                        .with_ensemble_mean(),
+                    FieldSelector::height_agl(CanonicalField::UWind, 10).with_ensemble_mean(),
+                    FieldSelector::height_agl(CanonicalField::VWind, 10).with_ensemble_mean(),
+                ],
+            ),
+            (
+                "gefs_avg_500mb_height_winds",
+                "pgrb2ap5/geavg",
+                vec![
+                    FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500)
+                        .with_ensemble_mean(),
+                    FieldSelector::isobaric(CanonicalField::UWind, 500).with_ensemble_mean(),
+                    FieldSelector::isobaric(CanonicalField::VWind, 500).with_ensemble_mean(),
+                ],
+            ),
+            (
+                "gefs_avg_mslp_10m_winds",
+                "pgrb2ap5/geavg",
+                vec![
+                    FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel)
+                        .with_ensemble_mean(),
+                    FieldSelector::height_agl(CanonicalField::UWind, 10).with_ensemble_mean(),
+                    FieldSelector::height_agl(CanonicalField::VWind, 10).with_ensemble_mean(),
+                ],
+            ),
+            (
+                "gefs_spr_2m_temperature_stddev",
+                "pgrb2ap5/gespr",
+                vec![
+                    FieldSelector::height_agl(CanonicalField::Temperature, 2)
+                        .with_ensemble_standard_deviation(),
+                ],
+            ),
+            (
+                "gefs_spr_500mb_height_stddev",
+                "pgrb2ap5/gespr",
+                vec![
+                    FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500)
+                        .with_ensemble_standard_deviation(),
+                ],
+            ),
+            (
+                "gefs_spr_mslp_stddev",
+                "pgrb2ap5/gespr",
+                vec![
+                    FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel)
+                        .with_ensemble_standard_deviation(),
+                ],
+            ),
+        ];
+
+        for (slug, product, selectors) in cases {
+            let plan = plot_recipe_fetch_plan(slug, ModelId::Gefs).unwrap();
+            assert_eq!(plan.product, product, "{slug}");
+            assert_eq!(
+                plan.fetch_policy,
+                PlotRecipeFetchPolicy::PreferIndexedSubset,
+                "{slug}"
+            );
+            assert_eq!(plan.selectors(), selectors, "{slug}");
+
+            let blockers = plot_recipe_fetch_blockers(slug, ModelId::Gfs).unwrap();
+            assert!(
+                blockers
+                    .iter()
+                    .any(|blocker| blocker.reason.contains("model 'gfs'")),
                 "{slug}"
             );
         }
