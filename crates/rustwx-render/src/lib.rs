@@ -43,7 +43,8 @@ pub use features::{
 pub use image::RgbaImage;
 pub use panel::{PanelGridLayout, PanelPadding, compose_panel_images, render_panel_grid};
 pub use presentation::{
-    LineworkRole, PolygonRole, ProductVisualMode, RenderPresentation, StaticPlotStyle,
+    LineworkPipeline, LineworkRole, PolygonRole, ProductVisualMode, RenderPresentation,
+    StaticPlotStyle,
 };
 pub use projected_map::{
     GeographicBounds, ProjectedBasemap, ProjectedBasemapBuildOptions, ProjectedDomainBuildOptions,
@@ -646,6 +647,7 @@ fn with_render_state_profile_with_style<T>(
             chrome_scale: request.chrome_scale,
             supersample_factor: plot_style.supersample_factor(request.supersample_factor),
             supersample_sharpen: plot_style.supersample_sharpen(request.supersample_sharpen),
+            linework_pipeline: LineworkPipeline::from_env(),
             domain_frame: request.domain_frame,
             map_extent: projected_domain.map(|domain| MapExtent {
                 x_min: domain.extent.x_min,

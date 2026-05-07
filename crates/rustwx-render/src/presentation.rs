@@ -107,6 +107,46 @@ impl StaticPlotStyle {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LineworkPipeline {
+    #[default]
+    Easy,
+    Medium,
+    Heavy,
+}
+
+impl LineworkPipeline {
+    pub fn from_env() -> Self {
+        std::env::var("RUSTWX_LINEWORK_PIPELINE")
+            .ok()
+            .and_then(|value| Self::parse(&value))
+            .unwrap_or_default()
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase().replace('-', "_");
+        match normalized.as_str() {
+            "" | "easy" | "standard" | "current" | "legacy" => Some(Self::Easy),
+            "medium" | "final" | "final_aa" | "final_linework" | "crisp" => Some(Self::Medium),
+            "heavy" | "line_sharpen" | "linework_sharpen" | "advanced" => Some(Self::Heavy),
+            _ => None,
+        }
+    }
+
+    pub fn uses_final_pass(self) -> bool {
+        matches!(self, Self::Medium | Self::Heavy)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Easy => "easy",
+            Self::Medium => "medium",
+            Self::Heavy => "heavy",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LineworkRole {
