@@ -88,6 +88,18 @@ pub struct ProductDefinition {
     pub num_forecasts_in_ensemble: Option<u8>,
     /// Derived forecast type (PDT 4.2, 4.12).
     pub derived_forecast_type: Option<u8>,
+    /// Percentile value (PDT 4.6, 4.10).
+    pub percentile_value: Option<u8>,
+    /// Forecast probability number (PDT 4.5, 4.9).
+    pub probability_number: Option<u8>,
+    /// Total number of forecast probabilities (PDT 4.5, 4.9).
+    pub total_number_of_probabilities: Option<u8>,
+    /// Probability type (PDT 4.5, 4.9; Code Table 4.9).
+    pub probability_type: Option<u8>,
+    /// Lower probability limit after applying its decimal scale (PDT 4.5, 4.9).
+    pub probability_lower_limit: Option<f64>,
+    /// Upper probability limit after applying its decimal scale (PDT 4.5, 4.9).
+    pub probability_upper_limit: Option<f64>,
     /// Type of statistical processing (PDT 4.8, 4.11, 4.12).
     pub statistical_process_type: Option<u8>,
     /// End of overall time interval (PDT 4.8, 4.11, 4.12).
@@ -194,6 +206,12 @@ impl Default for ProductDefinition {
             perturbation_number: None,
             num_forecasts_in_ensemble: None,
             derived_forecast_type: None,
+            percentile_value: None,
+            probability_number: None,
+            total_number_of_probabilities: None,
+            probability_type: None,
+            probability_lower_limit: None,
+            probability_upper_limit: None,
             statistical_process_type: None,
             end_of_interval: None,
             statistical_time_range_unit: None,
@@ -862,9 +880,27 @@ fn parse_section4(sec: &[u8]) -> Result<ProductDefinition, String> {
                 prod.num_forecasts_in_ensemble = Some(read_u8(sec, 35)?);
             }
         }
+        5 => {
+            // PDT 4.5: Probability forecast at a point in time
+            parse_pdt_probability_fields(sec, &mut prod, 34)?;
+        }
+        6 => {
+            // PDT 4.6: Percentile forecast at a point in time
+            parse_pdt_percentile_fields(sec, &mut prod, 34)?;
+        }
         8 => {
             // PDT 4.8: Statistically processed values over a time interval
             parse_pdt_statistical_fields(sec, &mut prod, 34)?;
+        }
+        9 => {
+            // PDT 4.9: Probability forecast over a time interval
+            parse_pdt_probability_fields(sec, &mut prod, 34)?;
+            parse_pdt_statistical_fields(sec, &mut prod, 47)?;
+        }
+        10 => {
+            // PDT 4.10: Percentile forecast over a time interval
+            parse_pdt_percentile_fields(sec, &mut prod, 34)?;
+            parse_pdt_statistical_fields(sec, &mut prod, 35)?;
         }
         11 => {
             // PDT 4.11: Individual ensemble forecast + time interval
@@ -891,6 +927,56 @@ fn parse_section4(sec: &[u8]) -> Result<ProductDefinition, String> {
     }
 
     Ok(prod)
+}
+
+/// Parse the probability metadata common to PDT 4.5 and 4.9.
+/// `base` is the 0-based offset where the forecast probability number starts.
+fn parse_pdt_probability_fields(
+    sec: &[u8],
+    prod: &mut ProductDefinition,
+    base: usize,
+) -> Result<(), String> {
+    if sec.len() < base + 13 {
+        return Ok(());
+    }
+    prod.probability_number = Some(read_u8(sec, base)?);
+    prod.total_number_of_probabilities = Some(read_u8(sec, base + 1)?);
+    prod.probability_type = Some(read_u8(sec, base + 2)?);
+    prod.probability_lower_limit = read_scaled_optional(sec, base + 3, base + 4)?;
+    prod.probability_upper_limit = read_scaled_optional(sec, base + 8, base + 9)?;
+    Ok(())
+}
+
+/// Parse the percentile metadata common to PDT 4.6 and 4.10.
+/// `offset` is the 0-based offset where the percentile value is stored.
+fn parse_pdt_percentile_fields(
+    sec: &[u8],
+    prod: &mut ProductDefinition,
+    offset: usize,
+) -> Result<(), String> {
+    if sec.len() > offset {
+        prod.percentile_value = Some(read_u8(sec, offset)?);
+    }
+    Ok(())
+}
+
+fn read_scaled_optional(
+    sec: &[u8],
+    scale_offset: usize,
+    value_offset: usize,
+) -> Result<Option<f64>, String> {
+    let scale_factor = read_u8(sec, scale_offset)?;
+    let scaled_value = read_u32(sec, value_offset)?;
+    if scale_factor == 255 || scaled_value == u32::MAX {
+        return Ok(None);
+    }
+    let value = if scale_factor < 128 {
+        scaled_value as f64 / 10.0_f64.powi(scale_factor as i32)
+    } else {
+        let neg_scale = 256 - scale_factor as i32;
+        scaled_value as f64 * 10.0_f64.powi(neg_scale)
+    };
+    Ok(Some(value))
 }
 
 /// Parse the statistical time interval fields common to PDT 4.8, 4.11, 4.12.
@@ -1071,6 +1157,101 @@ fn parse_section7(sec: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn seed_common_section4(sec: &mut [u8], template: u16) {
+        sec[7..9].copy_from_slice(&template.to_be_bytes());
+        sec[9] = 0;
+        sec[10] = 0;
+        sec[17] = 1;
+        sec[18..22].copy_from_slice(&24u32.to_be_bytes());
+        sec[22] = 103;
+        sec[23] = 0;
+        sec[24..28].copy_from_slice(&2u32.to_be_bytes());
+    }
+
+    fn seed_statistical_window(sec: &mut [u8], base: usize, length_hours: u32) {
+        sec[base..base + 2].copy_from_slice(&2026u16.to_be_bytes());
+        sec[base + 2] = 5;
+        sec[base + 3] = 7;
+        sec[base + 4] = 0;
+        sec[base + 5] = 0;
+        sec[base + 6] = 0;
+        sec[base + 7] = 1;
+        let spec_base = base + 12;
+        sec[spec_base] = 1;
+        sec[spec_base + 2] = 1;
+        sec[spec_base + 3..spec_base + 7].copy_from_slice(&length_hours.to_be_bytes());
+    }
+
+    #[test]
+    fn parse_section4_probability_template_captures_threshold() {
+        let mut sec = vec![0u8; 47];
+        seed_common_section4(&mut sec, 5);
+        sec[34] = 0;
+        sec[35] = 26;
+        sec[36] = 2;
+        sec[37] = 3;
+        sec[38..42].copy_from_slice(&305_372u32.to_be_bytes());
+        sec[42] = 255;
+        sec[43..47].copy_from_slice(&u32::MAX.to_be_bytes());
+
+        let product = parse_section4(&sec).expect("section 4 should parse");
+
+        assert_eq!(product.template, 5);
+        assert_eq!(product.probability_number, Some(0));
+        assert_eq!(product.total_number_of_probabilities, Some(26));
+        assert_eq!(product.probability_type, Some(2));
+        assert_eq!(product.probability_lower_limit, Some(305.372));
+        assert_eq!(product.probability_upper_limit, None);
+    }
+
+    #[test]
+    fn parse_section4_percentile_template_captures_percentile() {
+        let mut sec = vec![0u8; 35];
+        seed_common_section4(&mut sec, 6);
+        sec[34] = 50;
+
+        let product = parse_section4(&sec).expect("section 4 should parse");
+
+        assert_eq!(product.template, 6);
+        assert_eq!(product.percentile_value, Some(50));
+    }
+
+    #[test]
+    fn parse_section4_interval_probability_template_captures_threshold_and_window() {
+        let mut sec = vec![0u8; 71];
+        seed_common_section4(&mut sec, 9);
+        sec[34] = 1;
+        sec[35] = 26;
+        sec[36] = 1;
+        sec[37] = 255;
+        sec[38..42].copy_from_slice(&u32::MAX.to_be_bytes());
+        sec[42] = 0;
+        sec[43..47].copy_from_slice(&300u32.to_be_bytes());
+        seed_statistical_window(&mut sec, 47, 6);
+
+        let product = parse_section4(&sec).expect("section 4 should parse");
+
+        assert_eq!(product.template, 9);
+        assert_eq!(product.probability_type, Some(1));
+        assert_eq!(product.probability_lower_limit, None);
+        assert_eq!(product.probability_upper_limit, Some(300.0));
+        assert_eq!(product.statistical_time_range_hours(), Some(6));
+    }
+
+    #[test]
+    fn parse_section4_interval_percentile_template_captures_percentile_and_window() {
+        let mut sec = vec![0u8; 59];
+        seed_common_section4(&mut sec, 10);
+        sec[34] = 90;
+        seed_statistical_window(&mut sec, 35, 3);
+
+        let product = parse_section4(&sec).expect("section 4 should parse");
+
+        assert_eq!(product.template, 10);
+        assert_eq!(product.percentile_value, Some(90));
+        assert_eq!(product.statistical_time_range_hours(), Some(3));
+    }
 
     #[test]
     fn parse_section4_statistical_window_uses_spec_unit_and_length() {

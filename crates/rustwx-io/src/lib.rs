@@ -1272,7 +1272,7 @@ fn product_template_match_score(selector: FieldSelector, message: &Grib2Message)
 }
 
 fn is_probability_product_template(template: u16) -> bool {
-    matches!(template, 9 | 10)
+    matches!(template, 5 | 9)
 }
 
 fn selector_prefers_instantaneous_message(selector: FieldSelector) -> bool {
