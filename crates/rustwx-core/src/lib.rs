@@ -285,6 +285,7 @@ pub enum CanonicalField {
     RelativeVorticity,
     UWind,
     VWind,
+    WindSpeed,
     WindGust,
     TotalCloudCover,
     LowCloudCover,
@@ -321,6 +322,7 @@ impl CanonicalField {
             Self::RelativeVorticity => "relative_vorticity",
             Self::UWind => "u_wind",
             Self::VWind => "v_wind",
+            Self::WindSpeed => "wind_speed",
             Self::WindGust => "wind_gust",
             Self::TotalCloudCover => "total_cloud_cover",
             Self::LowCloudCover => "low_cloud_cover",
@@ -359,6 +361,7 @@ impl CanonicalField {
             Self::RelativeVorticity => "Relative Vorticity",
             Self::UWind => "U Wind",
             Self::VWind => "V Wind",
+            Self::WindSpeed => "Wind Speed",
             Self::WindGust => "Wind Gust",
             Self::TotalCloudCover => "Total Cloud Cover",
             Self::LowCloudCover => "Low Cloud Cover",
@@ -394,7 +397,7 @@ impl CanonicalField {
             Self::Dewpoint => "K",
             Self::PressureReducedToMeanSeaLevel => "Pa",
             Self::AbsoluteVorticity | Self::RelativeVorticity => "s^-1",
-            Self::UWind | Self::VWind => "m/s",
+            Self::UWind | Self::VWind | Self::WindSpeed => "m/s",
             Self::WindGust => "m/s",
             Self::TotalCloudCover => "%",
             Self::LowCloudCover | Self::MiddleCloudCover | Self::HighCloudCover => "%",
@@ -2144,6 +2147,10 @@ mod tests {
         let wind_10m = FieldSelector::height_agl(CanonicalField::UWind, 10);
         assert_eq!(wind_10m.key(), "u_wind_10m_agl");
         assert_eq!(wind_10m.native_units(), "m/s");
+
+        let wind_speed_10m = FieldSelector::height_agl(CanonicalField::WindSpeed, 10);
+        assert_eq!(wind_speed_10m.key(), "wind_speed_10m_agl");
+        assert_eq!(wind_speed_10m.native_units(), "m/s");
 
         let wind_gust_10m = FieldSelector::height_agl(CanonicalField::WindGust, 10);
         assert_eq!(wind_gust_10m.key(), "wind_gust_10m_agl");

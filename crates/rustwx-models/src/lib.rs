@@ -1391,6 +1391,51 @@ const FIELD_QMD_10M_WIND_GUST_P90: GribFieldSpec = qmd_height_agl_stat_field_spe
     &["GUST:10 m above ground"],
 );
 
+const FIELD_QMD_10M_WIND_SPEED_MEAN: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_wind_speed_10m_agl_mean",
+    "NBM QMD 10m AGL Wind Speed Mean",
+    CanonicalField::WindSpeed,
+    10,
+    FieldProduct::EnsembleMean,
+    &["WIND:10 m above ground"],
+);
+
+const FIELD_QMD_10M_WIND_SPEED_STDDEV: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_wind_speed_10m_agl_stddev",
+    "NBM QMD 10m AGL Wind Speed Std Dev",
+    CanonicalField::WindSpeed,
+    10,
+    FieldProduct::EnsembleStandardDeviation,
+    &["WIND:10 m above ground"],
+);
+
+const FIELD_QMD_10M_WIND_SPEED_P10: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_wind_speed_10m_agl_p10",
+    "NBM QMD 10m AGL Wind Speed P10",
+    CanonicalField::WindSpeed,
+    10,
+    FieldProduct::Percentile(10),
+    &["WIND:10 m above ground"],
+);
+
+const FIELD_QMD_10M_WIND_SPEED_P50: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_wind_speed_10m_agl_p50",
+    "NBM QMD 10m AGL Wind Speed P50",
+    CanonicalField::WindSpeed,
+    10,
+    FieldProduct::Percentile(50),
+    &["WIND:10 m above ground"],
+);
+
+const FIELD_QMD_10M_WIND_SPEED_P90: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_wind_speed_10m_agl_p90",
+    "NBM QMD 10m AGL Wind Speed P90",
+    CanonicalField::WindSpeed,
+    10,
+    FieldProduct::Percentile(90),
+    &["WIND:10 m above ground"],
+);
+
 const FIELD_MSLP: GribFieldSpec = field_spec(
     "pressure_reduced_to_mean_sea_level",
     "MSLP",
@@ -2000,6 +2045,51 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherWindGust,
     },
     PlotRecipe {
+        slug: "nbm_qmd_10m_wind_speed_mean",
+        title: "NBM QMD 10m AGL Wind Speed Mean",
+        filled: FIELD_QMD_10M_WIND_SPEED_MEAN,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherWinds,
+    },
+    PlotRecipe {
+        slug: "nbm_qmd_10m_wind_speed_stddev",
+        title: "NBM QMD 10m AGL Wind Speed Std Dev",
+        filled: FIELD_QMD_10M_WIND_SPEED_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherWinds,
+    },
+    PlotRecipe {
+        slug: "nbm_qmd_10m_wind_speed_p10",
+        title: "NBM QMD 10m AGL Wind Speed P10",
+        filled: FIELD_QMD_10M_WIND_SPEED_P10,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherWinds,
+    },
+    PlotRecipe {
+        slug: "nbm_qmd_10m_wind_speed_p50",
+        title: "NBM QMD 10m AGL Wind Speed P50",
+        filled: FIELD_QMD_10M_WIND_SPEED_P50,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherWinds,
+    },
+    PlotRecipe {
+        slug: "nbm_qmd_10m_wind_speed_p90",
+        title: "NBM QMD 10m AGL Wind Speed P90",
+        filled: FIELD_QMD_10M_WIND_SPEED_P90,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherWinds,
+    },
+    PlotRecipe {
         slug: "2m_temperature_10m_winds",
         title: "2m AGL Temperature / 10m Winds",
         filled: FIELD_2M_TEMP,
@@ -2461,6 +2551,7 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
             CanonicalField::UWind | CanonicalField::VWind,
             VerticalSelector::HeightAboveGroundMeters(10),
         ) => true,
+        (CanonicalField::WindSpeed, VerticalSelector::HeightAboveGroundMeters(10)) => true,
         (
             CanonicalField::Pressure | CanonicalField::SmokeMassDensity,
             VerticalSelector::HybridLevel(level),
@@ -5914,6 +6005,27 @@ mod tests {
             (
                 "nbm_qmd_10m_wind_gust_p90",
                 FieldSelector::height_agl(CanonicalField::WindGust, 10).with_percentile(90),
+            ),
+            (
+                "nbm_qmd_10m_wind_speed_mean",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10).with_ensemble_mean(),
+            ),
+            (
+                "nbm_qmd_10m_wind_speed_stddev",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+                    .with_ensemble_standard_deviation(),
+            ),
+            (
+                "nbm_qmd_10m_wind_speed_p10",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10).with_percentile(10),
+            ),
+            (
+                "nbm_qmd_10m_wind_speed_p50",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10).with_percentile(50),
+            ),
+            (
+                "nbm_qmd_10m_wind_speed_p90",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10).with_percentile(90),
             ),
         ];
 

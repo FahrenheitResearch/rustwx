@@ -1517,6 +1517,15 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
                 units: "m/s",
             }),
             FieldSelector {
+                field: CanonicalField::WindSpeed,
+                vertical: VerticalSelector::HeightAboveGroundMeters(10),
+                ..
+            } => Ok(Self {
+                parameters: PARAMETER_WIND_SPEED,
+                level: LevelMatch::HeightAboveGroundMeters(10),
+                units: "m/s",
+            }),
+            FieldSelector {
                 field: CanonicalField::WindGust,
                 vertical: VerticalSelector::HeightAboveGroundMeters(10),
                 ..
@@ -2424,6 +2433,15 @@ mod tests {
         .unwrap();
         let u_10m_message = ieee_f32_message(PARAMETER_UGRD[0], 103, 10.0, &[8.0], -99.0, -99.0);
         assert!(u_10m.matches(&u_10m_message));
+
+        let wind_speed_10m = StructuredMessageSelector::try_from(FieldSelector::height_agl(
+            CanonicalField::WindSpeed,
+            10,
+        ))
+        .unwrap();
+        let wind_speed_10m_message =
+            ieee_f32_message(PARAMETER_WIND_SPEED[0], 103, 10.0, &[12.0], -99.0, -99.0);
+        assert!(wind_speed_10m.matches(&wind_speed_10m_message));
 
         let gust_10m = StructuredMessageSelector::try_from(FieldSelector::height_agl(
             CanonicalField::WindGust,

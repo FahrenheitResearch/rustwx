@@ -3056,7 +3056,10 @@ fn convert_filled_field_with_ensemble(
             *value *= 100_000.0;
         }
         core.units = "10^-5 s^-1".to_string();
-    } else if field.selector.field == CanonicalField::WindGust {
+    } else if matches!(
+        field.selector.field,
+        CanonicalField::WindSpeed | CanonicalField::WindGust
+    ) {
         for value in &mut core.values {
             *value *= 1.943_844_5;
         }
@@ -5012,6 +5015,17 @@ mod tests {
         let converted_vort = convert_filled_field_with_ensemble(vort_recipe, &vort_field, None);
         assert_eq!(converted_vort.units, "10^-5 s^-1");
         assert!((converted_vort.values[0] - 20.0).abs() < 1.0e-6);
+
+        let wind_speed_recipe = plot_recipe("nbm_qmd_10m_wind_speed_p50").unwrap();
+        let wind_speed_field = sample_selected_field(
+            FieldSelector::height_agl(CanonicalField::WindSpeed, 10).with_percentile(50),
+            "m/s",
+            vec![10.0; 4],
+        );
+        let converted_wind_speed =
+            convert_filled_field_with_ensemble(wind_speed_recipe, &wind_speed_field, None);
+        assert_eq!(converted_wind_speed.units, "kt");
+        assert!((converted_wind_speed.values[0] - 19.438_445).abs() < 1.0e-5);
     }
 
     #[test]
