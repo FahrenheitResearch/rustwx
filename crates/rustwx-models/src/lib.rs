@@ -1478,6 +1478,16 @@ const FIELD_QMD_2M_TEMP_P10: GribFieldSpec = field_spec(
     &["TMP:2 m above ground"],
 );
 
+const FIELD_QMD_2M_TEMP_P25: GribFieldSpec = field_spec(
+    "qmd_temperature_2m_agl_p25",
+    "NBM QMD 2m AGL Temperature P25",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(FieldSelector::height_agl(CanonicalField::Temperature, 2).with_percentile(25)),
+    &["TMP:2 m above ground"],
+);
+
 const FIELD_QMD_2M_TEMP_P50: GribFieldSpec = field_spec(
     "qmd_temperature_2m_agl_p50",
     "NBM QMD 2m AGL Temperature P50",
@@ -1485,6 +1495,16 @@ const FIELD_QMD_2M_TEMP_P50: GribFieldSpec = field_spec(
     GribLevelKind::HeightAboveGround,
     Some(2),
     Some(FieldSelector::height_agl(CanonicalField::Temperature, 2).with_percentile(50)),
+    &["TMP:2 m above ground"],
+);
+
+const FIELD_QMD_2M_TEMP_P75: GribFieldSpec = field_spec(
+    "qmd_temperature_2m_agl_p75",
+    "NBM QMD 2m AGL Temperature P75",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(FieldSelector::height_agl(CanonicalField::Temperature, 2).with_percentile(75)),
     &["TMP:2 m above ground"],
 );
 
@@ -1498,6 +1518,15 @@ const FIELD_QMD_2M_TEMP_P90: GribFieldSpec = field_spec(
     &["TMP:2 m above ground"],
 );
 
+const FIELD_QMD_PROB_2M_TEMP_BELOW_270P928K: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_probability_temperature_2m_agl_lt_270p928k",
+    "NBM QMD Probability 2m AGL Temperature < 270.928 K",
+    CanonicalField::Temperature,
+    2,
+    FieldProduct::Probability(ProbabilitySelection::below_milli(270_928)),
+    &["TMP:2 m above ground"],
+);
+
 const FIELD_QMD_PROB_2M_TEMP_BELOW_273P15K: GribFieldSpec = qmd_height_agl_stat_field_spec(
     "qmd_probability_temperature_2m_agl_lt_273p15k",
     "NBM QMD Probability 2m AGL Temperature < 273.15 K",
@@ -1507,12 +1536,30 @@ const FIELD_QMD_PROB_2M_TEMP_BELOW_273P15K: GribFieldSpec = qmd_height_agl_stat_
     &["TMP:2 m above ground"],
 );
 
+const FIELD_QMD_PROB_2M_TEMP_ABOVE_299P817K: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_probability_temperature_2m_agl_gt_299p817k",
+    "NBM QMD Probability 2m AGL Temperature > 299.817 K",
+    CanonicalField::Temperature,
+    2,
+    FieldProduct::Probability(ProbabilitySelection::above_milli(299_817)),
+    &["TMP:2 m above ground"],
+);
+
 const FIELD_QMD_PROB_2M_TEMP_ABOVE_305P372K: GribFieldSpec = qmd_height_agl_stat_field_spec(
     "qmd_probability_temperature_2m_agl_gt_305p372k",
     "NBM QMD Probability 2m AGL Temperature > 305.372 K",
     CanonicalField::Temperature,
     2,
     FieldProduct::Probability(ProbabilitySelection::above_milli(305_372)),
+    &["TMP:2 m above ground"],
+);
+
+const FIELD_QMD_PROB_2M_TEMP_ABOVE_310P928K: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_probability_temperature_2m_agl_gt_310p928k",
+    "NBM QMD Probability 2m AGL Temperature > 310.928 K",
+    CanonicalField::Temperature,
+    2,
+    FieldProduct::Probability(ProbabilitySelection::above_milli(310_928)),
     &["TMP:2 m above ground"],
 );
 
@@ -1543,12 +1590,30 @@ const FIELD_QMD_2M_DEWPOINT_P10: GribFieldSpec = qmd_height_agl_stat_field_spec(
     &["DPT:2 m above ground"],
 );
 
+const FIELD_QMD_2M_DEWPOINT_P25: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_dewpoint_2m_agl_p25",
+    "NBM QMD 2m AGL Dewpoint P25",
+    CanonicalField::Dewpoint,
+    2,
+    FieldProduct::Percentile(25),
+    &["DPT:2 m above ground"],
+);
+
 const FIELD_QMD_2M_DEWPOINT_P50: GribFieldSpec = qmd_height_agl_stat_field_spec(
     "qmd_dewpoint_2m_agl_p50",
     "NBM QMD 2m AGL Dewpoint P50",
     CanonicalField::Dewpoint,
     2,
     FieldProduct::Percentile(50),
+    &["DPT:2 m above ground"],
+);
+
+const FIELD_QMD_2M_DEWPOINT_P75: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_dewpoint_2m_agl_p75",
+    "NBM QMD 2m AGL Dewpoint P75",
+    CanonicalField::Dewpoint,
+    2,
+    FieldProduct::Percentile(75),
     &["DPT:2 m above ground"],
 );
 
@@ -1561,12 +1626,30 @@ const FIELD_QMD_2M_DEWPOINT_P90: GribFieldSpec = qmd_height_agl_stat_field_spec(
     &["DPT:2 m above ground"],
 );
 
+const FIELD_QMD_PROB_2M_DEWPOINT_BELOW_273P15K: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_probability_dewpoint_2m_agl_lt_273p15k",
+    "NBM QMD Probability 2m AGL Dewpoint < 273.15 K",
+    CanonicalField::Dewpoint,
+    2,
+    FieldProduct::Probability(ProbabilitySelection::below_milli(273_150)),
+    &["DPT:2 m above ground"],
+);
+
 const FIELD_QMD_PROB_2M_DEWPOINT_ABOVE_291P483K: GribFieldSpec = qmd_height_agl_stat_field_spec(
     "qmd_probability_dewpoint_2m_agl_gt_291p483k",
     "NBM QMD Probability 2m AGL Dewpoint > 291.483 K",
     CanonicalField::Dewpoint,
     2,
     FieldProduct::Probability(ProbabilitySelection::above_milli(291_483)),
+    &["DPT:2 m above ground"],
+);
+
+const FIELD_QMD_PROB_2M_DEWPOINT_ABOVE_294P261K: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_probability_dewpoint_2m_agl_gt_294p261k",
+    "NBM QMD Probability 2m AGL Dewpoint > 294.261 K",
+    CanonicalField::Dewpoint,
+    2,
+    FieldProduct::Probability(ProbabilitySelection::above_milli(294_261)),
     &["DPT:2 m above ground"],
 );
 
@@ -1579,12 +1662,30 @@ const FIELD_QMD_2M_RH_P10: GribFieldSpec = qmd_height_agl_stat_field_spec(
     &["RH:2 m above ground"],
 );
 
+const FIELD_QMD_2M_RH_P25: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_relative_humidity_2m_agl_p25",
+    "NBM QMD 2m AGL Relative Humidity P25",
+    CanonicalField::RelativeHumidity,
+    2,
+    FieldProduct::Percentile(25),
+    &["RH:2 m above ground"],
+);
+
 const FIELD_QMD_2M_RH_P50: GribFieldSpec = qmd_height_agl_stat_field_spec(
     "qmd_relative_humidity_2m_agl_p50",
     "NBM QMD 2m AGL Relative Humidity P50",
     CanonicalField::RelativeHumidity,
     2,
     FieldProduct::Percentile(50),
+    &["RH:2 m above ground"],
+);
+
+const FIELD_QMD_2M_RH_P75: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_relative_humidity_2m_agl_p75",
+    "NBM QMD 2m AGL Relative Humidity P75",
+    CanonicalField::RelativeHumidity,
+    2,
+    FieldProduct::Percentile(75),
     &["RH:2 m above ground"],
 );
 
@@ -1740,12 +1841,30 @@ const FIELD_QMD_10M_WIND_GUST_STDDEV: GribFieldSpec = qmd_height_agl_stat_field_
     &["GUST:10 m above ground"],
 );
 
+const FIELD_QMD_PROB_10M_WIND_GUST_ABOVE_17P4911MS: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_probability_wind_gust_10m_agl_gt_17p4911ms",
+    "NBM QMD Probability 10m AGL Wind Gust > 17.4911 m/s",
+    CanonicalField::WindGust,
+    10,
+    FieldProduct::Probability(ProbabilitySelection::above_milli(17_491)),
+    &["GUST:10 m above ground"],
+);
+
 const FIELD_QMD_PROB_10M_WIND_GUST_ABOVE_24P6933MS: GribFieldSpec = qmd_height_agl_stat_field_spec(
     "qmd_probability_wind_gust_10m_agl_gt_24p6933ms",
     "NBM QMD Probability 10m AGL Wind Gust > 24.6933 m/s",
     CanonicalField::WindGust,
     10,
     FieldProduct::Probability(ProbabilitySelection::above_milli(24_693)),
+    &["GUST:10 m above ground"],
+);
+
+const FIELD_QMD_PROB_10M_WIND_GUST_ABOVE_28P8089MS: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_probability_wind_gust_10m_agl_gt_28p8089ms",
+    "NBM QMD Probability 10m AGL Wind Gust > 28.8089 m/s",
+    CanonicalField::WindGust,
+    10,
+    FieldProduct::Probability(ProbabilitySelection::above_milli(28_809)),
     &["GUST:10 m above ground"],
 );
 
@@ -1758,12 +1877,30 @@ const FIELD_QMD_10M_WIND_GUST_P10: GribFieldSpec = qmd_height_agl_stat_field_spe
     &["GUST:10 m above ground"],
 );
 
+const FIELD_QMD_10M_WIND_GUST_P25: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_wind_gust_10m_agl_p25",
+    "NBM QMD 10m AGL Wind Gust P25",
+    CanonicalField::WindGust,
+    10,
+    FieldProduct::Percentile(25),
+    &["GUST:10 m above ground"],
+);
+
 const FIELD_QMD_10M_WIND_GUST_P50: GribFieldSpec = qmd_height_agl_stat_field_spec(
     "qmd_wind_gust_10m_agl_p50",
     "NBM QMD 10m AGL Wind Gust P50",
     CanonicalField::WindGust,
     10,
     FieldProduct::Percentile(50),
+    &["GUST:10 m above ground"],
+);
+
+const FIELD_QMD_10M_WIND_GUST_P75: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_wind_gust_10m_agl_p75",
+    "NBM QMD 10m AGL Wind Gust P75",
+    CanonicalField::WindGust,
+    10,
+    FieldProduct::Percentile(75),
     &["GUST:10 m above ground"],
 );
 
@@ -1794,12 +1931,30 @@ const FIELD_QMD_10M_WIND_SPEED_STDDEV: GribFieldSpec = qmd_height_agl_stat_field
     &["WIND:10 m above ground"],
 );
 
+const FIELD_QMD_PROB_10M_WIND_SPEED_ABOVE_11P3177MS: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_probability_wind_speed_10m_agl_gt_11p3177ms",
+    "NBM QMD Probability 10m AGL Wind Speed > 11.3177 m/s",
+    CanonicalField::WindSpeed,
+    10,
+    FieldProduct::Probability(ProbabilitySelection::above_milli(11_318)),
+    &["WIND:10 m above ground"],
+);
+
 const FIELD_QMD_PROB_10M_WIND_SPEED_ABOVE_17P4911MS: GribFieldSpec = qmd_height_agl_stat_field_spec(
     "qmd_probability_wind_speed_10m_agl_gt_17p4911ms",
     "NBM QMD Probability 10m AGL Wind Speed > 17.4911 m/s",
     CanonicalField::WindSpeed,
     10,
     FieldProduct::Probability(ProbabilitySelection::above_milli(17_491)),
+    &["WIND:10 m above ground"],
+);
+
+const FIELD_QMD_PROB_10M_WIND_SPEED_ABOVE_24P6933MS: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_probability_wind_speed_10m_agl_gt_24p6933ms",
+    "NBM QMD Probability 10m AGL Wind Speed > 24.6933 m/s",
+    CanonicalField::WindSpeed,
+    10,
+    FieldProduct::Probability(ProbabilitySelection::above_milli(24_693)),
     &["WIND:10 m above ground"],
 );
 
@@ -1812,12 +1967,30 @@ const FIELD_QMD_10M_WIND_SPEED_P10: GribFieldSpec = qmd_height_agl_stat_field_sp
     &["WIND:10 m above ground"],
 );
 
+const FIELD_QMD_10M_WIND_SPEED_P25: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_wind_speed_10m_agl_p25",
+    "NBM QMD 10m AGL Wind Speed P25",
+    CanonicalField::WindSpeed,
+    10,
+    FieldProduct::Percentile(25),
+    &["WIND:10 m above ground"],
+);
+
 const FIELD_QMD_10M_WIND_SPEED_P50: GribFieldSpec = qmd_height_agl_stat_field_spec(
     "qmd_wind_speed_10m_agl_p50",
     "NBM QMD 10m AGL Wind Speed P50",
     CanonicalField::WindSpeed,
     10,
     FieldProduct::Percentile(50),
+    &["WIND:10 m above ground"],
+);
+
+const FIELD_QMD_10M_WIND_SPEED_P75: GribFieldSpec = qmd_height_agl_stat_field_spec(
+    "qmd_wind_speed_10m_agl_p75",
+    "NBM QMD 10m AGL Wind Speed P75",
+    CanonicalField::WindSpeed,
+    10,
+    FieldProduct::Percentile(75),
     &["WIND:10 m above ground"],
 );
 
@@ -2643,9 +2816,27 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherTemperature,
     },
     PlotRecipe {
+        slug: "nbm_qmd_2m_temperature_p25",
+        title: "NBM QMD 2m AGL Temperature P25",
+        filled: FIELD_QMD_2M_TEMP_P25,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
         slug: "nbm_qmd_2m_temperature_p50",
         title: "NBM QMD 2m AGL Temperature P50",
         filled: FIELD_QMD_2M_TEMP_P50,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
+        slug: "nbm_qmd_2m_temperature_p75",
+        title: "NBM QMD 2m AGL Temperature P75",
+        filled: FIELD_QMD_2M_TEMP_P75,
         contours: None,
         barbs_u: None,
         barbs_v: None,
@@ -2661,6 +2852,15 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherTemperature,
     },
     PlotRecipe {
+        slug: "nbm_qmd_prob_2m_temperature_below_270p928k",
+        title: "NBM QMD Probability 2m AGL Temperature < 270.928 K",
+        filled: FIELD_QMD_PROB_2M_TEMP_BELOW_270P928K,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
         slug: "nbm_qmd_prob_2m_temperature_below_273p15k",
         title: "NBM QMD Probability 2m AGL Temperature < 273.15 K",
         filled: FIELD_QMD_PROB_2M_TEMP_BELOW_273P15K,
@@ -2670,9 +2870,27 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherProbability,
     },
     PlotRecipe {
+        slug: "nbm_qmd_prob_2m_temperature_above_299p817k",
+        title: "NBM QMD Probability 2m AGL Temperature > 299.817 K",
+        filled: FIELD_QMD_PROB_2M_TEMP_ABOVE_299P817K,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
         slug: "nbm_qmd_prob_2m_temperature_above_305p372k",
         title: "NBM QMD Probability 2m AGL Temperature > 305.372 K",
         filled: FIELD_QMD_PROB_2M_TEMP_ABOVE_305P372K,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "nbm_qmd_prob_2m_temperature_above_310p928k",
+        title: "NBM QMD Probability 2m AGL Temperature > 310.928 K",
+        filled: FIELD_QMD_PROB_2M_TEMP_ABOVE_310P928K,
         contours: None,
         barbs_u: None,
         barbs_v: None,
@@ -2706,9 +2924,27 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherDewpoint,
     },
     PlotRecipe {
+        slug: "nbm_qmd_2m_dewpoint_p25",
+        title: "NBM QMD 2m AGL Dewpoint P25",
+        filled: FIELD_QMD_2M_DEWPOINT_P25,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherDewpoint,
+    },
+    PlotRecipe {
         slug: "nbm_qmd_2m_dewpoint_p50",
         title: "NBM QMD 2m AGL Dewpoint P50",
         filled: FIELD_QMD_2M_DEWPOINT_P50,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherDewpoint,
+    },
+    PlotRecipe {
+        slug: "nbm_qmd_2m_dewpoint_p75",
+        title: "NBM QMD 2m AGL Dewpoint P75",
+        filled: FIELD_QMD_2M_DEWPOINT_P75,
         contours: None,
         barbs_u: None,
         barbs_v: None,
@@ -2724,9 +2960,27 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherDewpoint,
     },
     PlotRecipe {
+        slug: "nbm_qmd_prob_2m_dewpoint_below_273p15k",
+        title: "NBM QMD Probability 2m AGL Dewpoint < 273.15 K",
+        filled: FIELD_QMD_PROB_2M_DEWPOINT_BELOW_273P15K,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
         slug: "nbm_qmd_prob_2m_dewpoint_above_291p483k",
         title: "NBM QMD Probability 2m AGL Dewpoint > 291.483 K",
         filled: FIELD_QMD_PROB_2M_DEWPOINT_ABOVE_291P483K,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "nbm_qmd_prob_2m_dewpoint_above_294p261k",
+        title: "NBM QMD Probability 2m AGL Dewpoint > 294.261 K",
+        filled: FIELD_QMD_PROB_2M_DEWPOINT_ABOVE_294P261K,
         contours: None,
         barbs_u: None,
         barbs_v: None,
@@ -2742,9 +2996,27 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherRh,
     },
     PlotRecipe {
+        slug: "nbm_qmd_2m_relative_humidity_p25",
+        title: "NBM QMD 2m AGL Relative Humidity P25",
+        filled: FIELD_QMD_2M_RH_P25,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherRh,
+    },
+    PlotRecipe {
         slug: "nbm_qmd_2m_relative_humidity_p50",
         title: "NBM QMD 2m AGL Relative Humidity P50",
         filled: FIELD_QMD_2M_RH_P50,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherRh,
+    },
+    PlotRecipe {
+        slug: "nbm_qmd_2m_relative_humidity_p75",
+        title: "NBM QMD 2m AGL Relative Humidity P75",
+        filled: FIELD_QMD_2M_RH_P75,
         contours: None,
         barbs_u: None,
         barbs_v: None,
@@ -2778,6 +3050,15 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherWindGust,
     },
     PlotRecipe {
+        slug: "nbm_qmd_prob_10m_wind_gust_above_17p4911ms",
+        title: "NBM QMD Probability 10m AGL Wind Gust > 17.4911 m/s",
+        filled: FIELD_QMD_PROB_10M_WIND_GUST_ABOVE_17P4911MS,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
         slug: "nbm_qmd_10m_wind_gust_p10",
         title: "NBM QMD 10m AGL Wind Gust P10",
         filled: FIELD_QMD_10M_WIND_GUST_P10,
@@ -2787,9 +3068,27 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherWindGust,
     },
     PlotRecipe {
+        slug: "nbm_qmd_10m_wind_gust_p25",
+        title: "NBM QMD 10m AGL Wind Gust P25",
+        filled: FIELD_QMD_10M_WIND_GUST_P25,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherWindGust,
+    },
+    PlotRecipe {
         slug: "nbm_qmd_10m_wind_gust_p50",
         title: "NBM QMD 10m AGL Wind Gust P50",
         filled: FIELD_QMD_10M_WIND_GUST_P50,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherWindGust,
+    },
+    PlotRecipe {
+        slug: "nbm_qmd_10m_wind_gust_p75",
+        title: "NBM QMD 10m AGL Wind Gust P75",
+        filled: FIELD_QMD_10M_WIND_GUST_P75,
         contours: None,
         barbs_u: None,
         barbs_v: None,
@@ -2814,6 +3113,15 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherProbability,
     },
     PlotRecipe {
+        slug: "nbm_qmd_prob_10m_wind_gust_above_28p8089ms",
+        title: "NBM QMD Probability 10m AGL Wind Gust > 28.8089 m/s",
+        filled: FIELD_QMD_PROB_10M_WIND_GUST_ABOVE_28P8089MS,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
         slug: "nbm_qmd_10m_wind_speed_mean",
         title: "NBM QMD 10m AGL Wind Speed Mean",
         filled: FIELD_QMD_10M_WIND_SPEED_MEAN,
@@ -2832,6 +3140,15 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherWinds,
     },
     PlotRecipe {
+        slug: "nbm_qmd_prob_10m_wind_speed_above_11p3177ms",
+        title: "NBM QMD Probability 10m AGL Wind Speed > 11.3177 m/s",
+        filled: FIELD_QMD_PROB_10M_WIND_SPEED_ABOVE_11P3177MS,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
         slug: "nbm_qmd_10m_wind_speed_p10",
         title: "NBM QMD 10m AGL Wind Speed P10",
         filled: FIELD_QMD_10M_WIND_SPEED_P10,
@@ -2841,9 +3158,27 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherWinds,
     },
     PlotRecipe {
+        slug: "nbm_qmd_10m_wind_speed_p25",
+        title: "NBM QMD 10m AGL Wind Speed P25",
+        filled: FIELD_QMD_10M_WIND_SPEED_P25,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherWinds,
+    },
+    PlotRecipe {
         slug: "nbm_qmd_10m_wind_speed_p50",
         title: "NBM QMD 10m AGL Wind Speed P50",
         filled: FIELD_QMD_10M_WIND_SPEED_P50,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherWinds,
+    },
+    PlotRecipe {
+        slug: "nbm_qmd_10m_wind_speed_p75",
+        title: "NBM QMD 10m AGL Wind Speed P75",
+        filled: FIELD_QMD_10M_WIND_SPEED_P75,
         contours: None,
         barbs_u: None,
         barbs_v: None,
@@ -2862,6 +3197,15 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         slug: "nbm_qmd_prob_10m_wind_speed_above_17p4911ms",
         title: "NBM QMD Probability 10m AGL Wind Speed > 17.4911 m/s",
         filled: FIELD_QMD_PROB_10M_WIND_SPEED_ABOVE_17P4911MS,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "nbm_qmd_prob_10m_wind_speed_above_24p6933ms",
+        title: "NBM QMD Probability 10m AGL Wind Speed > 24.6933 m/s",
+        filled: FIELD_QMD_PROB_10M_WIND_SPEED_ABOVE_24P6933MS,
         contours: None,
         barbs_u: None,
         barbs_v: None,
@@ -7495,12 +7839,25 @@ mod tests {
                 FieldSelector::height_agl(CanonicalField::Temperature, 2).with_percentile(10),
             ),
             (
+                "nbm_qmd_2m_temperature_p25",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2).with_percentile(25),
+            ),
+            (
                 "nbm_qmd_2m_temperature_p50",
                 FieldSelector::height_agl(CanonicalField::Temperature, 2).with_percentile(50),
             ),
             (
+                "nbm_qmd_2m_temperature_p75",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2).with_percentile(75),
+            ),
+            (
                 "nbm_qmd_2m_temperature_p90",
                 FieldSelector::height_agl(CanonicalField::Temperature, 2).with_percentile(90),
+            ),
+            (
+                "nbm_qmd_prob_2m_temperature_below_270p928k",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2)
+                    .with_probability(ProbabilitySelection::below_milli(270_928)),
             ),
             (
                 "nbm_qmd_prob_2m_temperature_below_273p15k",
@@ -7508,9 +7865,19 @@ mod tests {
                     .with_probability(ProbabilitySelection::below_milli(273_150)),
             ),
             (
+                "nbm_qmd_prob_2m_temperature_above_299p817k",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2)
+                    .with_probability(ProbabilitySelection::above_milli(299_817)),
+            ),
+            (
                 "nbm_qmd_prob_2m_temperature_above_305p372k",
                 FieldSelector::height_agl(CanonicalField::Temperature, 2)
                     .with_probability(ProbabilitySelection::above_milli(305_372)),
+            ),
+            (
+                "nbm_qmd_prob_2m_temperature_above_310p928k",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2)
+                    .with_probability(ProbabilitySelection::above_milli(310_928)),
             ),
             (
                 "nbm_qmd_2m_dewpoint_mean",
@@ -7526,12 +7893,25 @@ mod tests {
                 FieldSelector::height_agl(CanonicalField::Dewpoint, 2).with_percentile(10),
             ),
             (
+                "nbm_qmd_2m_dewpoint_p25",
+                FieldSelector::height_agl(CanonicalField::Dewpoint, 2).with_percentile(25),
+            ),
+            (
                 "nbm_qmd_2m_dewpoint_p50",
                 FieldSelector::height_agl(CanonicalField::Dewpoint, 2).with_percentile(50),
             ),
             (
+                "nbm_qmd_2m_dewpoint_p75",
+                FieldSelector::height_agl(CanonicalField::Dewpoint, 2).with_percentile(75),
+            ),
+            (
                 "nbm_qmd_2m_dewpoint_p90",
                 FieldSelector::height_agl(CanonicalField::Dewpoint, 2).with_percentile(90),
+            ),
+            (
+                "nbm_qmd_prob_2m_dewpoint_below_273p15k",
+                FieldSelector::height_agl(CanonicalField::Dewpoint, 2)
+                    .with_probability(ProbabilitySelection::below_milli(273_150)),
             ),
             (
                 "nbm_qmd_prob_2m_dewpoint_above_291p483k",
@@ -7539,12 +7919,25 @@ mod tests {
                     .with_probability(ProbabilitySelection::above_milli(291_483)),
             ),
             (
+                "nbm_qmd_prob_2m_dewpoint_above_294p261k",
+                FieldSelector::height_agl(CanonicalField::Dewpoint, 2)
+                    .with_probability(ProbabilitySelection::above_milli(294_261)),
+            ),
+            (
                 "nbm_qmd_2m_relative_humidity_p10",
                 FieldSelector::height_agl(CanonicalField::RelativeHumidity, 2).with_percentile(10),
             ),
             (
+                "nbm_qmd_2m_relative_humidity_p25",
+                FieldSelector::height_agl(CanonicalField::RelativeHumidity, 2).with_percentile(25),
+            ),
+            (
                 "nbm_qmd_2m_relative_humidity_p50",
                 FieldSelector::height_agl(CanonicalField::RelativeHumidity, 2).with_percentile(50),
+            ),
+            (
+                "nbm_qmd_2m_relative_humidity_p75",
+                FieldSelector::height_agl(CanonicalField::RelativeHumidity, 2).with_percentile(75),
             ),
             (
                 "nbm_qmd_2m_relative_humidity_p90",
@@ -7560,12 +7953,25 @@ mod tests {
                     .with_ensemble_standard_deviation(),
             ),
             (
+                "nbm_qmd_prob_10m_wind_gust_above_17p4911ms",
+                FieldSelector::height_agl(CanonicalField::WindGust, 10)
+                    .with_probability(ProbabilitySelection::above_milli(17_491)),
+            ),
+            (
                 "nbm_qmd_10m_wind_gust_p10",
                 FieldSelector::height_agl(CanonicalField::WindGust, 10).with_percentile(10),
             ),
             (
+                "nbm_qmd_10m_wind_gust_p25",
+                FieldSelector::height_agl(CanonicalField::WindGust, 10).with_percentile(25),
+            ),
+            (
                 "nbm_qmd_10m_wind_gust_p50",
                 FieldSelector::height_agl(CanonicalField::WindGust, 10).with_percentile(50),
+            ),
+            (
+                "nbm_qmd_10m_wind_gust_p75",
+                FieldSelector::height_agl(CanonicalField::WindGust, 10).with_percentile(75),
             ),
             (
                 "nbm_qmd_10m_wind_gust_p90",
@@ -7577,6 +7983,11 @@ mod tests {
                     .with_probability(ProbabilitySelection::above_milli(24_693)),
             ),
             (
+                "nbm_qmd_prob_10m_wind_gust_above_28p8089ms",
+                FieldSelector::height_agl(CanonicalField::WindGust, 10)
+                    .with_probability(ProbabilitySelection::above_milli(28_809)),
+            ),
+            (
                 "nbm_qmd_10m_wind_speed_mean",
                 FieldSelector::height_agl(CanonicalField::WindSpeed, 10).with_ensemble_mean(),
             ),
@@ -7586,12 +7997,25 @@ mod tests {
                     .with_ensemble_standard_deviation(),
             ),
             (
+                "nbm_qmd_prob_10m_wind_speed_above_11p3177ms",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+                    .with_probability(ProbabilitySelection::above_milli(11_318)),
+            ),
+            (
                 "nbm_qmd_10m_wind_speed_p10",
                 FieldSelector::height_agl(CanonicalField::WindSpeed, 10).with_percentile(10),
             ),
             (
+                "nbm_qmd_10m_wind_speed_p25",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10).with_percentile(25),
+            ),
+            (
                 "nbm_qmd_10m_wind_speed_p50",
                 FieldSelector::height_agl(CanonicalField::WindSpeed, 10).with_percentile(50),
+            ),
+            (
+                "nbm_qmd_10m_wind_speed_p75",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10).with_percentile(75),
             ),
             (
                 "nbm_qmd_10m_wind_speed_p90",
@@ -7601,6 +8025,11 @@ mod tests {
                 "nbm_qmd_prob_10m_wind_speed_above_17p4911ms",
                 FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
                     .with_probability(ProbabilitySelection::above_milli(17_491)),
+            ),
+            (
+                "nbm_qmd_prob_10m_wind_speed_above_24p6933ms",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+                    .with_probability(ProbabilitySelection::above_milli(24_693)),
             ),
         ];
 
