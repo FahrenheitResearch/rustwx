@@ -107,6 +107,9 @@ fn recipe_maturity(slug: &str) -> ProductMaturity {
     if slug.starts_with("sref_prob_") {
         return ProductMaturity::Experimental;
     }
+    if slug.starts_with("aigefs_spr_") {
+        return ProductMaturity::Experimental;
+    }
     match slug {
         "simulated_ir_satellite" | "lightning_flash_density" => ProductMaturity::Experimental,
         _ => ProductMaturity::Operational,
@@ -118,6 +121,9 @@ fn recipe_flags(slug: &str) -> Vec<ProductSemanticFlag> {
         return vec![ProductSemanticFlag::ProofOriented];
     }
     if slug.starts_with("sref_prob_") {
+        return vec![ProductSemanticFlag::ProofOriented];
+    }
+    if slug.starts_with("aigefs_spr_") {
         return vec![ProductSemanticFlag::ProofOriented];
     }
     match slug {
@@ -770,6 +776,19 @@ const FIELD_500_HEIGHT: GribFieldSpec = field_spec(
     &["HGT:500 mb"],
 );
 
+const FIELD_AIGEFS_SPR_500_HEIGHT_STDDEV: GribFieldSpec = field_spec(
+    "aigefs_spread_height_500mb_stddev",
+    "AI-GEFS 500mb Height Spread",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(500),
+    Some(
+        FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500)
+            .with_ensemble_standard_deviation(),
+    ),
+    &["HGT:500 mb"],
+);
+
 const FIELD_700_HEIGHT: GribFieldSpec = field_spec(
     "height_700mb",
     "700mb Height",
@@ -1317,6 +1336,19 @@ const FIELD_QMD_2M_RH_P90: GribFieldSpec = qmd_height_agl_stat_field_spec(
     2,
     FieldProduct::Percentile(90),
     &["RH:2 m above ground"],
+);
+
+const FIELD_AIGEFS_SPR_2M_TEMP_STDDEV: GribFieldSpec = field_spec(
+    "aigefs_spread_temperature_2m_agl_stddev",
+    "AI-GEFS 2m AGL Temperature Spread",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(
+        FieldSelector::height_agl(CanonicalField::Temperature, 2)
+            .with_ensemble_standard_deviation(),
+    ),
+    &["TMP:2 m above ground"],
 );
 
 const FIELD_2M_DEWPOINT: GribFieldSpec = field_spec(
@@ -2168,6 +2200,24 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherWinds,
     },
     PlotRecipe {
+        slug: "aigefs_spr_2m_temperature_stddev",
+        title: "AI-GEFS 2m AGL Temperature Spread",
+        filled: FIELD_AIGEFS_SPR_2M_TEMP_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
+        slug: "aigefs_spr_500mb_height_stddev",
+        title: "AI-GEFS 500mb Height Spread",
+        filled: FIELD_AIGEFS_SPR_500_HEIGHT_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherHeight,
+    },
+    PlotRecipe {
         slug: "sref_prob_2m_temperature_below_273k",
         title: "SREF Probability 2m Temperature < 273 K",
         filled: FIELD_SREF_PROB_2M_TEMP_BELOW_FREEZING,
@@ -2632,6 +2682,10 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
         match (model, selector.product) {
             (ModelId::Nbm, _) => {}
             (ModelId::Sref, FieldProduct::Probability(_)) => {}
+            (
+                ModelId::Aigefs,
+                FieldProduct::EnsembleStandardDeviation | FieldProduct::EnsembleSpread,
+            ) => {}
             _ => return false,
         }
     }
@@ -4320,6 +4374,14 @@ fn plot_recipe_fetch_defaults(
             .selector
             .is_some_and(|selector| matches!(selector.product, FieldProduct::Probability(_)))
     });
+    let has_ensemble_spread_selector = fields.iter().any(|field| {
+        field.selector.is_some_and(|selector| {
+            matches!(
+                selector.product,
+                FieldProduct::EnsembleStandardDeviation | FieldProduct::EnsembleSpread
+            )
+        })
+    });
     match (model, has_native, has_surface) {
         (ModelId::Hrrr, true, _) => ("nat", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Hrrr, false, true) => ("sfc", PlotRecipeFetchPolicy::PreferIndexedSubset),
@@ -4332,6 +4394,12 @@ fn plot_recipe_fetch_defaults(
         (ModelId::Gefs, _, _) => ("pgrb2ap5/gec00", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Aigfs, _, true) => ("sfc", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Aigfs, _, false) => ("pres", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Aigefs, _, true) if has_ensemble_spread_selector => {
+            ("sfc/spr", PlotRecipeFetchPolicy::PreferIndexedSubset)
+        }
+        (ModelId::Aigefs, _, false) if has_ensemble_spread_selector => {
+            ("pres/spr", PlotRecipeFetchPolicy::PreferIndexedSubset)
+        }
         (ModelId::Aigefs, _, true) => ("sfc/avg", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Aigefs, _, false) => ("pres/avg", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Rap, _, _) => ("awp130pgrb", PlotRecipeFetchPolicy::PreferIndexedSubset),
@@ -6298,6 +6366,43 @@ mod tests {
                 .iter()
                 .any(|blocker| { blocker.reason.contains("not yet supported for model 'gfs'") })
         );
+    }
+
+    #[test]
+    fn aigefs_spread_recipes_use_spr_products_and_stddev_selectors() {
+        let cases = [
+            (
+                "aigefs_spr_2m_temperature_stddev",
+                "sfc/spr",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2)
+                    .with_ensemble_standard_deviation(),
+            ),
+            (
+                "aigefs_spr_500mb_height_stddev",
+                "pres/spr",
+                FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500)
+                    .with_ensemble_standard_deviation(),
+            ),
+        ];
+
+        for (slug, product, selector) in cases {
+            let plan = plot_recipe_fetch_plan(slug, ModelId::Aigefs).unwrap();
+            assert_eq!(plan.product, product, "{slug}");
+            assert_eq!(
+                plan.fetch_policy,
+                PlotRecipeFetchPolicy::PreferIndexedSubset,
+                "{slug}"
+            );
+            assert_eq!(plan.selectors(), vec![selector], "{slug}");
+
+            let blockers = plot_recipe_fetch_blockers(slug, ModelId::Aigfs).unwrap();
+            assert!(
+                blockers.iter().any(|blocker| blocker
+                    .reason
+                    .contains("not yet supported for model 'aigfs'")),
+                "{slug}"
+            );
+        }
     }
 
     #[test]

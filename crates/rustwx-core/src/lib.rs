@@ -1657,8 +1657,9 @@ impl std::str::FromStr for ModelId {
             "urma" | "urma2p5" | "urma-2p5" | "urma_2p5" => Ok(Self::Urma),
             "nbm" | "blend" | "national-blend" | "national_blend" => Ok(Self::Nbm),
             "rrfs-a" | "rrfsa" | "rrfs_a" => Ok(Self::RrfsA),
-            "rrfs-public" | "rrfspublic" | "rrfs_public" | "rrfs-prototype"
-            | "rrfs_prototype" => Ok(Self::RrfsPublic),
+            "rrfs-public" | "rrfspublic" | "rrfs_public" | "rrfs-prototype" | "rrfs_prototype" => {
+                Ok(Self::RrfsPublic)
+            }
             "wrf-gdex" | "wrf_gdex" | "wrfgdex" | "wrf" => Ok(Self::WrfGdex),
             other => Err(RustwxError::UnknownModel(other.to_string())),
         }

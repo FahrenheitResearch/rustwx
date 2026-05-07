@@ -1453,8 +1453,7 @@ fn probability_semantic_limits(message: &Grib2Message) -> (Option<i64>, Option<i
 }
 
 fn scaled_limit_milli(actual: Option<f64>) -> Option<i64> {
-    actual
-        .map(|actual| (actual * 1000.0).round() as i64)
+    actual.map(|actual| (actual * 1000.0).round() as i64)
 }
 
 fn selector_prefers_instantaneous_message(selector: FieldSelector) -> bool {
