@@ -1,7 +1,7 @@
 use crate::derived::NativeContourRenderMode;
 use rustwx_core::{
-    BundleRequirement, CanonicalBundleDescriptor, CanonicalField, CycleSpec, FieldSelector,
-    GridProjection, ModelId, SelectedField2D, SourceId, VerticalSelector,
+    BundleRequirement, CanonicalBundleDescriptor, CanonicalField, CycleSpec, FieldProduct,
+    FieldSelector, GridProjection, ModelId, SelectedField2D, SourceId, VerticalSelector,
 };
 use rustwx_io::{
     earth2_archive::{Earth2EnsembleSelector, Earth2EnsembleStat},
@@ -2930,6 +2930,13 @@ fn earth2_is_std_selector(selector: Option<Earth2EnsembleSelector>) -> bool {
     )
 }
 
+fn selector_is_spread_product(selector: FieldSelector) -> bool {
+    matches!(
+        selector.product,
+        FieldProduct::EnsembleStandardDeviation | FieldProduct::EnsembleSpread
+    )
+}
+
 fn render_filled_field(
     recipe: &PlotRecipe,
     field: &SelectedField2D,
@@ -3021,7 +3028,7 @@ fn convert_filled_field_with_ensemble(
         recipe.style,
         RenderStyle::WeatherTemperature | RenderStyle::WeatherDewpoint
     ) {
-        if earth2_is_std_selector(earth2_ensemble) {
+        if earth2_is_std_selector(earth2_ensemble) || selector_is_spread_product(field.selector) {
             core.units = "K".to_string();
         } else {
             for value in &mut core.values {
@@ -3080,7 +3087,7 @@ fn scale_for_earth2_selector(
     values: &[f32],
     earth2_ensemble: Option<Earth2EnsembleSelector>,
 ) -> ColorScale {
-    if earth2_is_std_selector(earth2_ensemble) {
+    if earth2_is_std_selector(earth2_ensemble) || selector_is_spread_product(filled_selector) {
         return earth2_spread_scale(values);
     }
     scale_for_recipe(recipe, filled_selector)
@@ -5068,6 +5075,29 @@ mod tests {
         };
         assert_eq!(scale.levels.first().copied(), Some(0.0));
         assert!(scale.levels.last().copied().unwrap_or(0.0) >= 8.0);
+        assert_eq!(scale.extend, ExtendMode::Max);
+    }
+
+    #[test]
+    fn qmd_stddev_temperature_keeps_spread_units_and_scale() {
+        let recipe = plot_recipe("nbm_qmd_2m_temperature_stddev").unwrap();
+        let field = sample_selected_field(
+            FieldSelector::height_agl(CanonicalField::Temperature, 2)
+                .with_ensemble_standard_deviation(),
+            "K",
+            vec![0.0, 1.5, 3.0, 6.0],
+        );
+        let converted = convert_filled_field_with_ensemble(recipe, &field, None);
+        assert_eq!(converted.units, "K");
+        assert_eq!(converted.values, vec![0.0, 1.5, 3.0, 6.0]);
+
+        let ColorScale::Discrete(scale) =
+            scale_for_earth2_selector(recipe, field.selector, &converted.values, None)
+        else {
+            panic!("expected discrete spread scale");
+        };
+        assert_eq!(scale.levels.first().copied(), Some(0.0));
+        assert!(scale.levels.last().copied().unwrap_or(0.0) >= 6.0);
         assert_eq!(scale.extend, ExtendMode::Max);
     }
 
