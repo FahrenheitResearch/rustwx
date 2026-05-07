@@ -100,6 +100,9 @@ fn recipe_lineage(slug: &str, family: ProductFamily) -> ProductLineage {
 }
 
 fn recipe_maturity(slug: &str) -> ProductMaturity {
+    if slug.starts_with("nbm_qmd_") {
+        return ProductMaturity::Experimental;
+    }
     match slug {
         "simulated_ir_satellite" | "lightning_flash_density" => ProductMaturity::Experimental,
         _ => ProductMaturity::Operational,
@@ -107,6 +110,9 @@ fn recipe_maturity(slug: &str) -> ProductMaturity {
 }
 
 fn recipe_flags(slug: &str) -> Vec<ProductSemanticFlag> {
+    if slug.starts_with("nbm_qmd_") {
+        return vec![ProductSemanticFlag::ProofOriented];
+    }
     match slug {
         "cloud_cover_levels" | "precipitation_type" | "composite_reflectivity_uh" => {
             vec![ProductSemanticFlag::Composite]
@@ -1143,6 +1149,59 @@ const FIELD_2M_TEMP: GribFieldSpec = field_spec(
     &["TMP:2 m above ground"],
 );
 
+const FIELD_QMD_2M_TEMP_MEAN: GribFieldSpec = field_spec(
+    "qmd_temperature_2m_agl_mean",
+    "NBM QMD 2m AGL Temperature Mean",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(FieldSelector::height_agl(CanonicalField::Temperature, 2).with_ensemble_mean()),
+    &["TMP:2 m above ground"],
+);
+
+const FIELD_QMD_2M_TEMP_STDDEV: GribFieldSpec = field_spec(
+    "qmd_temperature_2m_agl_stddev",
+    "NBM QMD 2m AGL Temperature Std Dev",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(
+        FieldSelector::height_agl(CanonicalField::Temperature, 2)
+            .with_ensemble_standard_deviation(),
+    ),
+    &["TMP:2 m above ground"],
+);
+
+const FIELD_QMD_2M_TEMP_P10: GribFieldSpec = field_spec(
+    "qmd_temperature_2m_agl_p10",
+    "NBM QMD 2m AGL Temperature P10",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(FieldSelector::height_agl(CanonicalField::Temperature, 2).with_percentile(10)),
+    &["TMP:2 m above ground"],
+);
+
+const FIELD_QMD_2M_TEMP_P50: GribFieldSpec = field_spec(
+    "qmd_temperature_2m_agl_p50",
+    "NBM QMD 2m AGL Temperature P50",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(FieldSelector::height_agl(CanonicalField::Temperature, 2).with_percentile(50)),
+    &["TMP:2 m above ground"],
+);
+
+const FIELD_QMD_2M_TEMP_P90: GribFieldSpec = field_spec(
+    "qmd_temperature_2m_agl_p90",
+    "NBM QMD 2m AGL Temperature P90",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(FieldSelector::height_agl(CanonicalField::Temperature, 2).with_percentile(90)),
+    &["TMP:2 m above ground"],
+);
+
 const FIELD_2M_DEWPOINT: GribFieldSpec = field_spec(
     "dewpoint_2m_agl",
     "2m AGL Dewpoint",
@@ -1643,6 +1702,51 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherTemperature,
     },
     PlotRecipe {
+        slug: "nbm_qmd_2m_temperature_mean",
+        title: "NBM QMD 2m AGL Temperature Mean",
+        filled: FIELD_QMD_2M_TEMP_MEAN,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
+        slug: "nbm_qmd_2m_temperature_stddev",
+        title: "NBM QMD 2m AGL Temperature Std Dev",
+        filled: FIELD_QMD_2M_TEMP_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
+        slug: "nbm_qmd_2m_temperature_p10",
+        title: "NBM QMD 2m AGL Temperature P10",
+        filled: FIELD_QMD_2M_TEMP_P10,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
+        slug: "nbm_qmd_2m_temperature_p50",
+        title: "NBM QMD 2m AGL Temperature P50",
+        filled: FIELD_QMD_2M_TEMP_P50,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
+        slug: "nbm_qmd_2m_temperature_p90",
+        title: "NBM QMD 2m AGL Temperature P90",
+        filled: FIELD_QMD_2M_TEMP_P90,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
         slug: "2m_temperature_10m_winds",
         title: "2m AGL Temperature / 10m Winds",
         filled: FIELD_2M_TEMP,
@@ -2067,6 +2171,9 @@ pub fn plot_recipe_fetch_blockers(
 }
 
 pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> bool {
+    if !selector.product.is_default() && model != ModelId::Nbm {
+        return false;
+    }
     if matches!(
         (model, selector.vertical),
         (
@@ -3690,6 +3797,11 @@ fn plot_recipe_fetch_defaults(
     let has_surface = fields
         .iter()
         .any(|field| field.family == ProductFamily::Surface);
+    let has_product_selector = fields.iter().any(|field| {
+        field
+            .selector
+            .is_some_and(|selector| !selector.product.is_default())
+    });
     match (model, has_native, has_surface) {
         (ModelId::Hrrr, true, _) => ("nat", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Hrrr, false, true) => ("sfc", PlotRecipeFetchPolicy::PreferIndexedSubset),
@@ -3716,6 +3828,9 @@ fn plot_recipe_fetch_defaults(
         ),
         (ModelId::Rtma, _, _) => ("2dvaranl_ndfd", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Urma, _, _) => ("2dvaranl_ndfd", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Nbm, _, _) if has_product_selector => {
+            ("qmd/co", PlotRecipeFetchPolicy::PreferIndexedSubset)
+        }
         (ModelId::Nbm, _, _) => ("core/co", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::RrfsA, _, _) => ("prs-conus", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::EcmwfOpenData, _, _) => ("oper", PlotRecipeFetchPolicy::WholeFile),
@@ -5466,6 +5581,55 @@ mod tests {
             gfs_blockers
                 .iter()
                 .any(|blocker| blocker.reason.contains("only verified for NBM"))
+        );
+    }
+
+    #[test]
+    fn nbm_qmd_temperature_stat_recipes_use_qmd_product_and_exact_selectors() {
+        let cases = [
+            (
+                "nbm_qmd_2m_temperature_mean",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2).with_ensemble_mean(),
+            ),
+            (
+                "nbm_qmd_2m_temperature_stddev",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2)
+                    .with_ensemble_standard_deviation(),
+            ),
+            (
+                "nbm_qmd_2m_temperature_p10",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2).with_percentile(10),
+            ),
+            (
+                "nbm_qmd_2m_temperature_p50",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2).with_percentile(50),
+            ),
+            (
+                "nbm_qmd_2m_temperature_p90",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2).with_percentile(90),
+            ),
+        ];
+
+        for (slug, selector) in cases {
+            let plan = plot_recipe_fetch_plan(slug, ModelId::Nbm).unwrap();
+            assert_eq!(plan.product, "qmd/co", "{slug}");
+            assert_eq!(
+                plan.fetch_policy,
+                PlotRecipeFetchPolicy::PreferIndexedSubset,
+                "{slug}"
+            );
+            assert_eq!(plan.selectors(), vec![selector], "{slug}");
+        }
+    }
+
+    #[test]
+    fn nbm_qmd_temperature_stat_recipes_block_for_non_nbm_models() {
+        let blockers =
+            plot_recipe_fetch_blockers("nbm_qmd_2m_temperature_p50", ModelId::Gfs).unwrap();
+        assert!(
+            blockers
+                .iter()
+                .any(|blocker| { blocker.reason.contains("not yet supported for model 'gfs'") })
         );
     }
 

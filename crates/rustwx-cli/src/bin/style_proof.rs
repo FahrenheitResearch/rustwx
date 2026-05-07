@@ -730,22 +730,27 @@ fn build_contour_layers(
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(200),
+            ..
         } => (range_step(1020.0, 1290.0, 6.0), Color::BLACK, 1, true),
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(300),
+            ..
         } => (range_step(780.0, 1020.0, 6.0), Color::BLACK, 1, true),
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(500),
+            ..
         } => (range_step(450.0, 650.0, 3.0), Color::BLACK, 1, true),
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(700),
+            ..
         } => (range_step(180.0, 360.0, 3.0), Color::BLACK, 1, true),
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(850),
+            ..
         } => (range_step(0.0, 200.0, 3.0), Color::BLACK, 1, true),
         FieldSelector {
             field: CanonicalField::UpdraftHelicity,
@@ -754,6 +759,7 @@ fn build_contour_layers(
                     bottom_m: 2000,
                     top_m: 5000,
                 },
+            ..
         } => (
             vec![25.0, 50.0, 75.0, 100.0, 150.0, 200.0],
             Color::rgba(166, 0, 255, 255),

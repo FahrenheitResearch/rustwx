@@ -759,6 +759,7 @@ fn default_non_ecape_product_sets(
 
 fn include_in_operational_default(entry: &rustwx_products::catalog::ProductCatalogEntry) -> bool {
     entry.maturity == ProductMaturity::Operational
+        && !entry.slug.starts_with("nbm_qmd_")
         && !entry
             .flags
             .iter()

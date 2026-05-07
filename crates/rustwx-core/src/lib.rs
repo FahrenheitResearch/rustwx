@@ -471,14 +471,153 @@ impl std::fmt::Display for VerticalSelector {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldProduct {
+    Default,
+    EnsembleMean,
+    EnsembleStandardDeviation,
+    EnsembleSpread,
+    EnsembleMinimum,
+    EnsembleMaximum,
+    Percentile(u8),
+    Probability(ProbabilitySelection),
+}
+
+impl Default for FieldProduct {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
+impl FieldProduct {
+    pub const fn is_default(&self) -> bool {
+        matches!(self, Self::Default)
+    }
+
+    pub fn as_slug(self) -> String {
+        match self {
+            Self::Default => "default".to_string(),
+            Self::EnsembleMean => "ensemble_mean".to_string(),
+            Self::EnsembleStandardDeviation => "ensemble_stddev".to_string(),
+            Self::EnsembleSpread => "ensemble_spread".to_string(),
+            Self::EnsembleMinimum => "ensemble_min".to_string(),
+            Self::EnsembleMaximum => "ensemble_max".to_string(),
+            Self::Percentile(value) => format!("p{value}"),
+            Self::Probability(selection) => selection.as_slug(),
+        }
+    }
+
+    pub fn display_prefix(self) -> Option<String> {
+        match self {
+            Self::Default => None,
+            Self::EnsembleMean => Some("Ensemble Mean".to_string()),
+            Self::EnsembleStandardDeviation => Some("Ensemble Std Dev".to_string()),
+            Self::EnsembleSpread => Some("Ensemble Spread".to_string()),
+            Self::EnsembleMinimum => Some("Ensemble Min".to_string()),
+            Self::EnsembleMaximum => Some("Ensemble Max".to_string()),
+            Self::Percentile(value) => Some(format!("P{value}")),
+            Self::Probability(_) => Some("Probability".to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ProbabilitySelection {
+    pub probability_type: Option<u8>,
+    pub lower_limit_milli: Option<i64>,
+    pub upper_limit_milli: Option<i64>,
+}
+
+impl ProbabilitySelection {
+    pub const fn new(
+        probability_type: Option<u8>,
+        lower_limit_milli: Option<i64>,
+        upper_limit_milli: Option<i64>,
+    ) -> Self {
+        Self {
+            probability_type,
+            lower_limit_milli,
+            upper_limit_milli,
+        }
+    }
+
+    pub const fn any() -> Self {
+        Self::new(None, None, None)
+    }
+
+    pub const fn above_milli(lower_limit_milli: i64) -> Self {
+        Self::new(None, Some(lower_limit_milli), None)
+    }
+
+    pub const fn below_milli(upper_limit_milli: i64) -> Self {
+        Self::new(None, None, Some(upper_limit_milli))
+    }
+
+    fn as_slug(self) -> String {
+        let type_slug = self
+            .probability_type
+            .map(|value| format!("type{value}_"))
+            .unwrap_or_default();
+        match (self.lower_limit_milli, self.upper_limit_milli) {
+            (Some(lower), Some(upper)) => format!("prob_{type_slug}{lower}m_to_{upper}m"),
+            (Some(lower), None) => format!("prob_{type_slug}gt_{lower}m"),
+            (None, Some(upper)) => format!("prob_{type_slug}lt_{upper}m"),
+            (None, None) => format!("prob_{type_slug}any"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FieldSelector {
     pub field: CanonicalField,
     pub vertical: VerticalSelector,
+    #[serde(default, skip_serializing_if = "FieldProduct::is_default")]
+    pub product: FieldProduct,
 }
 
 impl FieldSelector {
     pub const fn new(field: CanonicalField, vertical: VerticalSelector) -> Self {
-        Self { field, vertical }
+        Self {
+            field,
+            vertical,
+            product: FieldProduct::Default,
+        }
+    }
+
+    pub const fn with_product(self, product: FieldProduct) -> Self {
+        Self {
+            field: self.field,
+            vertical: self.vertical,
+            product,
+        }
+    }
+
+    pub const fn with_ensemble_mean(self) -> Self {
+        self.with_product(FieldProduct::EnsembleMean)
+    }
+
+    pub const fn with_ensemble_standard_deviation(self) -> Self {
+        self.with_product(FieldProduct::EnsembleStandardDeviation)
+    }
+
+    pub const fn with_ensemble_spread(self) -> Self {
+        self.with_product(FieldProduct::EnsembleSpread)
+    }
+
+    pub const fn with_ensemble_minimum(self) -> Self {
+        self.with_product(FieldProduct::EnsembleMinimum)
+    }
+
+    pub const fn with_ensemble_maximum(self) -> Self {
+        self.with_product(FieldProduct::EnsembleMaximum)
+    }
+
+    pub const fn with_percentile(self, percentile: u8) -> Self {
+        self.with_product(FieldProduct::Percentile(percentile))
+    }
+
+    pub const fn with_probability(self, selection: ProbabilitySelection) -> Self {
+        self.with_product(FieldProduct::Probability(selection))
     }
 
     pub const fn isobaric(field: CanonicalField, level_hpa: u16) -> Self {
@@ -517,7 +656,12 @@ impl FieldSelector {
     }
 
     pub fn key(self) -> String {
-        format!("{}_{}", self.field.as_str(), self.vertical.as_slug())
+        let base = format!("{}_{}", self.field.as_str(), self.vertical.as_slug());
+        if self.product.is_default() {
+            base
+        } else {
+            format!("{}_{}", base, self.product.as_slug())
+        }
     }
 
     pub fn product_key(self) -> ProductKey {
@@ -525,7 +669,11 @@ impl FieldSelector {
     }
 
     pub fn display_name(self) -> String {
-        format!("{} ({})", self.field.display_name(), self.vertical)
+        if let Some(prefix) = self.product.display_prefix() {
+            format!("{prefix} {} ({})", self.field.display_name(), self.vertical)
+        } else {
+            format!("{} ({})", self.field.display_name(), self.vertical)
+        }
     }
 
     pub fn native_units(self) -> &'static str {
@@ -535,7 +683,17 @@ impl FieldSelector {
 
 impl std::fmt::Display for FieldSelector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}@{}", self.field, self.vertical)
+        if self.product.is_default() {
+            write!(f, "{}@{}", self.field, self.vertical)
+        } else {
+            write!(
+                f,
+                "{}@{}:{}",
+                self.field,
+                self.vertical,
+                self.product.as_slug()
+            )
+        }
     }
 }
 
@@ -1971,6 +2129,9 @@ mod tests {
         let temp_2m = FieldSelector::height_agl(CanonicalField::Temperature, 2);
         assert_eq!(temp_2m.key(), "temperature_2m_agl");
         assert_eq!(temp_2m.native_units(), "K");
+        let temp_2m_p50 = temp_2m.with_percentile(50);
+        assert_eq!(temp_2m_p50.key(), "temperature_2m_agl_p50");
+        assert_eq!(temp_2m_p50.to_string(), "temperature@2m_agl:p50");
 
         let dewpoint_2m = FieldSelector::height_agl(CanonicalField::Dewpoint, 2);
         assert_eq!(dewpoint_2m.key(), "dewpoint_2m_agl");

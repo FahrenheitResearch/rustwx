@@ -1014,18 +1014,24 @@ fn extract_selector(
     grid: &LatLonGrid,
     selector: FieldSelector,
 ) -> Result<SelectedField2D, WrfError> {
+    if !selector.product.is_default() {
+        return Err(WrfError::UnsupportedSelector(selector));
+    }
     let values = match selector {
         FieldSelector {
             field: CanonicalField::Temperature,
             vertical: VerticalSelector::HeightAboveGroundMeters(2),
+            ..
         } => file.t2()?.to_vec(),
         FieldSelector {
             field: CanonicalField::Dewpoint,
             vertical: VerticalSelector::HeightAboveGroundMeters(2),
+            ..
         } => file.td2()?.to_vec(),
         FieldSelector {
             field: CanonicalField::RelativeHumidity,
             vertical: VerticalSelector::HeightAboveGroundMeters(2),
+            ..
         } => file
             .t2()?
             .iter()
@@ -1038,42 +1044,52 @@ fn extract_selector(
         FieldSelector {
             field: CanonicalField::UWind,
             vertical: VerticalSelector::HeightAboveGroundMeters(10),
+            ..
         } => file.u10_earth()?.to_vec(),
         FieldSelector {
             field: CanonicalField::VWind,
             vertical: VerticalSelector::HeightAboveGroundMeters(10),
+            ..
         } => file.v10_earth()?.to_vec(),
         FieldSelector {
             field: CanonicalField::WindGust,
             vertical: VerticalSelector::HeightAboveGroundMeters(10),
+            ..
         } => file.wind_gust_10m()?.to_vec(),
         FieldSelector {
             field: CanonicalField::PressureReducedToMeanSeaLevel,
             vertical: VerticalSelector::MeanSeaLevel,
+            ..
         } => file.slp_pa()?.to_vec(),
         FieldSelector {
             field: CanonicalField::PrecipitableWater,
             vertical: VerticalSelector::EntireAtmosphere,
+            ..
         } => file.pwat_kgm2()?.to_vec(),
         FieldSelector {
             field: CanonicalField::TotalPrecipitation,
             vertical: VerticalSelector::Surface,
+            ..
         } => file.total_precip_mm()?.to_vec(),
         FieldSelector {
             field: CanonicalField::LowCloudCover,
             vertical: VerticalSelector::EntireAtmosphere,
+            ..
         } => file.cloud_cover_layers()?.0.to_vec(),
         FieldSelector {
             field: CanonicalField::MiddleCloudCover,
             vertical: VerticalSelector::EntireAtmosphere,
+            ..
         } => file.cloud_cover_layers()?.1.to_vec(),
         FieldSelector {
             field: CanonicalField::HighCloudCover,
             vertical: VerticalSelector::EntireAtmosphere,
+            ..
         } => file.cloud_cover_layers()?.2.to_vec(),
         FieldSelector {
             field: CanonicalField::TotalCloudCover,
             vertical: VerticalSelector::EntireAtmosphere,
+            ..
         } => {
             let (low, mid, high) = file.cloud_cover_layers()?;
             low.iter()
@@ -1085,10 +1101,12 @@ fn extract_selector(
         FieldSelector {
             field: CanonicalField::CompositeReflectivity,
             vertical: VerticalSelector::EntireAtmosphere,
+            ..
         } => file.composite_reflectivity()?.to_vec(),
         FieldSelector {
             field: CanonicalField::RadarReflectivity,
             vertical: VerticalSelector::HeightAboveGroundMeters(1000),
+            ..
         } => file.reflectivity_1km_agl()?.to_vec(),
         FieldSelector {
             field: CanonicalField::UpdraftHelicity,
@@ -1097,14 +1115,17 @@ fn extract_selector(
                     bottom_m: 2000,
                     top_m: 5000,
                 },
+            ..
         } => file.updraft_helicity_2to5km()?.to_vec(),
         FieldSelector {
             field: CanonicalField::Pressure,
             vertical: VerticalSelector::Surface,
+            ..
         } => file.psfc()?.to_vec(),
         FieldSelector {
             field,
             vertical: VerticalSelector::IsobaricHpa(level_hpa),
+            ..
         } if matches!(
             field,
             CanonicalField::Temperature

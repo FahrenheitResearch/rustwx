@@ -12,9 +12,9 @@ use grib_core::grib2::{
 };
 use rayon::prelude::*;
 use rustwx_core::{
-    CanonicalField, FieldSelector, GridProjection, GridShape, LatLonGrid, ModelId, ModelRunRequest,
-    ModelTimestep, ResolvedUrl, SelectedField2D, SelectedHybridLevelVolume, SourceId,
-    VerticalSelector,
+    CanonicalField, FieldProduct, FieldSelector, GridProjection, GridShape, LatLonGrid, ModelId,
+    ModelRunRequest, ModelTimestep, ProbabilitySelection, ResolvedUrl, SelectedField2D,
+    SelectedHybridLevelVolume, SourceId, VerticalSelector,
 };
 use rustwx_models::{latest_available_run, model_summary, resolve_urls};
 #[cfg(feature = "wrf")]
@@ -430,7 +430,9 @@ pub fn extract_fields_from_grib2(
     for message in &grib.messages {
         for (index, prepared_selector) in prepared.iter().enumerate() {
             if prepared_selector.message.matches(message) {
-                let score = prepared_selector.match_score(message);
+                let Some(score) = prepared_selector.match_score(message) else {
+                    continue;
+                };
                 let replace = matched[index]
                     .map(|(_, best_score)| score < best_score)
                     .unwrap_or(true);
@@ -491,7 +493,9 @@ pub fn extract_fields_from_grib2_partial(
     for message in &grib.messages {
         for (index, prepared_selector) in prepared.iter().enumerate() {
             if prepared_selector.message.matches(message) {
-                let score = prepared_selector.match_score(message);
+                let Some(score) = prepared_selector.match_score(message) else {
+                    continue;
+                };
                 let replace = matched[index]
                     .map(|(_, best_score)| score < best_score)
                     .unwrap_or(true);
@@ -1237,42 +1241,128 @@ impl PreparedSelector {
         })
     }
 
-    fn match_score(self, message: &Grib2Message) -> u8 {
+    fn match_score(self, message: &Grib2Message) -> Option<u8> {
         product_template_match_score(self.selector, message)
     }
 }
 
-fn product_template_match_score(selector: FieldSelector, message: &Grib2Message) -> u8 {
+fn product_template_match_score(selector: FieldSelector, message: &Grib2Message) -> Option<u8> {
+    match selector.product {
+        FieldProduct::Default => default_product_template_match_score(selector, message),
+        FieldProduct::EnsembleMean => derived_forecast_match_score(message, &[0]),
+        FieldProduct::EnsembleStandardDeviation => derived_forecast_match_score(message, &[2, 3]),
+        FieldProduct::EnsembleSpread => derived_forecast_match_score(message, &[4]),
+        FieldProduct::EnsembleMinimum => derived_forecast_match_score(message, &[8]),
+        FieldProduct::EnsembleMaximum => derived_forecast_match_score(message, &[9]),
+        FieldProduct::Percentile(percentile) => percentile_product_match_score(message, percentile),
+        FieldProduct::Probability(selection) => probability_product_match_score(message, selection),
+    }
+}
+
+fn default_product_template_match_score(
+    selector: FieldSelector,
+    message: &Grib2Message,
+) -> Option<u8> {
     if selector.field == CanonicalField::ProbabilityOfPrecipitation {
         return if is_probability_product_template(message.product.template) {
-            0
+            Some(0)
         } else {
-            50
+            None
         };
     }
 
     if selector.field == CanonicalField::TotalPrecipitation {
         return match message.product.template {
-            8 | 11 | 12 => 0,
-            template if is_probability_product_template(template) => 50,
-            _ => 10,
+            8 | 11 | 12 if message.product.derived_forecast_type.is_none() => Some(0),
+            0 | 1 => Some(10),
+            _ => None,
         };
     }
 
+    if is_probability_product_template(message.product.template)
+        || is_percentile_product_template(message.product.template)
+        || message.product.derived_forecast_type.is_some()
+    {
+        return None;
+    }
+
     if !selector_prefers_instantaneous_message(selector) {
-        return 0;
+        return Some(0);
     }
 
     match message.product.template {
-        0 => 0,
-        1 => 1,
-        8 | 11 | 12 => 10,
-        _ => 20,
+        0 => Some(0),
+        1 => Some(1),
+        8 | 11 | 12 => Some(10),
+        _ => None,
     }
 }
 
 fn is_probability_product_template(template: u16) -> bool {
     matches!(template, 5 | 9)
+}
+
+fn is_percentile_product_template(template: u16) -> bool {
+    matches!(template, 6 | 10)
+}
+
+fn derived_forecast_match_score(message: &Grib2Message, accepted_codes: &[u8]) -> Option<u8> {
+    let code = message.product.derived_forecast_type?;
+    accepted_codes.contains(&code).then_some(0)
+}
+
+fn percentile_product_match_score(message: &Grib2Message, percentile: u8) -> Option<u8> {
+    if is_percentile_product_template(message.product.template)
+        && message.product.percentile_value == Some(percentile)
+    {
+        return Some(0);
+    }
+    let derived_code = percentile_derived_forecast_code(percentile)?;
+    (message.product.derived_forecast_type == Some(derived_code)).then_some(5)
+}
+
+fn percentile_derived_forecast_code(percentile: u8) -> Option<u8> {
+    match percentile {
+        5 => Some(201),
+        10 => Some(193),
+        25 => Some(202),
+        50 => Some(194),
+        75 => Some(203),
+        90 => Some(195),
+        95 => Some(204),
+        _ => None,
+    }
+}
+
+fn probability_product_match_score(
+    message: &Grib2Message,
+    selection: ProbabilitySelection,
+) -> Option<u8> {
+    if !is_probability_product_template(message.product.template) {
+        return None;
+    }
+    if let Some(probability_type) = selection.probability_type {
+        if message.product.probability_type != Some(probability_type) {
+            return None;
+        }
+    }
+    if let Some(lower) = selection.lower_limit_milli {
+        if !scaled_limit_matches(message.product.probability_lower_limit, lower) {
+            return None;
+        }
+    }
+    if let Some(upper) = selection.upper_limit_milli {
+        if !scaled_limit_matches(message.product.probability_upper_limit, upper) {
+            return None;
+        }
+    }
+    Some(0)
+}
+
+fn scaled_limit_matches(actual: Option<f64>, expected_milli: i64) -> bool {
+    actual
+        .map(|actual| (actual * 1000.0).round() as i64 == expected_milli)
+        .unwrap_or(false)
 }
 
 fn selector_prefers_instantaneous_message(selector: FieldSelector) -> bool {
@@ -1294,6 +1384,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::Pressure,
                 vertical: VerticalSelector::Surface,
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_PRESSURE,
                 level: LevelMatch::Surface,
@@ -1302,6 +1393,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::Pressure,
                 vertical: VerticalSelector::HybridLevel(level),
+                ..
             } if is_supported_hrrr_smoke_hybrid_level(level) => Ok(Self {
                 parameters: PARAMETER_PRESSURE,
                 level: LevelMatch::HybridLevel(level),
@@ -1310,6 +1402,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::GeopotentialHeight,
                 vertical: VerticalSelector::IsobaricHpa(level_hpa),
+                ..
             } if is_supported_upper_air_level(level_hpa) => Ok(Self {
                 parameters: PARAMETER_HGT,
                 level: LevelMatch::IsobaricHpa(level_hpa),
@@ -1318,6 +1411,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::Temperature,
                 vertical: VerticalSelector::IsobaricHpa(level_hpa),
+                ..
             } if is_supported_upper_air_level(level_hpa) => Ok(Self {
                 parameters: PARAMETER_TMP,
                 level: LevelMatch::IsobaricHpa(level_hpa),
@@ -1326,6 +1420,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::RelativeHumidity,
                 vertical: VerticalSelector::IsobaricHpa(level_hpa),
+                ..
             } if is_supported_upper_air_level(level_hpa) => Ok(Self {
                 parameters: PARAMETER_RH,
                 level: LevelMatch::IsobaricHpa(level_hpa),
@@ -1334,6 +1429,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::Dewpoint,
                 vertical: VerticalSelector::IsobaricHpa(level_hpa),
+                ..
             } if matches!(level_hpa, 700 | 850) => Ok(Self {
                 parameters: PARAMETER_DPT,
                 level: LevelMatch::IsobaricHpa(level_hpa),
@@ -1342,6 +1438,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::Temperature,
                 vertical: VerticalSelector::HeightAboveGroundMeters(2),
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_TMP,
                 level: LevelMatch::HeightAboveGroundMeters(2),
@@ -1350,6 +1447,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::Dewpoint,
                 vertical: VerticalSelector::HeightAboveGroundMeters(2),
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_DPT,
                 level: LevelMatch::HeightAboveGroundMeters(2),
@@ -1358,6 +1456,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::RelativeHumidity,
                 vertical: VerticalSelector::HeightAboveGroundMeters(2),
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_RH,
                 level: LevelMatch::HeightAboveGroundMeters(2),
@@ -1366,6 +1465,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::SmokeMassDensity,
                 vertical: VerticalSelector::HybridLevel(level),
+                ..
             } if is_supported_hrrr_smoke_hybrid_level(level) => Ok(Self {
                 parameters: PARAMETER_SMOKE_MASS_DENSITY,
                 level: LevelMatch::HybridLevel(level),
@@ -1374,6 +1474,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::AbsoluteVorticity,
                 vertical: VerticalSelector::IsobaricHpa(level_hpa),
+                ..
             } if is_supported_upper_air_level(level_hpa) => Ok(Self {
                 parameters: PARAMETER_ABSOLUTE_VORTICITY,
                 level: LevelMatch::IsobaricHpa(level_hpa),
@@ -1382,6 +1483,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::UWind,
                 vertical: VerticalSelector::IsobaricHpa(level_hpa),
+                ..
             } if is_supported_upper_air_level(level_hpa) => Ok(Self {
                 parameters: PARAMETER_UGRD,
                 level: LevelMatch::IsobaricHpa(level_hpa),
@@ -1390,6 +1492,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::VWind,
                 vertical: VerticalSelector::IsobaricHpa(level_hpa),
+                ..
             } if is_supported_upper_air_level(level_hpa) => Ok(Self {
                 parameters: PARAMETER_VGRD,
                 level: LevelMatch::IsobaricHpa(level_hpa),
@@ -1398,6 +1501,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::UWind,
                 vertical: VerticalSelector::HeightAboveGroundMeters(10),
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_UGRD,
                 level: LevelMatch::HeightAboveGroundMeters(10),
@@ -1406,6 +1510,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::VWind,
                 vertical: VerticalSelector::HeightAboveGroundMeters(10),
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_VGRD,
                 level: LevelMatch::HeightAboveGroundMeters(10),
@@ -1414,6 +1519,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::WindGust,
                 vertical: VerticalSelector::HeightAboveGroundMeters(10),
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_WIND_GUST,
                 // Operational gust products are often keyed as 10 m AGL in
@@ -1425,6 +1531,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::SmokeMassDensity,
                 vertical: VerticalSelector::HeightAboveGroundMeters(8),
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_SMOKE_MASS_DENSITY,
                 level: LevelMatch::HeightAboveGroundMeters(8),
@@ -1433,6 +1540,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::PressureReducedToMeanSeaLevel,
                 vertical: VerticalSelector::MeanSeaLevel,
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_MSLP,
                 level: LevelMatch::MeanSeaLevel,
@@ -1441,6 +1549,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::PrecipitableWater,
                 vertical: VerticalSelector::EntireAtmosphere,
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_PWAT,
                 level: LevelMatch::EntireAtmosphere,
@@ -1449,6 +1558,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::ColumnIntegratedSmoke,
                 vertical: VerticalSelector::EntireAtmosphere,
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_COLUMN_INTEGRATED_SMOKE,
                 level: LevelMatch::EntireAtmosphere,
@@ -1457,6 +1567,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::TotalPrecipitation,
                 vertical: VerticalSelector::Surface,
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_TOTAL_PRECIPITATION,
                 level: LevelMatch::Surface,
@@ -1465,6 +1576,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::ProbabilityOfPrecipitation,
                 vertical: VerticalSelector::Surface,
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_PROBABILITY_OF_PRECIPITATION,
                 level: LevelMatch::Surface,
@@ -1473,6 +1585,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::TotalCloudCover,
                 vertical: VerticalSelector::EntireAtmosphere,
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_TOTAL_CLOUD_COVER,
                 level: LevelMatch::EntireAtmosphere,
@@ -1481,6 +1594,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::LowCloudCover,
                 vertical: VerticalSelector::EntireAtmosphere,
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_LOW_CLOUD_COVER,
                 level: LevelMatch::ExactLevelType(214),
@@ -1489,6 +1603,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::MiddleCloudCover,
                 vertical: VerticalSelector::EntireAtmosphere,
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_MIDDLE_CLOUD_COVER,
                 level: LevelMatch::ExactLevelType(224),
@@ -1497,6 +1612,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::HighCloudCover,
                 vertical: VerticalSelector::EntireAtmosphere,
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_HIGH_CLOUD_COVER,
                 level: LevelMatch::ExactLevelType(234),
@@ -1505,6 +1621,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::Visibility,
                 vertical: VerticalSelector::Surface,
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_VISIBILITY,
                 level: LevelMatch::Surface,
@@ -1513,6 +1630,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::SimulatedInfraredBrightnessTemperature,
                 vertical: VerticalSelector::NominalTop,
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_SIMULATED_IR,
                 level: LevelMatch::NominalTop,
@@ -1521,6 +1639,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::CategoricalRain,
                 vertical: VerticalSelector::Surface,
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_CATEGORICAL_RAIN,
                 level: LevelMatch::Surface,
@@ -1529,6 +1648,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::CategoricalFreezingRain,
                 vertical: VerticalSelector::Surface,
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_CATEGORICAL_FREEZING_RAIN,
                 level: LevelMatch::Surface,
@@ -1537,6 +1657,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::CategoricalIcePellets,
                 vertical: VerticalSelector::Surface,
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_CATEGORICAL_ICE_PELLETS,
                 level: LevelMatch::Surface,
@@ -1545,6 +1666,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::CategoricalSnow,
                 vertical: VerticalSelector::Surface,
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_CATEGORICAL_SNOW,
                 level: LevelMatch::Surface,
@@ -1553,6 +1675,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::RadarReflectivity,
                 vertical: VerticalSelector::HeightAboveGroundMeters(1000),
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_RADAR_REFLECTIVITY,
                 level: LevelMatch::HeightAboveGroundMeters(1000),
@@ -1561,6 +1684,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::LandSeaMask,
                 vertical: VerticalSelector::Surface,
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_LANDSEA_MASK,
                 level: LevelMatch::Surface,
@@ -1569,6 +1693,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             FieldSelector {
                 field: CanonicalField::CompositeReflectivity,
                 vertical: VerticalSelector::EntireAtmosphere,
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_COMPOSITE_REFLECTIVITY,
                 level: LevelMatch::EntireAtmosphere,
@@ -1581,6 +1706,7 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
                         bottom_m: 2000,
                         top_m: 5000,
                     },
+                ..
             } => Ok(Self {
                 parameters: PARAMETER_UPDRAFT_HELICITY,
                 // HRRR/RRFS native UH fields surface the top of the AGL layer
@@ -2668,6 +2794,132 @@ mod tests {
         assert_eq!(qpf.values, vec![2.0, 4.0]);
         assert_eq!(pop.values, vec![80.0, 90.0]);
         assert_eq!(pop.units, "%");
+    }
+
+    #[test]
+    fn extract_qmd_percentile_uses_exact_percentile_metadata() {
+        let mut p10 = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[270.0], -99.0, -99.0);
+        p10.product.template = 6;
+        p10.product.percentile_value = Some(10);
+        let mut p50 = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[280.0], -99.0, -99.0);
+        p50.product.template = 6;
+        p50.product.percentile_value = Some(50);
+        let mut p90 = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[290.0], -99.0, -99.0);
+        p90.product.template = 6;
+        p90.product.percentile_value = Some(90);
+        let grib = Grib2File {
+            messages: vec![p10, p50, p90],
+        };
+
+        let field = extract_field_from_grib2(
+            &grib,
+            FieldSelector::height_agl(CanonicalField::Temperature, 2).with_percentile(50),
+        )
+        .unwrap();
+
+        assert_eq!(field.values, vec![280.0]);
+        assert_eq!(
+            field.selector,
+            FieldSelector::height_agl(CanonicalField::Temperature, 2).with_percentile(50)
+        );
+    }
+
+    #[test]
+    fn extract_qmd_percentile_does_not_fallback_to_wrong_percentile() {
+        let mut p50 = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[280.0], -99.0, -99.0);
+        p50.product.template = 6;
+        p50.product.percentile_value = Some(50);
+        let grib = Grib2File {
+            messages: vec![p50],
+        };
+
+        let err = extract_field_from_grib2(
+            &grib,
+            FieldSelector::height_agl(CanonicalField::Temperature, 2).with_percentile(90),
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, IoError::FieldNotFound { .. }));
+    }
+
+    #[test]
+    fn extract_qmd_probability_uses_exact_threshold_metadata() {
+        let mut freeze = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[70.0], -99.0, -99.0);
+        freeze.product.template = 5;
+        freeze.product.probability_type = Some(1);
+        freeze.product.probability_upper_limit = Some(273.0);
+        let mut hot = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[30.0], -99.0, -99.0);
+        hot.product.template = 5;
+        hot.product.probability_type = Some(2);
+        hot.product.probability_lower_limit = Some(298.8);
+        let grib = Grib2File {
+            messages: vec![freeze, hot],
+        };
+
+        let freezing_probability = extract_field_from_grib2(
+            &grib,
+            FieldSelector::height_agl(CanonicalField::Temperature, 2)
+                .with_probability(ProbabilitySelection::below_milli(273_000)),
+        )
+        .unwrap();
+        let hot_probability = extract_field_from_grib2(
+            &grib,
+            FieldSelector::height_agl(CanonicalField::Temperature, 2)
+                .with_probability(ProbabilitySelection::above_milli(298_800)),
+        )
+        .unwrap();
+
+        assert_eq!(freezing_probability.values, vec![70.0]);
+        assert_eq!(hot_probability.values, vec![30.0]);
+    }
+
+    #[test]
+    fn extract_qmd_derived_mean_and_stddev_do_not_alias() {
+        let mut mean = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[279.0], -99.0, -99.0);
+        mean.product.template = 2;
+        mean.product.derived_forecast_type = Some(0);
+        let mut stddev = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[3.5], -99.0, -99.0);
+        stddev.product.template = 2;
+        stddev.product.derived_forecast_type = Some(2);
+        let grib = Grib2File {
+            messages: vec![stddev, mean],
+        };
+
+        let mean_field = extract_field_from_grib2(
+            &grib,
+            FieldSelector::height_agl(CanonicalField::Temperature, 2).with_ensemble_mean(),
+        )
+        .unwrap();
+        let stddev_field = extract_field_from_grib2(
+            &grib,
+            FieldSelector::height_agl(CanonicalField::Temperature, 2)
+                .with_ensemble_standard_deviation(),
+        )
+        .unwrap();
+
+        assert_eq!(mean_field.values, vec![279.0]);
+        assert_eq!(stddev_field.values, vec![3.5]);
+    }
+
+    #[test]
+    fn default_temperature_selector_does_not_fallback_to_qmd_products() {
+        let mut percentile = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[280.0], -99.0, -99.0);
+        percentile.product.template = 6;
+        percentile.product.percentile_value = Some(50);
+        let mut mean = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[279.0], -99.0, -99.0);
+        mean.product.template = 2;
+        mean.product.derived_forecast_type = Some(0);
+        let grib = Grib2File {
+            messages: vec![percentile, mean],
+        };
+
+        let err = extract_field_from_grib2(
+            &grib,
+            FieldSelector::height_agl(CanonicalField::Temperature, 2),
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, IoError::FieldNotFound { .. }));
     }
 
     #[test]

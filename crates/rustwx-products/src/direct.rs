@@ -1099,9 +1099,14 @@ fn run_direct_batch_with_context(
 pub fn supported_direct_recipe_slugs(model: ModelId) -> Vec<String> {
     direct_product_specs()
         .into_iter()
+        .filter(|spec| !direct_recipe_requires_explicit_opt_in(&spec.slug))
         .filter(|spec| plot_recipe_fetch_plan(&spec.slug, model).is_ok())
         .map(|spec| spec.slug)
         .collect()
+}
+
+fn direct_recipe_requires_explicit_opt_in(slug: &str) -> bool {
+    slug.starts_with("nbm_qmd_")
 }
 
 fn plan_direct_recipes(
@@ -3421,26 +3426,32 @@ fn contour_layer_for_values(selector: FieldSelector, values: &[f32]) -> Option<C
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(200),
+            ..
         } => (range_step(1020.0, 1321.0, 4.0), Color::BLACK, 1, true),
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(300),
+            ..
         } => (range_step(700.0, 1101.0, 4.0), Color::BLACK, 1, true),
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(250),
+            ..
         } => (range_step(900.0, 1201.0, 4.0), Color::BLACK, 1, true),
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(500),
+            ..
         } => (range_step(450.0, 651.0, 3.0), Color::BLACK, 1, true),
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(700),
+            ..
         } => (range_step(100.0, 401.0, 3.0), Color::BLACK, 1, true),
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(850),
+            ..
         } => (range_step(0.0, 201.0, 3.0), Color::BLACK, 1, true),
         FieldSelector {
             field: CanonicalField::PressureReducedToMeanSeaLevel,
@@ -3453,6 +3464,7 @@ fn contour_layer_for_values(selector: FieldSelector, values: &[f32]) -> Option<C
                     bottom_m: 2000,
                     top_m: 5000,
                 },
+            ..
         } => (
             // Match the classic compref/UH combo threshold now that the
             // WRF/GDEX path prefers the native UP_HELI_MAX diagnostic.
@@ -4884,6 +4896,16 @@ mod tests {
         assert!(groups[0].selectors.contains(&FieldSelector::surface(
             CanonicalField::ProbabilityOfPrecipitation
         )));
+    }
+
+    #[test]
+    fn nbm_qmd_direct_recipes_are_explicit_only_for_all_supported() {
+        let supported = supported_direct_recipe_slugs(ModelId::Nbm);
+        assert!(!supported.iter().any(|slug| slug.starts_with("nbm_qmd_")));
+
+        let planned =
+            plan_direct_recipes(ModelId::Nbm, &["nbm_qmd_2m_temperature_p50".to_string()]).unwrap();
+        assert_eq!(planned[0].plan.product, "qmd/co");
     }
 
     #[test]

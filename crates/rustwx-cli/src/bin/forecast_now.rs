@@ -664,6 +664,7 @@ fn model_supported_recipe_lists(model: ModelId) -> (Vec<String>, Vec<String>) {
         .direct
         .iter()
         .filter(|e| supported_for_model(&e.support))
+        .filter(|e| !direct_recipe_requires_explicit_opt_in(&e.slug))
         .map(|e| e.slug.clone())
         .collect();
     let derived: Vec<String> = catalog
@@ -673,6 +674,10 @@ fn model_supported_recipe_lists(model: ModelId) -> (Vec<String>, Vec<String>) {
         .map(|e| e.slug.clone())
         .collect();
     (direct, derived)
+}
+
+fn direct_recipe_requires_explicit_opt_in(slug: &str) -> bool {
+    slug.starts_with("nbm_qmd_")
 }
 
 fn filter_recipes_for_model(requested: &[String], supported: &[String]) -> Vec<String> {

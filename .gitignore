@@ -35,6 +35,7 @@ proof/tmp_*
 proof/CONFIRMED_*
 proof/*decode_stats.json
 /cache/
+/data/
 /scratch/
 /bench_*/
 /proof_*/
