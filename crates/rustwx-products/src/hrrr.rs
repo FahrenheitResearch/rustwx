@@ -601,9 +601,10 @@ mod tests {
             ehi_sb_01km_proxy: vec![2.0],
             tehi: vec![3.0],
             tts: vec![4.0],
+            vtp_mod: vec![5.0],
         });
 
-        assert_eq!(fields.len(), 10);
+        assert_eq!(fields.len(), 11);
         assert_eq!(fields[5].product, WeatherProduct::StpFixed);
         assert_eq!(
             fields[6].title_override.as_deref(),
@@ -612,5 +613,6 @@ mod tests {
         assert_eq!(fields[7].title_override.as_deref(), Some("EHI 0-1 KM"));
         assert_eq!(fields[8].product, WeatherProduct::Tehi);
         assert_eq!(fields[9].product, WeatherProduct::Tts);
+        assert_eq!(fields[10].product, WeatherProduct::VtpMod);
     }
 }

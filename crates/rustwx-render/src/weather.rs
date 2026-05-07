@@ -101,6 +101,7 @@ pub enum WeatherProduct {
     Ehi,
     Tehi,
     Tts,
+    VtpMod,
     Uh,
     EcapeScpExperimental,
     EcapeEhi01kmExperimental,
@@ -190,6 +191,7 @@ impl WeatherProduct {
             "ehi" => Some(Self::Ehi),
             "tehi" | "tornadic_ehi" | "tornadic_0_1km_ehi" => Some(Self::Tehi),
             "tts" | "tornadic_tilting_stretching" => Some(Self::Tts),
+            "vtp_mod" | "modified_vtp" | "vtp" => Some(Self::VtpMod),
             "uhel" | "uh" => Some(Self::Uh),
             "ecape_scp" => Some(Self::EcapeScpExperimental),
             "ecape_ehi" | "ecape_ehi_0_1km" | "ecape_ehi_01km" => {
@@ -240,6 +242,7 @@ impl WeatherProduct {
             Self::Ehi => "ehi",
             Self::Tehi => "tehi",
             Self::Tts => "tts",
+            Self::VtpMod => "vtp_mod",
             Self::Uh => "uhel",
             Self::EcapeScpExperimental => "ecape_scp",
             Self::EcapeEhi01kmExperimental => "ecape_ehi_0_1km",
@@ -287,6 +290,7 @@ impl WeatherProduct {
             Self::Ehi => "EHI",
             Self::Tehi => "TEHI",
             Self::Tts => "TTS",
+            Self::VtpMod => "VTP MOD",
             Self::Uh => "UH",
             Self::EcapeScpExperimental => "ECAPE SCP (EXP)",
             Self::EcapeEhi01kmExperimental => "ECAPE EHI 0-1 KM (EXP)",
@@ -329,6 +333,7 @@ impl WeatherProduct {
             | Self::StpEffective
             | Self::Tehi
             | Self::Tts
+            | Self::VtpMod
             | Self::EcapeStpExperimental => WeatherPreset::Stp,
             Self::Scp | Self::EcapeScpExperimental => WeatherPreset::Scp,
             Self::Ehi | Self::EcapeEhi01kmExperimental | Self::EcapeEhi03kmExperimental => {
@@ -885,8 +890,16 @@ mod tests {
             Some(WeatherProduct::EcapeEhi03kmExperimental)
         );
         assert_eq!(
+            WeatherProduct::from_product_name("vtp_mod"),
+            Some(WeatherProduct::VtpMod)
+        );
+        assert_eq!(
             WeatherPreset::from_product_name("ecape_ehi_0_3km"),
             Some(WeatherPreset::Ehi)
+        );
+        assert_eq!(
+            WeatherPreset::from_product_name("vtp_mod"),
+            Some(WeatherPreset::Stp)
         );
     }
 

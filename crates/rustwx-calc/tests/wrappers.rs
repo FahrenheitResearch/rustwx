@@ -130,11 +130,13 @@ fn supported_severe_fields_match_component_wrappers_on_single_column_fixture() {
     assert_eq!(supported.ehi_sb_01km_proxy.len(), 1);
     assert_eq!(supported.tehi.len(), 1);
     assert_eq!(supported.tts.len(), 1);
+    assert_eq!(supported.vtp_mod.len(), 1);
     assert!(supported.stp_fixed[0].is_finite());
     assert!(supported.scp_mu_03km_06km_proxy[0].is_finite());
     assert!(supported.ehi_sb_01km_proxy[0].is_finite());
     assert!(supported.tehi[0].is_finite());
     assert!(supported.tts[0].is_finite());
+    assert!(supported.vtp_mod[0].is_finite() || supported.vtp_mod[0].is_nan());
 }
 
 #[test]

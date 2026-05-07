@@ -368,6 +368,7 @@ pub fn severe_panel_fields_from_supported(fields: SupportedSevereFields) -> Vec<
         .with_title_override("EHI 0-1 KM"),
         WeatherPanelField::new(WeatherProduct::Tehi, "dimensionless", fields.tehi),
         WeatherPanelField::new(WeatherProduct::Tts, "dimensionless", fields.tts),
+        WeatherPanelField::new(WeatherProduct::VtpMod, "dimensionless", fields.vtp_mod),
     ]
 }
 

@@ -35,7 +35,7 @@ Current top-level commands:
   - Current default benchmark set is `stp_fixed`, `sbcape`, and `srh_0_1km`; writes PNGs plus summary JSON/Markdown under the selected output directory.
 - `hrrr_derived_batch` / `derived_batch`
   - Best lane for iterating derived weather-native maps.
-  - Native projected contour-filled derived products are currently `stp_fixed`, `sbcape`, `mlcape`, `srh_0_1km`, `srh_0_3km`, `ehi_0_1km`, `ehi_0_3km`, `tehi`, and `tts`.
+  - Native projected contour-filled derived products are currently `stp_fixed`, `sbcape`, `mlcape`, `srh_0_1km`, `srh_0_3km`, `ehi_0_1km`, `ehi_0_3km`, `tehi`, `tts`, and `vtp_mod`.
 - `hrrr_direct_batch` / `direct_batch`
   - Direct field proof lane.
   - Useful for contour-sensitive projected products such as `mslp_10m_winds` that still use the standard `rustwx-render` contour/overlay path.

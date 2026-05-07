@@ -163,6 +163,14 @@ pub struct TornadicBetaOutputs {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct EffectiveLayerDiagnosticsBundle {
+    pub effective_srh_m2s2: Vec<f64>,
+    pub effective_bulk_wind_difference_ms: Vec<f64>,
+    pub effective_inflow_bottom_m: Vec<f64>,
+    pub effective_inflow_top_m: Vec<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ScpEhiOutputs {
     pub scp: Vec<f64>,
     pub ehi: Vec<f64>,
@@ -181,6 +189,7 @@ pub struct SupportedSevereFields {
     pub ehi_sb_01km_proxy: Vec<f64>,
     pub tehi: Vec<f64>,
     pub tts: Vec<f64>,
+    pub vtp_mod: Vec<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -290,6 +299,63 @@ pub fn compute_wind_diagnostics_bundle(
         srh_01km_m2s2: diagnostics.srh_01km_m2s2,
         srh_03km_m2s2: diagnostics.srh_03km_m2s2,
         shear_06km_ms: diagnostics.shear_06km_ms,
+    })
+}
+
+pub fn compute_effective_layer_diagnostics(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+    lat_deg: Option<&[f64]>,
+) -> Result<EffectiveLayerDiagnosticsBundle, CalcError> {
+    validate_severe_inputs(grid, volume, surface)?;
+    if let Some(lat_deg) = lat_deg {
+        validate_len("lat_deg", lat_deg.len(), grid.len())?;
+    }
+
+    let n2d = grid.len();
+    let pressure_levels_hpa = if pressure_is_levels(volume) {
+        Some(
+            volume
+                .pressure_pa
+                .iter()
+                .map(|pressure_pa| *pressure_pa / 100.0)
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        None
+    };
+
+    let results = (0..n2d)
+        .into_par_iter()
+        .map(|ij| {
+            let column = build_effective_layer_column(
+                volume,
+                surface,
+                n2d,
+                ij,
+                pressure_levels_hpa.as_deref(),
+            );
+            effective_layer_for_column(&column, lat_deg.map(|lat| lat[ij]))
+        })
+        .collect::<Vec<_>>();
+
+    let mut effective_srh_m2s2 = Vec::with_capacity(n2d);
+    let mut effective_bulk_wind_difference_ms = Vec::with_capacity(n2d);
+    let mut effective_inflow_bottom_m = Vec::with_capacity(n2d);
+    let mut effective_inflow_top_m = Vec::with_capacity(n2d);
+    for result in results {
+        effective_srh_m2s2.push(result.effective_srh_m2s2);
+        effective_bulk_wind_difference_ms.push(result.effective_bulk_wind_difference_ms);
+        effective_inflow_bottom_m.push(result.effective_inflow_bottom_m);
+        effective_inflow_top_m.push(result.effective_inflow_top_m);
+    }
+
+    Ok(EffectiveLayerDiagnosticsBundle {
+        effective_srh_m2s2,
+        effective_bulk_wind_difference_ms,
+        effective_inflow_bottom_m,
+        effective_inflow_top_m,
     })
 }
 
@@ -589,8 +655,7 @@ pub fn compute_bri(inputs: BulkRichardsonInputs<'_>) -> Result<Vec<f64>, CalcErr
         .collect())
 }
 
-/// Compute the currently supported gridded severe bundle without inventing
-/// effective-layer derivation.
+/// Compute the currently supported gridded severe bundle.
 ///
 /// This bundle is intentionally conservative:
 /// - `stp_fixed` uses the fixed-layer Thompson-style formula with `sbCAPE`,
@@ -599,10 +664,12 @@ pub fn compute_bri(inputs: BulkRichardsonInputs<'_>) -> Result<Vec<f64>, CalcErr
 ///   shear` through the existing SCP wrapper, but is still a fixed-depth proxy,
 ///   not an effective-layer SCP
 /// - `ehi_sb_01km_proxy` uses `sbCAPE` with `0-1 km SRH`
+/// - `vtp_mod` uses the effective inflow layer derived from each grid column,
+///   Bunkers storm motion, effective-layer SRH/BWD, 0-3 km MLCAPE, and the
+///   700-500 hPa lapse rate.
 ///
-/// This is suitable for proof plots and for honest operational use where the
-/// effective inflow layer has not yet been derived upstream. It does not claim
-/// to be full effective-layer severe diagnostics.
+/// The fixed-depth SCP/EHI products keep their explicit proxy names so they are
+/// not confused with the effective-layer VTP mod calculation.
 pub fn compute_supported_severe_fields(
     grid: GridShape,
     volume: EcapeVolumeInputs<'_>,
@@ -674,6 +741,18 @@ fn compute_supported_severe_fields_impl(
         mlcin_jkg: &ml.cin_jkg,
         sbcin_jkg: &sb.cin_jkg,
     })?;
+    let effective_layer = compute_effective_layer_diagnostics(grid, volume, surface, lat_deg)?;
+    let lapse_rate_700_500 = lapse_rate_700_500_for_supported(grid, volume)?;
+    let vtp_mod = compute_vtp_mod(VtpModInputs {
+        grid,
+        mlcape_jkg: &ml.cape_jkg,
+        effective_srh_m2s2: &effective_layer.effective_srh_m2s2,
+        effective_bulk_wind_difference_ms: &effective_layer.effective_bulk_wind_difference_ms,
+        ml_lcl_m: &ml.lcl_m,
+        mlcin_jkg: &ml.cin_jkg,
+        mlcape_03km_jkg: &ml_03km.cape_jkg,
+        lapse_rate_700_500_cpkm: &lapse_rate_700_500,
+    })?;
 
     Ok(SupportedSevereFields {
         sbcape_jkg: sb.cape_jkg,
@@ -687,6 +766,7 @@ fn compute_supported_severe_fields_impl(
         ehi_sb_01km_proxy: scp_ehi.ehi,
         tehi: beta.tehi,
         tts: beta.tts,
+        vtp_mod,
     })
 }
 
@@ -800,6 +880,430 @@ fn compute_cape_cin_with_pressure_levels(
         lfc.push(lfc_value);
     }
     (cape, cin, lcl, lfc)
+}
+
+#[derive(Debug, Clone)]
+struct EffectiveLayerColumn {
+    pressure_hpa: Vec<f64>,
+    temperature_c: Vec<f64>,
+    dewpoint_c: Vec<f64>,
+    height_agl_m: Vec<f64>,
+    u_ms: Vec<f64>,
+    v_ms: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EffectiveLayerColumnResult {
+    effective_srh_m2s2: f64,
+    effective_bulk_wind_difference_ms: f64,
+    effective_inflow_bottom_m: f64,
+    effective_inflow_top_m: f64,
+}
+
+fn build_effective_layer_column(
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+    n2d: usize,
+    ij: usize,
+    pressure_levels_hpa: Option<&[f64]>,
+) -> EffectiveLayerColumn {
+    let mut rows = Vec::with_capacity(volume.nz + 1);
+    let psfc_hpa = surface.psfc_pa[ij] / 100.0;
+    rows.push((
+        psfc_hpa,
+        surface.t2_k[ij] - ZEROCNK,
+        dewpoint_from_q(surface.q2_kgkg[ij], psfc_hpa),
+        0.0,
+        surface.u10_ms[ij],
+        surface.v10_ms[ij],
+    ));
+
+    for k in 0..volume.nz {
+        let idx = k * n2d + ij;
+        let pressure_hpa = match pressure_levels_hpa {
+            Some(levels) => levels[k],
+            None => volume.pressure_pa[idx] / 100.0,
+        };
+        rows.push((
+            pressure_hpa,
+            volume.temperature_c[idx],
+            dewpoint_from_q(volume.qvapor_kgkg[idx], pressure_hpa),
+            volume.height_agl_m[idx],
+            volume.u_ms[idx],
+            volume.v_ms[idx],
+        ));
+    }
+
+    rows.retain(|(p, t, td, h, u, v)| {
+        p.is_finite()
+            && *p > 0.0
+            && t.is_finite()
+            && td.is_finite()
+            && h.is_finite()
+            && *h >= 0.0
+            && u.is_finite()
+            && v.is_finite()
+    });
+    rows.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
+    rows.dedup_by(|a, b| (a.3 - b.3).abs() < 1.0 && (a.0 - b.0).abs() < 0.1);
+
+    let mut pressure_hpa = Vec::with_capacity(rows.len());
+    let mut temperature_c = Vec::with_capacity(rows.len());
+    let mut dewpoint_c = Vec::with_capacity(rows.len());
+    let mut height_agl_m = Vec::with_capacity(rows.len());
+    let mut u_ms = Vec::with_capacity(rows.len());
+    let mut v_ms = Vec::with_capacity(rows.len());
+    for (p, t, td, h, u, v) in rows {
+        pressure_hpa.push(p);
+        temperature_c.push(t);
+        dewpoint_c.push(td.min(t));
+        height_agl_m.push(h);
+        u_ms.push(u);
+        v_ms.push(v);
+    }
+
+    EffectiveLayerColumn {
+        pressure_hpa,
+        temperature_c,
+        dewpoint_c,
+        height_agl_m,
+        u_ms,
+        v_ms,
+    }
+}
+
+fn effective_layer_for_column(
+    column: &EffectiveLayerColumn,
+    lat_deg: Option<f64>,
+) -> EffectiveLayerColumnResult {
+    const ECAPE_THRESHOLD: f64 = 100.0;
+    const ECIN_THRESHOLD: f64 = -250.0;
+
+    let missing = EffectiveLayerColumnResult {
+        effective_srh_m2s2: f64::NAN,
+        effective_bulk_wind_difference_ms: f64::NAN,
+        effective_inflow_bottom_m: f64::NAN,
+        effective_inflow_top_m: f64::NAN,
+    };
+    let n = column.pressure_hpa.len();
+    if n < 3 {
+        return missing;
+    }
+
+    let mut bottom_idx = None;
+    let mut top_idx = None;
+    for idx in 0..n {
+        let Some((cape, cin)) = parcel_cape_cin_from_level(column, idx) else {
+            continue;
+        };
+        let effective = cape >= ECAPE_THRESHOLD && cin > ECIN_THRESHOLD;
+        if effective {
+            if bottom_idx.is_none() {
+                bottom_idx = Some(idx);
+            }
+            top_idx = Some(idx);
+        } else if bottom_idx.is_some() {
+            break;
+        }
+    }
+
+    let (Some(bottom_idx), Some(top_idx)) = (bottom_idx, top_idx) else {
+        return missing;
+    };
+    if top_idx <= bottom_idx {
+        return missing;
+    }
+
+    let bottom_m = column.height_agl_m[bottom_idx];
+    let top_m = column.height_agl_m[top_idx];
+    if !bottom_m.is_finite() || !top_m.is_finite() || top_m <= bottom_m {
+        return missing;
+    }
+
+    let pressure_hpa = &column.pressure_hpa;
+    let heights = &column.height_agl_m;
+    let u = &column.u_ms;
+    let v = &column.v_ms;
+    let (rm, lm, _) = metrust::calc::wind::bunkers_storm_motion(pressure_hpa, u, v, heights);
+    let southern = lat_deg.is_some_and(|lat| lat.is_finite() && lat < 0.0);
+    let storm_motion = if southern { lm } else { rm };
+    let mut srh = srh_between_heights(
+        heights,
+        u,
+        v,
+        bottom_m,
+        top_m,
+        storm_motion.0,
+        storm_motion.1,
+    );
+    if southern {
+        srh = -srh;
+    }
+
+    let Some((u_bot, v_bot)) = interp_wind_at_height(heights, u, v, bottom_m) else {
+        return missing;
+    };
+    let Some((u_top, v_top)) = interp_wind_at_height(heights, u, v, top_m) else {
+        return missing;
+    };
+    let bwd = ((u_top - u_bot).powi(2) + (v_top - v_bot).powi(2)).sqrt();
+
+    EffectiveLayerColumnResult {
+        effective_srh_m2s2: srh,
+        effective_bulk_wind_difference_ms: bwd,
+        effective_inflow_bottom_m: bottom_m,
+        effective_inflow_top_m: top_m,
+    }
+}
+
+fn parcel_cape_cin_from_level(
+    column: &EffectiveLayerColumn,
+    start_idx: usize,
+) -> Option<(f64, f64)> {
+    if start_idx + 2 >= column.pressure_hpa.len() {
+        return None;
+    }
+
+    let p_start = column.pressure_hpa[start_idx];
+    let t_start = column.temperature_c[start_idx];
+    let td_start = column.dewpoint_c[start_idx].min(t_start);
+    let h_start = column.height_agl_m[start_idx];
+    if !p_start.is_finite() || !t_start.is_finite() || !td_start.is_finite() || !h_start.is_finite()
+    {
+        return None;
+    }
+
+    let mut pressure_hpa = Vec::new();
+    let mut temperature_c = Vec::new();
+    let mut dewpoint_c = Vec::new();
+    let mut height_agl_m = Vec::new();
+    for idx in (start_idx + 1)..column.pressure_hpa.len() {
+        let height = column.height_agl_m[idx] - h_start;
+        if height <= 0.0 {
+            continue;
+        }
+        pressure_hpa.push(column.pressure_hpa[idx]);
+        temperature_c.push(column.temperature_c[idx]);
+        dewpoint_c.push(column.dewpoint_c[idx].min(column.temperature_c[idx]));
+        height_agl_m.push(height);
+    }
+    if pressure_hpa.len() < 2 {
+        return None;
+    }
+
+    let (cape, cin, _, _) = metrust::calc::thermo::cape_cin_core(
+        &pressure_hpa,
+        &temperature_c,
+        &dewpoint_c,
+        &height_agl_m,
+        p_start,
+        t_start,
+        td_start,
+        "sb",
+        100.0,
+        300.0,
+        None,
+    );
+    Some((cape, cin))
+}
+
+fn interp_wind_at_height(
+    heights: &[f64],
+    u: &[f64],
+    v: &[f64],
+    target_m: f64,
+) -> Option<(f64, f64)> {
+    Some((
+        interp_scalar_at_height(heights, u, target_m)?,
+        interp_scalar_at_height(heights, v, target_m)?,
+    ))
+}
+
+fn interp_scalar_at_height(heights: &[f64], values: &[f64], target_m: f64) -> Option<f64> {
+    if heights.len() != values.len() || heights.is_empty() || !target_m.is_finite() {
+        return None;
+    }
+    if target_m < heights[0] || target_m > heights[heights.len() - 1] {
+        return None;
+    }
+    if (target_m - heights[0]).abs() < 1.0e-6 {
+        return Some(values[0]);
+    }
+    for idx in 1..heights.len() {
+        if target_m <= heights[idx] {
+            let dz = heights[idx] - heights[idx - 1];
+            if dz.abs() < 1.0e-9 {
+                return Some(values[idx]);
+            }
+            let weight = (target_m - heights[idx - 1]) / dz;
+            return Some(values[idx - 1] + weight * (values[idx] - values[idx - 1]));
+        }
+    }
+    Some(values[values.len() - 1])
+}
+
+fn srh_between_heights(
+    heights: &[f64],
+    u: &[f64],
+    v: &[f64],
+    bottom_m: f64,
+    top_m: f64,
+    storm_u: f64,
+    storm_v: f64,
+) -> f64 {
+    let Some((mut prev_u, mut prev_v)) = interp_wind_at_height(heights, u, v, bottom_m) else {
+        return f64::NAN;
+    };
+    let mut srh = 0.0;
+    let mut prev_h = bottom_m;
+
+    for idx in 0..heights.len() {
+        let h = heights[idx];
+        if h <= bottom_m {
+            continue;
+        }
+        if h >= top_m {
+            break;
+        }
+        if h <= prev_h {
+            continue;
+        }
+        let next_u = u[idx];
+        let next_v = v[idx];
+        srh += srh_segment(prev_u, prev_v, next_u, next_v, storm_u, storm_v);
+        prev_u = next_u;
+        prev_v = next_v;
+        prev_h = h;
+    }
+
+    if top_m > prev_h {
+        if let Some((top_u, top_v)) = interp_wind_at_height(heights, u, v, top_m) {
+            srh += srh_segment(prev_u, prev_v, top_u, top_v, storm_u, storm_v);
+        }
+    }
+
+    srh
+}
+
+fn srh_segment(u0: f64, v0: f64, u1: f64, v1: f64, storm_u: f64, storm_v: f64) -> f64 {
+    let sru0 = u0 - storm_u;
+    let srv0 = v0 - storm_v;
+    let sru1 = u1 - storm_u;
+    let srv1 = v1 - storm_v;
+    sru1 * srv0 - sru0 * srv1
+}
+
+fn lapse_rate_700_500_for_supported(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+) -> Result<Vec<f64>, CalcError> {
+    validate_severe_volume_inputs(grid, volume)?;
+    let n2d = grid.len();
+    let pressure_levels_hpa = if pressure_is_levels(volume) {
+        Some(
+            volume
+                .pressure_pa
+                .iter()
+                .map(|pressure_pa| *pressure_pa / 100.0)
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        None
+    };
+    Ok((0..n2d)
+        .into_par_iter()
+        .map(|ij| lapse_rate_700_500_column(volume, n2d, ij, pressure_levels_hpa.as_deref()))
+        .collect())
+}
+
+fn validate_severe_volume_inputs(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+) -> Result<(), CalcError> {
+    let n3d = grid.len() * volume.nz;
+    if pressure_is_levels(volume) {
+        validate_len("pressure_levels_pa", volume.pressure_pa.len(), volume.nz)?;
+    } else {
+        validate_len("pressure_pa", volume.pressure_pa.len(), n3d)?;
+    }
+    validate_len("temperature_c", volume.temperature_c.len(), n3d)?;
+    validate_len("qvapor_kgkg", volume.qvapor_kgkg.len(), n3d)?;
+    validate_len("height_agl_m", volume.height_agl_m.len(), n3d)?;
+    validate_len("u_ms", volume.u_ms.len(), n3d)?;
+    validate_len("v_ms", volume.v_ms.len(), n3d)?;
+    Ok(())
+}
+
+fn lapse_rate_700_500_column(
+    volume: EcapeVolumeInputs<'_>,
+    n2d: usize,
+    ij: usize,
+    pressure_levels_hpa: Option<&[f64]>,
+) -> f64 {
+    let mut pressure_hpa = Vec::with_capacity(volume.nz);
+    let mut virtual_temperature_c = Vec::with_capacity(volume.nz);
+    let mut height_agl_m = Vec::with_capacity(volume.nz);
+    for k in 0..volume.nz {
+        let idx = k * n2d + ij;
+        let pressure = match pressure_levels_hpa {
+            Some(levels) => levels[k],
+            None => volume.pressure_pa[idx] / 100.0,
+        };
+        let temperature = volume.temperature_c[idx];
+        let dewpoint = dewpoint_from_q(volume.qvapor_kgkg[idx], pressure).min(temperature);
+        let tv = metrust::calc::thermo::virtual_temperature_from_dewpoint(
+            temperature,
+            dewpoint,
+            pressure,
+        );
+        pressure_hpa.push(pressure);
+        virtual_temperature_c.push(tv);
+        height_agl_m.push(volume.height_agl_m[idx]);
+    }
+
+    if pressure_hpa.len() > 1 && pressure_hpa[0] < pressure_hpa[pressure_hpa.len() - 1] {
+        pressure_hpa.reverse();
+        virtual_temperature_c.reverse();
+        height_agl_m.reverse();
+    }
+
+    let Some(tv700) = interp_at_pressure(&pressure_hpa, &virtual_temperature_c, 700.0) else {
+        return f64::NAN;
+    };
+    let Some(tv500) = interp_at_pressure(&pressure_hpa, &virtual_temperature_c, 500.0) else {
+        return f64::NAN;
+    };
+    let Some(z700) = interp_at_pressure(&pressure_hpa, &height_agl_m, 700.0) else {
+        return f64::NAN;
+    };
+    let Some(z500) = interp_at_pressure(&pressure_hpa, &height_agl_m, 500.0) else {
+        return f64::NAN;
+    };
+    let dz_km = (z500 - z700) / 1000.0;
+    if dz_km > 0.0 {
+        (tv700 - tv500) / dz_km
+    } else {
+        f64::NAN
+    }
+}
+
+fn interp_at_pressure(pressures_hpa: &[f64], values: &[f64], target_hpa: f64) -> Option<f64> {
+    if pressures_hpa.len() != values.len() || pressures_hpa.is_empty() {
+        return None;
+    }
+    for idx in 1..pressures_hpa.len() {
+        let p0 = pressures_hpa[idx - 1];
+        let p1 = pressures_hpa[idx];
+        if (p0 >= target_hpa && target_hpa >= p1) || (p1 >= target_hpa && target_hpa >= p0) {
+            let denom = p1 - p0;
+            if denom.abs() < 1.0e-9 {
+                return Some(values[idx]);
+            }
+            let weight = (target_hpa - p0) / denom;
+            return Some(values[idx - 1] + weight * (values[idx] - values[idx - 1]));
+        }
+    }
+    None
 }
 
 fn fixed_stp_value(sbcape_jkg: f64, lcl_m: f64, srh_1km_m2s2: f64, shear_6km_ms: f64) -> f64 {
@@ -1377,6 +1881,20 @@ mod tests {
             sbcin_jkg: &sb.cin_jkg,
         })
         .unwrap();
+        let effective_layer =
+            compute_effective_layer_diagnostics(grid, volume, surface, None).unwrap();
+        let lapse_rate_700_500 = lapse_rate_700_500_for_supported(grid, volume).unwrap();
+        let vtp_mod = compute_vtp_mod(VtpModInputs {
+            grid,
+            mlcape_jkg: &ml.cape_jkg,
+            effective_srh_m2s2: &effective_layer.effective_srh_m2s2,
+            effective_bulk_wind_difference_ms: &effective_layer.effective_bulk_wind_difference_ms,
+            ml_lcl_m: &ml.lcl_m,
+            mlcin_jkg: &ml.cin_jkg,
+            mlcape_03km_jkg: &ml_03km.cape_jkg,
+            lapse_rate_700_500_cpkm: &lapse_rate_700_500,
+        })
+        .unwrap();
 
         assert_eq!(supported.sbcape_jkg, sb.cape_jkg);
         assert_eq!(supported.mlcin_jkg, ml.cin_jkg);
@@ -1389,6 +1907,7 @@ mod tests {
         assert_eq!(supported.ehi_sb_01km_proxy, proxy.ehi);
         assert_eq!(supported.tehi, beta.tehi);
         assert_eq!(supported.tts, beta.tts);
+        assert_eq!(supported.vtp_mod, vtp_mod);
     }
 
     #[test]
@@ -1473,6 +1992,7 @@ mod tests {
         assert_vec_close(&levels.ehi_sb_01km_proxy, &broadcast.ehi_sb_01km_proxy);
         assert_vec_close(&levels.tehi, &broadcast.tehi);
         assert_vec_close(&levels.tts, &broadcast.tts);
+        assert_vec_close(&levels.vtp_mod, &broadcast.vtp_mod);
     }
 
     #[test]
