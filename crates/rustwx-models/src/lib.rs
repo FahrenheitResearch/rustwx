@@ -110,6 +110,9 @@ fn recipe_maturity(slug: &str) -> ProductMaturity {
     if slug.starts_with("aigefs_spr_") {
         return ProductMaturity::Experimental;
     }
+    if slug.starts_with("hgefs_spr_") {
+        return ProductMaturity::Experimental;
+    }
     match slug {
         "simulated_ir_satellite" | "lightning_flash_density" => ProductMaturity::Experimental,
         _ => ProductMaturity::Operational,
@@ -124,6 +127,9 @@ fn recipe_flags(slug: &str) -> Vec<ProductSemanticFlag> {
         return vec![ProductSemanticFlag::ProofOriented];
     }
     if slug.starts_with("aigefs_spr_") {
+        return vec![ProductSemanticFlag::ProofOriented];
+    }
+    if slug.starts_with("hgefs_spr_") {
         return vec![ProductSemanticFlag::ProofOriented];
     }
     match slug {
@@ -622,6 +628,16 @@ const MODELS: &[ModelSummary] = &[
         ensemble_mode: EnsembleMode::MemberGribFiles,
     },
     ModelSummary {
+        id: ModelId::Hgefs,
+        description: "NOAA HGEFS hybrid AI/GEFS ensemble-stat global forecast",
+        default_product: "sfc/avg",
+        cycle_hours_utc: AI_MODEL_CYCLE_HOURS,
+        max_forecast_hour: 240,
+        sources: NOMADS_ONLY_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::MemberGribFiles,
+    },
+    ModelSummary {
         id: ModelId::EcmwfOpenData,
         description: "ECMWF open data IFS 0.25 degree feed",
         default_product: "oper",
@@ -779,6 +795,19 @@ const FIELD_500_HEIGHT: GribFieldSpec = field_spec(
 const FIELD_AIGEFS_SPR_500_HEIGHT_STDDEV: GribFieldSpec = field_spec(
     "aigefs_spread_height_500mb_stddev",
     "AI-GEFS 500mb Height Spread",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(500),
+    Some(
+        FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500)
+            .with_ensemble_standard_deviation(),
+    ),
+    &["HGT:500 mb"],
+);
+
+const FIELD_HGEFS_SPR_500_HEIGHT_STDDEV: GribFieldSpec = field_spec(
+    "hgefs_spread_height_500mb_stddev",
+    "HGEFS 500mb Height Spread",
     ProductFamily::Pressure,
     GribLevelKind::IsobaricHpa,
     Some(500),
@@ -1341,6 +1370,19 @@ const FIELD_QMD_2M_RH_P90: GribFieldSpec = qmd_height_agl_stat_field_spec(
 const FIELD_AIGEFS_SPR_2M_TEMP_STDDEV: GribFieldSpec = field_spec(
     "aigefs_spread_temperature_2m_agl_stddev",
     "AI-GEFS 2m AGL Temperature Spread",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(
+        FieldSelector::height_agl(CanonicalField::Temperature, 2)
+            .with_ensemble_standard_deviation(),
+    ),
+    &["TMP:2 m above ground"],
+);
+
+const FIELD_HGEFS_SPR_2M_TEMP_STDDEV: GribFieldSpec = field_spec(
+    "hgefs_spread_temperature_2m_agl_stddev",
+    "HGEFS 2m AGL Temperature Spread",
     ProductFamily::Surface,
     GribLevelKind::HeightAboveGround,
     Some(2),
@@ -2218,6 +2260,24 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherHeight,
     },
     PlotRecipe {
+        slug: "hgefs_spr_2m_temperature_stddev",
+        title: "HGEFS 2m AGL Temperature Spread",
+        filled: FIELD_HGEFS_SPR_2M_TEMP_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
+        slug: "hgefs_spr_500mb_height_stddev",
+        title: "HGEFS 500mb Height Spread",
+        filled: FIELD_HGEFS_SPR_500_HEIGHT_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherHeight,
+    },
+    PlotRecipe {
         slug: "sref_prob_2m_temperature_below_273k",
         title: "SREF Probability 2m Temperature < 273 K",
         filled: FIELD_SREF_PROB_2M_TEMP_BELOW_FREEZING,
@@ -2683,7 +2743,7 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
             (ModelId::Nbm, _) => {}
             (ModelId::Sref, FieldProduct::Probability(_)) => {}
             (
-                ModelId::Aigefs,
+                ModelId::Aigefs | ModelId::Hgefs,
                 FieldProduct::EnsembleStandardDeviation | FieldProduct::EnsembleSpread,
             ) => {}
             _ => return false,
@@ -2841,6 +2901,7 @@ pub fn supported_forecast_hours(model: ModelId, cycle_hour_utc: u8) -> Vec<u16> 
             hours
         }
         ModelId::Aigfs | ModelId::Aigefs => (0..=384).step_by(6).collect(),
+        ModelId::Hgefs => (0..=240).step_by(6).collect(),
         // ECMWF Open Data currently publishes four daily IFS runs. The 00/12z
         // deterministic/ensemble open-data stream carries 3-hourly steps to
         // 144h and then 6-hourly steps to 360h; 06/18z carries 3-hourly steps
@@ -2929,6 +2990,9 @@ fn default_canonical_bundle_product(
         (ModelId::Aigefs, CanonicalBundleDescriptor::SurfaceAnalysis) => "sfc/avg",
         (ModelId::Aigefs, CanonicalBundleDescriptor::PressureAnalysis) => "pres/avg",
         (ModelId::Aigefs, CanonicalBundleDescriptor::NativeAnalysis) => "sfc/avg",
+        (ModelId::Hgefs, CanonicalBundleDescriptor::SurfaceAnalysis) => "sfc/avg",
+        (ModelId::Hgefs, CanonicalBundleDescriptor::PressureAnalysis) => "pres/avg",
+        (ModelId::Hgefs, CanonicalBundleDescriptor::NativeAnalysis) => "sfc/avg",
         (ModelId::EcmwfOpenData, _) => "oper",
         (ModelId::Aifs, _) => "oper",
         (ModelId::Rap, _) => "awp130pgrb",
@@ -3336,6 +3400,7 @@ fn build_grib_url(source: SourceId, request: &ModelRunRequest) -> Result<String,
         ModelId::Gefs => build_gefs_url(source, request)?,
         ModelId::Aigfs => build_aigfs_url(source, request)?,
         ModelId::Aigefs => build_aigefs_url(source, request)?,
+        ModelId::Hgefs => build_hgefs_url(source, request)?,
         ModelId::EcmwfOpenData => build_ecmwf_url(source, request)?,
         ModelId::Aifs => build_aifs_url(source, request)?,
         ModelId::Rap => build_rap_url(source, request)?,
@@ -3892,6 +3957,31 @@ fn build_aigefs_url(source: SourceId, request: &ModelRunRequest) -> Result<Strin
     ))
 }
 
+fn build_hgefs_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    if source != SourceId::Nomads {
+        return Ok(unsupported_source(source, request.model));
+    }
+    let token = normalize_token(&request.product);
+    let family = if token.contains("pres") || token.contains("pressure") {
+        "pres"
+    } else {
+        "sfc"
+    };
+    let stat = token
+        .split(['_', '/'])
+        .find(|part| matches!(*part, "avg" | "spr" | "p10" | "p50" | "p90"))
+        .unwrap_or("avg");
+    Ok(format!(
+        "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hgefs/prod/hgefs.{}/{:02}/ensstat/products/atmos/grib2/hgefs.t{:02}z.{}.{}.f{:03}.grib2",
+        request.cycle.date_yyyymmdd,
+        request.cycle.hour_utc,
+        request.cycle.hour_utc,
+        family,
+        stat,
+        request.forecast_hour
+    ))
+}
+
 fn build_rap_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
     if source != SourceId::Nomads {
         return Ok(unsupported_source(source, request.model));
@@ -4402,6 +4492,14 @@ fn plot_recipe_fetch_defaults(
         }
         (ModelId::Aigefs, _, true) => ("sfc/avg", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Aigefs, _, false) => ("pres/avg", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Hgefs, _, true) if has_ensemble_spread_selector => {
+            ("sfc/spr", PlotRecipeFetchPolicy::PreferIndexedSubset)
+        }
+        (ModelId::Hgefs, _, false) if has_ensemble_spread_selector => {
+            ("pres/spr", PlotRecipeFetchPolicy::PreferIndexedSubset)
+        }
+        (ModelId::Hgefs, _, true) => ("sfc/avg", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Hgefs, _, false) => ("pres/avg", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Rap, _, _) => ("awp130pgrb", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Nam, _, _) => ("awip12", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Hiresw, _, _) => (
@@ -4556,6 +4654,18 @@ fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<Stri
 
 fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> Option<String> {
     match (model, field.key) {
+        (model, key) if key.starts_with("aigefs_spread_") && model != ModelId::Aigefs => {
+            Some(format!(
+                "{} is only verified for AI-GEFS ensstat spread fields right now; do not route this recipe through model '{model}'",
+                field.label
+            ))
+        }
+        (model, key) if key.starts_with("hgefs_spread_") && model != ModelId::Hgefs => {
+            Some(format!(
+                "{} is only verified for HGEFS ensstat spread fields right now; do not route this recipe through model '{model}'",
+                field.label
+            ))
+        }
         (model, key) if key.starts_with("sref_probability_") && model != ModelId::Sref => {
             Some(format!(
                 "{} is only verified for SREF ensprod probability fields right now; do not route this recipe through model '{model}'",
@@ -4635,6 +4745,18 @@ fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> O
 
 fn model_specific_surface_field_gap(field: &GribFieldSpec, model: ModelId) -> Option<String> {
     match (model, field.key) {
+        (model, key) if key.starts_with("aigefs_spread_") && model != ModelId::Aigefs => {
+            Some(format!(
+                "{} is only verified for AI-GEFS ensstat spread fields right now; do not route this recipe through model '{model}'",
+                field.label
+            ))
+        }
+        (model, key) if key.starts_with("hgefs_spread_") && model != ModelId::Hgefs => {
+            Some(format!(
+                "{} is only verified for HGEFS ensstat spread fields right now; do not route this recipe through model '{model}'",
+                field.label
+            ))
+        }
         (model, key) if key.starts_with("sref_probability_") && model != ModelId::Sref => {
             Some(format!(
                 "{} is only verified for SREF ensprod probability fields right now; do not route this recipe through model '{model}'",
@@ -4803,7 +4925,7 @@ mod tests {
 
     #[test]
     fn built_in_models_are_real() {
-        assert_eq!(built_in_models().len(), 19);
+        assert_eq!(built_in_models().len(), 20);
         assert_eq!(model_summary(ModelId::HrrrAk).default_product, "sfc");
         assert_eq!(model_summary(ModelId::Gdas).default_product, "pgrb2.0p25");
         assert_eq!(
@@ -4812,6 +4934,8 @@ mod tests {
         );
         assert_eq!(model_summary(ModelId::Aigfs).default_product, "sfc");
         assert_eq!(model_summary(ModelId::Aigefs).default_product, "sfc/avg");
+        assert_eq!(model_summary(ModelId::Hgefs).default_product, "sfc/avg");
+        assert_eq!(model_summary(ModelId::Hgefs).max_forecast_hour, 240);
         assert_eq!(model_summary(ModelId::Aifs).max_forecast_hour, 43_848);
         assert_eq!(model_summary(ModelId::Rtma).max_forecast_hour, 0);
         assert_eq!(model_summary(ModelId::Nbm).default_product, "core/co");
@@ -5266,6 +5390,7 @@ mod tests {
                     | ModelId::Gefs
                     | ModelId::Aigfs
                     | ModelId::Aigefs
+                    | ModelId::Hgefs
                     | ModelId::Rap
                     | ModelId::Nam
                     | ModelId::Hiresw
@@ -5543,6 +5668,12 @@ mod tests {
         assert_eq!(
             build_grib_url(SourceId::Nomads, &aigefs).unwrap(),
             "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigefs/prod/aigefs.20260502/00/ensstat/products/atmos/grib2/aigefs.t00z.sfc.avg.f024.grib2"
+        );
+
+        let hgefs = ModelRunRequest::new(ModelId::Hgefs, cycle.clone(), 24, "pres/spr").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Nomads, &hgefs).unwrap(),
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hgefs/prod/hgefs.20260502/00/ensstat/products/atmos/grib2/hgefs.t00z.pres.spr.f024.grib2"
         );
 
         let rap = ModelRunRequest::new(ModelId::Rap, cycle.clone(), 21, "awp130pgrb").unwrap();
@@ -6397,9 +6528,46 @@ mod tests {
 
             let blockers = plot_recipe_fetch_blockers(slug, ModelId::Aigfs).unwrap();
             assert!(
-                blockers.iter().any(|blocker| blocker
-                    .reason
-                    .contains("not yet supported for model 'aigfs'")),
+                blockers
+                    .iter()
+                    .any(|blocker| blocker.reason.contains("model 'aigfs'")),
+                "{slug}"
+            );
+        }
+    }
+
+    #[test]
+    fn hgefs_spread_recipes_use_spr_products_and_stddev_selectors() {
+        let cases = [
+            (
+                "hgefs_spr_2m_temperature_stddev",
+                "sfc/spr",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2)
+                    .with_ensemble_standard_deviation(),
+            ),
+            (
+                "hgefs_spr_500mb_height_stddev",
+                "pres/spr",
+                FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500)
+                    .with_ensemble_standard_deviation(),
+            ),
+        ];
+
+        for (slug, product, selector) in cases {
+            let plan = plot_recipe_fetch_plan(slug, ModelId::Hgefs).unwrap();
+            assert_eq!(plan.product, product, "{slug}");
+            assert_eq!(
+                plan.fetch_policy,
+                PlotRecipeFetchPolicy::PreferIndexedSubset,
+                "{slug}"
+            );
+            assert_eq!(plan.selectors(), vec![selector], "{slug}");
+
+            let blockers = plot_recipe_fetch_blockers(slug, ModelId::Aigefs).unwrap();
+            assert!(
+                blockers
+                    .iter()
+                    .any(|blocker| blocker.reason.contains("model 'aigefs'")),
                 "{slug}"
             );
         }

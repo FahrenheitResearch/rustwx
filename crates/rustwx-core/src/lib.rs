@@ -1589,6 +1589,7 @@ pub enum ModelId {
     Gefs,
     Aigfs,
     Aigefs,
+    Hgefs,
     EcmwfOpenData,
     Aifs,
     Rap,
@@ -1613,6 +1614,7 @@ impl ModelId {
             Self::Gefs => "gefs",
             Self::Aigfs => "aigfs",
             Self::Aigefs => "aigefs",
+            Self::Hgefs => "hgefs",
             Self::EcmwfOpenData => "ecmwf-open-data",
             Self::Aifs => "aifs",
             Self::Rap => "rap",
@@ -1647,6 +1649,9 @@ impl std::str::FromStr for ModelId {
             "gefs" | "gefs-ens" | "gefs_ens" | "gefs-ensemble" => Ok(Self::Gefs),
             "aigfs" | "ai-gfs" | "ai_gfs" => Ok(Self::Aigfs),
             "aigefs" | "ai-gefs" | "ai_gefs" => Ok(Self::Aigefs),
+            "hgefs" | "hybrid-gefs" | "hybrid_gefs" | "hybrid-ai-gefs" | "hybrid_ai_gefs" => {
+                Ok(Self::Hgefs)
+            }
             "ecmwf" | "ifs" | "ecmwf-open-data" | "ecmwf_open_data" => Ok(Self::EcmwfOpenData),
             "aifs" | "aifs-single" | "aifs_single" | "aifs-single-1.1" => Ok(Self::Aifs),
             "rap" => Ok(Self::Rap),
@@ -2070,9 +2075,11 @@ mod tests {
             "rrfs_public".parse::<ModelId>().unwrap(),
             ModelId::RrfsPublic
         );
+        assert_eq!("hybrid_gefs".parse::<ModelId>().unwrap(), ModelId::Hgefs);
         assert_eq!("ecmwf".parse::<ModelId>().unwrap(), ModelId::EcmwfOpenData);
         assert_eq!("wrf".parse::<ModelId>().unwrap(), ModelId::WrfGdex);
         assert_eq!(ModelId::Hrrr.to_string(), "hrrr");
+        assert_eq!(ModelId::Hgefs.to_string(), "hgefs");
         assert_eq!(ModelId::RrfsPublic.to_string(), "rrfs-public");
         assert_eq!(ModelId::WrfGdex.to_string(), "wrf-gdex");
         assert_eq!("gdex".parse::<SourceId>().unwrap(), SourceId::Gdex);

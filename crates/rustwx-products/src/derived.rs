@@ -1355,6 +1355,7 @@ pub fn supported_derived_recipe_slugs(model: ModelId) -> Vec<String> {
         | ModelId::Gefs
         | ModelId::Aigfs
         | ModelId::Aigefs
+        | ModelId::Hgefs
         | ModelId::EcmwfOpenData
         | ModelId::Aifs
         | ModelId::Rap
