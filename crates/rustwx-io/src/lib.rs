@@ -453,7 +453,7 @@ pub fn extract_fields_from_grib2(
         out.push(build_selected_field(
             message,
             prepared_selector.selector,
-            prepared_selector.message.units,
+            prepared_selector.selector.native_units(),
         )?);
     }
 
@@ -527,7 +527,7 @@ fn extract_fields_from_grib2_partial_inner(
             Some((message, _)) => extracted.push(build_selected_field(
                 message,
                 prepared_selector.selector,
-                prepared_selector.message.units,
+                prepared_selector.selector.native_units(),
             )?),
             None => missing.push(prepared_selector.selector),
         }
@@ -1421,23 +1421,38 @@ fn probability_product_match_score(
             return None;
         }
     }
+    let (semantic_lower_limit, semantic_upper_limit) = probability_semantic_limits(message);
     if let Some(lower) = selection.lower_limit_milli {
-        if !scaled_limit_matches(message.product.probability_lower_limit, lower) {
+        if semantic_lower_limit != Some(lower) {
             return None;
         }
     }
     if let Some(upper) = selection.upper_limit_milli {
-        if !scaled_limit_matches(message.product.probability_upper_limit, upper) {
+        if semantic_upper_limit != Some(upper) {
             return None;
         }
     }
     Some(0)
 }
 
-fn scaled_limit_matches(actual: Option<f64>, expected_milli: i64) -> bool {
+fn probability_semantic_limits(message: &Grib2Message) -> (Option<i64>, Option<i64>) {
+    let lower = scaled_limit_milli(message.product.probability_lower_limit);
+    let upper = scaled_limit_milli(message.product.probability_upper_limit);
+    match message.product.probability_type {
+        // GRIB2 Code Table 4.9 stores "below lower limit" and "above upper limit" using
+        // raw lower/upper slots, but rustwx selectors describe the meteorological threshold.
+        Some(0) => (None, lower),
+        Some(1) => (upper, None),
+        Some(2) => (lower, upper),
+        Some(3) => (lower, None),
+        Some(4) => (None, upper),
+        _ => (lower, upper),
+    }
+}
+
+fn scaled_limit_milli(actual: Option<f64>) -> Option<i64> {
     actual
-        .map(|actual| (actual * 1000.0).round() as i64 == expected_milli)
-        .unwrap_or(false)
+        .map(|actual| (actual * 1000.0).round() as i64)
 }
 
 fn selector_prefers_instantaneous_message(selector: FieldSelector) -> bool {
@@ -2992,12 +3007,12 @@ mod tests {
     fn extract_qmd_probability_uses_exact_threshold_metadata() {
         let mut freeze = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[70.0], -99.0, -99.0);
         freeze.product.template = 5;
-        freeze.product.probability_type = Some(1);
-        freeze.product.probability_upper_limit = Some(273.0);
+        freeze.product.probability_type = Some(0);
+        freeze.product.probability_lower_limit = Some(273.0);
         let mut hot = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[30.0], -99.0, -99.0);
         hot.product.template = 5;
-        hot.product.probability_type = Some(2);
-        hot.product.probability_lower_limit = Some(298.8);
+        hot.product.probability_type = Some(1);
+        hot.product.probability_upper_limit = Some(298.8);
         let grib = Grib2File {
             messages: vec![freeze, hot],
         };
@@ -3017,6 +3032,8 @@ mod tests {
 
         assert_eq!(freezing_probability.values, vec![70.0]);
         assert_eq!(hot_probability.values, vec![30.0]);
+        assert_eq!(freezing_probability.units, "%");
+        assert_eq!(hot_probability.units, "%");
     }
 
     #[test]

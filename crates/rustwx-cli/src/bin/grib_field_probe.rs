@@ -48,6 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             message.grid.latin1,
             message.grid.latin2,
         );
+        print_product_details(message);
     }
 
     if let Some(index) = args.message {
@@ -55,6 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .messages
             .get(index)
             .ok_or_else(|| format!("message index {index} out of range"))?;
+        print_product_details(message);
         let values = unpack_message(message)?;
         let nx = message.grid.nx as usize;
         let ny = message.grid.ny as usize;
@@ -88,6 +90,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+fn print_product_details(message: &grib_core::grib2::Grib2Message) {
+    println!(
+        "      forecast_time={} time_unit={} prob_type={:?} prob_lower={:?} prob_upper={:?} percentile={:?} derived={:?} ens_type={:?} pert={:?} n_ens={:?} stat={:?} range_unit={:?} range_len={:?}",
+        message.product.forecast_time,
+        message.product.time_range_unit,
+        message.product.probability_type,
+        message.product.probability_lower_limit,
+        message.product.probability_upper_limit,
+        message.product.percentile_value,
+        message.product.derived_forecast_type,
+        message.product.ensemble_type,
+        message.product.perturbation_number,
+        message.product.num_forecasts_in_ensemble,
+        message.product.statistical_process_type,
+        message.product.statistical_time_range_unit,
+        message.product.time_range_length,
+    );
 }
 
 fn scan_bits(scan_mode: u8) -> String {

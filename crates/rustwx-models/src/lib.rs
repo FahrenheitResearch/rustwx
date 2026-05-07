@@ -1,8 +1,8 @@
 use rustwx_core::{
     CanonicalBundleDescriptor, CanonicalDataFamily, CanonicalField, CycleSpec, FieldProduct,
-    FieldSelector, ModelId, ModelRunRequest, ProductKeyMetadata, ProductLineage, ProductMaturity,
-    ProductProvenance, ProductSemanticFlag, ProductWindowSpec, ResolvedUrl, RustwxError, SourceId,
-    StatisticalProcess, VerticalSelector,
+    FieldSelector, ModelId, ModelRunRequest, ProbabilitySelection, ProductKeyMetadata,
+    ProductLineage, ProductMaturity, ProductProvenance, ProductSemanticFlag, ProductWindowSpec,
+    ResolvedUrl, RustwxError, SourceId, StatisticalProcess, VerticalSelector,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -73,6 +73,7 @@ pub enum RenderStyle {
     WeatherTemperature,
     WeatherDewpoint,
     WeatherRh,
+    WeatherProbability,
     WeatherWinds,
     WeatherHeight,
     WeatherPressure,
@@ -103,6 +104,9 @@ fn recipe_maturity(slug: &str) -> ProductMaturity {
     if slug.starts_with("nbm_qmd_") {
         return ProductMaturity::Experimental;
     }
+    if slug.starts_with("sref_prob_") {
+        return ProductMaturity::Experimental;
+    }
     match slug {
         "simulated_ir_satellite" | "lightning_flash_density" => ProductMaturity::Experimental,
         _ => ProductMaturity::Operational,
@@ -111,6 +115,9 @@ fn recipe_maturity(slug: &str) -> ProductMaturity {
 
 fn recipe_flags(slug: &str) -> Vec<ProductSemanticFlag> {
     if slug.starts_with("nbm_qmd_") {
+        return vec![ProductSemanticFlag::ProofOriented];
+    }
+    if slug.starts_with("sref_prob_") {
         return vec![ProductSemanticFlag::ProofOriented];
     }
     match slug {
@@ -1436,6 +1443,58 @@ const FIELD_QMD_10M_WIND_SPEED_P90: GribFieldSpec = qmd_height_agl_stat_field_sp
     &["WIND:10 m above ground"],
 );
 
+const FIELD_SREF_PROB_2M_TEMP_BELOW_FREEZING: GribFieldSpec = field_spec(
+    "sref_probability_temperature_2m_agl_lt_273k",
+    "SREF Probability 2m Temperature < 273 K",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(
+        FieldSelector::height_agl(CanonicalField::Temperature, 2)
+            .with_probability(ProbabilitySelection::below_milli(273_000)),
+    ),
+    &["TMP:2 m above ground"],
+);
+
+const FIELD_SREF_PROB_2M_TEMP_ABOVE_298P8K: GribFieldSpec = field_spec(
+    "sref_probability_temperature_2m_agl_gt_298p8k",
+    "SREF Probability 2m Temperature > 298.8 K",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(
+        FieldSelector::height_agl(CanonicalField::Temperature, 2)
+            .with_probability(ProbabilitySelection::above_milli(298_800)),
+    ),
+    &["TMP:2 m above ground"],
+);
+
+const FIELD_SREF_PROB_850MB_TEMP_BELOW_FREEZING: GribFieldSpec = field_spec(
+    "sref_probability_temperature_850mb_lt_273k",
+    "SREF Probability 850mb Temperature < 273 K",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(850),
+    Some(
+        FieldSelector::isobaric(CanonicalField::Temperature, 850)
+            .with_probability(ProbabilitySelection::below_milli(273_000)),
+    ),
+    &["TMP:850 mb"],
+);
+
+const FIELD_SREF_PROB_VISIBILITY_BELOW_ONE_MILE: GribFieldSpec = field_spec(
+    "sref_probability_visibility_surface_lt_1609m",
+    "SREF Probability Visibility < 1609 m",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::Visibility)
+            .with_probability(ProbabilitySelection::below_milli(1_609_000)),
+    ),
+    &["VIS:surface"],
+);
+
 const FIELD_MSLP: GribFieldSpec = field_spec(
     "pressure_reduced_to_mean_sea_level",
     "MSLP",
@@ -2090,6 +2149,42 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherWinds,
     },
     PlotRecipe {
+        slug: "sref_prob_2m_temperature_below_273k",
+        title: "SREF Probability 2m Temperature < 273 K",
+        filled: FIELD_SREF_PROB_2M_TEMP_BELOW_FREEZING,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "sref_prob_2m_temperature_above_298p8k",
+        title: "SREF Probability 2m Temperature > 298.8 K",
+        filled: FIELD_SREF_PROB_2M_TEMP_ABOVE_298P8K,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "sref_prob_850mb_temperature_below_273k",
+        title: "SREF Probability 850mb Temperature < 273 K",
+        filled: FIELD_SREF_PROB_850MB_TEMP_BELOW_FREEZING,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "sref_prob_visibility_below_1609m",
+        title: "SREF Probability Visibility < 1609 m",
+        filled: FIELD_SREF_PROB_VISIBILITY_BELOW_ONE_MILE,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
         slug: "2m_temperature_10m_winds",
         title: "2m AGL Temperature / 10m Winds",
         filled: FIELD_2M_TEMP,
@@ -2514,8 +2609,12 @@ pub fn plot_recipe_fetch_blockers(
 }
 
 pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> bool {
-    if !selector.product.is_default() && model != ModelId::Nbm {
-        return false;
+    if !selector.product.is_default() {
+        match (model, selector.product) {
+            (ModelId::Nbm, _) => {}
+            (ModelId::Sref, FieldProduct::Probability(_)) => {}
+            _ => return false,
+        }
     }
     if matches!(
         (model, selector.vertical),
@@ -4146,6 +4245,11 @@ fn plot_recipe_fetch_defaults(
             .selector
             .is_some_and(|selector| !selector.product.is_default())
     });
+    let has_probability_selector = fields.iter().any(|field| {
+        field
+            .selector
+            .is_some_and(|selector| matches!(selector.product, FieldProduct::Probability(_)))
+    });
     match (model, has_native, has_surface) {
         (ModelId::Hrrr, true, _) => ("nat", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Hrrr, false, true) => ("sfc", PlotRecipeFetchPolicy::PreferIndexedSubset),
@@ -4164,6 +4268,10 @@ fn plot_recipe_fetch_defaults(
         (ModelId::Nam, _, _) => ("awip12", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Hiresw, _, _) => (
             "arw_2p5km/conus",
+            PlotRecipeFetchPolicy::PreferIndexedSubset,
+        ),
+        (ModelId::Sref, _, _) if has_probability_selector => (
+            "ensprod/pgrb212/prob_3hrly",
             PlotRecipeFetchPolicy::PreferIndexedSubset,
         ),
         (ModelId::Sref, _, _) => (
@@ -4297,6 +4405,12 @@ fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<Stri
 
 fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> Option<String> {
     match (model, field.key) {
+        (model, key) if key.starts_with("sref_probability_") && model != ModelId::Sref => {
+            Some(format!(
+                "{} is only verified for SREF ensprod probability fields right now; do not route this recipe through model '{model}'",
+                field.label
+            ))
+        }
         (ModelId::Rtma | ModelId::Urma | ModelId::Nbm, _) => Some(format!(
             "{} requires an isobaric-pressure product; model '{model}' is currently wired only through surface/core grids in rustwx v0.5",
             field.label
@@ -4370,6 +4484,12 @@ fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> O
 
 fn model_specific_surface_field_gap(field: &GribFieldSpec, model: ModelId) -> Option<String> {
     match (model, field.key) {
+        (model, key) if key.starts_with("sref_probability_") && model != ModelId::Sref => {
+            Some(format!(
+                "{} is only verified for SREF ensprod probability fields right now; do not route this recipe through model '{model}'",
+                field.label
+            ))
+        }
         (ModelId::Hrrr, "theta_e_2m_agl") => Some(
             "2m Theta-e is surface-derived rather than native; HRRR exposes it through the derived product 'theta_e_2m_10m_winds' (legacy plot-recipe slug '2m_theta_e_10m_winds'), not as a direct/native GRIB recipe.".to_string(),
         ),
@@ -6050,6 +6170,57 @@ mod tests {
                 .iter()
                 .any(|blocker| { blocker.reason.contains("not yet supported for model 'gfs'") })
         );
+    }
+
+    #[test]
+    fn sref_probability_recipes_use_prob_product_and_exact_selectors() {
+        let cases = [
+            (
+                "sref_prob_2m_temperature_below_273k",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2)
+                    .with_probability(ProbabilitySelection::below_milli(273_000)),
+            ),
+            (
+                "sref_prob_2m_temperature_above_298p8k",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2)
+                    .with_probability(ProbabilitySelection::above_milli(298_800)),
+            ),
+            (
+                "sref_prob_850mb_temperature_below_273k",
+                FieldSelector::isobaric(CanonicalField::Temperature, 850)
+                    .with_probability(ProbabilitySelection::below_milli(273_000)),
+            ),
+            (
+                "sref_prob_visibility_below_1609m",
+                FieldSelector::surface(CanonicalField::Visibility)
+                    .with_probability(ProbabilitySelection::below_milli(1_609_000)),
+            ),
+        ];
+
+        for (slug, selector) in cases {
+            let plan = plot_recipe_fetch_plan(slug, ModelId::Sref).unwrap();
+            assert_eq!(plan.product, "ensprod/pgrb212/prob_3hrly", "{slug}");
+            assert_eq!(
+                plan.fetch_policy,
+                PlotRecipeFetchPolicy::PreferIndexedSubset,
+                "{slug}"
+            );
+            assert_eq!(plan.selectors(), vec![selector], "{slug}");
+        }
+    }
+
+    #[test]
+    fn sref_probability_recipes_block_for_non_sref_models() {
+        for model in [ModelId::Gfs, ModelId::Nbm] {
+            let blockers =
+                plot_recipe_fetch_blockers("sref_prob_2m_temperature_below_273k", model).unwrap();
+            assert!(
+                blockers
+                    .iter()
+                    .any(|blocker| blocker.reason.contains("only verified for SREF")),
+                "{model:?}: {blockers:?}"
+            );
+        }
     }
 
     #[test]

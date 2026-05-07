@@ -677,7 +677,7 @@ fn model_supported_recipe_lists(model: ModelId) -> (Vec<String>, Vec<String>) {
 }
 
 fn direct_recipe_requires_explicit_opt_in(slug: &str) -> bool {
-    slug.starts_with("nbm_qmd_")
+    slug.starts_with("nbm_qmd_") || slug.starts_with("sref_prob_")
 }
 
 fn filter_recipes_for_model(requested: &[String], supported: &[String]) -> Vec<String> {

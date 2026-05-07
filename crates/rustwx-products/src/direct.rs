@@ -1106,7 +1106,7 @@ pub fn supported_direct_recipe_slugs(model: ModelId) -> Vec<String> {
 }
 
 fn direct_recipe_requires_explicit_opt_in(slug: &str) -> bool {
-    slug.starts_with("nbm_qmd_")
+    slug.starts_with("nbm_qmd_") || slug.starts_with("sref_prob_")
 }
 
 fn plan_direct_recipes(
@@ -3229,7 +3229,7 @@ fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> Colo
                 mask_below: None,
             }
         }
-        RenderStyle::WeatherRh => DiscreteColorScale {
+        RenderStyle::WeatherRh | RenderStyle::WeatherProbability => DiscreteColorScale {
             levels: range_step(0.0, 101.0, 1.0),
             colors: weather_palette(WeatherPalette::Rh),
             extend: ExtendMode::Both,
@@ -4914,10 +4914,23 @@ mod tests {
     fn nbm_qmd_direct_recipes_are_explicit_only_for_all_supported() {
         let supported = supported_direct_recipe_slugs(ModelId::Nbm);
         assert!(!supported.iter().any(|slug| slug.starts_with("nbm_qmd_")));
+        let sref_supported = supported_direct_recipe_slugs(ModelId::Sref);
+        assert!(
+            !sref_supported
+                .iter()
+                .any(|slug| slug.starts_with("sref_prob_"))
+        );
 
         let planned =
             plan_direct_recipes(ModelId::Nbm, &["nbm_qmd_2m_temperature_p50".to_string()]).unwrap();
         assert_eq!(planned[0].plan.product, "qmd/co");
+
+        let sref_planned = plan_direct_recipes(
+            ModelId::Sref,
+            &["sref_prob_2m_temperature_below_273k".to_string()],
+        )
+        .unwrap();
+        assert_eq!(sref_planned[0].plan.product, "ensprod/pgrb212/prob_3hrly");
     }
 
     #[test]

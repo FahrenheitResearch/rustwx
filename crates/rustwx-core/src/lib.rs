@@ -680,6 +680,9 @@ impl FieldSelector {
     }
 
     pub fn native_units(self) -> &'static str {
+        if matches!(self.product, FieldProduct::Probability(_)) {
+            return "%";
+        }
         self.field.native_units()
     }
 }
@@ -2135,6 +2138,8 @@ mod tests {
         let temp_2m_p50 = temp_2m.with_percentile(50);
         assert_eq!(temp_2m_p50.key(), "temperature_2m_agl_p50");
         assert_eq!(temp_2m_p50.to_string(), "temperature@2m_agl:p50");
+        let temp_2m_prob = temp_2m.with_probability(ProbabilitySelection::below_milli(273_000));
+        assert_eq!(temp_2m_prob.native_units(), "%");
 
         let dewpoint_2m = FieldSelector::height_agl(CanonicalField::Dewpoint, 2);
         assert_eq!(dewpoint_2m.key(), "dewpoint_2m_agl");
