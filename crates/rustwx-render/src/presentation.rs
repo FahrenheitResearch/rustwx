@@ -370,7 +370,7 @@ impl RenderPresentation {
         let (color, width, visible) = match self.mode {
             ProductVisualMode::OverlayAnalysis => match role {
                 LineworkRole::Coast => (Rgba::with_alpha(24, 28, 34, 210), 2, true),
-                LineworkRole::Lake => (Rgba::with_alpha(40, 88, 150, 210), 2, true),
+                LineworkRole::Lake => (Rgba::with_alpha(60, 66, 74, 160), 2, true),
                 LineworkRole::International => (Rgba::new(74, 82, 94), 1, true),
                 LineworkRole::State => (Rgba::with_alpha(24, 28, 34, 210), 2, true),
                 LineworkRole::County => (Rgba::with_alpha(142, 151, 162, 150), 1, true),
@@ -378,7 +378,7 @@ impl RenderPresentation {
             },
             ProductVisualMode::UpperAirAnalysis => match role {
                 LineworkRole::Coast => (Rgba::with_alpha(22, 26, 32, 220), 2, true),
-                LineworkRole::Lake => (Rgba::with_alpha(38, 84, 146, 220), 2, true),
+                LineworkRole::Lake => (Rgba::with_alpha(58, 64, 72, 165), 2, true),
                 LineworkRole::International => (Rgba::new(68, 76, 86), 1, true),
                 LineworkRole::State => (Rgba::with_alpha(22, 26, 32, 220), 2, true),
                 LineworkRole::County => (Rgba::with_alpha(150, 158, 168, 90), 1, true),
@@ -386,7 +386,7 @@ impl RenderPresentation {
             },
             ProductVisualMode::SevereDiagnostic => match role {
                 LineworkRole::Coast => (Rgba::with_alpha(22, 26, 31, 225), 2, true),
-                LineworkRole::Lake => (Rgba::with_alpha(36, 80, 142, 225), 2, true),
+                LineworkRole::Lake => (Rgba::with_alpha(50, 56, 64, 175), 2, true),
                 LineworkRole::International => (Rgba::new(72, 80, 88), 1, true),
                 LineworkRole::State => (Rgba::with_alpha(22, 26, 31, 225), 2, true),
                 LineworkRole::County => (Rgba::with_alpha(126, 134, 143, 175), 1, true),
@@ -394,7 +394,7 @@ impl RenderPresentation {
             },
             ProductVisualMode::PanelMember | ProductVisualMode::ComparisonPanel => match role {
                 LineworkRole::Coast => (Rgba::with_alpha(26, 30, 36, 215), 2, true),
-                LineworkRole::Lake => (Rgba::with_alpha(44, 92, 154, 215), 2, true),
+                LineworkRole::Lake => (Rgba::with_alpha(68, 76, 86, 145), 2, true),
                 LineworkRole::International => (Rgba::new(92, 100, 110), 1, true),
                 LineworkRole::State => (Rgba::with_alpha(26, 30, 36, 215), 2, true),
                 LineworkRole::County => (Rgba::with_alpha(150, 158, 168, 70), 1, true),
@@ -402,7 +402,7 @@ impl RenderPresentation {
             },
             ProductVisualMode::FilledMeteorology => match role {
                 LineworkRole::Coast => (Rgba::with_alpha(22, 26, 32, 220), 2, true),
-                LineworkRole::Lake => (Rgba::with_alpha(42, 90, 152, 220), 2, true),
+                LineworkRole::Lake => (Rgba::with_alpha(54, 60, 68, 150), 2, true),
                 LineworkRole::International => (Rgba::with_alpha(72, 80, 92, 210), 1, true),
                 LineworkRole::State => (Rgba::with_alpha(22, 26, 32, 220), 2, true),
                 LineworkRole::County => (Rgba::with_alpha(140, 148, 160, 70), 1, false),
@@ -563,7 +563,7 @@ mod tests {
 
         assert!(style.visible);
         assert_eq!(style.width, 2);
-        assert_eq!(style.color, Rgba::with_alpha(42, 90, 152, 220));
+        assert_eq!(style.color, Rgba::with_alpha(54, 60, 68, 150));
     }
 
     #[test]
@@ -584,6 +584,18 @@ mod tests {
         assert!(style.visible);
         assert_eq!(style.width, 2);
         assert_eq!(style.color, Rgba::with_alpha(22, 26, 32, 220));
+    }
+
+    #[test]
+    fn clean_atlas_lake_linework_is_neutral_not_blue() {
+        let style = RenderPresentation::for_mode_with_style(
+            ProductVisualMode::FilledMeteorology,
+            StaticPlotStyle::CleanAtlasFast,
+        )
+        .linework_style(LineworkRole::Lake, Rgba::BLACK, 1);
+
+        assert!(style.visible);
+        assert_eq!(style.color, Rgba::with_alpha(54, 60, 68, 132));
     }
 }
 
@@ -788,7 +800,7 @@ fn clean_atlas_linework_style(
             true,
         ),
         LineworkRole::Lake => (
-            Rgba::with_alpha(50, 98, 150, alpha(150)),
+            Rgba::with_alpha(54, 60, 68, alpha(132)),
             boost_width(minor_width),
             true,
         ),

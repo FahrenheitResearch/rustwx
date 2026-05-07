@@ -2608,7 +2608,7 @@ mod tests {
         assert_eq!(render_request.width, 1200);
         assert_eq!(render_request.height, 900);
         assert_eq!(render_request.chrome_scale, ChromeScale::Fixed(0.9));
-        assert_eq!(render_request.supersample_factor, 2);
+        assert_eq!(render_request.supersample_factor, 1);
         assert_eq!(
             render_request.subtitle_left.as_deref(),
             Some("Init 04/24 22Z | F001 | Valid 04/24 23Z | HRRR")

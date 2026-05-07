@@ -212,7 +212,7 @@ pub(crate) fn static_supersample_factor() -> u32 {
         .ok()
         .and_then(|value| value.parse::<u32>().ok())
         .filter(|&value| value > 0)
-        .unwrap_or(2)
+        .unwrap_or(1)
 }
 
 pub(crate) fn static_supersample_sharpen() -> bool {
@@ -223,7 +223,7 @@ pub(crate) fn static_supersample_sharpen() -> bool {
             "0" | "false" | "no" | "off" => Some(false),
             _ => None,
         })
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 pub(crate) fn static_chrome_scale() -> ChromeScale {
