@@ -999,6 +999,32 @@ const FIELD_GEFS_SPR_500_TEMP_STDDEV: GribFieldSpec = field_spec(
     &["TMP:500 mb"],
 );
 
+const FIELD_AIGEFS_SPR_500_TEMP_STDDEV: GribFieldSpec = field_spec(
+    "aigefs_spread_temperature_500mb_stddev",
+    "AI-GEFS 500mb Temperature Spread",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(500),
+    Some(
+        FieldSelector::isobaric(CanonicalField::Temperature, 500)
+            .with_ensemble_standard_deviation(),
+    ),
+    &["TMP:500 mb"],
+);
+
+const FIELD_HGEFS_SPR_500_TEMP_STDDEV: GribFieldSpec = field_spec(
+    "hgefs_spread_temperature_500mb_stddev",
+    "HGEFS 500mb Temperature Spread",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(500),
+    Some(
+        FieldSelector::isobaric(CanonicalField::Temperature, 500)
+            .with_ensemble_standard_deviation(),
+    ),
+    &["TMP:500 mb"],
+);
+
 const FIELD_HREF_SPRD_500_TEMP: GribFieldSpec = field_spec(
     "href_spread_temperature_500mb",
     "HREF 500mb Temperature Spread",
@@ -2713,6 +2739,32 @@ const FIELD_GEFS_SPR_MSLP_STDDEV: GribFieldSpec = field_spec(
     &["PRMSL:mean sea level"],
 );
 
+const FIELD_AIGEFS_SPR_MSLP_STDDEV: GribFieldSpec = field_spec(
+    "aigefs_spread_pressure_reduced_to_mean_sea_level_stddev",
+    "AI-GEFS MSLP Spread",
+    ProductFamily::Surface,
+    GribLevelKind::MeanSeaLevel,
+    None,
+    Some(
+        FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel)
+            .with_ensemble_standard_deviation(),
+    ),
+    &["PRMSL:mean sea level"],
+);
+
+const FIELD_HGEFS_SPR_MSLP_STDDEV: GribFieldSpec = field_spec(
+    "hgefs_spread_pressure_reduced_to_mean_sea_level_stddev",
+    "HGEFS MSLP Spread",
+    ProductFamily::Surface,
+    GribLevelKind::MeanSeaLevel,
+    None,
+    Some(
+        FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel)
+            .with_ensemble_standard_deviation(),
+    ),
+    &["PRMSL:mean sea level"],
+);
+
 const FIELD_HREF_SPRD_MSLP: GribFieldSpec = field_spec(
     "href_spread_pressure_reduced_to_mean_sea_level",
     "HREF MSLP Spread",
@@ -2907,6 +2959,32 @@ const FIELD_GEFS_AVG_6H_QPF: GribFieldSpec = field_spec(
 const FIELD_GEFS_SPR_6H_QPF_STDDEV: GribFieldSpec = field_spec(
     "gefs_spread_6h_qpf_stddev",
     "GEFS 6h QPF Spread",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::TotalPrecipitation)
+            .with_ensemble_standard_deviation(),
+    ),
+    &["APCP:surface"],
+);
+
+const FIELD_AIGEFS_SPR_6H_QPF_STDDEV: GribFieldSpec = field_spec(
+    "aigefs_spread_6h_qpf_stddev",
+    "AI-GEFS 6h QPF Spread",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::TotalPrecipitation)
+            .with_ensemble_standard_deviation(),
+    ),
+    &["APCP:surface"],
+);
+
+const FIELD_HGEFS_SPR_6H_QPF_STDDEV: GribFieldSpec = field_spec(
+    "hgefs_spread_6h_qpf_stddev",
+    "HGEFS 6h QPF Spread",
     ProductFamily::Surface,
     GribLevelKind::Surface,
     None,
@@ -3768,6 +3846,33 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherHeight,
     },
     PlotRecipe {
+        slug: "aigefs_spr_500mb_temperature_stddev",
+        title: "AI-GEFS 500mb Temperature Spread",
+        filled: FIELD_AIGEFS_SPR_500_TEMP_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
+        slug: "aigefs_spr_mslp_stddev",
+        title: "AI-GEFS MSLP Spread",
+        filled: FIELD_AIGEFS_SPR_MSLP_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherPressure,
+    },
+    PlotRecipe {
+        slug: "aigefs_spr_6h_qpf_stddev",
+        title: "AI-GEFS 6h QPF Spread",
+        filled: FIELD_AIGEFS_SPR_6H_QPF_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherQpf,
+    },
+    PlotRecipe {
         slug: "hgefs_spr_2m_temperature_stddev",
         title: "HGEFS 2m AGL Temperature Spread",
         filled: FIELD_HGEFS_SPR_2M_TEMP_STDDEV,
@@ -3784,6 +3889,33 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         barbs_u: None,
         barbs_v: None,
         style: RenderStyle::WeatherHeight,
+    },
+    PlotRecipe {
+        slug: "hgefs_spr_500mb_temperature_stddev",
+        title: "HGEFS 500mb Temperature Spread",
+        filled: FIELD_HGEFS_SPR_500_TEMP_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
+        slug: "hgefs_spr_mslp_stddev",
+        title: "HGEFS MSLP Spread",
+        filled: FIELD_HGEFS_SPR_MSLP_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherPressure,
+    },
+    PlotRecipe {
+        slug: "hgefs_spr_6h_qpf_stddev",
+        title: "HGEFS 6h QPF Spread",
+        filled: FIELD_HGEFS_SPR_6H_QPF_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherQpf,
     },
     PlotRecipe {
         slug: "href_sprd_2m_temperature",
@@ -9173,6 +9305,24 @@ mod tests {
                 FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500)
                     .with_ensemble_standard_deviation(),
             ),
+            (
+                "aigefs_spr_500mb_temperature_stddev",
+                "pres/spr",
+                FieldSelector::isobaric(CanonicalField::Temperature, 500)
+                    .with_ensemble_standard_deviation(),
+            ),
+            (
+                "aigefs_spr_mslp_stddev",
+                "sfc/spr",
+                FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel)
+                    .with_ensemble_standard_deviation(),
+            ),
+            (
+                "aigefs_spr_6h_qpf_stddev",
+                "sfc/spr",
+                FieldSelector::surface(CanonicalField::TotalPrecipitation)
+                    .with_ensemble_standard_deviation(),
+            ),
         ];
 
         for (slug, product, selector) in cases {
@@ -9390,6 +9540,24 @@ mod tests {
                 "hgefs_spr_500mb_height_stddev",
                 "pres/spr",
                 FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500)
+                    .with_ensemble_standard_deviation(),
+            ),
+            (
+                "hgefs_spr_500mb_temperature_stddev",
+                "pres/spr",
+                FieldSelector::isobaric(CanonicalField::Temperature, 500)
+                    .with_ensemble_standard_deviation(),
+            ),
+            (
+                "hgefs_spr_mslp_stddev",
+                "sfc/spr",
+                FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel)
+                    .with_ensemble_standard_deviation(),
+            ),
+            (
+                "hgefs_spr_6h_qpf_stddev",
+                "sfc/spr",
+                FieldSelector::surface(CanonicalField::TotalPrecipitation)
                     .with_ensemble_standard_deviation(),
             ),
         ];
