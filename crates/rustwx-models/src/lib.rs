@@ -1403,6 +1403,29 @@ const FIELD_GEFS_SPR_2M_TEMP_STDDEV: GribFieldSpec = field_spec(
     &["TMP:2 m above ground"],
 );
 
+const FIELD_GEFS_AVG_2M_RH: GribFieldSpec = field_spec(
+    "gefs_mean_relative_humidity_2m_agl",
+    "GEFS 2m AGL Relative Humidity Mean",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(FieldSelector::height_agl(CanonicalField::RelativeHumidity, 2).with_ensemble_mean()),
+    &["RH:2 m above ground"],
+);
+
+const FIELD_GEFS_SPR_2M_RH_STDDEV: GribFieldSpec = field_spec(
+    "gefs_spread_relative_humidity_2m_agl_stddev",
+    "GEFS 2m AGL Relative Humidity Spread",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(
+        FieldSelector::height_agl(CanonicalField::RelativeHumidity, 2)
+            .with_ensemble_standard_deviation(),
+    ),
+    &["RH:2 m above ground"],
+);
+
 const fn qmd_height_agl_stat_field_spec(
     key: &'static str,
     label: &'static str,
@@ -2065,6 +2088,29 @@ const FIELD_TOTAL_CLOUD_COVER: GribFieldSpec = field_spec(
     &["TCDC:entire atmosphere", "TCDC:"],
 );
 
+const FIELD_GEFS_AVG_TOTAL_CLOUD_COVER: GribFieldSpec = field_spec(
+    "gefs_mean_total_cloud_cover",
+    "GEFS Total Cloud Cover Mean",
+    ProductFamily::Surface,
+    GribLevelKind::EntireAtmosphere,
+    None,
+    Some(FieldSelector::entire_atmosphere(CanonicalField::TotalCloudCover).with_ensemble_mean()),
+    &["TCDC:entire atmosphere", "TCDC:"],
+);
+
+const FIELD_GEFS_SPR_TOTAL_CLOUD_COVER_STDDEV: GribFieldSpec = field_spec(
+    "gefs_spread_total_cloud_cover_stddev",
+    "GEFS Total Cloud Cover Spread",
+    ProductFamily::Surface,
+    GribLevelKind::EntireAtmosphere,
+    None,
+    Some(
+        FieldSelector::entire_atmosphere(CanonicalField::TotalCloudCover)
+            .with_ensemble_standard_deviation(),
+    ),
+    &["TCDC:entire atmosphere", "TCDC:"],
+);
+
 const FIELD_LOW_CLOUD_COVER: GribFieldSpec = field_spec(
     "low_cloud_cover",
     "Low Cloud Cover",
@@ -2108,6 +2154,29 @@ const FIELD_TOTAL_QPF: GribFieldSpec = field_spec(
     GribLevelKind::Surface,
     None,
     Some(FieldSelector::surface(CanonicalField::TotalPrecipitation)),
+    &["APCP:surface"],
+);
+
+const FIELD_GEFS_AVG_6H_QPF: GribFieldSpec = field_spec(
+    "gefs_mean_6h_qpf",
+    "GEFS 6h QPF Mean",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(FieldSelector::surface(CanonicalField::TotalPrecipitation).with_ensemble_mean()),
+    &["APCP:surface"],
+);
+
+const FIELD_GEFS_SPR_6H_QPF_STDDEV: GribFieldSpec = field_spec(
+    "gefs_spread_6h_qpf_stddev",
+    "GEFS 6h QPF Spread",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::TotalPrecipitation)
+            .with_ensemble_standard_deviation(),
+    ),
     &["APCP:surface"],
 );
 
@@ -2976,6 +3045,24 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherTemperature,
     },
     PlotRecipe {
+        slug: "gefs_avg_2m_relative_humidity",
+        title: "GEFS 2m AGL Relative Humidity Mean",
+        filled: FIELD_GEFS_AVG_2M_RH,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherRh,
+    },
+    PlotRecipe {
+        slug: "gefs_spr_2m_relative_humidity_stddev",
+        title: "GEFS 2m AGL Relative Humidity Spread",
+        filled: FIELD_GEFS_SPR_2M_RH_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherRh,
+    },
+    PlotRecipe {
         slug: "2m_dewpoint",
         title: "2m AGL Dewpoint",
         filled: FIELD_2M_DEWPOINT,
@@ -3066,6 +3153,24 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherCloudCover,
     },
     PlotRecipe {
+        slug: "gefs_avg_cloud_cover",
+        title: "GEFS Cloud Cover Mean",
+        filled: FIELD_GEFS_AVG_TOTAL_CLOUD_COVER,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherCloudCover,
+    },
+    PlotRecipe {
+        slug: "gefs_spr_cloud_cover_stddev",
+        title: "GEFS Cloud Cover Spread",
+        filled: FIELD_GEFS_SPR_TOTAL_CLOUD_COVER_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherCloudCover,
+    },
+    PlotRecipe {
         slug: "low_cloud_cover",
         title: "Low Cloud Cover",
         filled: FIELD_LOW_CLOUD_COVER,
@@ -3132,6 +3237,24 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         slug: "total_qpf",
         title: "Total QPF",
         filled: FIELD_TOTAL_QPF,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherQpf,
+    },
+    PlotRecipe {
+        slug: "gefs_avg_6h_qpf",
+        title: "GEFS 6h QPF Mean",
+        filled: FIELD_GEFS_AVG_6H_QPF,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherQpf,
+    },
+    PlotRecipe {
+        slug: "gefs_spr_6h_qpf_stddev",
+        title: "GEFS 6h QPF Spread",
+        filled: FIELD_GEFS_SPR_6H_QPF_STDDEV,
         contours: None,
         barbs_u: None,
         barbs_v: None,
@@ -7549,6 +7672,22 @@ mod tests {
                 ],
             ),
             (
+                "gefs_avg_2m_relative_humidity",
+                "pgrb2ap5/geavg",
+                vec![
+                    FieldSelector::height_agl(CanonicalField::RelativeHumidity, 2)
+                        .with_ensemble_mean(),
+                ],
+            ),
+            (
+                "gefs_spr_2m_relative_humidity_stddev",
+                "pgrb2ap5/gespr",
+                vec![
+                    FieldSelector::height_agl(CanonicalField::RelativeHumidity, 2)
+                        .with_ensemble_standard_deviation(),
+                ],
+            ),
+            (
                 "gefs_spr_500mb_height_stddev",
                 "pgrb2ap5/gespr",
                 vec![
@@ -7585,6 +7724,37 @@ mod tests {
                 "pgrb2ap5/gespr",
                 vec![
                     FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+                        .with_ensemble_standard_deviation(),
+                ],
+            ),
+            (
+                "gefs_avg_cloud_cover",
+                "pgrb2ap5/geavg",
+                vec![
+                    FieldSelector::entire_atmosphere(CanonicalField::TotalCloudCover)
+                        .with_ensemble_mean(),
+                ],
+            ),
+            (
+                "gefs_spr_cloud_cover_stddev",
+                "pgrb2ap5/gespr",
+                vec![
+                    FieldSelector::entire_atmosphere(CanonicalField::TotalCloudCover)
+                        .with_ensemble_standard_deviation(),
+                ],
+            ),
+            (
+                "gefs_avg_6h_qpf",
+                "pgrb2ap5/geavg",
+                vec![
+                    FieldSelector::surface(CanonicalField::TotalPrecipitation).with_ensemble_mean(),
+                ],
+            ),
+            (
+                "gefs_spr_6h_qpf_stddev",
+                "pgrb2ap5/gespr",
+                vec![
+                    FieldSelector::surface(CanonicalField::TotalPrecipitation)
                         .with_ensemble_standard_deviation(),
                 ],
             ),
