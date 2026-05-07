@@ -1324,7 +1324,7 @@ fn time_value_to_hours(unit: u8, value: u32) -> Option<u32> {
 fn product_template_match_score(selector: FieldSelector, message: &Grib2Message) -> Option<u8> {
     match selector.product {
         FieldProduct::Default => default_product_template_match_score(selector, message),
-        FieldProduct::EnsembleMean => derived_forecast_match_score(message, &[0]),
+        FieldProduct::EnsembleMean => derived_forecast_match_score(message, &[0, 1]),
         FieldProduct::EnsembleStandardDeviation => derived_forecast_match_score(message, &[2, 3]),
         FieldProduct::EnsembleSpread => derived_forecast_match_score(message, &[4]),
         FieldProduct::EnsembleMinimum => derived_forecast_match_score(message, &[8]),
@@ -3063,6 +3063,25 @@ mod tests {
 
         assert_eq!(mean_field.values, vec![279.0]);
         assert_eq!(stddev_field.values, vec![3.5]);
+    }
+
+    #[test]
+    fn ensemble_mean_selector_accepts_weighted_mean_product() {
+        let mut weighted_mean =
+            ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[281.0], -99.0, -99.0);
+        weighted_mean.product.template = 2;
+        weighted_mean.product.derived_forecast_type = Some(1);
+        let grib = Grib2File {
+            messages: vec![weighted_mean],
+        };
+
+        let field = extract_field_from_grib2(
+            &grib,
+            FieldSelector::height_agl(CanonicalField::Temperature, 2).with_ensemble_mean(),
+        )
+        .unwrap();
+
+        assert_eq!(field.values, vec![281.0]);
     }
 
     #[test]

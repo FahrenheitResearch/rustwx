@@ -1114,6 +1114,7 @@ fn direct_recipe_requires_explicit_opt_in(slug: &str) -> bool {
         || slug.starts_with("hgefs_spr_")
         || slug.starts_with("href_sprd_")
         || slug.starts_with("href_prob_")
+        || slug.starts_with("href_mean_")
         || slug.starts_with("refs_sprd_")
         || slug.starts_with("refs_prob_")
 }
@@ -4948,11 +4949,11 @@ mod tests {
                 .any(|slug| slug.starts_with("hgefs_spr_"))
         );
         let href_supported = supported_direct_recipe_slugs(ModelId::Href);
-        assert!(
-            !href_supported
-                .iter()
-                .any(|slug| { slug.starts_with("href_sprd_") || slug.starts_with("href_prob_") })
-        );
+        assert!(!href_supported.iter().any(|slug| {
+            slug.starts_with("href_sprd_")
+                || slug.starts_with("href_prob_")
+                || slug.starts_with("href_mean_")
+        }));
         let refs_supported = supported_direct_recipe_slugs(ModelId::Refs);
         assert!(
             !refs_supported
@@ -5002,6 +5003,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(href_prob_planned[0].plan.product, "ensprod/conus/prob");
+
+        let href_mean_planned =
+            plan_direct_recipes(ModelId::Href, &["href_mean_2m_temperature".to_string()]).unwrap();
+        assert_eq!(href_mean_planned[0].plan.product, "ensprod/conus/mean");
 
         let refs_spread_planned =
             plan_direct_recipes(ModelId::Refs, &["refs_sprd_2m_temperature".to_string()]).unwrap();

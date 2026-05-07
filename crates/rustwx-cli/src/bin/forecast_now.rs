@@ -351,6 +351,12 @@ fn forecast_now_required_products(model: ModelId, args: &Args) -> Vec<String> {
         let direct_recipes = args.direct_recipes.as_deref().unwrap_or(&[]);
         if direct_recipes
             .iter()
+            .any(|recipe| recipe.starts_with("href_mean_"))
+        {
+            products.push("ensprod/conus/mean".to_string());
+        }
+        if direct_recipes
+            .iter()
             .any(|recipe| recipe.starts_with("href_prob_"))
         {
             products.push("ensprod/conus/prob".to_string());
@@ -719,6 +725,7 @@ fn direct_recipe_requires_explicit_opt_in(slug: &str) -> bool {
         || slug.starts_with("hgefs_spr_")
         || slug.starts_with("href_sprd_")
         || slug.starts_with("href_prob_")
+        || slug.starts_with("href_mean_")
         || slug.starts_with("refs_sprd_")
         || slug.starts_with("refs_prob_")
 }
@@ -1185,6 +1192,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         total_outputs,
         summary_path.display()
     );
+    if fail_count > 0 {
+        return Err(format!(
+            "{fail_count} forecast outcome(s) failed; see {}",
+            summary_path.display()
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -1328,6 +1342,20 @@ mod tests {
 
     #[test]
     fn href_direct_recipes_probe_their_required_products() {
+        let mean_args = Args::parse_from([
+            "forecast-now",
+            "--out-dir",
+            "out",
+            "--cache-dir",
+            "cache",
+            "--direct-recipes",
+            "href_mean_2m_temperature",
+        ]);
+        assert_eq!(
+            forecast_now_required_products(ModelId::Href, &mean_args),
+            vec!["ensprod/conus/mean".to_string()]
+        );
+
         let prob_args = Args::parse_from([
             "forecast-now",
             "--out-dir",
@@ -1363,11 +1391,12 @@ mod tests {
             "--cache-dir",
             "cache",
             "--direct-recipes",
-            "href_prob_2m_temperature_below_273p15k,href_sprd_2m_temperature",
+            "href_mean_2m_temperature,href_prob_2m_temperature_below_273p15k,href_sprd_2m_temperature",
         ]);
         assert_eq!(
             forecast_now_required_products(ModelId::Href, &both_args),
             vec![
+                "ensprod/conus/mean".to_string(),
                 "ensprod/conus/prob".to_string(),
                 "ensprod/conus/sprd".to_string()
             ]
