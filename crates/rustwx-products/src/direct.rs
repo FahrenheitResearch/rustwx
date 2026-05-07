@@ -1112,6 +1112,7 @@ fn direct_recipe_requires_explicit_opt_in(slug: &str) -> bool {
         || slug.starts_with("gefs_spr_")
         || slug.starts_with("aigefs_spr_")
         || slug.starts_with("hgefs_spr_")
+        || slug.starts_with("href_sprd_")
 }
 
 fn plan_direct_recipes(
@@ -4943,6 +4944,12 @@ mod tests {
                 .iter()
                 .any(|slug| slug.starts_with("hgefs_spr_"))
         );
+        let href_supported = supported_direct_recipe_slugs(ModelId::Href);
+        assert!(
+            !href_supported
+                .iter()
+                .any(|slug| slug.starts_with("href_sprd_"))
+        );
 
         let planned =
             plan_direct_recipes(ModelId::Nbm, &["nbm_qmd_2m_temperature_p50".to_string()]).unwrap();
@@ -4975,6 +4982,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hgefs_planned[0].plan.product, "sfc/spr");
+
+        let href_planned =
+            plan_direct_recipes(ModelId::Href, &["href_sprd_2m_temperature".to_string()]).unwrap();
+        assert_eq!(href_planned[0].plan.product, "ensprod/conus/sprd");
     }
 
     #[test]

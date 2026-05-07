@@ -113,6 +113,9 @@ fn recipe_maturity(slug: &str) -> ProductMaturity {
     if slug.starts_with("hgefs_spr_") {
         return ProductMaturity::Experimental;
     }
+    if slug.starts_with("href_sprd_") {
+        return ProductMaturity::Experimental;
+    }
     if slug.starts_with("gefs_avg_") || slug.starts_with("gefs_spr_") {
         return ProductMaturity::Experimental;
     }
@@ -133,6 +136,9 @@ fn recipe_flags(slug: &str) -> Vec<ProductSemanticFlag> {
         return vec![ProductSemanticFlag::ProofOriented];
     }
     if slug.starts_with("hgefs_spr_") {
+        return vec![ProductSemanticFlag::ProofOriented];
+    }
+    if slug.starts_with("href_sprd_") {
         return vec![ProductSemanticFlag::ProofOriented];
     }
     if slug.starts_with("gefs_avg_") || slug.starts_with("gefs_spr_") {
@@ -388,6 +394,7 @@ const RAP_CYCLE_HOURS: &[u8] = &[
 ];
 const NAM_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
 const HIRESW_CYCLE_HOURS: &[u8] = &[0, 12];
+const HREF_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
 const SREF_CYCLE_HOURS: &[u8] = &[3, 9, 15, 21];
 const HOURLY_ANALYSIS_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
@@ -703,6 +710,16 @@ const MODELS: &[ModelSummary] = &[
         ensemble_mode: EnsembleMode::MemberGribFiles,
     },
     ModelSummary {
+        id: ModelId::Href,
+        description: "HREF CONUS ensemble products",
+        default_product: "ensprod/conus/sprd",
+        cycle_hours_utc: HREF_CYCLE_HOURS,
+        max_forecast_hour: 48,
+        sources: NOMADS_ONLY_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::MemberGribFiles,
+    },
+    ModelSummary {
         id: ModelId::Sref,
         description: "SREF regional ensemble member/statistic forecast grids",
         default_product: "ensprod/pgrb212/mean_3hrly",
@@ -843,6 +860,19 @@ const FIELD_HGEFS_SPR_500_HEIGHT_STDDEV: GribFieldSpec = field_spec(
     &["HGT:500 mb"],
 );
 
+const FIELD_HREF_SPRD_500_HEIGHT: GribFieldSpec = field_spec(
+    "href_spread_height_500mb",
+    "HREF 500mb Height Spread",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(500),
+    Some(
+        FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500)
+            .with_product(FieldProduct::EnsembleSpread),
+    ),
+    &["HGT:500 mb"],
+);
+
 const FIELD_GEFS_AVG_500_HEIGHT: GribFieldSpec = field_spec(
     "gefs_mean_height_500mb",
     "GEFS 500mb Height Mean",
@@ -921,6 +951,19 @@ const FIELD_GEFS_SPR_500_TEMP_STDDEV: GribFieldSpec = field_spec(
     Some(
         FieldSelector::isobaric(CanonicalField::Temperature, 500)
             .with_ensemble_standard_deviation(),
+    ),
+    &["TMP:500 mb"],
+);
+
+const FIELD_HREF_SPRD_500_TEMP: GribFieldSpec = field_spec(
+    "href_spread_temperature_500mb",
+    "HREF 500mb Temperature Spread",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(500),
+    Some(
+        FieldSelector::isobaric(CanonicalField::Temperature, 500)
+            .with_product(FieldProduct::EnsembleSpread),
     ),
     &["TMP:500 mb"],
 );
@@ -1557,6 +1600,19 @@ const FIELD_HGEFS_SPR_2M_TEMP_STDDEV: GribFieldSpec = field_spec(
     &["TMP:2 m above ground"],
 );
 
+const FIELD_HREF_SPRD_2M_TEMP: GribFieldSpec = field_spec(
+    "href_spread_temperature_2m_agl",
+    "HREF 2m AGL Temperature Spread",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(
+        FieldSelector::height_agl(CanonicalField::Temperature, 2)
+            .with_product(FieldProduct::EnsembleSpread),
+    ),
+    &["TMP:2 m above ground"],
+);
+
 const FIELD_2M_DEWPOINT: GribFieldSpec = field_spec(
     "dewpoint_2m_agl",
     "2m AGL Dewpoint",
@@ -1564,6 +1620,19 @@ const FIELD_2M_DEWPOINT: GribFieldSpec = field_spec(
     GribLevelKind::HeightAboveGround,
     Some(2),
     Some(FieldSelector::height_agl(CanonicalField::Dewpoint, 2)),
+    &["DPT:2 m above ground"],
+);
+
+const FIELD_HREF_SPRD_2M_DEWPOINT: GribFieldSpec = field_spec(
+    "href_spread_dewpoint_2m_agl",
+    "HREF 2m AGL Dewpoint Spread",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(
+        FieldSelector::height_agl(CanonicalField::Dewpoint, 2)
+            .with_product(FieldProduct::EnsembleSpread),
+    ),
     &["DPT:2 m above ground"],
 );
 
@@ -1735,6 +1804,19 @@ const FIELD_QMD_10M_WIND_SPEED_P90: GribFieldSpec = qmd_height_agl_stat_field_sp
     CanonicalField::WindSpeed,
     10,
     FieldProduct::Percentile(90),
+    &["WIND:10 m above ground"],
+);
+
+const FIELD_HREF_SPRD_10M_WIND_SPEED: GribFieldSpec = field_spec(
+    "href_spread_wind_speed_10m_agl",
+    "HREF 10m AGL Wind Speed Spread",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(10),
+    Some(
+        FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+            .with_product(FieldProduct::EnsembleSpread),
+    ),
     &["WIND:10 m above ground"],
 );
 
@@ -1910,6 +1992,19 @@ const FIELD_GEFS_SPR_MSLP_STDDEV: GribFieldSpec = field_spec(
     &["PRMSL:mean sea level"],
 );
 
+const FIELD_HREF_SPRD_MSLP: GribFieldSpec = field_spec(
+    "href_spread_pressure_reduced_to_mean_sea_level",
+    "HREF MSLP Spread",
+    ProductFamily::Surface,
+    GribLevelKind::MeanSeaLevel,
+    None,
+    Some(
+        FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel)
+            .with_product(FieldProduct::EnsembleSpread),
+    ),
+    &["MSLET:mean sea level"],
+);
+
 const FIELD_PWAT: GribFieldSpec = field_spec(
     "precipitable_water",
     "Precipitable Water",
@@ -1941,6 +2036,19 @@ const FIELD_GEFS_SPR_PWAT_STDDEV: GribFieldSpec = field_spec(
     Some(
         FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
             .with_ensemble_standard_deviation(),
+    ),
+    &["PWAT:entire atmosphere", "PWAT:"],
+);
+
+const FIELD_HREF_SPRD_PWAT: GribFieldSpec = field_spec(
+    "href_spread_precipitable_water",
+    "HREF Precipitable Water Spread",
+    ProductFamily::Surface,
+    GribLevelKind::EntireAtmosphere,
+    None,
+    Some(
+        FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+            .with_product(FieldProduct::EnsembleSpread),
     ),
     &["PWAT:entire atmosphere", "PWAT:"],
 );
@@ -2688,6 +2796,69 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherHeight,
     },
     PlotRecipe {
+        slug: "href_sprd_2m_temperature",
+        title: "HREF 2m AGL Temperature Spread",
+        filled: FIELD_HREF_SPRD_2M_TEMP,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
+        slug: "href_sprd_2m_dewpoint",
+        title: "HREF 2m AGL Dewpoint Spread",
+        filled: FIELD_HREF_SPRD_2M_DEWPOINT,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherDewpoint,
+    },
+    PlotRecipe {
+        slug: "href_sprd_10m_wind_speed",
+        title: "HREF 10m AGL Wind Speed Spread",
+        filled: FIELD_HREF_SPRD_10M_WIND_SPEED,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherWinds,
+    },
+    PlotRecipe {
+        slug: "href_sprd_mslp",
+        title: "HREF MSLP Spread",
+        filled: FIELD_HREF_SPRD_MSLP,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherPressure,
+    },
+    PlotRecipe {
+        slug: "href_sprd_precipitable_water",
+        title: "HREF Precipitable Water Spread",
+        filled: FIELD_HREF_SPRD_PWAT,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherPrecipitableWater,
+    },
+    PlotRecipe {
+        slug: "href_sprd_500mb_height",
+        title: "HREF 500mb Height Spread",
+        filled: FIELD_HREF_SPRD_500_HEIGHT,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherHeight,
+    },
+    PlotRecipe {
+        slug: "href_sprd_500mb_temperature",
+        title: "HREF 500mb Temperature Spread",
+        filled: FIELD_HREF_SPRD_500_TEMP,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
         slug: "sref_prob_2m_temperature_below_273k",
         title: "SREF Probability 2m Temperature < 273 K",
         filled: FIELD_SREF_PROB_2M_TEMP_BELOW_FREEZING,
@@ -3288,8 +3459,12 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
                 ModelId::Aigefs | ModelId::Hgefs,
                 FieldProduct::EnsembleStandardDeviation | FieldProduct::EnsembleSpread,
             ) => {}
+            (ModelId::Href, FieldProduct::EnsembleSpread) => {}
             _ => return false,
         }
+    }
+    if model == ModelId::Href && selector.product.is_default() {
+        return false;
     }
     if matches!(
         (model, selector.vertical),
@@ -3478,6 +3653,7 @@ pub fn supported_forecast_hours(model: ModelId, cycle_hour_utc: u8) -> Vec<u16> 
             hours
         }
         ModelId::Hiresw => (0..=48).collect(),
+        ModelId::Href => (1..=48).collect(),
         ModelId::Sref => (0..=87).step_by(3).collect(),
         ModelId::Rtma | ModelId::Urma => vec![0],
         ModelId::Nbm => (1..=264).collect(),
@@ -3545,6 +3721,7 @@ fn default_canonical_bundle_product(
         (ModelId::Rap, _) => "awp130pgrb",
         (ModelId::Nam, _) => "awip12",
         (ModelId::Hiresw, _) => "arw_2p5km/conus",
+        (ModelId::Href, _) => "ensprod/conus/sprd",
         (ModelId::Sref, _) => "ensprod/pgrb212/mean_3hrly",
         (ModelId::Rtma, _) => "2dvaranl_ndfd",
         (ModelId::Urma, _) => "2dvaranl_ndfd",
@@ -3956,6 +4133,7 @@ fn build_grib_url(source: SourceId, request: &ModelRunRequest) -> Result<String,
         ModelId::Rap => build_rap_url(source, request)?,
         ModelId::Nam => build_nam_url(source, request)?,
         ModelId::Hiresw => build_hiresw_url(source, request)?,
+        ModelId::Href => build_href_url(source, request)?,
         ModelId::Sref => build_sref_url(source, request)?,
         ModelId::Rtma => build_rtma_url(source, request)?,
         ModelId::Urma => build_urma_url(source, request)?,
@@ -4648,6 +4826,38 @@ fn build_hiresw_url(source: SourceId, request: &ModelRunRequest) -> Result<Strin
     ))
 }
 
+fn build_href_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    if source != SourceId::Nomads {
+        return Ok(unsupported_source(source, request.model));
+    }
+    if !forecast_hour_supported(request.model, request.cycle.hour_utc, request.forecast_hour) {
+        return Err(ModelError::UnsupportedForecastHour {
+            model: request.model,
+            cycle_hour: request.cycle.hour_utc,
+            forecast_hour: request.forecast_hour,
+            reason: "HREF CONUS ensprod files are expected for f01 through f48".to_string(),
+        });
+    }
+    let token = normalize_token(&request.product);
+    let product = token
+        .split(['_', '/'])
+        .find(|part| {
+            matches!(
+                *part,
+                "avrg" | "eas" | "ffri" | "lpmm" | "mean" | "pmmn" | "prob" | "sprd"
+            )
+        })
+        .unwrap_or("sprd");
+    let domain = token
+        .split(['_', '/'])
+        .find(|part| matches!(*part, "conus"))
+        .unwrap_or("conus");
+    Ok(format!(
+        "https://nomads.ncep.noaa.gov/pub/data/nccf/com/href/prod/href.{}/ensprod/href.t{:02}z.{}.{}.f{:02}.grib2",
+        request.cycle.date_yyyymmdd, request.cycle.hour_utc, domain, product, request.forecast_hour
+    ))
+}
+
 fn build_sref_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
     if source != SourceId::Nomads {
         return Ok(unsupported_source(source, request.model));
@@ -5100,6 +5310,14 @@ fn plot_recipe_fetch_defaults(
             "arw_2p5km/conus",
             PlotRecipeFetchPolicy::PreferIndexedSubset,
         ),
+        (ModelId::Href, _, _) if has_ensemble_spread_selector => (
+            "ensprod/conus/sprd",
+            PlotRecipeFetchPolicy::PreferIndexedSubset,
+        ),
+        (ModelId::Href, _, _) => (
+            "ensprod/conus/sprd",
+            PlotRecipeFetchPolicy::PreferIndexedSubset,
+        ),
         (ModelId::Sref, _, _) if has_probability_selector => (
             "ensprod/pgrb212/prob_3hrly",
             PlotRecipeFetchPolicy::PreferIndexedSubset,
@@ -5194,6 +5412,7 @@ fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<Stri
             | ModelId::Rap
             | ModelId::Nam
             | ModelId::Hiresw
+            | ModelId::Href
             | ModelId::Sref
             | ModelId::Rtma
             | ModelId::Urma
@@ -5214,6 +5433,7 @@ fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<Stri
             | ModelId::Rap
             | ModelId::Nam
             | ModelId::Hiresw
+            | ModelId::Href
             | ModelId::Sref
             | ModelId::Rtma
             | ModelId::Urma
@@ -5234,6 +5454,7 @@ fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<Stri
             | ModelId::Rap
             | ModelId::Nam
             | ModelId::Hiresw
+            | ModelId::Href
             | ModelId::Sref
             | ModelId::Rtma
             | ModelId::Urma
@@ -5258,6 +5479,14 @@ fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<Stri
 
 fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> Option<String> {
     match (model, field.key) {
+        (ModelId::Href, key) if !key.starts_with("href_spread_") => Some(format!(
+            "{} is not yet wired for HREF; HREF support is currently limited to explicit `href_sprd_*` ensprod spread recipes",
+            field.label
+        )),
+        (model, key) if key.starts_with("href_spread_") && model != ModelId::Href => Some(format!(
+            "{} is only verified for HREF ensprod spread fields right now; do not route this recipe through model '{model}'",
+            field.label
+        )),
         (model, key)
             if (key.starts_with("gefs_mean_") || key.starts_with("gefs_spread_"))
                 && model != ModelId::Gefs =>
@@ -5358,6 +5587,16 @@ fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> O
 
 fn model_specific_surface_field_gap(field: &GribFieldSpec, model: ModelId) -> Option<String> {
     match (model, field.key) {
+        (ModelId::Href, key) if !key.starts_with("href_spread_") => Some(format!(
+            "{} is not yet wired for HREF; HREF support is currently limited to explicit `href_sprd_*` ensprod spread recipes",
+            field.label
+        )),
+        (model, key) if key.starts_with("href_spread_") && model != ModelId::Href => {
+            Some(format!(
+                "{} is only verified for HREF ensprod spread fields right now; do not route this recipe through model '{model}'",
+                field.label
+            ))
+        }
         (model, key)
             if (key.starts_with("gefs_mean_") || key.starts_with("gefs_spread_"))
                 && model != ModelId::Gefs =>
@@ -5547,7 +5786,7 @@ mod tests {
 
     #[test]
     fn built_in_models_are_real() {
-        assert_eq!(built_in_models().len(), 21);
+        assert_eq!(built_in_models().len(), 22);
         assert_eq!(model_summary(ModelId::HrrrAk).default_product, "sfc");
         assert_eq!(model_summary(ModelId::Gdas).default_product, "pgrb2.0p25");
         assert_eq!(
@@ -5559,6 +5798,14 @@ mod tests {
         assert_eq!(model_summary(ModelId::Hgefs).default_product, "sfc/avg");
         assert_eq!(model_summary(ModelId::Hgefs).max_forecast_hour, 240);
         assert_eq!(model_summary(ModelId::Aifs).max_forecast_hour, 43_848);
+        assert_eq!(
+            model_summary(ModelId::Href).default_product,
+            "ensprod/conus/sprd"
+        );
+        assert_eq!(
+            model_summary(ModelId::Href).cycle_hours_utc,
+            HREF_CYCLE_HOURS
+        );
         assert_eq!(model_summary(ModelId::Rtma).max_forecast_hour, 0);
         assert_eq!(model_summary(ModelId::Nbm).default_product, "core/co");
         assert_eq!(model_summary(ModelId::RrfsA).default_product, "prs-conus");
@@ -5971,6 +6218,7 @@ mod tests {
             ModelId::Rap,
             ModelId::Nam,
             ModelId::Hiresw,
+            ModelId::Href,
             ModelId::Sref,
             ModelId::Rtma,
             ModelId::Urma,
@@ -6003,6 +6251,8 @@ mod tests {
                 let reason = &blockers[0].reason;
                 if matches!(model, ModelId::Rtma | ModelId::Urma | ModelId::Nbm) {
                     assert!(reason.contains("surface/core grids"));
+                } else if model == ModelId::Href {
+                    assert!(reason.contains("limited to explicit `href_sprd_*`"));
                 } else {
                     assert!(reason.contains("700 hPa temperature/height/wind selectors"));
                 }
@@ -6029,6 +6279,9 @@ mod tests {
                     }
                     ModelId::Rtma | ModelId::Urma | ModelId::Nbm => {
                         assert!(reason.contains("surface/core grids"));
+                    }
+                    ModelId::Href => {
+                        assert!(reason.contains("limited to explicit `href_sprd_*`"));
                     }
                     ModelId::Aifs => {
                         assert!(reason.contains("whole-file structured extraction"));
@@ -6328,6 +6581,13 @@ mod tests {
         assert_eq!(
             build_grib_url(SourceId::Nomads, &hiresw).unwrap(),
             "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hiresw/prod/hiresw.20260502/hiresw.t00z.arw_2p5km.f24.conus.grib2"
+        );
+
+        let href =
+            ModelRunRequest::new(ModelId::Href, cycle.clone(), 24, "ensprod/conus/sprd").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Nomads, &href).unwrap(),
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/href/prod/href.20260502/ensprod/href.t00z.conus.sprd.f24.grib2"
         );
 
         let nbm = ModelRunRequest::new(ModelId::Nbm, cycle.clone(), 24, "core/co").unwrap();
@@ -7385,6 +7645,73 @@ mod tests {
                 "{slug}"
             );
         }
+    }
+
+    #[test]
+    fn href_spread_recipes_use_sprd_product_and_spread_selectors() {
+        let cases = [
+            (
+                "href_sprd_2m_temperature",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2)
+                    .with_product(FieldProduct::EnsembleSpread),
+            ),
+            (
+                "href_sprd_2m_dewpoint",
+                FieldSelector::height_agl(CanonicalField::Dewpoint, 2)
+                    .with_product(FieldProduct::EnsembleSpread),
+            ),
+            (
+                "href_sprd_10m_wind_speed",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+                    .with_product(FieldProduct::EnsembleSpread),
+            ),
+            (
+                "href_sprd_mslp",
+                FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel)
+                    .with_product(FieldProduct::EnsembleSpread),
+            ),
+            (
+                "href_sprd_precipitable_water",
+                FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+                    .with_product(FieldProduct::EnsembleSpread),
+            ),
+            (
+                "href_sprd_500mb_height",
+                FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500)
+                    .with_product(FieldProduct::EnsembleSpread),
+            ),
+            (
+                "href_sprd_500mb_temperature",
+                FieldSelector::isobaric(CanonicalField::Temperature, 500)
+                    .with_product(FieldProduct::EnsembleSpread),
+            ),
+        ];
+
+        for (slug, selector) in cases {
+            let plan = plot_recipe_fetch_plan(slug, ModelId::Href).unwrap();
+            assert_eq!(plan.product, "ensprod/conus/sprd", "{slug}");
+            assert_eq!(
+                plan.fetch_policy,
+                PlotRecipeFetchPolicy::PreferIndexedSubset,
+                "{slug}"
+            );
+            assert_eq!(plan.selectors(), vec![selector], "{slug}");
+
+            let blockers = plot_recipe_fetch_blockers(slug, ModelId::Gefs).unwrap();
+            assert!(
+                blockers
+                    .iter()
+                    .any(|blocker| blocker.reason.contains("model 'gefs'")),
+                "{slug}"
+            );
+        }
+
+        let generic = plot_recipe_fetch_blockers("2m_temperature", ModelId::Href).unwrap();
+        assert!(
+            generic
+                .iter()
+                .any(|blocker| { blocker.reason.contains("limited to explicit `href_sprd_*`") })
+        );
     }
 
     #[test]

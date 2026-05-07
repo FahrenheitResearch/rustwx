@@ -1370,6 +1370,7 @@ pub fn supported_derived_recipe_slugs(model: ModelId) -> Vec<String> {
             .collect(),
         ModelId::Rtma
         | ModelId::Urma
+        | ModelId::Href
         | ModelId::Nbm
         | ModelId::RrfsPublic
         | ModelId::RrfsFireWx => Vec::new(),
