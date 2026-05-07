@@ -1588,6 +1588,84 @@ const FIELD_SREF_PROB_VISIBILITY_BELOW_ONE_MILE: GribFieldSpec = field_spec(
     &["VIS:surface"],
 );
 
+const FIELD_SREF_PROB_VISIBILITY_BELOW_402M: GribFieldSpec = field_spec(
+    "sref_probability_visibility_surface_lt_402m",
+    "SREF Probability Visibility < 402 m",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::Visibility)
+            .with_probability(ProbabilitySelection::below_milli(402_000)),
+    ),
+    &["VIS:surface"],
+);
+
+const FIELD_SREF_PROB_VISIBILITY_BELOW_804M: GribFieldSpec = field_spec(
+    "sref_probability_visibility_surface_lt_804m",
+    "SREF Probability Visibility < 804 m",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::Visibility)
+            .with_probability(ProbabilitySelection::below_milli(804_000)),
+    ),
+    &["VIS:surface"],
+);
+
+const FIELD_SREF_PROB_VISIBILITY_BELOW_3218M: GribFieldSpec = field_spec(
+    "sref_probability_visibility_surface_lt_3218m",
+    "SREF Probability Visibility < 3218 m",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::Visibility)
+            .with_probability(ProbabilitySelection::below_milli(3_218_000)),
+    ),
+    &["VIS:surface"],
+);
+
+const FIELD_SREF_PROB_10M_WIND_SPEED_ABOVE_12P89MS: GribFieldSpec = field_spec(
+    "sref_probability_wind_speed_10m_agl_gt_12p89ms",
+    "SREF Probability 10m Wind Speed > 12.89 m/s",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(10),
+    Some(
+        FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+            .with_probability(ProbabilitySelection::above_milli(12_890)),
+    ),
+    &["WIND:10 m above ground"],
+);
+
+const FIELD_SREF_PROB_10M_WIND_SPEED_ABOVE_17P5MS: GribFieldSpec = field_spec(
+    "sref_probability_wind_speed_10m_agl_gt_17p5ms",
+    "SREF Probability 10m Wind Speed > 17.5 m/s",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(10),
+    Some(
+        FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+            .with_probability(ProbabilitySelection::above_milli(17_500)),
+    ),
+    &["WIND:10 m above ground"],
+);
+
+const FIELD_SREF_PROB_10M_WIND_SPEED_ABOVE_25P78MS: GribFieldSpec = field_spec(
+    "sref_probability_wind_speed_10m_agl_gt_25p78ms",
+    "SREF Probability 10m Wind Speed > 25.78 m/s",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(10),
+    Some(
+        FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+            .with_probability(ProbabilitySelection::above_milli(25_780)),
+    ),
+    &["WIND:10 m above ground"],
+);
+
 const FIELD_MSLP: GribFieldSpec = field_spec(
     "pressure_reduced_to_mean_sea_level",
     "MSLP",
@@ -2308,6 +2386,60 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         slug: "sref_prob_visibility_below_1609m",
         title: "SREF Probability Visibility < 1609 m",
         filled: FIELD_SREF_PROB_VISIBILITY_BELOW_ONE_MILE,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "sref_prob_visibility_below_402m",
+        title: "SREF Probability Visibility < 402 m",
+        filled: FIELD_SREF_PROB_VISIBILITY_BELOW_402M,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "sref_prob_visibility_below_804m",
+        title: "SREF Probability Visibility < 804 m",
+        filled: FIELD_SREF_PROB_VISIBILITY_BELOW_804M,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "sref_prob_visibility_below_3218m",
+        title: "SREF Probability Visibility < 3218 m",
+        filled: FIELD_SREF_PROB_VISIBILITY_BELOW_3218M,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "sref_prob_10m_wind_speed_above_12p89ms",
+        title: "SREF Probability 10m Wind Speed > 12.89 m/s",
+        filled: FIELD_SREF_PROB_10M_WIND_SPEED_ABOVE_12P89MS,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "sref_prob_10m_wind_speed_above_17p5ms",
+        title: "SREF Probability 10m Wind Speed > 17.5 m/s",
+        filled: FIELD_SREF_PROB_10M_WIND_SPEED_ABOVE_17P5MS,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "sref_prob_10m_wind_speed_above_25p78ms",
+        title: "SREF Probability 10m Wind Speed > 25.78 m/s",
+        filled: FIELD_SREF_PROB_10M_WIND_SPEED_ABOVE_25P78MS,
         contours: None,
         barbs_u: None,
         barbs_v: None,
@@ -6595,6 +6727,36 @@ mod tests {
                 "sref_prob_visibility_below_1609m",
                 FieldSelector::surface(CanonicalField::Visibility)
                     .with_probability(ProbabilitySelection::below_milli(1_609_000)),
+            ),
+            (
+                "sref_prob_visibility_below_402m",
+                FieldSelector::surface(CanonicalField::Visibility)
+                    .with_probability(ProbabilitySelection::below_milli(402_000)),
+            ),
+            (
+                "sref_prob_visibility_below_804m",
+                FieldSelector::surface(CanonicalField::Visibility)
+                    .with_probability(ProbabilitySelection::below_milli(804_000)),
+            ),
+            (
+                "sref_prob_visibility_below_3218m",
+                FieldSelector::surface(CanonicalField::Visibility)
+                    .with_probability(ProbabilitySelection::below_milli(3_218_000)),
+            ),
+            (
+                "sref_prob_10m_wind_speed_above_12p89ms",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+                    .with_probability(ProbabilitySelection::above_milli(12_890)),
+            ),
+            (
+                "sref_prob_10m_wind_speed_above_17p5ms",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+                    .with_probability(ProbabilitySelection::above_milli(17_500)),
+            ),
+            (
+                "sref_prob_10m_wind_speed_above_25p78ms",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+                    .with_probability(ProbabilitySelection::above_milli(25_780)),
             ),
         ];
 
