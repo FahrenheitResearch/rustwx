@@ -430,7 +430,7 @@ pub fn extract_fields_from_grib2(
     for message in &grib.messages {
         for (index, prepared_selector) in prepared.iter().enumerate() {
             if prepared_selector.message.matches(message) {
-                let Some(score) = prepared_selector.match_score(message) else {
+                let Some(score) = prepared_selector.match_score(message, None) else {
                     continue;
                 };
                 let replace = matched[index]
@@ -476,6 +476,22 @@ pub fn extract_fields_from_grib2_partial(
     grib: &Grib2File,
     selectors: &[FieldSelector],
 ) -> Result<PartialExtraction, IoError> {
+    extract_fields_from_grib2_partial_inner(grib, selectors, None)
+}
+
+pub fn extract_fields_from_grib2_partial_at_forecast_hour(
+    grib: &Grib2File,
+    selectors: &[FieldSelector],
+    forecast_hour: u16,
+) -> Result<PartialExtraction, IoError> {
+    extract_fields_from_grib2_partial_inner(grib, selectors, Some(forecast_hour))
+}
+
+fn extract_fields_from_grib2_partial_inner(
+    grib: &Grib2File,
+    selectors: &[FieldSelector],
+    forecast_hour: Option<u16>,
+) -> Result<PartialExtraction, IoError> {
     let mut extracted = Vec::new();
     let mut missing = Vec::new();
 
@@ -493,7 +509,7 @@ pub fn extract_fields_from_grib2_partial(
     for message in &grib.messages {
         for (index, prepared_selector) in prepared.iter().enumerate() {
             if prepared_selector.message.matches(message) {
-                let Some(score) = prepared_selector.match_score(message) else {
+                let Some(score) = prepared_selector.match_score(message, forecast_hour) else {
                     continue;
                 };
                 let replace = matched[index]
@@ -550,6 +566,24 @@ pub fn extract_fields_partial_from_model_bytes_with_earth2_selector(
     selectors: &[FieldSelector],
     earth2_ensemble: Option<earth2_archive::Earth2EnsembleSelector>,
 ) -> Result<PartialExtraction, IoError> {
+    extract_fields_partial_from_model_bytes_with_earth2_selector_at_forecast_hour(
+        model,
+        bytes,
+        preferred_path,
+        selectors,
+        earth2_ensemble,
+        None,
+    )
+}
+
+pub fn extract_fields_partial_from_model_bytes_with_earth2_selector_at_forecast_hour(
+    model: ModelId,
+    bytes: &[u8],
+    preferred_path: Option<&Path>,
+    selectors: &[FieldSelector],
+    earth2_ensemble: Option<earth2_archive::Earth2EnsembleSelector>,
+    forecast_hour: Option<u16>,
+) -> Result<PartialExtraction, IoError> {
     match model {
         ModelId::Aifs if should_decode_aifs_as_earth2(bytes, preferred_path) => {
             earth2_archive::extract_fields_partial_from_bytes_with_selector(
@@ -563,7 +597,11 @@ pub fn extract_fields_partial_from_model_bytes_with_earth2_selector(
         _ => {
             let grib =
                 Grib2File::from_bytes(bytes).map_err(|err| IoError::Grib(err.to_string()))?;
-            let mut partial = extract_fields_from_grib2_partial(&grib, selectors)?;
+            let mut partial = if let Some(forecast_hour) = forecast_hour {
+                extract_fields_from_grib2_partial_at_forecast_hour(&grib, selectors, forecast_hour)?
+            } else {
+                extract_fields_from_grib2_partial(&grib, selectors)?
+            };
             if model == ModelId::Nbm {
                 synthesize_nbm_10m_wind_components_from_speed_direction(&grib, &mut partial)?;
             }
@@ -1241,8 +1279,45 @@ impl PreparedSelector {
         })
     }
 
-    fn match_score(self, message: &Grib2Message) -> Option<u8> {
-        product_template_match_score(self.selector, message)
+    fn match_score(self, message: &Grib2Message, forecast_hour: Option<u16>) -> Option<u8> {
+        let product_score = product_template_match_score(self.selector, message)?;
+        let forecast_score = if let Some(forecast_hour) = forecast_hour {
+            forecast_hour_match_score(message, forecast_hour)?
+        } else {
+            0
+        };
+        Some(product_score.saturating_add(forecast_score))
+    }
+}
+
+fn forecast_hour_match_score(message: &Grib2Message, expected_hour: u16) -> Option<u8> {
+    let start_hour = time_value_to_hours(
+        message.product.time_range_unit,
+        message.product.forecast_time,
+    )?;
+    if start_hour == expected_hour as u32 {
+        return Some(0);
+    }
+    let end_hour = message
+        .product
+        .statistical_time_range_hours()
+        .map(|length| start_hour.saturating_add(length as u32));
+    if end_hour == Some(expected_hour as u32) {
+        return Some(1);
+    }
+    None
+}
+
+fn time_value_to_hours(unit: u8, value: u32) -> Option<u32> {
+    match unit {
+        // WMO Code Table 4.4: minute, hour, day, 3 hours, 6 hours, 12 hours.
+        0 => (value % 60 == 0).then_some(value / 60),
+        1 => Some(value),
+        2 => value.checked_mul(24),
+        10 => value.checked_mul(3),
+        11 => value.checked_mul(6),
+        12 => value.checked_mul(12),
+        _ => None,
     }
 }
 
@@ -2770,6 +2845,59 @@ mod tests {
         .unwrap();
 
         assert_eq!(field.values, vec![280.0, 281.5]);
+    }
+
+    #[test]
+    fn partial_extract_at_forecast_hour_uses_requested_lead_time() {
+        let mut f003 = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[273.0], -99.0, -99.0);
+        f003.product.time_range_unit = 1;
+        f003.product.forecast_time = 3;
+
+        let mut f024 = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[294.0], -99.0, -99.0);
+        f024.product.time_range_unit = 1;
+        f024.product.forecast_time = 24;
+
+        let selector = FieldSelector::height_agl(CanonicalField::Temperature, 2);
+        let grib = Grib2File {
+            messages: vec![f003, f024],
+        };
+
+        let partial =
+            extract_fields_from_grib2_partial_at_forecast_hour(&grib, &[selector], 24).unwrap();
+        assert!(partial.missing.is_empty());
+        assert_eq!(partial.extracted[0].values, vec![294.0]);
+
+        let missing =
+            extract_fields_from_grib2_partial_at_forecast_hour(&grib, &[selector], 12).unwrap();
+        assert!(missing.extracted.is_empty());
+        assert_eq!(missing.missing, vec![selector]);
+    }
+
+    #[test]
+    fn partial_extract_at_forecast_hour_matches_statistical_window_end() {
+        let mut qpf = ieee_f32_message(
+            PARAMETER_TOTAL_PRECIPITATION[0],
+            1,
+            0.0,
+            &[7.5],
+            -99.0,
+            -99.0,
+        );
+        qpf.product.template = 8;
+        qpf.product.time_range_unit = 1;
+        qpf.product.forecast_time = 18;
+        qpf.product.statistical_time_range_unit = Some(1);
+        qpf.product.time_range_length = Some(6);
+
+        let selector = FieldSelector::surface(CanonicalField::TotalPrecipitation);
+        let grib = Grib2File {
+            messages: vec![qpf],
+        };
+
+        let partial =
+            extract_fields_from_grib2_partial_at_forecast_hour(&grib, &[selector], 24).unwrap();
+        assert!(partial.missing.is_empty());
+        assert_eq!(partial.extracted[0].values, vec![7.5]);
     }
 
     #[test]

@@ -5,8 +5,8 @@ use rustwx_core::{
 };
 use rustwx_io::{
     earth2_archive::{Earth2EnsembleSelector, Earth2EnsembleStat},
-    extract_fields_partial_from_model_bytes_with_earth2_selector, load_cached_selected_field,
-    store_cached_selected_field,
+    extract_fields_partial_from_model_bytes_with_earth2_selector_at_forecast_hour,
+    load_cached_selected_field, store_cached_selected_field,
 };
 use rustwx_models::{
     LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
@@ -1492,13 +1492,15 @@ fn extract_direct_fetch_group_from_loaded(
     let mut unmatched = Vec::<FieldSelector>::new();
     let parse_start = Instant::now();
     if !missing.is_empty() {
-        let partial = extract_fields_partial_from_model_bytes_with_earth2_selector(
-            fetch_request.request.model,
-            &fetched.file.bytes,
-            Some(cached_result.bytes_path.as_path()),
-            &missing,
-            fetch_request.earth2_ensemble,
-        )?;
+        let partial =
+            extract_fields_partial_from_model_bytes_with_earth2_selector_at_forecast_hour(
+                fetch_request.request.model,
+                &fetched.file.bytes,
+                Some(cached_result.bytes_path.as_path()),
+                &missing,
+                fetch_request.earth2_ensemble,
+                Some(fetch_request.request.forecast_hour),
+            )?;
         if use_cache {
             for field in &partial.extracted {
                 store_cached_selected_field(&request.cache_root, fetch_request, field)?;
