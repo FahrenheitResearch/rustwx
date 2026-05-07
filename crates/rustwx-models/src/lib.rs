@@ -5328,15 +5328,19 @@ fn build_hiresw_url(source: SourceId, request: &ModelRunRequest) -> Result<Strin
         return Ok(unsupported_source(source, request.model));
     }
     let token = normalize_token(&request.product);
-    let core = token
+    let raw_core = token
         .split('/')
         .next()
         .unwrap_or("arw_2p5km")
         .replace("__", "_");
-    let core = match core.as_str() {
+    let mem2_core = matches!(
+        raw_core.as_str(),
+        "arw_mem2" | "mem2arw" | "arwmem2" | "arw_mem2_2p5km" | "arwmem2_2p5km"
+    );
+    let core = match raw_core.as_str() {
         "arw" | "arw_2p5km" | "arw_2_5km" => "arw_2p5km",
         "fv3" | "fv3_2p5km" | "fv3_2_5km" => "fv3_2p5km",
-        "arw_mem2" | "mem2arw" | "arwmem2" => "arw_mem2_2p5km",
+        "arw_mem2" | "mem2arw" | "arwmem2" | "arw_mem2_2p5km" | "arwmem2_2p5km" => "arw_5km",
         other => other,
     };
     let domain = token
@@ -5344,13 +5348,27 @@ fn build_hiresw_url(source: SourceId, request: &ModelRunRequest) -> Result<Strin
         .find(|part| {
             matches!(
                 *part,
-                "conus" | "ak" | "alaska" | "hi" | "hawaii" | "guam" | "pr"
+                "conus"
+                    | "conusmem2"
+                    | "ak"
+                    | "akmem2"
+                    | "alaska"
+                    | "hi"
+                    | "himem2"
+                    | "hawaii"
+                    | "guam"
+                    | "pr"
+                    | "prmem2"
             )
         })
         .unwrap_or("conus");
     let domain = match domain {
         "alaska" => "ak",
         "hawaii" => "hi",
+        "conus" if mem2_core => "conusmem2",
+        "ak" if mem2_core => "akmem2",
+        "hi" if mem2_core => "himem2",
+        "pr" if mem2_core => "prmem2",
         other => other,
     };
     Ok(format!(
@@ -7114,6 +7132,20 @@ mod tests {
         assert_eq!(
             build_grib_url(SourceId::Nomads, &hiresw).unwrap(),
             "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hiresw/prod/hiresw.20260502/hiresw.t00z.arw_2p5km.f24.conus.grib2"
+        );
+
+        let hiresw_arw_mem2 =
+            ModelRunRequest::new(ModelId::Hiresw, cycle.clone(), 24, "arw_mem2/conus").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Nomads, &hiresw_arw_mem2).unwrap(),
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hiresw/prod/hiresw.20260502/hiresw.t00z.arw_5km.f24.conusmem2.grib2"
+        );
+
+        let hiresw_arw_5km_mem2 =
+            ModelRunRequest::new(ModelId::Hiresw, cycle.clone(), 24, "arw_5km/conusmem2").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Nomads, &hiresw_arw_5km_mem2).unwrap(),
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hiresw/prod/hiresw.20260502/hiresw.t00z.arw_5km.f24.conusmem2.grib2"
         );
 
         let href =
