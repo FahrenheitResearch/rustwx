@@ -1934,6 +1934,45 @@ const FIELD_SREF_PROB_VISIBILITY_BELOW_3218M: GribFieldSpec = field_spec(
     &["VIS:surface"],
 );
 
+const FIELD_SREF_PROB_VISIBILITY_BELOW_4827M: GribFieldSpec = field_spec(
+    "sref_probability_visibility_surface_lt_4827m",
+    "SREF Probability Visibility < 4827 m",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::Visibility)
+            .with_probability(ProbabilitySelection::below_milli(4_827_000)),
+    ),
+    &["VIS:surface"],
+);
+
+const FIELD_SREF_PROB_VISIBILITY_BELOW_8046M: GribFieldSpec = field_spec(
+    "sref_probability_visibility_surface_lt_8046m",
+    "SREF Probability Visibility < 8046 m",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::Visibility)
+            .with_probability(ProbabilitySelection::below_milli(8_046_000)),
+    ),
+    &["VIS:surface"],
+);
+
+const FIELD_SREF_PROB_VISIBILITY_BELOW_9654M: GribFieldSpec = field_spec(
+    "sref_probability_visibility_surface_lt_9654m",
+    "SREF Probability Visibility < 9654 m",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::Visibility)
+            .with_probability(ProbabilitySelection::below_milli(9_654_000)),
+    ),
+    &["VIS:surface"],
+);
+
 const FIELD_SREF_PROB_10M_WIND_SPEED_ABOVE_12P89MS: GribFieldSpec = field_spec(
     "sref_probability_wind_speed_10m_agl_gt_12p89ms",
     "SREF Probability 10m Wind Speed > 12.89 m/s",
@@ -2985,6 +3024,33 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         slug: "sref_prob_visibility_below_3218m",
         title: "SREF Probability Visibility < 3218 m",
         filled: FIELD_SREF_PROB_VISIBILITY_BELOW_3218M,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "sref_prob_visibility_below_4827m",
+        title: "SREF Probability Visibility < 4827 m",
+        filled: FIELD_SREF_PROB_VISIBILITY_BELOW_4827M,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "sref_prob_visibility_below_8046m",
+        title: "SREF Probability Visibility < 8046 m",
+        filled: FIELD_SREF_PROB_VISIBILITY_BELOW_8046M,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "sref_prob_visibility_below_9654m",
+        title: "SREF Probability Visibility < 9654 m",
+        filled: FIELD_SREF_PROB_VISIBILITY_BELOW_9654M,
         contours: None,
         barbs_u: None,
         barbs_v: None,
@@ -7921,6 +7987,21 @@ mod tests {
                 "sref_prob_visibility_below_3218m",
                 FieldSelector::surface(CanonicalField::Visibility)
                     .with_probability(ProbabilitySelection::below_milli(3_218_000)),
+            ),
+            (
+                "sref_prob_visibility_below_4827m",
+                FieldSelector::surface(CanonicalField::Visibility)
+                    .with_probability(ProbabilitySelection::below_milli(4_827_000)),
+            ),
+            (
+                "sref_prob_visibility_below_8046m",
+                FieldSelector::surface(CanonicalField::Visibility)
+                    .with_probability(ProbabilitySelection::below_milli(8_046_000)),
+            ),
+            (
+                "sref_prob_visibility_below_9654m",
+                FieldSelector::surface(CanonicalField::Visibility)
+                    .with_probability(ProbabilitySelection::below_milli(9_654_000)),
             ),
             (
                 "sref_prob_10m_wind_speed_above_12p89ms",
