@@ -179,6 +179,8 @@ pub struct SupportedSevereFields {
     pub stp_fixed: Vec<f64>,
     pub scp_mu_03km_06km_proxy: Vec<f64>,
     pub ehi_sb_01km_proxy: Vec<f64>,
+    pub tehi: Vec<f64>,
+    pub tts: Vec<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -629,6 +631,7 @@ fn compute_supported_severe_fields_impl(
 
     let sb = compute_cape_cin(grid, volume, surface, "sb", None)?;
     let ml = compute_cape_cin(grid, volume, surface, "ml", None)?;
+    let ml_03km = compute_cape_cin(grid, volume, surface, "ml", Some(3000.0))?;
     let mu = compute_cape_cin(grid, volume, surface, "mu", None)?;
 
     let wind = WindGridInputs {
@@ -661,6 +664,16 @@ fn compute_supported_severe_fields_impl(
         ehi_cape_jkg: &sb.cape_jkg,
         ehi_srh_m2s2: &wind_diagnostics.srh_01km_m2s2,
     })?;
+    let beta = compute_tornadic_beta(TornadicBetaInputs {
+        grid,
+        srh_1km_m2s2: &wind_diagnostics.srh_01km_m2s2,
+        mlcape_jkg: &ml.cape_jkg,
+        mlcape_03km_jkg: &ml_03km.cape_jkg,
+        shear_6km_ms: &wind_diagnostics.shear_06km_ms,
+        ml_lcl_m: &ml.lcl_m,
+        mlcin_jkg: &ml.cin_jkg,
+        sbcin_jkg: &sb.cin_jkg,
+    })?;
 
     Ok(SupportedSevereFields {
         sbcape_jkg: sb.cape_jkg,
@@ -672,6 +685,8 @@ fn compute_supported_severe_fields_impl(
         stp_fixed,
         scp_mu_03km_06km_proxy: scp_ehi.scp,
         ehi_sb_01km_proxy: scp_ehi.ehi,
+        tehi: beta.tehi,
+        tts: beta.tts,
     })
 }
 
@@ -1323,6 +1338,7 @@ mod tests {
         let supported = compute_supported_severe_fields(grid, volume, surface).unwrap();
         let sb = compute_cape_cin(grid, volume, surface, "sb", None).unwrap();
         let ml = compute_cape_cin(grid, volume, surface, "ml", None).unwrap();
+        let ml_03km = compute_cape_cin(grid, volume, surface, "ml", Some(3000.0)).unwrap();
         let mu = compute_cape_cin(grid, volume, surface, "mu", None).unwrap();
         let wind = WindGridInputs {
             shape: VolumeShape::new(grid, volume.nz).unwrap(),
@@ -1350,6 +1366,17 @@ mod tests {
             ehi_srh_m2s2: &srh_01km,
         })
         .unwrap();
+        let beta = compute_tornadic_beta(TornadicBetaInputs {
+            grid,
+            srh_1km_m2s2: &srh_01km,
+            mlcape_jkg: &ml.cape_jkg,
+            mlcape_03km_jkg: &ml_03km.cape_jkg,
+            shear_6km_ms: &shear_06km,
+            ml_lcl_m: &ml.lcl_m,
+            mlcin_jkg: &ml.cin_jkg,
+            sbcin_jkg: &sb.cin_jkg,
+        })
+        .unwrap();
 
         assert_eq!(supported.sbcape_jkg, sb.cape_jkg);
         assert_eq!(supported.mlcin_jkg, ml.cin_jkg);
@@ -1360,6 +1387,8 @@ mod tests {
         assert_eq!(supported.stp_fixed, stp_fixed);
         assert_eq!(supported.scp_mu_03km_06km_proxy, proxy.scp);
         assert_eq!(supported.ehi_sb_01km_proxy, proxy.ehi);
+        assert_eq!(supported.tehi, beta.tehi);
+        assert_eq!(supported.tts, beta.tts);
     }
 
     #[test]
@@ -1442,6 +1471,8 @@ mod tests {
             &broadcast.scp_mu_03km_06km_proxy,
         );
         assert_vec_close(&levels.ehi_sb_01km_proxy, &broadcast.ehi_sb_01km_proxy);
+        assert_vec_close(&levels.tehi, &broadcast.tehi);
+        assert_vec_close(&levels.tts, &broadcast.tts);
     }
 
     #[test]

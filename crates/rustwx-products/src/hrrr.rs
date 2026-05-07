@@ -599,14 +599,18 @@ mod tests {
             stp_fixed: vec![1.5],
             scp_mu_03km_06km_proxy: vec![5.0],
             ehi_sb_01km_proxy: vec![2.0],
+            tehi: vec![3.0],
+            tts: vec![4.0],
         });
 
-        assert_eq!(fields.len(), 8);
+        assert_eq!(fields.len(), 10);
         assert_eq!(fields[5].product, WeatherProduct::StpFixed);
         assert_eq!(
             fields[6].title_override.as_deref(),
             Some("SCP (MU / 0-3 KM / 0-6 KM PROXY)")
         );
         assert_eq!(fields[7].title_override.as_deref(), Some("EHI 0-1 KM"));
+        assert_eq!(fields[8].product, WeatherProduct::Tehi);
+        assert_eq!(fields[9].product, WeatherProduct::Tts);
     }
 }

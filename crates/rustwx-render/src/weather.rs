@@ -99,6 +99,8 @@ pub enum WeatherProduct {
     StpEffective,
     Scp,
     Ehi,
+    Tehi,
+    Tts,
     Uh,
     EcapeScpExperimental,
     EcapeEhi01kmExperimental,
@@ -186,6 +188,8 @@ impl WeatherProduct {
             "stp_effective" => Some(Self::StpEffective),
             "scp" => Some(Self::Scp),
             "ehi" => Some(Self::Ehi),
+            "tehi" | "tornadic_ehi" | "tornadic_0_1km_ehi" => Some(Self::Tehi),
+            "tts" | "tornadic_tilting_stretching" => Some(Self::Tts),
             "uhel" | "uh" => Some(Self::Uh),
             "ecape_scp" => Some(Self::EcapeScpExperimental),
             "ecape_ehi" | "ecape_ehi_0_1km" | "ecape_ehi_01km" => {
@@ -234,6 +238,8 @@ impl WeatherProduct {
             Self::StpEffective => "stp_effective",
             Self::Scp => "scp",
             Self::Ehi => "ehi",
+            Self::Tehi => "tehi",
+            Self::Tts => "tts",
             Self::Uh => "uhel",
             Self::EcapeScpExperimental => "ecape_scp",
             Self::EcapeEhi01kmExperimental => "ecape_ehi_0_1km",
@@ -279,6 +285,8 @@ impl WeatherProduct {
             Self::StpEffective => "STP (EFFECTIVE)",
             Self::Scp => "SCP",
             Self::Ehi => "EHI",
+            Self::Tehi => "TEHI",
+            Self::Tts => "TTS",
             Self::Uh => "UH",
             Self::EcapeScpExperimental => "ECAPE SCP (EXP)",
             Self::EcapeEhi01kmExperimental => "ECAPE EHI 0-1 KM (EXP)",
@@ -316,9 +324,12 @@ impl WeatherProduct {
             Self::Lfc | Self::EcapeLfc => WeatherPreset::Lfc,
             Self::El | Self::EcapeEl => WeatherPreset::El,
             Self::Srh01km | Self::Srh03km => WeatherPreset::Srh,
-            Self::Stp | Self::StpFixed | Self::StpEffective | Self::EcapeStpExperimental => {
-                WeatherPreset::Stp
-            }
+            Self::Stp
+            | Self::StpFixed
+            | Self::StpEffective
+            | Self::Tehi
+            | Self::Tts
+            | Self::EcapeStpExperimental => WeatherPreset::Stp,
             Self::Scp | Self::EcapeScpExperimental => WeatherPreset::Scp,
             Self::Ehi | Self::EcapeEhi01kmExperimental | Self::EcapeEhi03kmExperimental => {
                 WeatherPreset::Ehi
