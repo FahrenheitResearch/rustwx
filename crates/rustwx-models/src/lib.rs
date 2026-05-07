@@ -902,6 +902,29 @@ const FIELD_500_TEMP: GribFieldSpec = field_spec(
     &["TMP:500 mb"],
 );
 
+const FIELD_GEFS_AVG_500_TEMP: GribFieldSpec = field_spec(
+    "gefs_mean_temperature_500mb",
+    "GEFS 500mb Temperature Mean",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(500),
+    Some(FieldSelector::isobaric(CanonicalField::Temperature, 500).with_ensemble_mean()),
+    &["TMP:500 mb"],
+);
+
+const FIELD_GEFS_SPR_500_TEMP_STDDEV: GribFieldSpec = field_spec(
+    "gefs_spread_temperature_500mb_stddev",
+    "GEFS 500mb Temperature Spread",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(500),
+    Some(
+        FieldSelector::isobaric(CanonicalField::Temperature, 500)
+            .with_ensemble_standard_deviation(),
+    ),
+    &["TMP:500 mb"],
+);
+
 const FIELD_850_TEMP: GribFieldSpec = field_spec(
     "temperature_850mb",
     "850mb Temperature",
@@ -952,6 +975,29 @@ const FIELD_500_RH: GribFieldSpec = field_spec(
         CanonicalField::RelativeHumidity,
         500,
     )),
+    &["RH:500 mb"],
+);
+
+const FIELD_GEFS_AVG_500_RH: GribFieldSpec = field_spec(
+    "gefs_mean_rh_500mb",
+    "GEFS 500mb Relative Humidity Mean",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(500),
+    Some(FieldSelector::isobaric(CanonicalField::RelativeHumidity, 500).with_ensemble_mean()),
+    &["RH:500 mb"],
+);
+
+const FIELD_GEFS_SPR_500_RH_STDDEV: GribFieldSpec = field_spec(
+    "gefs_spread_rh_500mb_stddev",
+    "GEFS 500mb Relative Humidity Spread",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(500),
+    Some(
+        FieldSelector::isobaric(CanonicalField::RelativeHumidity, 500)
+            .with_ensemble_standard_deviation(),
+    ),
     &["RH:500 mb"],
 );
 
@@ -1831,6 +1877,29 @@ const FIELD_PWAT: GribFieldSpec = field_spec(
     &["PWAT:entire atmosphere", "PWAT:"],
 );
 
+const FIELD_GEFS_AVG_PWAT: GribFieldSpec = field_spec(
+    "gefs_mean_precipitable_water",
+    "GEFS Precipitable Water Mean",
+    ProductFamily::Surface,
+    GribLevelKind::EntireAtmosphere,
+    None,
+    Some(FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater).with_ensemble_mean()),
+    &["PWAT:entire atmosphere", "PWAT:"],
+);
+
+const FIELD_GEFS_SPR_PWAT_STDDEV: GribFieldSpec = field_spec(
+    "gefs_spread_precipitable_water_stddev",
+    "GEFS Precipitable Water Spread",
+    ProductFamily::Surface,
+    GribLevelKind::EntireAtmosphere,
+    None,
+    Some(
+        FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+            .with_ensemble_standard_deviation(),
+    ),
+    &["PWAT:entire atmosphere", "PWAT:"],
+);
+
 const FIELD_TOTAL_CLOUD_COVER: GribFieldSpec = field_spec(
     "total_cloud_cover",
     "Total Cloud Cover",
@@ -2220,6 +2289,24 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_500_HEIGHT),
         barbs_u: Some(FIELD_500_U),
         barbs_v: Some(FIELD_500_V),
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
+        slug: "gefs_avg_500mb_temperature_height_winds",
+        title: "GEFS 500mb Temperature / Height / Winds Mean",
+        filled: FIELD_GEFS_AVG_500_TEMP,
+        contours: Some(FIELD_GEFS_AVG_500_HEIGHT),
+        barbs_u: Some(FIELD_GEFS_AVG_500_U),
+        barbs_v: Some(FIELD_GEFS_AVG_500_V),
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
+        slug: "gefs_spr_500mb_temperature_stddev",
+        title: "GEFS 500mb Temperature Spread",
+        filled: FIELD_GEFS_SPR_500_TEMP_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
         style: RenderStyle::WeatherTemperature,
     },
     PlotRecipe {
@@ -2691,6 +2778,24 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherPrecipitableWater,
     },
     PlotRecipe {
+        slug: "gefs_avg_precipitable_water",
+        title: "GEFS Precipitable Water Mean",
+        filled: FIELD_GEFS_AVG_PWAT,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherPrecipitableWater,
+    },
+    PlotRecipe {
+        slug: "gefs_spr_precipitable_water_stddev",
+        title: "GEFS Precipitable Water Spread",
+        filled: FIELD_GEFS_SPR_PWAT_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherPrecipitableWater,
+    },
+    PlotRecipe {
         slug: "cloud_cover",
         title: "Cloud Cover",
         filled: FIELD_TOTAL_CLOUD_COVER,
@@ -2904,6 +3009,24 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_500_HEIGHT),
         barbs_u: Some(FIELD_500_U),
         barbs_v: Some(FIELD_500_V),
+        style: RenderStyle::WeatherRh,
+    },
+    PlotRecipe {
+        slug: "gefs_avg_500mb_rh_height_winds",
+        title: "GEFS 500mb RH / Height / Winds Mean",
+        filled: FIELD_GEFS_AVG_500_RH,
+        contours: Some(FIELD_GEFS_AVG_500_HEIGHT),
+        barbs_u: Some(FIELD_GEFS_AVG_500_U),
+        barbs_v: Some(FIELD_GEFS_AVG_500_V),
+        style: RenderStyle::WeatherRh,
+    },
+    PlotRecipe {
+        slug: "gefs_spr_500mb_rh_stddev",
+        title: "GEFS 500mb RH Spread",
+        filled: FIELD_GEFS_SPR_500_RH_STDDEV,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
         style: RenderStyle::WeatherRh,
     },
     PlotRecipe {
@@ -7002,6 +7125,29 @@ mod tests {
                 ],
             ),
             (
+                "gefs_avg_500mb_temperature_height_winds",
+                "pgrb2ap5/geavg",
+                vec![
+                    FieldSelector::isobaric(CanonicalField::Temperature, 500).with_ensemble_mean(),
+                    FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500)
+                        .with_ensemble_mean(),
+                    FieldSelector::isobaric(CanonicalField::UWind, 500).with_ensemble_mean(),
+                    FieldSelector::isobaric(CanonicalField::VWind, 500).with_ensemble_mean(),
+                ],
+            ),
+            (
+                "gefs_avg_500mb_rh_height_winds",
+                "pgrb2ap5/geavg",
+                vec![
+                    FieldSelector::isobaric(CanonicalField::RelativeHumidity, 500)
+                        .with_ensemble_mean(),
+                    FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500)
+                        .with_ensemble_mean(),
+                    FieldSelector::isobaric(CanonicalField::UWind, 500).with_ensemble_mean(),
+                    FieldSelector::isobaric(CanonicalField::VWind, 500).with_ensemble_mean(),
+                ],
+            ),
+            (
                 "gefs_avg_mslp_10m_winds",
                 "pgrb2ap5/geavg",
                 vec![
@@ -7009,6 +7155,14 @@ mod tests {
                         .with_ensemble_mean(),
                     FieldSelector::height_agl(CanonicalField::UWind, 10).with_ensemble_mean(),
                     FieldSelector::height_agl(CanonicalField::VWind, 10).with_ensemble_mean(),
+                ],
+            ),
+            (
+                "gefs_avg_precipitable_water",
+                "pgrb2ap5/geavg",
+                vec![
+                    FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+                        .with_ensemble_mean(),
                 ],
             ),
             (
@@ -7028,10 +7182,34 @@ mod tests {
                 ],
             ),
             (
+                "gefs_spr_500mb_temperature_stddev",
+                "pgrb2ap5/gespr",
+                vec![
+                    FieldSelector::isobaric(CanonicalField::Temperature, 500)
+                        .with_ensemble_standard_deviation(),
+                ],
+            ),
+            (
+                "gefs_spr_500mb_rh_stddev",
+                "pgrb2ap5/gespr",
+                vec![
+                    FieldSelector::isobaric(CanonicalField::RelativeHumidity, 500)
+                        .with_ensemble_standard_deviation(),
+                ],
+            ),
+            (
                 "gefs_spr_mslp_stddev",
                 "pgrb2ap5/gespr",
                 vec![
                     FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel)
+                        .with_ensemble_standard_deviation(),
+                ],
+            ),
+            (
+                "gefs_spr_precipitable_water_stddev",
+                "pgrb2ap5/gespr",
+                vec![
+                    FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
                         .with_ensemble_standard_deviation(),
                 ],
             ),
