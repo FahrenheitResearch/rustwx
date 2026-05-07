@@ -116,6 +116,9 @@ fn recipe_maturity(slug: &str) -> ProductMaturity {
     if slug.starts_with("href_sprd_") {
         return ProductMaturity::Experimental;
     }
+    if slug.starts_with("refs_sprd_") || slug.starts_with("refs_prob_") {
+        return ProductMaturity::Experimental;
+    }
     if slug.starts_with("gefs_avg_") || slug.starts_with("gefs_spr_") {
         return ProductMaturity::Experimental;
     }
@@ -139,6 +142,9 @@ fn recipe_flags(slug: &str) -> Vec<ProductSemanticFlag> {
         return vec![ProductSemanticFlag::ProofOriented];
     }
     if slug.starts_with("href_sprd_") {
+        return vec![ProductSemanticFlag::ProofOriented];
+    }
+    if slug.starts_with("refs_sprd_") || slug.starts_with("refs_prob_") {
         return vec![ProductSemanticFlag::ProofOriented];
     }
     if slug.starts_with("gefs_avg_") || slug.starts_with("gefs_spr_") {
@@ -403,6 +409,7 @@ const RRFS_A_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 ];
 const RRFS_PUBLIC_CYCLE_HOURS: &[u8] = &[0, 3, 6, 9, 12, 15, 18, 21];
+const REFS_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
 const RRFS_FIREWX_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
 const WRF_GDEX_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
@@ -560,6 +567,14 @@ const RRFS_PUBLIC_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
     priority: 1,
     max_age_hours: None,
     notes: "NOAA RRFS public prototype AWS bucket",
+}];
+
+const REFS_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
+    id: SourceId::Aws,
+    idx_available: true,
+    priority: 1,
+    max_age_hours: None,
+    notes: "NOAA REFS ensemble post-processing AWS bucket",
 }];
 
 const RRFS_FIREWX_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
@@ -780,6 +795,16 @@ const MODELS: &[ModelSummary] = &[
         ensemble_mode: EnsembleMode::Deterministic,
     },
     ModelSummary {
+        id: ModelId::Refs,
+        description: "REFS RRFS ensemble post-processed spread/probability products",
+        default_product: "sprd-conus",
+        cycle_hours_utc: REFS_CYCLE_HOURS,
+        max_forecast_hour: 60,
+        sources: REFS_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::MemberGribFiles,
+    },
+    ModelSummary {
         id: ModelId::RrfsFireWx,
         description: "RRFS public 1.5 km fire-weather nest deterministic forecast",
         default_product: "2dfld-firewx",
@@ -863,6 +888,19 @@ const FIELD_HGEFS_SPR_500_HEIGHT_STDDEV: GribFieldSpec = field_spec(
 const FIELD_HREF_SPRD_500_HEIGHT: GribFieldSpec = field_spec(
     "href_spread_height_500mb",
     "HREF 500mb Height Spread",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(500),
+    Some(
+        FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500)
+            .with_product(FieldProduct::EnsembleSpread),
+    ),
+    &["HGT:500 mb"],
+);
+
+const FIELD_REFS_SPRD_500_HEIGHT: GribFieldSpec = field_spec(
+    "refs_spread_height_500mb",
+    "REFS 500mb Height Spread",
     ProductFamily::Pressure,
     GribLevelKind::IsobaricHpa,
     Some(500),
@@ -958,6 +996,19 @@ const FIELD_GEFS_SPR_500_TEMP_STDDEV: GribFieldSpec = field_spec(
 const FIELD_HREF_SPRD_500_TEMP: GribFieldSpec = field_spec(
     "href_spread_temperature_500mb",
     "HREF 500mb Temperature Spread",
+    ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa,
+    Some(500),
+    Some(
+        FieldSelector::isobaric(CanonicalField::Temperature, 500)
+            .with_product(FieldProduct::EnsembleSpread),
+    ),
+    &["TMP:500 mb"],
+);
+
+const FIELD_REFS_SPRD_500_TEMP: GribFieldSpec = field_spec(
+    "refs_spread_temperature_500mb",
+    "REFS 500mb Temperature Spread",
     ProductFamily::Pressure,
     GribLevelKind::IsobaricHpa,
     Some(500),
@@ -1737,6 +1788,19 @@ const FIELD_HREF_SPRD_2M_TEMP: GribFieldSpec = field_spec(
     &["TMP:2 m above ground"],
 );
 
+const FIELD_REFS_SPRD_2M_TEMP: GribFieldSpec = field_spec(
+    "refs_spread_temperature_2m_agl",
+    "REFS 2m AGL Temperature Spread",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(
+        FieldSelector::height_agl(CanonicalField::Temperature, 2)
+            .with_product(FieldProduct::EnsembleSpread),
+    ),
+    &["TMP:2 m above ground"],
+);
+
 const FIELD_2M_DEWPOINT: GribFieldSpec = field_spec(
     "dewpoint_2m_agl",
     "2m AGL Dewpoint",
@@ -1750,6 +1814,19 @@ const FIELD_2M_DEWPOINT: GribFieldSpec = field_spec(
 const FIELD_HREF_SPRD_2M_DEWPOINT: GribFieldSpec = field_spec(
     "href_spread_dewpoint_2m_agl",
     "HREF 2m AGL Dewpoint Spread",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(
+        FieldSelector::height_agl(CanonicalField::Dewpoint, 2)
+            .with_product(FieldProduct::EnsembleSpread),
+    ),
+    &["DPT:2 m above ground"],
+);
+
+const FIELD_REFS_SPRD_2M_DEWPOINT: GribFieldSpec = field_spec(
+    "refs_spread_dewpoint_2m_agl",
+    "REFS 2m AGL Dewpoint Spread",
     ProductFamily::Surface,
     GribLevelKind::HeightAboveGround,
     Some(2),
@@ -2016,6 +2093,19 @@ const FIELD_HREF_SPRD_10M_WIND_SPEED: GribFieldSpec = field_spec(
     &["WIND:10 m above ground"],
 );
 
+const FIELD_REFS_SPRD_10M_WIND_SPEED: GribFieldSpec = field_spec(
+    "refs_spread_wind_speed_10m_agl",
+    "REFS 10m AGL Wind Speed Spread",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(10),
+    Some(
+        FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+            .with_product(FieldProduct::EnsembleSpread),
+    ),
+    &["WIND:10 m above ground"],
+);
+
 const FIELD_SREF_PROB_2M_TEMP_BELOW_FREEZING: GribFieldSpec = field_spec(
     "sref_probability_temperature_2m_agl_lt_273k",
     "SREF Probability 2m Temperature < 273 K",
@@ -2185,6 +2275,201 @@ const FIELD_SREF_PROB_10M_WIND_SPEED_ABOVE_25P78MS: GribFieldSpec = field_spec(
     &["WIND:10 m above ground"],
 );
 
+const FIELD_REFS_PROB_2M_TEMP_BELOW_273P15K: GribFieldSpec = field_spec(
+    "refs_probability_temperature_2m_agl_lt_273p15k",
+    "REFS Probability 2m Temperature < 273.15 K",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(
+        FieldSelector::height_agl(CanonicalField::Temperature, 2)
+            .with_probability(ProbabilitySelection::below_milli(273_150)),
+    ),
+    &["TMP:2 m above ground"],
+);
+
+const FIELD_REFS_PROB_2M_DEWPOINT_ABOVE_291P48K: GribFieldSpec = field_spec(
+    "refs_probability_dewpoint_2m_agl_gt_291p48k",
+    "REFS Probability 2m Dewpoint > 291.48 K",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(
+        FieldSelector::height_agl(CanonicalField::Dewpoint, 2)
+            .with_probability(ProbabilitySelection::above_milli(291_480)),
+    ),
+    &["DPT:2 m above ground"],
+);
+
+const FIELD_REFS_PROB_2M_DEWPOINT_ABOVE_294P26K: GribFieldSpec = field_spec(
+    "refs_probability_dewpoint_2m_agl_gt_294p26k",
+    "REFS Probability 2m Dewpoint > 294.26 K",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(
+        FieldSelector::height_agl(CanonicalField::Dewpoint, 2)
+            .with_probability(ProbabilitySelection::above_milli(294_260)),
+    ),
+    &["DPT:2 m above ground"],
+);
+
+const FIELD_REFS_PROB_PWAT_ABOVE_25MM: GribFieldSpec = field_spec(
+    "refs_probability_precipitable_water_gt_25mm",
+    "REFS Probability Precipitable Water > 25 mm",
+    ProductFamily::Surface,
+    GribLevelKind::EntireAtmosphere,
+    None,
+    Some(
+        FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+            .with_probability(ProbabilitySelection::above_milli(25_000)),
+    ),
+    &["PWAT:entire atmosphere", "PWAT:"],
+);
+
+const FIELD_REFS_PROB_PWAT_ABOVE_37P5MM: GribFieldSpec = field_spec(
+    "refs_probability_precipitable_water_gt_37p5mm",
+    "REFS Probability Precipitable Water > 37.5 mm",
+    ProductFamily::Surface,
+    GribLevelKind::EntireAtmosphere,
+    None,
+    Some(
+        FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+            .with_probability(ProbabilitySelection::above_milli(37_500)),
+    ),
+    &["PWAT:entire atmosphere", "PWAT:"],
+);
+
+const FIELD_REFS_PROB_PWAT_ABOVE_50MM: GribFieldSpec = field_spec(
+    "refs_probability_precipitable_water_gt_50mm",
+    "REFS Probability Precipitable Water > 50 mm",
+    ProductFamily::Surface,
+    GribLevelKind::EntireAtmosphere,
+    None,
+    Some(
+        FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+            .with_probability(ProbabilitySelection::above_milli(50_000)),
+    ),
+    &["PWAT:entire atmosphere", "PWAT:"],
+);
+
+const FIELD_REFS_PROB_VISIBILITY_BELOW_1600M: GribFieldSpec = field_spec(
+    "refs_probability_visibility_surface_lt_1600m",
+    "REFS Probability Visibility < 1600 m",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::Visibility)
+            .with_probability(ProbabilitySelection::below_milli(1_600_000)),
+    ),
+    &["VIS:surface"],
+);
+
+const FIELD_REFS_PROB_VISIBILITY_BELOW_3200M: GribFieldSpec = field_spec(
+    "refs_probability_visibility_surface_lt_3200m",
+    "REFS Probability Visibility < 3200 m",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::Visibility)
+            .with_probability(ProbabilitySelection::below_milli(3_200_000)),
+    ),
+    &["VIS:surface"],
+);
+
+const FIELD_REFS_PROB_VISIBILITY_BELOW_8049M: GribFieldSpec = field_spec(
+    "refs_probability_visibility_surface_lt_8049m",
+    "REFS Probability Visibility < 8049 m",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::Visibility)
+            .with_probability(ProbabilitySelection::below_milli(8_049_000)),
+    ),
+    &["VIS:surface"],
+);
+
+const FIELD_REFS_PROB_10M_WIND_SPEED_ABOVE_15P4MS: GribFieldSpec = field_spec(
+    "refs_probability_wind_speed_10m_agl_gt_15p4ms",
+    "REFS Probability 10m Wind Speed > 15.4 m/s",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(10),
+    Some(
+        FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+            .with_probability(ProbabilitySelection::above_milli(15_400)),
+    ),
+    &["WIND:10 m above ground"],
+);
+
+const FIELD_REFS_PROB_10M_WIND_SPEED_ABOVE_20P6MS: GribFieldSpec = field_spec(
+    "refs_probability_wind_speed_10m_agl_gt_20p6ms",
+    "REFS Probability 10m Wind Speed > 20.6 m/s",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(10),
+    Some(
+        FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+            .with_probability(ProbabilitySelection::above_milli(20_600)),
+    ),
+    &["WIND:10 m above ground"],
+);
+
+const FIELD_REFS_PROB_10M_WIND_SPEED_ABOVE_25P72MS: GribFieldSpec = field_spec(
+    "refs_probability_wind_speed_10m_agl_gt_25p72ms",
+    "REFS Probability 10m Wind Speed > 25.72 m/s",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(10),
+    Some(
+        FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+            .with_probability(ProbabilitySelection::above_milli(25_720)),
+    ),
+    &["WIND:10 m above ground"],
+);
+
+const FIELD_REFS_PROB_UH_ABOVE_25: GribFieldSpec = field_spec(
+    "refs_probability_updraft_helicity_2to5km_gt_25",
+    "REFS Probability 2-5 km Updraft Helicity > 25",
+    ProductFamily::Native,
+    GribLevelKind::HeightAboveGroundLayer,
+    None,
+    Some(
+        FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000)
+            .with_probability(ProbabilitySelection::above_milli(25_000)),
+    ),
+    &["MXUPHL:5000-2000"],
+);
+
+const FIELD_REFS_PROB_UH_ABOVE_75: GribFieldSpec = field_spec(
+    "refs_probability_updraft_helicity_2to5km_gt_75",
+    "REFS Probability 2-5 km Updraft Helicity > 75",
+    ProductFamily::Native,
+    GribLevelKind::HeightAboveGroundLayer,
+    None,
+    Some(
+        FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000)
+            .with_probability(ProbabilitySelection::above_milli(75_000)),
+    ),
+    &["MXUPHL:5000-2000"],
+);
+
+const FIELD_REFS_PROB_UH_ABOVE_150: GribFieldSpec = field_spec(
+    "refs_probability_updraft_helicity_2to5km_gt_150",
+    "REFS Probability 2-5 km Updraft Helicity > 150",
+    ProductFamily::Native,
+    GribLevelKind::HeightAboveGroundLayer,
+    None,
+    Some(
+        FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000)
+            .with_probability(ProbabilitySelection::above_milli(150_000)),
+    ),
+    &["MXUPHL:5000-2000"],
+);
+
 const FIELD_MSLP: GribFieldSpec = field_spec(
     "pressure_reduced_to_mean_sea_level",
     "MSLP",
@@ -2240,6 +2525,19 @@ const FIELD_HREF_SPRD_MSLP: GribFieldSpec = field_spec(
     &["MSLET:mean sea level"],
 );
 
+const FIELD_REFS_SPRD_MSLP: GribFieldSpec = field_spec(
+    "refs_spread_pressure_reduced_to_mean_sea_level",
+    "REFS MSLP Spread",
+    ProductFamily::Surface,
+    GribLevelKind::MeanSeaLevel,
+    None,
+    Some(
+        FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel)
+            .with_product(FieldProduct::EnsembleSpread),
+    ),
+    &["MSLET:mean sea level", "PRMSL:mean sea level"],
+);
+
 const FIELD_PWAT: GribFieldSpec = field_spec(
     "precipitable_water",
     "Precipitable Water",
@@ -2288,6 +2586,19 @@ const FIELD_HREF_SPRD_PWAT: GribFieldSpec = field_spec(
     &["PWAT:entire atmosphere", "PWAT:"],
 );
 
+const FIELD_REFS_SPRD_PWAT: GribFieldSpec = field_spec(
+    "refs_spread_precipitable_water",
+    "REFS Precipitable Water Spread",
+    ProductFamily::Surface,
+    GribLevelKind::EntireAtmosphere,
+    None,
+    Some(
+        FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+            .with_product(FieldProduct::EnsembleSpread),
+    ),
+    &["PWAT:entire atmosphere", "PWAT:"],
+);
+
 const FIELD_TOTAL_CLOUD_COVER: GribFieldSpec = field_spec(
     "total_cloud_cover",
     "Total Cloud Cover",
@@ -2319,6 +2630,19 @@ const FIELD_GEFS_SPR_TOTAL_CLOUD_COVER_STDDEV: GribFieldSpec = field_spec(
     Some(
         FieldSelector::entire_atmosphere(CanonicalField::TotalCloudCover)
             .with_ensemble_standard_deviation(),
+    ),
+    &["TCDC:entire atmosphere", "TCDC:"],
+);
+
+const FIELD_REFS_SPRD_TOTAL_CLOUD_COVER: GribFieldSpec = field_spec(
+    "refs_spread_total_cloud_cover",
+    "REFS Total Cloud Cover Spread",
+    ProductFamily::Surface,
+    GribLevelKind::EntireAtmosphere,
+    None,
+    Some(
+        FieldSelector::entire_atmosphere(CanonicalField::TotalCloudCover)
+            .with_product(FieldProduct::EnsembleSpread),
     ),
     &["TCDC:entire atmosphere", "TCDC:"],
 );
@@ -2455,6 +2779,19 @@ const FIELD_VISIBILITY: GribFieldSpec = field_spec(
     GribLevelKind::Surface,
     None,
     Some(FieldSelector::surface(CanonicalField::Visibility)),
+    &["VIS:surface"],
+);
+
+const FIELD_REFS_SPRD_VISIBILITY: GribFieldSpec = field_spec(
+    "refs_spread_visibility_surface",
+    "REFS Visibility Spread",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::Visibility)
+            .with_product(FieldProduct::EnsembleSpread),
+    ),
     &["VIS:surface"],
 );
 
@@ -3311,6 +3648,222 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherTemperature,
     },
     PlotRecipe {
+        slug: "refs_sprd_2m_temperature",
+        title: "REFS 2m AGL Temperature Spread",
+        filled: FIELD_REFS_SPRD_2M_TEMP,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
+        slug: "refs_sprd_2m_dewpoint",
+        title: "REFS 2m AGL Dewpoint Spread",
+        filled: FIELD_REFS_SPRD_2M_DEWPOINT,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherDewpoint,
+    },
+    PlotRecipe {
+        slug: "refs_sprd_10m_wind_speed",
+        title: "REFS 10m AGL Wind Speed Spread",
+        filled: FIELD_REFS_SPRD_10M_WIND_SPEED,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherWinds,
+    },
+    PlotRecipe {
+        slug: "refs_sprd_mslp",
+        title: "REFS MSLP Spread",
+        filled: FIELD_REFS_SPRD_MSLP,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherPressure,
+    },
+    PlotRecipe {
+        slug: "refs_sprd_precipitable_water",
+        title: "REFS Precipitable Water Spread",
+        filled: FIELD_REFS_SPRD_PWAT,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherPrecipitableWater,
+    },
+    PlotRecipe {
+        slug: "refs_sprd_visibility",
+        title: "REFS Visibility Spread",
+        filled: FIELD_REFS_SPRD_VISIBILITY,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherVisibility,
+    },
+    PlotRecipe {
+        slug: "refs_sprd_cloud_cover",
+        title: "REFS Total Cloud Cover Spread",
+        filled: FIELD_REFS_SPRD_TOTAL_CLOUD_COVER,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherCloudCover,
+    },
+    PlotRecipe {
+        slug: "refs_sprd_500mb_height",
+        title: "REFS 500mb Height Spread",
+        filled: FIELD_REFS_SPRD_500_HEIGHT,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherHeight,
+    },
+    PlotRecipe {
+        slug: "refs_sprd_500mb_temperature",
+        title: "REFS 500mb Temperature Spread",
+        filled: FIELD_REFS_SPRD_500_TEMP,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherTemperature,
+    },
+    PlotRecipe {
+        slug: "refs_prob_uh_2to5km_above_25",
+        title: "REFS Probability 2-5 km Updraft Helicity > 25",
+        filled: FIELD_REFS_PROB_UH_ABOVE_25,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_uh_2to5km_above_75",
+        title: "REFS Probability 2-5 km Updraft Helicity > 75",
+        filled: FIELD_REFS_PROB_UH_ABOVE_75,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_uh_2to5km_above_150",
+        title: "REFS Probability 2-5 km Updraft Helicity > 150",
+        filled: FIELD_REFS_PROB_UH_ABOVE_150,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_2m_temperature_below_273p15k",
+        title: "REFS Probability 2m Temperature < 273.15 K",
+        filled: FIELD_REFS_PROB_2M_TEMP_BELOW_273P15K,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_2m_dewpoint_above_291p48k",
+        title: "REFS Probability 2m Dewpoint > 291.48 K",
+        filled: FIELD_REFS_PROB_2M_DEWPOINT_ABOVE_291P48K,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_2m_dewpoint_above_294p26k",
+        title: "REFS Probability 2m Dewpoint > 294.26 K",
+        filled: FIELD_REFS_PROB_2M_DEWPOINT_ABOVE_294P26K,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_pwat_above_25mm",
+        title: "REFS Probability Precipitable Water > 25 mm",
+        filled: FIELD_REFS_PROB_PWAT_ABOVE_25MM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_pwat_above_37p5mm",
+        title: "REFS Probability Precipitable Water > 37.5 mm",
+        filled: FIELD_REFS_PROB_PWAT_ABOVE_37P5MM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_pwat_above_50mm",
+        title: "REFS Probability Precipitable Water > 50 mm",
+        filled: FIELD_REFS_PROB_PWAT_ABOVE_50MM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_visibility_below_1600m",
+        title: "REFS Probability Visibility < 1600 m",
+        filled: FIELD_REFS_PROB_VISIBILITY_BELOW_1600M,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_visibility_below_3200m",
+        title: "REFS Probability Visibility < 3200 m",
+        filled: FIELD_REFS_PROB_VISIBILITY_BELOW_3200M,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_visibility_below_8049m",
+        title: "REFS Probability Visibility < 8049 m",
+        filled: FIELD_REFS_PROB_VISIBILITY_BELOW_8049M,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_10m_wind_speed_above_15p4ms",
+        title: "REFS Probability 10m Wind Speed > 15.4 m/s",
+        filled: FIELD_REFS_PROB_10M_WIND_SPEED_ABOVE_15P4MS,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_10m_wind_speed_above_20p6ms",
+        title: "REFS Probability 10m Wind Speed > 20.6 m/s",
+        filled: FIELD_REFS_PROB_10M_WIND_SPEED_ABOVE_20P6MS,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_10m_wind_speed_above_25p72ms",
+        title: "REFS Probability 10m Wind Speed > 25.72 m/s",
+        filled: FIELD_REFS_PROB_10M_WIND_SPEED_ABOVE_25P72MS,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
         slug: "sref_prob_2m_temperature_below_273k",
         title: "SREF Probability 2m Temperature < 273 K",
         filled: FIELD_SREF_PROB_2M_TEMP_BELOW_FREEZING,
@@ -3993,10 +4546,11 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
                 FieldProduct::EnsembleStandardDeviation | FieldProduct::EnsembleSpread,
             ) => {}
             (ModelId::Href, FieldProduct::EnsembleSpread) => {}
+            (ModelId::Refs, FieldProduct::EnsembleSpread | FieldProduct::Probability(_)) => {}
             _ => return false,
         }
     }
-    if model == ModelId::Href && selector.product.is_default() {
+    if matches!(model, ModelId::Href | ModelId::Refs) && selector.product.is_default() {
         return false;
     }
     if matches!(
@@ -4117,6 +4671,7 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
                 | ModelId::HrrrAk
                 | ModelId::RrfsA
                 | ModelId::RrfsPublic
+                | ModelId::Refs
                 | ModelId::RrfsFireWx
                 | ModelId::WrfGdex
         ),
@@ -4192,6 +4747,7 @@ pub fn supported_forecast_hours(model: ModelId, cycle_hour_utc: u8) -> Vec<u16> 
         ModelId::Nbm => (1..=264).collect(),
         ModelId::RrfsA => (0..=60).collect(),
         ModelId::RrfsPublic => (0..=60).collect(),
+        ModelId::Refs => (1..=60).collect(),
         ModelId::RrfsFireWx => (0..=36).collect(),
         ModelId::WrfGdex => (0..=23).collect(),
     }
@@ -4268,6 +4824,7 @@ fn default_canonical_bundle_product(
         (ModelId::RrfsPublic, CanonicalBundleDescriptor::SurfaceAnalysis) => "2dfld-conus",
         (ModelId::RrfsPublic, CanonicalBundleDescriptor::PressureAnalysis) => "prs-conus",
         (ModelId::RrfsPublic, CanonicalBundleDescriptor::NativeAnalysis) => "prs-conus",
+        (ModelId::Refs, _) => "sprd-conus",
         (ModelId::RrfsFireWx, CanonicalBundleDescriptor::SurfaceAnalysis) => "2dfld-firewx",
         (ModelId::RrfsFireWx, CanonicalBundleDescriptor::PressureAnalysis) => "prs-firewx",
         (ModelId::RrfsFireWx, CanonicalBundleDescriptor::NativeAnalysis) => "2dfld-firewx",
@@ -4673,6 +5230,7 @@ fn build_grib_url(source: SourceId, request: &ModelRunRequest) -> Result<String,
         ModelId::Nbm => build_nbm_url(source, request)?,
         ModelId::RrfsA => build_rrfs_a_url(source, request)?,
         ModelId::RrfsPublic => build_rrfs_public_url(source, request)?,
+        ModelId::Refs => build_refs_url(source, request)?,
         ModelId::RrfsFireWx => build_rrfs_firewx_url(source, request)?,
         ModelId::WrfGdex => build_wrf_gdex_url(source, request)?,
     })
@@ -5632,6 +6190,50 @@ fn build_rrfs_public_url(
     ))
 }
 
+fn build_refs_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    if source != SourceId::Aws {
+        return Ok(unsupported_source(source, request.model));
+    }
+
+    let token = normalize_token(&request.product);
+    let (product_kind, domain) = match token.as_str() {
+        "sprd" | "sprd_conus" | "spread_conus" | "enspost/sprd" | "enspost/sprd_conus" => {
+            ("sprd", "conus")
+        }
+        "prob" | "prob_conus" | "probability_conus" | "enspost/prob" | "enspost/prob_conus" => {
+            ("prob", "conus")
+        }
+        "avrg" | "avg_conus" | "mean_conus" | "enspost/avrg" | "enspost/avrg_conus" => {
+            ("avrg", "conus")
+        }
+        "eas" | "eas_conus" | "enspost/eas" | "enspost/eas_conus" => ("eas", "conus"),
+        "lpmm" | "lpmm_conus" | "enspost/lpmm" | "enspost/lpmm_conus" => ("lpmm", "conus"),
+        "ffri" | "ffri_conus" | "enspost/ffri" | "enspost/ffri_conus" => ("ffri", "conus"),
+        "sprd_ak" | "spread_ak" => ("sprd", "ak"),
+        "prob_ak" | "probability_ak" => ("prob", "ak"),
+        "sprd_hi" | "spread_hi" => ("sprd", "hi"),
+        "prob_hi" | "probability_hi" => ("prob", "hi"),
+        "sprd_pr" | "spread_pr" => ("sprd", "pr"),
+        "prob_pr" | "probability_pr" => ("prob", "pr"),
+        other => {
+            return Err(ModelError::UnsupportedProduct {
+                model: request.model,
+                product: other.to_string(),
+            });
+        }
+    };
+
+    Ok(format!(
+        "https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_public/refs.{}/{:02}/enspost/refs.t{:02}z.{}.f{:02}.{}.grib2",
+        request.cycle.date_yyyymmdd,
+        request.cycle.hour_utc,
+        request.cycle.hour_utc,
+        product_kind,
+        request.forecast_hour,
+        domain
+    ))
+}
+
 fn build_rrfs_firewx_url(
     source: SourceId,
     request: &ModelRunRequest,
@@ -5877,6 +6479,13 @@ fn plot_recipe_fetch_defaults(
             "arw/ctl/pgrb132",
             PlotRecipeFetchPolicy::PreferIndexedSubset,
         ),
+        (ModelId::Refs, _, _) if has_probability_selector => {
+            ("prob-conus", PlotRecipeFetchPolicy::PreferIndexedSubset)
+        }
+        (ModelId::Refs, _, _) if has_ensemble_spread_selector => {
+            ("sprd-conus", PlotRecipeFetchPolicy::PreferIndexedSubset)
+        }
+        (ModelId::Refs, _, _) => ("sprd-conus", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Rtma, _, _) => ("2dvaranl_ndfd", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Urma, _, _) => ("2dvaranl_ndfd", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Nbm, _, _) if has_product_selector => {
@@ -5951,6 +6560,23 @@ fn wrf_gdex_recipe_product_override(
 
 fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<String> {
     match (field.key, model) {
+        (key, ModelId::Refs)
+            if !key.starts_with("refs_spread_") && !key.starts_with("refs_probability_") =>
+        {
+            Some(format!(
+                "{} is not yet wired for REFS; REFS support is currently limited to explicit `refs_sprd_*` and `refs_prob_*` enspost recipes",
+                field.label
+            ))
+        }
+        (key, model)
+            if (key.starts_with("refs_spread_") || key.starts_with("refs_probability_"))
+                && model != ModelId::Refs =>
+        {
+            Some(format!(
+                "{} is only verified for REFS enspost fields right now; do not route this recipe through model '{model}'",
+                field.label
+            ))
+        }
         (
             "composite_reflectivity" | "radar_reflectivity_1km_agl" | "updraft_helicity",
             ModelId::Gfs
@@ -6030,6 +6656,23 @@ fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<Stri
 
 fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> Option<String> {
     match (model, field.key) {
+        (ModelId::Refs, key)
+            if !key.starts_with("refs_spread_") && !key.starts_with("refs_probability_") =>
+        {
+            Some(format!(
+                "{} is not yet wired for REFS; REFS support is currently limited to explicit `refs_sprd_*` and `refs_prob_*` enspost recipes",
+                field.label
+            ))
+        }
+        (model, key)
+            if (key.starts_with("refs_spread_") || key.starts_with("refs_probability_"))
+                && model != ModelId::Refs =>
+        {
+            Some(format!(
+                "{} is only verified for REFS enspost fields right now; do not route this recipe through model '{model}'",
+                field.label
+            ))
+        }
         (ModelId::Href, key) if !key.starts_with("href_spread_") => Some(format!(
             "{} is not yet wired for HREF; HREF support is currently limited to explicit `href_sprd_*` ensprod spread recipes",
             field.label
@@ -6138,6 +6781,23 @@ fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> O
 
 fn model_specific_surface_field_gap(field: &GribFieldSpec, model: ModelId) -> Option<String> {
     match (model, field.key) {
+        (ModelId::Refs, key)
+            if !key.starts_with("refs_spread_") && !key.starts_with("refs_probability_") =>
+        {
+            Some(format!(
+                "{} is not yet wired for REFS; REFS support is currently limited to explicit `refs_sprd_*` and `refs_prob_*` enspost recipes",
+                field.label
+            ))
+        }
+        (model, key)
+            if (key.starts_with("refs_spread_") || key.starts_with("refs_probability_"))
+                && model != ModelId::Refs =>
+        {
+            Some(format!(
+                "{} is only verified for REFS enspost fields right now; do not route this recipe through model '{model}'",
+                field.label
+            ))
+        }
         (ModelId::Href, key) if !key.starts_with("href_spread_") => Some(format!(
             "{} is not yet wired for HREF; HREF support is currently limited to explicit `href_sprd_*` ensprod spread recipes",
             field.label
@@ -6337,7 +6997,7 @@ mod tests {
 
     #[test]
     fn built_in_models_are_real() {
-        assert_eq!(built_in_models().len(), 22);
+        assert_eq!(built_in_models().len(), 23);
         assert_eq!(model_summary(ModelId::HrrrAk).default_product, "sfc");
         assert_eq!(model_summary(ModelId::Gdas).default_product, "pgrb2.0p25");
         assert_eq!(
@@ -6364,6 +7024,12 @@ mod tests {
             model_summary(ModelId::RrfsPublic).cycle_hours_utc,
             RRFS_PUBLIC_CYCLE_HOURS
         );
+        assert_eq!(model_summary(ModelId::Refs).default_product, "sprd-conus");
+        assert_eq!(
+            model_summary(ModelId::Refs).cycle_hours_utc,
+            REFS_CYCLE_HOURS
+        );
+        assert_eq!(model_summary(ModelId::Refs).max_forecast_hour, 60);
         assert_eq!(
             model_summary(ModelId::RrfsFireWx).cycle_hours_utc,
             RRFS_FIREWX_CYCLE_HOURS
@@ -6532,6 +7198,21 @@ mod tests {
             lightning.product_metadata().provenance.unwrap().maturity,
             ProductMaturity::Experimental
         );
+
+        for slug in [
+            "refs_sprd_2m_temperature",
+            "refs_prob_2m_temperature_below_273p15k",
+        ] {
+            let recipe = plot_recipe(slug).expect("refs recipe should exist");
+            let provenance = recipe.product_metadata().provenance.unwrap();
+            assert_eq!(provenance.maturity, ProductMaturity::Experimental, "{slug}");
+            assert!(
+                provenance
+                    .flags
+                    .contains(&ProductSemanticFlag::ProofOriented),
+                "{slug}"
+            );
+        }
     }
 
     #[test]
@@ -6776,6 +7457,7 @@ mod tests {
             ModelId::Nbm,
             ModelId::RrfsA,
             ModelId::RrfsPublic,
+            ModelId::Refs,
             ModelId::WrfGdex,
         ] {
             if selectors
@@ -6804,6 +7486,8 @@ mod tests {
                     assert!(reason.contains("surface/core grids"));
                 } else if model == ModelId::Href {
                     assert!(reason.contains("limited to explicit `href_sprd_*`"));
+                } else if model == ModelId::Refs {
+                    assert!(reason.contains("limited to explicit `refs_sprd_*`"));
                 } else {
                     assert!(reason.contains("700 hPa temperature/height/wind selectors"));
                 }
@@ -6827,6 +7511,9 @@ mod tests {
                     | ModelId::RrfsPublic
                     | ModelId::RrfsFireWx => {
                         assert!(reason.contains("idx subsetting can stage the GRIB messages"));
+                    }
+                    ModelId::Refs => {
+                        assert!(reason.contains("limited to explicit `refs_sprd_*`"));
                     }
                     ModelId::Rtma | ModelId::Urma | ModelId::Nbm => {
                         assert!(reason.contains("surface/core grids"));
@@ -7153,6 +7840,12 @@ mod tests {
         assert_eq!(
             build_grib_url(SourceId::Nomads, &href).unwrap(),
             "https://nomads.ncep.noaa.gov/pub/data/nccf/com/href/prod/href.20260502/ensprod/href.t00z.conus.sprd.f24.grib2"
+        );
+
+        let refs = ModelRunRequest::new(ModelId::Refs, cycle.clone(), 24, "prob-conus").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Aws, &refs).unwrap(),
+            "https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_public/refs.20260502/00/enspost/refs.t00z.prob.f24.conus.grib2"
         );
 
         let nbm = ModelRunRequest::new(ModelId::Nbm, cycle.clone(), 24, "core/co").unwrap();
@@ -8409,6 +9102,183 @@ mod tests {
                 .iter()
                 .any(|blocker| { blocker.reason.contains("limited to explicit `href_sprd_*`") })
         );
+    }
+
+    #[test]
+    fn refs_spread_recipes_use_sprd_product_and_spread_selectors() {
+        let cases = [
+            (
+                "refs_sprd_2m_temperature",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2)
+                    .with_product(FieldProduct::EnsembleSpread),
+            ),
+            (
+                "refs_sprd_2m_dewpoint",
+                FieldSelector::height_agl(CanonicalField::Dewpoint, 2)
+                    .with_product(FieldProduct::EnsembleSpread),
+            ),
+            (
+                "refs_sprd_10m_wind_speed",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+                    .with_product(FieldProduct::EnsembleSpread),
+            ),
+            (
+                "refs_sprd_mslp",
+                FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel)
+                    .with_product(FieldProduct::EnsembleSpread),
+            ),
+            (
+                "refs_sprd_precipitable_water",
+                FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+                    .with_product(FieldProduct::EnsembleSpread),
+            ),
+            (
+                "refs_sprd_visibility",
+                FieldSelector::surface(CanonicalField::Visibility)
+                    .with_product(FieldProduct::EnsembleSpread),
+            ),
+            (
+                "refs_sprd_cloud_cover",
+                FieldSelector::entire_atmosphere(CanonicalField::TotalCloudCover)
+                    .with_product(FieldProduct::EnsembleSpread),
+            ),
+            (
+                "refs_sprd_500mb_height",
+                FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500)
+                    .with_product(FieldProduct::EnsembleSpread),
+            ),
+            (
+                "refs_sprd_500mb_temperature",
+                FieldSelector::isobaric(CanonicalField::Temperature, 500)
+                    .with_product(FieldProduct::EnsembleSpread),
+            ),
+        ];
+
+        for (slug, selector) in cases {
+            let plan = plot_recipe_fetch_plan(slug, ModelId::Refs).unwrap();
+            assert_eq!(plan.product, "sprd-conus", "{slug}");
+            assert_eq!(
+                plan.fetch_policy,
+                PlotRecipeFetchPolicy::PreferIndexedSubset,
+                "{slug}"
+            );
+            assert_eq!(plan.selectors(), vec![selector], "{slug}");
+
+            let blockers = plot_recipe_fetch_blockers(slug, ModelId::RrfsPublic).unwrap();
+            assert!(
+                blockers
+                    .iter()
+                    .any(|blocker| blocker.reason.contains("model 'rrfs-public'")),
+                "{slug}"
+            );
+        }
+
+        let generic = plot_recipe_fetch_blockers("2m_temperature", ModelId::Refs).unwrap();
+        assert!(
+            generic
+                .iter()
+                .any(|blocker| { blocker.reason.contains("limited to explicit `refs_sprd_*`") })
+        );
+    }
+
+    #[test]
+    fn refs_probability_recipes_use_prob_product_and_exact_selectors() {
+        let cases = [
+            (
+                "refs_prob_uh_2to5km_above_25",
+                FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000)
+                    .with_probability(ProbabilitySelection::above_milli(25_000)),
+            ),
+            (
+                "refs_prob_uh_2to5km_above_75",
+                FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000)
+                    .with_probability(ProbabilitySelection::above_milli(75_000)),
+            ),
+            (
+                "refs_prob_uh_2to5km_above_150",
+                FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000)
+                    .with_probability(ProbabilitySelection::above_milli(150_000)),
+            ),
+            (
+                "refs_prob_2m_temperature_below_273p15k",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2)
+                    .with_probability(ProbabilitySelection::below_milli(273_150)),
+            ),
+            (
+                "refs_prob_2m_dewpoint_above_291p48k",
+                FieldSelector::height_agl(CanonicalField::Dewpoint, 2)
+                    .with_probability(ProbabilitySelection::above_milli(291_480)),
+            ),
+            (
+                "refs_prob_2m_dewpoint_above_294p26k",
+                FieldSelector::height_agl(CanonicalField::Dewpoint, 2)
+                    .with_probability(ProbabilitySelection::above_milli(294_260)),
+            ),
+            (
+                "refs_prob_pwat_above_25mm",
+                FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+                    .with_probability(ProbabilitySelection::above_milli(25_000)),
+            ),
+            (
+                "refs_prob_pwat_above_37p5mm",
+                FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+                    .with_probability(ProbabilitySelection::above_milli(37_500)),
+            ),
+            (
+                "refs_prob_pwat_above_50mm",
+                FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+                    .with_probability(ProbabilitySelection::above_milli(50_000)),
+            ),
+            (
+                "refs_prob_visibility_below_1600m",
+                FieldSelector::surface(CanonicalField::Visibility)
+                    .with_probability(ProbabilitySelection::below_milli(1_600_000)),
+            ),
+            (
+                "refs_prob_visibility_below_3200m",
+                FieldSelector::surface(CanonicalField::Visibility)
+                    .with_probability(ProbabilitySelection::below_milli(3_200_000)),
+            ),
+            (
+                "refs_prob_visibility_below_8049m",
+                FieldSelector::surface(CanonicalField::Visibility)
+                    .with_probability(ProbabilitySelection::below_milli(8_049_000)),
+            ),
+            (
+                "refs_prob_10m_wind_speed_above_15p4ms",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+                    .with_probability(ProbabilitySelection::above_milli(15_400)),
+            ),
+            (
+                "refs_prob_10m_wind_speed_above_20p6ms",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+                    .with_probability(ProbabilitySelection::above_milli(20_600)),
+            ),
+            (
+                "refs_prob_10m_wind_speed_above_25p72ms",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+                    .with_probability(ProbabilitySelection::above_milli(25_720)),
+            ),
+        ];
+
+        for (slug, selector) in cases {
+            let plan = plot_recipe_fetch_plan(slug, ModelId::Refs).unwrap();
+            assert_eq!(plan.product, "prob-conus", "{slug}");
+            assert_eq!(
+                plan.fetch_policy,
+                PlotRecipeFetchPolicy::PreferIndexedSubset,
+                "{slug}"
+            );
+            assert_eq!(plan.selectors(), vec![selector], "{slug}");
+
+            let blockers = plot_recipe_fetch_blockers(slug, ModelId::Gfs).unwrap();
+            assert!(
+                blockers
+                    .iter()
+                    .any(|blocker| blocker.reason.contains("only verified for REFS")),
+                "{slug}"
+            );
+        }
     }
 
     #[test]

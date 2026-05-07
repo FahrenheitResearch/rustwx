@@ -1602,6 +1602,7 @@ pub enum ModelId {
     Nbm,
     RrfsA,
     RrfsPublic,
+    Refs,
     RrfsFireWx,
     WrfGdex,
 }
@@ -1629,6 +1630,7 @@ impl ModelId {
             Self::Nbm => "nbm",
             Self::RrfsA => "rrfs-a",
             Self::RrfsPublic => "rrfs-public",
+            Self::Refs => "refs",
             Self::RrfsFireWx => "rrfs-firewx",
             Self::WrfGdex => "wrf-gdex",
         }
@@ -1670,6 +1672,7 @@ impl std::str::FromStr for ModelId {
             "rrfs-public" | "rrfspublic" | "rrfs_public" | "rrfs-prototype" | "rrfs_prototype" => {
                 Ok(Self::RrfsPublic)
             }
+            "refs" | "rrfs-ensemble" | "rrfs_ensemble" => Ok(Self::Refs),
             "rrfs-firewx" | "rrfs_firewx" | "rrfsfirewx" | "firewx" | "fire-weather" => {
                 Ok(Self::RrfsFireWx)
             }
@@ -2083,6 +2086,7 @@ mod tests {
             "rrfs_public".parse::<ModelId>().unwrap(),
             ModelId::RrfsPublic
         );
+        assert_eq!("rrfs_ensemble".parse::<ModelId>().unwrap(), ModelId::Refs);
         assert_eq!("hybrid_gefs".parse::<ModelId>().unwrap(), ModelId::Hgefs);
         assert_eq!("firewx".parse::<ModelId>().unwrap(), ModelId::RrfsFireWx);
         assert_eq!("ecmwf".parse::<ModelId>().unwrap(), ModelId::EcmwfOpenData);
@@ -2091,6 +2095,7 @@ mod tests {
         assert_eq!(ModelId::Hgefs.to_string(), "hgefs");
         assert_eq!(ModelId::RrfsFireWx.to_string(), "rrfs-firewx");
         assert_eq!(ModelId::RrfsPublic.to_string(), "rrfs-public");
+        assert_eq!(ModelId::Refs.to_string(), "refs");
         assert_eq!(ModelId::WrfGdex.to_string(), "wrf-gdex");
         assert_eq!("gdex".parse::<SourceId>().unwrap(), SourceId::Gdex);
         assert_eq!(SourceId::Gdex.to_string(), "gdex");

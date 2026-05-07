@@ -50,7 +50,7 @@ use serde::Serialize;
     about = "One-shot multi-model multi-hour orchestrator with per-lane soft-fail"
 )]
 struct Args {
-    /// Comma-separated list of models (hrrr, gfs, ecmwf-open-data, rrfs-public).
+    /// Comma-separated list of models (hrrr, gfs, ecmwf-open-data, rrfs-public, refs).
     #[arg(long, value_delimiter = ',', default_value = "hrrr")]
     models: Vec<ModelId>,
 
@@ -346,6 +346,21 @@ fn forecast_now_required_products(model: ModelId, args: &Args) -> Vec<String> {
     if matches!(model, ModelId::RrfsPublic) && !args.skip_direct {
         products.push("2dfld-conus".to_string());
         products.push("prs-conus".to_string());
+    }
+    if matches!(model, ModelId::Refs) && !args.skip_direct {
+        let direct_recipes = args.direct_recipes.as_deref().unwrap_or(&[]);
+        if direct_recipes
+            .iter()
+            .any(|recipe| recipe.starts_with("refs_prob_"))
+        {
+            products.push("prob-conus".to_string());
+        }
+        if direct_recipes
+            .iter()
+            .any(|recipe| recipe.starts_with("refs_sprd_"))
+        {
+            products.push("sprd-conus".to_string());
+        }
     }
     if matches!(model, ModelId::WrfGdex) {
         if let Some(product) = &args.surface_product {
@@ -681,7 +696,15 @@ fn model_supported_recipe_lists(model: ModelId) -> (Vec<String>, Vec<String>) {
 }
 
 fn direct_recipe_requires_explicit_opt_in(slug: &str) -> bool {
-    slug.starts_with("nbm_qmd_") || slug.starts_with("sref_prob_")
+    slug.starts_with("nbm_qmd_")
+        || slug.starts_with("sref_prob_")
+        || slug.starts_with("gefs_avg_")
+        || slug.starts_with("gefs_spr_")
+        || slug.starts_with("aigefs_spr_")
+        || slug.starts_with("hgefs_spr_")
+        || slug.starts_with("href_sprd_")
+        || slug.starts_with("refs_sprd_")
+        || slug.starts_with("refs_prob_")
 }
 
 fn filter_recipes_for_model(requested: &[String], supported: &[String]) -> Vec<String> {
@@ -1152,10 +1175,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PinResolution, PinnedRunRequest, RoutePolicyArg, RouteSelection, default_windowed_products,
-        filter_heavy_derived_recipes, parse_windowed_products, select_non_hrrr_non_ecape_route,
+        Args, PinResolution, PinnedRunRequest, RoutePolicyArg, RouteSelection,
+        default_windowed_products, filter_heavy_derived_recipes, forecast_now_required_products,
+        parse_windowed_products, select_non_hrrr_non_ecape_route,
         supports_unified_non_hrrr_non_ecape,
     };
+    use clap::Parser;
     use rustwx_core::{ModelId, SourceId};
     use rustwx_products::windowed::HrrrWindowedProduct;
 
@@ -1238,6 +1263,51 @@ mod tests {
     fn wrf_gdex_supports_unified_non_ecape_runner() {
         assert!(supports_unified_non_hrrr_non_ecape(ModelId::WrfGdex));
         assert!(!supports_unified_non_hrrr_non_ecape(ModelId::Hrrr));
+    }
+
+    #[test]
+    fn refs_direct_recipes_probe_their_required_products() {
+        let prob_args = Args::parse_from([
+            "forecast-now",
+            "--out-dir",
+            "out",
+            "--cache-dir",
+            "cache",
+            "--direct-recipes",
+            "refs_prob_2m_temperature_below_273p15k",
+        ]);
+        assert_eq!(
+            forecast_now_required_products(ModelId::Refs, &prob_args),
+            vec!["prob-conus".to_string()]
+        );
+
+        let spread_args = Args::parse_from([
+            "forecast-now",
+            "--out-dir",
+            "out",
+            "--cache-dir",
+            "cache",
+            "--direct-recipes",
+            "refs_sprd_2m_temperature",
+        ]);
+        assert_eq!(
+            forecast_now_required_products(ModelId::Refs, &spread_args),
+            vec!["sprd-conus".to_string()]
+        );
+
+        let both_args = Args::parse_from([
+            "forecast-now",
+            "--out-dir",
+            "out",
+            "--cache-dir",
+            "cache",
+            "--direct-recipes",
+            "refs_prob_2m_temperature_below_273p15k,refs_sprd_2m_temperature",
+        ]);
+        assert_eq!(
+            forecast_now_required_products(ModelId::Refs, &both_args),
+            vec!["prob-conus".to_string(), "sprd-conus".to_string()]
+        );
     }
 }
 

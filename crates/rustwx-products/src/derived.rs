@@ -1373,6 +1373,7 @@ pub fn supported_derived_recipe_slugs(model: ModelId) -> Vec<String> {
         | ModelId::Href
         | ModelId::Nbm
         | ModelId::RrfsPublic
+        | ModelId::Refs
         | ModelId::RrfsFireWx => Vec::new(),
     }
 }
