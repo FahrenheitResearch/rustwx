@@ -42,7 +42,7 @@ struct Args {
     #[arg(
         long,
         value_delimiter = ',',
-        default_value = "hrrr,gfs,ecmwf-open-data,rrfs-a"
+        default_value = "hrrr,gfs,ecmwf-open-data,rrfs-public"
     )]
     models: Vec<ModelId>,
     #[arg(long, default_value = "0-6")]

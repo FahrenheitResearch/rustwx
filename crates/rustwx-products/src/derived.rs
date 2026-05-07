@@ -1367,7 +1367,7 @@ pub fn supported_derived_recipe_slugs(model: ModelId) -> Vec<String> {
             .filter(|recipe| derived_recipe_supported_for_model(recipe, model))
             .map(|recipe| recipe.slug.to_string())
             .collect(),
-        ModelId::Rtma | ModelId::Urma | ModelId::Nbm => Vec::new(),
+        ModelId::Rtma | ModelId::Urma | ModelId::Nbm | ModelId::RrfsPublic => Vec::new(),
     }
 }
 

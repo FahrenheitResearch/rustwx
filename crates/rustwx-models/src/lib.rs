@@ -377,6 +377,7 @@ const HOURLY_ANALYSIS_CYCLE_HOURS: &[u8] = &[
 const RRFS_A_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 ];
+const RRFS_PUBLIC_CYCLE_HOURS: &[u8] = &[0, 3, 6, 9, 12, 15, 18, 21];
 const WRF_GDEX_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 ];
@@ -525,6 +526,14 @@ const RRFS_A_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
     priority: 1,
     max_age_hours: None,
     notes: "NOAA RRFS AWS bucket",
+}];
+
+const RRFS_PUBLIC_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
+    id: SourceId::Aws,
+    idx_available: true,
+    priority: 1,
+    max_age_hours: None,
+    notes: "NOAA RRFS public prototype AWS bucket",
 }];
 
 const WRF_GDEX_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
@@ -703,6 +712,16 @@ const MODELS: &[ModelSummary] = &[
         cycle_hours_utc: RRFS_A_CYCLE_HOURS,
         max_forecast_hour: 60,
         sources: RRFS_A_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::Deterministic,
+    },
+    ModelSummary {
+        id: ModelId::RrfsPublic,
+        description: "RRFS public prototype 3 km CONUS deterministic forecast",
+        default_product: "prs-conus",
+        cycle_hours_utc: RRFS_PUBLIC_CYCLE_HOURS,
+        max_forecast_hour: 60,
+        sources: RRFS_PUBLIC_SOURCES,
         runtime_family: ModelRuntimeFamily::Grib2Forecast,
         ensemble_mode: EnsembleMode::Deterministic,
     },
@@ -2689,7 +2708,12 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
             VerticalSelector::Surface,
         ) => matches!(
             model,
-            ModelId::Hrrr | ModelId::HrrrAk | ModelId::Gfs | ModelId::Gdas | ModelId::RrfsA
+            ModelId::Hrrr
+                | ModelId::HrrrAk
+                | ModelId::Gfs
+                | ModelId::Gdas
+                | ModelId::RrfsA
+                | ModelId::RrfsPublic
         ),
         (CanonicalField::LandSeaMask, VerticalSelector::Surface) => {
             matches!(model, ModelId::EcmwfOpenData)
@@ -2697,13 +2721,21 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
         (CanonicalField::RadarReflectivity, VerticalSelector::HeightAboveGroundMeters(1000)) => {
             matches!(
                 model,
-                ModelId::Hrrr | ModelId::HrrrAk | ModelId::RrfsA | ModelId::WrfGdex
+                ModelId::Hrrr
+                    | ModelId::HrrrAk
+                    | ModelId::RrfsA
+                    | ModelId::RrfsPublic
+                    | ModelId::WrfGdex
             )
         }
         (CanonicalField::CompositeReflectivity, VerticalSelector::EntireAtmosphere) => {
             matches!(
                 model,
-                ModelId::Hrrr | ModelId::HrrrAk | ModelId::RrfsA | ModelId::WrfGdex
+                ModelId::Hrrr
+                    | ModelId::HrrrAk
+                    | ModelId::RrfsA
+                    | ModelId::RrfsPublic
+                    | ModelId::WrfGdex
             )
         }
         (
@@ -2714,7 +2746,11 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
             },
         ) => matches!(
             model,
-            ModelId::Hrrr | ModelId::HrrrAk | ModelId::RrfsA | ModelId::WrfGdex
+            ModelId::Hrrr
+                | ModelId::HrrrAk
+                | ModelId::RrfsA
+                | ModelId::RrfsPublic
+                | ModelId::WrfGdex
         ),
         (CanonicalField::SimulatedInfraredBrightnessTemperature, VerticalSelector::NominalTop) => {
             matches!(model, ModelId::Hrrr | ModelId::HrrrAk)
@@ -2785,6 +2821,7 @@ pub fn supported_forecast_hours(model: ModelId, cycle_hour_utc: u8) -> Vec<u16> 
         ModelId::Rtma | ModelId::Urma => vec![0],
         ModelId::Nbm => (1..=264).collect(),
         ModelId::RrfsA => (0..=60).collect(),
+        ModelId::RrfsPublic => (0..=60).collect(),
         ModelId::WrfGdex => (0..=23).collect(),
     }
 }
@@ -2853,6 +2890,9 @@ fn default_canonical_bundle_product(
         (ModelId::RrfsA, CanonicalBundleDescriptor::SurfaceAnalysis) => "nat-na",
         (ModelId::RrfsA, CanonicalBundleDescriptor::PressureAnalysis) => "prs-na",
         (ModelId::RrfsA, CanonicalBundleDescriptor::NativeAnalysis) => "nat-na",
+        (ModelId::RrfsPublic, CanonicalBundleDescriptor::SurfaceAnalysis) => "2dfld-conus",
+        (ModelId::RrfsPublic, CanonicalBundleDescriptor::PressureAnalysis) => "prs-conus",
+        (ModelId::RrfsPublic, CanonicalBundleDescriptor::NativeAnalysis) => "prs-conus",
         (ModelId::WrfGdex, CanonicalBundleDescriptor::SurfaceAnalysis) => {
             WRF_GDEX_DEFAULT_SURFACE_PRODUCT
         }
@@ -3252,6 +3292,7 @@ fn build_grib_url(source: SourceId, request: &ModelRunRequest) -> Result<String,
         ModelId::Urma => build_urma_url(source, request)?,
         ModelId::Nbm => build_nbm_url(source, request)?,
         ModelId::RrfsA => build_rrfs_a_url(source, request)?,
+        ModelId::RrfsPublic => build_rrfs_public_url(source, request)?,
         ModelId::WrfGdex => build_wrf_gdex_url(source, request)?,
     })
 }
@@ -4106,6 +4147,35 @@ fn build_rrfs_a_url(source: SourceId, request: &ModelRunRequest) -> Result<Strin
     ))
 }
 
+fn build_rrfs_public_url(
+    source: SourceId,
+    request: &ModelRunRequest,
+) -> Result<String, ModelError> {
+    if source != SourceId::Aws {
+        return Ok(unsupported_source(source, request.model));
+    }
+
+    let suffix = match normalize_token(&request.product).as_str() {
+        "prs_conus" | "prslev_conus" | "conus" => {
+            format!("prslev.3km.f{:03}.conus.grib2", request.forecast_hour)
+        }
+        "2dfld_conus" | "sfc_conus" | "surface_conus" | "surface" | "sfc" => {
+            format!("2dfld.3km.f{:03}.conus.grib2", request.forecast_hour)
+        }
+        other => {
+            return Err(ModelError::UnsupportedProduct {
+                model: request.model,
+                product: other.to_string(),
+            });
+        }
+    };
+
+    Ok(format!(
+        "https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_public/rrfs.{}/{:02}/rrfs.t{:02}z.{}",
+        request.cycle.date_yyyymmdd, request.cycle.hour_utc, request.cycle.hour_utc, suffix
+    ))
+}
+
 fn normalize_token(value: &str) -> String {
     value
         .trim()
@@ -4285,6 +4355,15 @@ fn plot_recipe_fetch_defaults(
         }
         (ModelId::Nbm, _, _) => ("core/co", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::RrfsA, _, _) => ("prs-conus", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::RrfsPublic, true, _) => {
+            ("2dfld-conus", PlotRecipeFetchPolicy::PreferIndexedSubset)
+        }
+        (ModelId::RrfsPublic, false, true) => {
+            ("2dfld-conus", PlotRecipeFetchPolicy::PreferIndexedSubset)
+        }
+        (ModelId::RrfsPublic, false, false) => {
+            ("prs-conus", PlotRecipeFetchPolicy::PreferIndexedSubset)
+        }
         (ModelId::EcmwfOpenData, _, _) => ("oper", PlotRecipeFetchPolicy::WholeFile),
         (ModelId::Aifs, _, _) => ("oper", PlotRecipeFetchPolicy::WholeFile),
         (ModelId::WrfGdex, true, _) => (
@@ -4390,12 +4469,16 @@ fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<Stri
             | ModelId::Rtma
             | ModelId::Urma
             | ModelId::Nbm
-            | ModelId::RrfsA,
+            | ModelId::RrfsA
+            | ModelId::RrfsPublic,
         ) => Some(format!(
             "{} is only verified and wired for HRRR right now; the native GRIB signature is not verified yet for model '{model}'",
             field.label
         )),
-        ("smoke_mass_density_8m_agl" | "column_integrated_smoke", ModelId::RrfsA) => Some(format!(
+        (
+            "smoke_mass_density_8m_agl" | "column_integrated_smoke",
+            ModelId::RrfsA | ModelId::RrfsPublic,
+        ) => Some(format!(
             "{} is only verified and wired for HRRR wrfnat right now; the native GRIB signature is not verified yet for model '{model}'",
             field.label
         )),
@@ -4652,7 +4735,7 @@ mod tests {
 
     #[test]
     fn built_in_models_are_real() {
-        assert_eq!(built_in_models().len(), 18);
+        assert_eq!(built_in_models().len(), 19);
         assert_eq!(model_summary(ModelId::HrrrAk).default_product, "sfc");
         assert_eq!(model_summary(ModelId::Gdas).default_product, "pgrb2.0p25");
         assert_eq!(
@@ -4665,6 +4748,10 @@ mod tests {
         assert_eq!(model_summary(ModelId::Rtma).max_forecast_hour, 0);
         assert_eq!(model_summary(ModelId::Nbm).default_product, "core/co");
         assert_eq!(model_summary(ModelId::RrfsA).default_product, "prs-conus");
+        assert_eq!(
+            model_summary(ModelId::RrfsPublic).cycle_hours_utc,
+            RRFS_PUBLIC_CYCLE_HOURS
+        );
         assert_eq!(
             model_summary(ModelId::WrfGdex).default_product,
             WRF_GDEX_DEFAULT_SURFACE_PRODUCT
@@ -5070,6 +5157,7 @@ mod tests {
             ModelId::Urma,
             ModelId::Nbm,
             ModelId::RrfsA,
+            ModelId::RrfsPublic,
             ModelId::WrfGdex,
         ] {
             if selectors
@@ -5114,7 +5202,8 @@ mod tests {
                     | ModelId::Nam
                     | ModelId::Hiresw
                     | ModelId::Sref
-                    | ModelId::RrfsA => {
+                    | ModelId::RrfsA
+                    | ModelId::RrfsPublic => {
                         assert!(reason.contains("idx subsetting can stage the GRIB messages"));
                     }
                     ModelId::Rtma | ModelId::Urma | ModelId::Nbm => {
@@ -5626,6 +5715,32 @@ mod tests {
             ]
         );
         assert!(!rrfs_plan.variable_patterns().is_empty());
+
+        let rrfs_public_plan =
+            plot_recipe_fetch_plan("composite_reflectivity_uh", ModelId::RrfsPublic).unwrap();
+        assert_eq!(rrfs_public_plan.product, "2dfld-conus");
+        assert_eq!(
+            rrfs_public_plan.fetch_policy,
+            PlotRecipeFetchPolicy::PreferIndexedSubset
+        );
+        assert_eq!(
+            rrfs_public_plan.fetch_mode,
+            PlotRecipeFetchMode::IndexedSubset
+        );
+        assert_eq!(rrfs_public_plan.selectors(), rrfs_plan.selectors());
+        assert!(!rrfs_public_plan.variable_patterns().is_empty());
+    }
+
+    #[test]
+    fn rrfs_public_direct_fetches_use_matching_public_products() {
+        let surface =
+            plot_recipe_fetch_plan("2m_temperature_10m_winds", ModelId::RrfsPublic).unwrap();
+        assert_eq!(surface.product, "2dfld-conus");
+        assert_eq!(surface.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
+
+        let pressure = plot_recipe_fetch_plan("500mb_height_winds", ModelId::RrfsPublic).unwrap();
+        assert_eq!(pressure.product, "prs-conus");
+        assert_eq!(pressure.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
     }
 
     #[test]
@@ -5702,6 +5817,11 @@ mod tests {
         );
         assert!(
             plot_recipe_fetch_blockers("composite_reflectivity_uh", ModelId::RrfsA)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            plot_recipe_fetch_blockers("composite_reflectivity_uh", ModelId::RrfsPublic)
                 .unwrap()
                 .is_empty()
         );
@@ -6379,6 +6499,28 @@ mod tests {
             urls[0].idx_url.as_deref(),
             Some(
                 "https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_a/rrfs.20260414/20/rrfs.t20z.prslev.3km.f002.conus.grib2.idx"
+            )
+        );
+    }
+
+    #[test]
+    fn rrfs_public_urls_match_public_bucket_pattern() {
+        let request = ModelRunRequest::new(
+            ModelId::RrfsPublic,
+            CycleSpec::new("20260507", 0).unwrap(),
+            24,
+            "prs-conus",
+        )
+        .unwrap();
+        let urls = resolve_urls(&request).unwrap();
+        assert_eq!(
+            urls[0].grib_url,
+            "https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_public/rrfs.20260507/00/rrfs.t00z.prslev.3km.f024.conus.grib2"
+        );
+        assert_eq!(
+            urls[0].idx_url.as_deref(),
+            Some(
+                "https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_public/rrfs.20260507/00/rrfs.t00z.prslev.3km.f024.conus.grib2.idx"
             )
         );
     }

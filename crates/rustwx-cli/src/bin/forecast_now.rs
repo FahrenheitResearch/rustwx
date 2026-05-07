@@ -50,7 +50,7 @@ use serde::Serialize;
     about = "One-shot multi-model multi-hour orchestrator with per-lane soft-fail"
 )]
 struct Args {
-    /// Comma-separated list of models (hrrr, gfs, ecmwf-open-data, rrfs-a).
+    /// Comma-separated list of models (hrrr, gfs, ecmwf-open-data, rrfs-public).
     #[arg(long, value_delimiter = ',', default_value = "hrrr")]
     models: Vec<ModelId>,
 
@@ -342,6 +342,10 @@ fn forecast_now_required_products(model: ModelId, args: &Args) -> Vec<String> {
             products.push("nat-na".to_string());
             products.push("prs-na".to_string());
         }
+    }
+    if matches!(model, ModelId::RrfsPublic) && !args.skip_direct {
+        products.push("2dfld-conus".to_string());
+        products.push("prs-conus".to_string());
     }
     if matches!(model, ModelId::WrfGdex) {
         if let Some(product) = &args.surface_product {
@@ -747,7 +751,11 @@ fn select_non_hrrr_non_ecape_route(model: ModelId, policy: RoutePolicyArg) -> Ro
 fn supports_unified_non_hrrr_non_ecape(model: ModelId) -> bool {
     matches!(
         model,
-        ModelId::RrfsA | ModelId::Gfs | ModelId::EcmwfOpenData | ModelId::WrfGdex
+        ModelId::RrfsA
+            | ModelId::RrfsPublic
+            | ModelId::Gfs
+            | ModelId::EcmwfOpenData
+            | ModelId::WrfGdex
     )
 }
 
