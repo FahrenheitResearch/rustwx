@@ -4873,6 +4873,20 @@ mod tests {
     }
 
     #[test]
+    fn nbm_pop_direct_recipe_groups_to_core_surface_product() {
+        let planned =
+            plan_direct_recipes(ModelId::Nbm, &["probability_of_precipitation".to_string()])
+                .unwrap();
+        let request = sample_direct_request(ModelId::Nbm);
+        let groups = group_direct_fetches(&request, &planned);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].product, "core/co");
+        assert!(groups[0].selectors.contains(&FieldSelector::surface(
+            CanonicalField::ProbabilityOfPrecipitation
+        )));
+    }
+
+    #[test]
     fn unsupported_recipe_error_stays_explicit() {
         let err = plan_direct_recipes(ModelId::Hrrr, &["1h_qpf".to_string()])
             .unwrap_err()

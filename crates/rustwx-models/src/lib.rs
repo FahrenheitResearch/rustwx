@@ -1282,6 +1282,18 @@ const FIELD_TOTAL_QPF: GribFieldSpec = field_spec(
     &["APCP:surface"],
 );
 
+const FIELD_POP: GribFieldSpec = field_spec(
+    "probability_of_precipitation",
+    "Probability of Precipitation",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(FieldSelector::surface(
+        CanonicalField::ProbabilityOfPrecipitation,
+    )),
+    &["APCP:surface"],
+);
+
 const FIELD_CATEGORICAL_RAIN: GribFieldSpec = field_spec(
     "categorical_rain",
     "Categorical Rain",
@@ -1775,6 +1787,15 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherQpf,
     },
     PlotRecipe {
+        slug: "probability_of_precipitation",
+        title: "Probability of Precipitation",
+        filled: FIELD_POP,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherRh,
+    },
+    PlotRecipe {
         slug: "categorical_rain",
         title: "Categorical Rain",
         filled: FIELD_CATEGORICAL_RAIN,
@@ -2105,7 +2126,10 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
         (CanonicalField::ColumnIntegratedSmoke, VerticalSelector::EntireAtmosphere) => {
             matches!(model, ModelId::Hrrr | ModelId::HrrrAk)
         }
-        (CanonicalField::TotalPrecipitation, VerticalSelector::Surface) => true,
+        (
+            CanonicalField::TotalPrecipitation | CanonicalField::ProbabilityOfPrecipitation,
+            VerticalSelector::Surface,
+        ) => true,
         (CanonicalField::Visibility, VerticalSelector::Surface) => true,
         (
             CanonicalField::CategoricalRain
@@ -3926,6 +3950,10 @@ fn model_specific_surface_field_gap(field: &GribFieldSpec, model: ModelId) -> Op
         (_, "one_hour_qpf") => Some(
             "1h QPF is not yet exposed as a generic native recipe because APCP accumulation windows vary by model and forecast hour.".to_string(),
         ),
+        (model, "probability_of_precipitation") if model != ModelId::Nbm => Some(format!(
+            "{} is only verified for NBM core APCP probability fields right now; add a model-specific idx/GRIB signature test before exposing it for '{model}'",
+            field.label
+        )),
         (_, "precipitation_type") => None,
         (_, "lightning_flash_density") => Some(
             "Verified HRRR surface files expose LTNGSD at 1 m and 2 m AGL as discipline 0/category 17/number 0 Lightning Strike Density [m^-2 s^-1], plus LTNG as discipline 0/category 17/number 192 Lightning [non-dim]; HRRR does not expose the flash-density parameters 2/3/4, so wiring this slug would mislabel strike density or a lightning flag.".to_string(),
@@ -5409,6 +5437,36 @@ mod tests {
         assert!(precipitation_type.iter().any(|blocker| {
             blocker.reason.contains("selector") || blocker.reason.contains("not yet supported")
         }));
+    }
+
+    #[test]
+    fn nbm_probability_of_precipitation_recipe_uses_core_surface_plan() {
+        let plan = plot_recipe_fetch_plan("probability_of_precipitation", ModelId::Nbm).unwrap();
+        assert_eq!(plan.product, "core/co");
+        assert_eq!(
+            plan.fetch_policy,
+            PlotRecipeFetchPolicy::PreferIndexedSubset
+        );
+        assert_eq!(
+            plan.selectors(),
+            vec![FieldSelector::surface(
+                CanonicalField::ProbabilityOfPrecipitation
+            )]
+        );
+        assert!(plan.variable_patterns().contains(&"APCP:surface"));
+        assert!(
+            plot_recipe_fetch_blockers("probability_of_precipitation", ModelId::Nbm)
+                .unwrap()
+                .is_empty()
+        );
+
+        let gfs_blockers =
+            plot_recipe_fetch_blockers("probability_of_precipitation", ModelId::Gfs).unwrap();
+        assert!(
+            gfs_blockers
+                .iter()
+                .any(|blocker| blocker.reason.contains("only verified for NBM"))
+        );
     }
 
     #[test]

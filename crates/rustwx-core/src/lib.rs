@@ -292,6 +292,7 @@ pub enum CanonicalField {
     HighCloudCover,
     PrecipitableWater,
     TotalPrecipitation,
+    ProbabilityOfPrecipitation,
     Visibility,
     SimulatedInfraredBrightnessTemperature,
     RadarReflectivity,
@@ -327,6 +328,7 @@ impl CanonicalField {
             Self::HighCloudCover => "high_cloud_cover",
             Self::PrecipitableWater => "precipitable_water",
             Self::TotalPrecipitation => "total_precipitation",
+            Self::ProbabilityOfPrecipitation => "probability_of_precipitation",
             Self::Visibility => "visibility",
             Self::SimulatedInfraredBrightnessTemperature => {
                 "simulated_infrared_brightness_temperature"
@@ -364,6 +366,7 @@ impl CanonicalField {
             Self::HighCloudCover => "High Cloud Cover",
             Self::PrecipitableWater => "Precipitable Water",
             Self::TotalPrecipitation => "Total Precipitation",
+            Self::ProbabilityOfPrecipitation => "Probability of Precipitation",
             Self::Visibility => "Visibility",
             Self::SimulatedInfraredBrightnessTemperature => {
                 "Simulated Infrared Brightness Temperature"
@@ -397,6 +400,7 @@ impl CanonicalField {
             Self::LowCloudCover | Self::MiddleCloudCover | Self::HighCloudCover => "%",
             Self::PrecipitableWater => "kg/m^2",
             Self::TotalPrecipitation => "kg/m^2",
+            Self::ProbabilityOfPrecipitation => "%",
             Self::Visibility => "m",
             Self::SimulatedInfraredBrightnessTemperature => "K",
             Self::RadarReflectivity => "dBZ",

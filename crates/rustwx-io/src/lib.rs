@@ -1029,6 +1029,7 @@ const PARAMETER_TOTAL_PRECIPITATION: &[ParameterCode] = &[ParameterCode {
     category: 1,
     number: 8,
 }];
+const PARAMETER_PROBABILITY_OF_PRECIPITATION: &[ParameterCode] = PARAMETER_TOTAL_PRECIPITATION;
 const PARAMETER_CATEGORICAL_RAIN: &[ParameterCode] = &[
     ParameterCode {
         discipline: 0,
@@ -1242,6 +1243,22 @@ impl PreparedSelector {
 }
 
 fn product_template_match_score(selector: FieldSelector, message: &Grib2Message) -> u8 {
+    if selector.field == CanonicalField::ProbabilityOfPrecipitation {
+        return if is_probability_product_template(message.product.template) {
+            0
+        } else {
+            50
+        };
+    }
+
+    if selector.field == CanonicalField::TotalPrecipitation {
+        return match message.product.template {
+            8 | 11 | 12 => 0,
+            template if is_probability_product_template(template) => 50,
+            _ => 10,
+        };
+    }
+
     if !selector_prefers_instantaneous_message(selector) {
         return 0;
     }
@@ -1254,11 +1271,14 @@ fn product_template_match_score(selector: FieldSelector, message: &Grib2Message)
     }
 }
 
+fn is_probability_product_template(template: u16) -> bool {
+    matches!(template, 9 | 10)
+}
+
 fn selector_prefers_instantaneous_message(selector: FieldSelector) -> bool {
     !matches!(
         selector.field,
         CanonicalField::WindGust
-            | CanonicalField::TotalPrecipitation
             | CanonicalField::CategoricalRain
             | CanonicalField::CategoricalFreezingRain
             | CanonicalField::CategoricalIcePellets
@@ -1441,6 +1461,14 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
                 parameters: PARAMETER_TOTAL_PRECIPITATION,
                 level: LevelMatch::Surface,
                 units: "kg/m^2",
+            }),
+            FieldSelector {
+                field: CanonicalField::ProbabilityOfPrecipitation,
+                vertical: VerticalSelector::Surface,
+            } => Ok(Self {
+                parameters: PARAMETER_PROBABILITY_OF_PRECIPITATION,
+                level: LevelMatch::Surface,
+                units: "%",
             }),
             FieldSelector {
                 field: CanonicalField::TotalCloudCover,
@@ -2315,6 +2343,20 @@ mod tests {
         );
         assert!(qpf.matches(&qpf_message));
 
+        let pop = StructuredMessageSelector::try_from(FieldSelector::surface(
+            CanonicalField::ProbabilityOfPrecipitation,
+        ))
+        .unwrap();
+        let pop_message = ieee_f32_message(
+            PARAMETER_PROBABILITY_OF_PRECIPITATION[0],
+            1,
+            0.0,
+            &[80.0],
+            -99.0,
+            -99.0,
+        );
+        assert!(pop.matches(&pop_message));
+
         let tcdc = StructuredMessageSelector::try_from(FieldSelector::entire_atmosphere(
             CanonicalField::TotalCloudCover,
         ))
@@ -2584,6 +2626,48 @@ mod tests {
         .unwrap();
 
         assert_eq!(field.values, vec![280.0, 281.5]);
+    }
+
+    #[test]
+    fn extract_distinguishes_pop_from_accumulated_qpf() {
+        let mut probability = ieee_f32_message(
+            PARAMETER_TOTAL_PRECIPITATION[0],
+            1,
+            0.0,
+            &[80.0, 90.0],
+            -99.0,
+            -99.0,
+        );
+        probability.product.template = 9;
+
+        let mut accumulation = ieee_f32_message(
+            PARAMETER_TOTAL_PRECIPITATION[0],
+            1,
+            0.0,
+            &[2.0, 4.0],
+            -99.0,
+            -99.0,
+        );
+        accumulation.product.template = 8;
+
+        let grib = Grib2File {
+            messages: vec![probability, accumulation],
+        };
+
+        let qpf = extract_field_from_grib2(
+            &grib,
+            FieldSelector::surface(CanonicalField::TotalPrecipitation),
+        )
+        .unwrap();
+        let pop = extract_field_from_grib2(
+            &grib,
+            FieldSelector::surface(CanonicalField::ProbabilityOfPrecipitation),
+        )
+        .unwrap();
+
+        assert_eq!(qpf.values, vec![2.0, 4.0]);
+        assert_eq!(pop.values, vec![80.0, 90.0]);
+        assert_eq!(pop.units, "%");
     }
 
     #[test]
