@@ -347,6 +347,21 @@ fn forecast_now_required_products(model: ModelId, args: &Args) -> Vec<String> {
         products.push("2dfld-conus".to_string());
         products.push("prs-conus".to_string());
     }
+    if matches!(model, ModelId::Href) && !args.skip_direct {
+        let direct_recipes = args.direct_recipes.as_deref().unwrap_or(&[]);
+        if direct_recipes
+            .iter()
+            .any(|recipe| recipe.starts_with("href_prob_"))
+        {
+            products.push("ensprod/conus/prob".to_string());
+        }
+        if direct_recipes
+            .iter()
+            .any(|recipe| recipe.starts_with("href_sprd_"))
+        {
+            products.push("ensprod/conus/sprd".to_string());
+        }
+    }
     if matches!(model, ModelId::Refs) && !args.skip_direct {
         let direct_recipes = args.direct_recipes.as_deref().unwrap_or(&[]);
         if direct_recipes
@@ -703,6 +718,7 @@ fn direct_recipe_requires_explicit_opt_in(slug: &str) -> bool {
         || slug.starts_with("aigefs_spr_")
         || slug.starts_with("hgefs_spr_")
         || slug.starts_with("href_sprd_")
+        || slug.starts_with("href_prob_")
         || slug.starts_with("refs_sprd_")
         || slug.starts_with("refs_prob_")
 }
@@ -1307,6 +1323,54 @@ mod tests {
         assert_eq!(
             forecast_now_required_products(ModelId::Refs, &both_args),
             vec!["prob-conus".to_string(), "sprd-conus".to_string()]
+        );
+    }
+
+    #[test]
+    fn href_direct_recipes_probe_their_required_products() {
+        let prob_args = Args::parse_from([
+            "forecast-now",
+            "--out-dir",
+            "out",
+            "--cache-dir",
+            "cache",
+            "--direct-recipes",
+            "href_prob_2m_temperature_below_273p15k",
+        ]);
+        assert_eq!(
+            forecast_now_required_products(ModelId::Href, &prob_args),
+            vec!["ensprod/conus/prob".to_string()]
+        );
+
+        let spread_args = Args::parse_from([
+            "forecast-now",
+            "--out-dir",
+            "out",
+            "--cache-dir",
+            "cache",
+            "--direct-recipes",
+            "href_sprd_2m_temperature",
+        ]);
+        assert_eq!(
+            forecast_now_required_products(ModelId::Href, &spread_args),
+            vec!["ensprod/conus/sprd".to_string()]
+        );
+
+        let both_args = Args::parse_from([
+            "forecast-now",
+            "--out-dir",
+            "out",
+            "--cache-dir",
+            "cache",
+            "--direct-recipes",
+            "href_prob_2m_temperature_below_273p15k,href_sprd_2m_temperature",
+        ]);
+        assert_eq!(
+            forecast_now_required_products(ModelId::Href, &both_args),
+            vec![
+                "ensprod/conus/prob".to_string(),
+                "ensprod/conus/sprd".to_string()
+            ]
         );
     }
 }

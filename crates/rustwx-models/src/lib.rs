@@ -116,6 +116,9 @@ fn recipe_maturity(slug: &str) -> ProductMaturity {
     if slug.starts_with("href_sprd_") {
         return ProductMaturity::Experimental;
     }
+    if slug.starts_with("href_prob_") {
+        return ProductMaturity::Experimental;
+    }
     if slug.starts_with("refs_sprd_") || slug.starts_with("refs_prob_") {
         return ProductMaturity::Experimental;
     }
@@ -142,6 +145,9 @@ fn recipe_flags(slug: &str) -> Vec<ProductSemanticFlag> {
         return vec![ProductSemanticFlag::ProofOriented];
     }
     if slug.starts_with("href_sprd_") {
+        return vec![ProductSemanticFlag::ProofOriented];
+    }
+    if slug.starts_with("href_prob_") {
         return vec![ProductSemanticFlag::ProofOriented];
     }
     if slug.starts_with("refs_sprd_") || slug.starts_with("refs_prob_") {
@@ -2288,9 +2294,35 @@ const FIELD_REFS_PROB_2M_TEMP_BELOW_273P15K: GribFieldSpec = field_spec(
     &["TMP:2 m above ground"],
 );
 
+const FIELD_HREF_PROB_2M_TEMP_BELOW_273P15K: GribFieldSpec = field_spec(
+    "href_probability_temperature_2m_agl_lt_273p15k",
+    "HREF Probability 2m Temperature < 273.15 K",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(
+        FieldSelector::height_agl(CanonicalField::Temperature, 2)
+            .with_probability(ProbabilitySelection::below_milli(273_150)),
+    ),
+    &["TMP:2 m above ground"],
+);
+
 const FIELD_REFS_PROB_2M_DEWPOINT_ABOVE_291P48K: GribFieldSpec = field_spec(
     "refs_probability_dewpoint_2m_agl_gt_291p48k",
     "REFS Probability 2m Dewpoint > 291.48 K",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(
+        FieldSelector::height_agl(CanonicalField::Dewpoint, 2)
+            .with_probability(ProbabilitySelection::above_milli(291_480)),
+    ),
+    &["DPT:2 m above ground"],
+);
+
+const FIELD_HREF_PROB_2M_DEWPOINT_ABOVE_291P48K: GribFieldSpec = field_spec(
+    "href_probability_dewpoint_2m_agl_gt_291p48k",
+    "HREF Probability 2m Dewpoint > 291.48 K",
     ProductFamily::Surface,
     GribLevelKind::HeightAboveGround,
     Some(2),
@@ -2314,9 +2346,35 @@ const FIELD_REFS_PROB_2M_DEWPOINT_ABOVE_294P26K: GribFieldSpec = field_spec(
     &["DPT:2 m above ground"],
 );
 
+const FIELD_HREF_PROB_2M_DEWPOINT_ABOVE_294P26K: GribFieldSpec = field_spec(
+    "href_probability_dewpoint_2m_agl_gt_294p26k",
+    "HREF Probability 2m Dewpoint > 294.26 K",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(2),
+    Some(
+        FieldSelector::height_agl(CanonicalField::Dewpoint, 2)
+            .with_probability(ProbabilitySelection::above_milli(294_260)),
+    ),
+    &["DPT:2 m above ground"],
+);
+
 const FIELD_REFS_PROB_PWAT_ABOVE_25MM: GribFieldSpec = field_spec(
     "refs_probability_precipitable_water_gt_25mm",
     "REFS Probability Precipitable Water > 25 mm",
+    ProductFamily::Surface,
+    GribLevelKind::EntireAtmosphere,
+    None,
+    Some(
+        FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+            .with_probability(ProbabilitySelection::above_milli(25_000)),
+    ),
+    &["PWAT:entire atmosphere", "PWAT:"],
+);
+
+const FIELD_HREF_PROB_PWAT_ABOVE_25MM: GribFieldSpec = field_spec(
+    "href_probability_precipitable_water_gt_25mm",
+    "HREF Probability Precipitable Water > 25 mm",
     ProductFamily::Surface,
     GribLevelKind::EntireAtmosphere,
     None,
@@ -2340,9 +2398,35 @@ const FIELD_REFS_PROB_PWAT_ABOVE_37P5MM: GribFieldSpec = field_spec(
     &["PWAT:entire atmosphere", "PWAT:"],
 );
 
+const FIELD_HREF_PROB_PWAT_ABOVE_37P5MM: GribFieldSpec = field_spec(
+    "href_probability_precipitable_water_gt_37p5mm",
+    "HREF Probability Precipitable Water > 37.5 mm",
+    ProductFamily::Surface,
+    GribLevelKind::EntireAtmosphere,
+    None,
+    Some(
+        FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+            .with_probability(ProbabilitySelection::above_milli(37_500)),
+    ),
+    &["PWAT:entire atmosphere", "PWAT:"],
+);
+
 const FIELD_REFS_PROB_PWAT_ABOVE_50MM: GribFieldSpec = field_spec(
     "refs_probability_precipitable_water_gt_50mm",
     "REFS Probability Precipitable Water > 50 mm",
+    ProductFamily::Surface,
+    GribLevelKind::EntireAtmosphere,
+    None,
+    Some(
+        FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+            .with_probability(ProbabilitySelection::above_milli(50_000)),
+    ),
+    &["PWAT:entire atmosphere", "PWAT:"],
+);
+
+const FIELD_HREF_PROB_PWAT_ABOVE_50MM: GribFieldSpec = field_spec(
+    "href_probability_precipitable_water_gt_50mm",
+    "HREF Probability Precipitable Water > 50 mm",
     ProductFamily::Surface,
     GribLevelKind::EntireAtmosphere,
     None,
@@ -2366,9 +2450,35 @@ const FIELD_REFS_PROB_VISIBILITY_BELOW_1600M: GribFieldSpec = field_spec(
     &["VIS:surface"],
 );
 
+const FIELD_HREF_PROB_VISIBILITY_BELOW_1600M: GribFieldSpec = field_spec(
+    "href_probability_visibility_surface_lt_1600m",
+    "HREF Probability Visibility < 1600 m",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::Visibility)
+            .with_probability(ProbabilitySelection::below_milli(1_600_000)),
+    ),
+    &["VIS:surface"],
+);
+
 const FIELD_REFS_PROB_VISIBILITY_BELOW_3200M: GribFieldSpec = field_spec(
     "refs_probability_visibility_surface_lt_3200m",
     "REFS Probability Visibility < 3200 m",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::Visibility)
+            .with_probability(ProbabilitySelection::below_milli(3_200_000)),
+    ),
+    &["VIS:surface"],
+);
+
+const FIELD_HREF_PROB_VISIBILITY_BELOW_3200M: GribFieldSpec = field_spec(
+    "href_probability_visibility_surface_lt_3200m",
+    "HREF Probability Visibility < 3200 m",
     ProductFamily::Surface,
     GribLevelKind::Surface,
     None,
@@ -2392,9 +2502,35 @@ const FIELD_REFS_PROB_VISIBILITY_BELOW_8049M: GribFieldSpec = field_spec(
     &["VIS:surface"],
 );
 
+const FIELD_HREF_PROB_VISIBILITY_BELOW_6400M: GribFieldSpec = field_spec(
+    "href_probability_visibility_surface_lt_6400m",
+    "HREF Probability Visibility < 6400 m",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::Visibility)
+            .with_probability(ProbabilitySelection::below_milli(6_400_000)),
+    ),
+    &["VIS:surface"],
+);
+
 const FIELD_REFS_PROB_10M_WIND_SPEED_ABOVE_15P4MS: GribFieldSpec = field_spec(
     "refs_probability_wind_speed_10m_agl_gt_15p4ms",
     "REFS Probability 10m Wind Speed > 15.4 m/s",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(10),
+    Some(
+        FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+            .with_probability(ProbabilitySelection::above_milli(15_400)),
+    ),
+    &["WIND:10 m above ground"],
+);
+
+const FIELD_HREF_PROB_10M_WIND_SPEED_ABOVE_15P4MS: GribFieldSpec = field_spec(
+    "href_probability_wind_speed_10m_agl_gt_15p4ms",
+    "HREF Probability 10m Wind Speed > 15.4 m/s",
     ProductFamily::Surface,
     GribLevelKind::HeightAboveGround,
     Some(10),
@@ -2418,9 +2554,35 @@ const FIELD_REFS_PROB_10M_WIND_SPEED_ABOVE_20P6MS: GribFieldSpec = field_spec(
     &["WIND:10 m above ground"],
 );
 
+const FIELD_HREF_PROB_10M_WIND_SPEED_ABOVE_20P6MS: GribFieldSpec = field_spec(
+    "href_probability_wind_speed_10m_agl_gt_20p6ms",
+    "HREF Probability 10m Wind Speed > 20.6 m/s",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(10),
+    Some(
+        FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+            .with_probability(ProbabilitySelection::above_milli(20_600)),
+    ),
+    &["WIND:10 m above ground"],
+);
+
 const FIELD_REFS_PROB_10M_WIND_SPEED_ABOVE_25P72MS: GribFieldSpec = field_spec(
     "refs_probability_wind_speed_10m_agl_gt_25p72ms",
     "REFS Probability 10m Wind Speed > 25.72 m/s",
+    ProductFamily::Surface,
+    GribLevelKind::HeightAboveGround,
+    Some(10),
+    Some(
+        FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+            .with_probability(ProbabilitySelection::above_milli(25_720)),
+    ),
+    &["WIND:10 m above ground"],
+);
+
+const FIELD_HREF_PROB_10M_WIND_SPEED_ABOVE_25P72MS: GribFieldSpec = field_spec(
+    "href_probability_wind_speed_10m_agl_gt_25p72ms",
+    "HREF Probability 10m Wind Speed > 25.72 m/s",
     ProductFamily::Surface,
     GribLevelKind::HeightAboveGround,
     Some(10),
@@ -2444,6 +2606,19 @@ const FIELD_REFS_PROB_UH_ABOVE_25: GribFieldSpec = field_spec(
     &["MXUPHL:5000-2000"],
 );
 
+const FIELD_HREF_PROB_UH_ABOVE_25: GribFieldSpec = field_spec(
+    "href_probability_updraft_helicity_2to5km_gt_25",
+    "HREF Probability 2-5 km Updraft Helicity > 25",
+    ProductFamily::Native,
+    GribLevelKind::HeightAboveGroundLayer,
+    None,
+    Some(
+        FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000)
+            .with_probability(ProbabilitySelection::above_milli(25_000)),
+    ),
+    &["MXUPHL:5000-2000"],
+);
+
 const FIELD_REFS_PROB_UH_ABOVE_75: GribFieldSpec = field_spec(
     "refs_probability_updraft_helicity_2to5km_gt_75",
     "REFS Probability 2-5 km Updraft Helicity > 75",
@@ -2457,9 +2632,35 @@ const FIELD_REFS_PROB_UH_ABOVE_75: GribFieldSpec = field_spec(
     &["MXUPHL:5000-2000"],
 );
 
+const FIELD_HREF_PROB_UH_ABOVE_75: GribFieldSpec = field_spec(
+    "href_probability_updraft_helicity_2to5km_gt_75",
+    "HREF Probability 2-5 km Updraft Helicity > 75",
+    ProductFamily::Native,
+    GribLevelKind::HeightAboveGroundLayer,
+    None,
+    Some(
+        FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000)
+            .with_probability(ProbabilitySelection::above_milli(75_000)),
+    ),
+    &["MXUPHL:5000-2000"],
+);
+
 const FIELD_REFS_PROB_UH_ABOVE_150: GribFieldSpec = field_spec(
     "refs_probability_updraft_helicity_2to5km_gt_150",
     "REFS Probability 2-5 km Updraft Helicity > 150",
+    ProductFamily::Native,
+    GribLevelKind::HeightAboveGroundLayer,
+    None,
+    Some(
+        FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000)
+            .with_probability(ProbabilitySelection::above_milli(150_000)),
+    ),
+    &["MXUPHL:5000-2000"],
+);
+
+const FIELD_HREF_PROB_UH_ABOVE_150: GribFieldSpec = field_spec(
+    "href_probability_updraft_helicity_2to5km_gt_150",
+    "HREF Probability 2-5 km Updraft Helicity > 150",
     ProductFamily::Native,
     GribLevelKind::HeightAboveGroundLayer,
     None,
@@ -3864,6 +4065,141 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherProbability,
     },
     PlotRecipe {
+        slug: "href_prob_uh_2to5km_above_25",
+        title: "HREF Probability 2-5 km Updraft Helicity > 25",
+        filled: FIELD_HREF_PROB_UH_ABOVE_25,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "href_prob_uh_2to5km_above_75",
+        title: "HREF Probability 2-5 km Updraft Helicity > 75",
+        filled: FIELD_HREF_PROB_UH_ABOVE_75,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "href_prob_uh_2to5km_above_150",
+        title: "HREF Probability 2-5 km Updraft Helicity > 150",
+        filled: FIELD_HREF_PROB_UH_ABOVE_150,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "href_prob_2m_temperature_below_273p15k",
+        title: "HREF Probability 2m Temperature < 273.15 K",
+        filled: FIELD_HREF_PROB_2M_TEMP_BELOW_273P15K,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "href_prob_2m_dewpoint_above_291p48k",
+        title: "HREF Probability 2m Dewpoint > 291.48 K",
+        filled: FIELD_HREF_PROB_2M_DEWPOINT_ABOVE_291P48K,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "href_prob_2m_dewpoint_above_294p26k",
+        title: "HREF Probability 2m Dewpoint > 294.26 K",
+        filled: FIELD_HREF_PROB_2M_DEWPOINT_ABOVE_294P26K,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "href_prob_pwat_above_25mm",
+        title: "HREF Probability Precipitable Water > 25 mm",
+        filled: FIELD_HREF_PROB_PWAT_ABOVE_25MM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "href_prob_pwat_above_37p5mm",
+        title: "HREF Probability Precipitable Water > 37.5 mm",
+        filled: FIELD_HREF_PROB_PWAT_ABOVE_37P5MM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "href_prob_pwat_above_50mm",
+        title: "HREF Probability Precipitable Water > 50 mm",
+        filled: FIELD_HREF_PROB_PWAT_ABOVE_50MM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "href_prob_visibility_below_1600m",
+        title: "HREF Probability Visibility < 1600 m",
+        filled: FIELD_HREF_PROB_VISIBILITY_BELOW_1600M,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "href_prob_visibility_below_3200m",
+        title: "HREF Probability Visibility < 3200 m",
+        filled: FIELD_HREF_PROB_VISIBILITY_BELOW_3200M,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "href_prob_visibility_below_6400m",
+        title: "HREF Probability Visibility < 6400 m",
+        filled: FIELD_HREF_PROB_VISIBILITY_BELOW_6400M,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "href_prob_10m_wind_speed_above_15p4ms",
+        title: "HREF Probability 10m Wind Speed > 15.4 m/s",
+        filled: FIELD_HREF_PROB_10M_WIND_SPEED_ABOVE_15P4MS,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "href_prob_10m_wind_speed_above_20p6ms",
+        title: "HREF Probability 10m Wind Speed > 20.6 m/s",
+        filled: FIELD_HREF_PROB_10M_WIND_SPEED_ABOVE_20P6MS,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "href_prob_10m_wind_speed_above_25p72ms",
+        title: "HREF Probability 10m Wind Speed > 25.72 m/s",
+        filled: FIELD_HREF_PROB_10M_WIND_SPEED_ABOVE_25P72MS,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
         slug: "sref_prob_2m_temperature_below_273k",
         title: "SREF Probability 2m Temperature < 273 K",
         filled: FIELD_SREF_PROB_2M_TEMP_BELOW_FREEZING,
@@ -4545,7 +4881,7 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
                 ModelId::Aigefs | ModelId::Hgefs,
                 FieldProduct::EnsembleStandardDeviation | FieldProduct::EnsembleSpread,
             ) => {}
-            (ModelId::Href, FieldProduct::EnsembleSpread) => {}
+            (ModelId::Href, FieldProduct::EnsembleSpread | FieldProduct::Probability(_)) => {}
             (ModelId::Refs, FieldProduct::EnsembleSpread | FieldProduct::Probability(_)) => {}
             _ => return false,
         }
@@ -4669,6 +5005,7 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
             model,
             ModelId::Hrrr
                 | ModelId::HrrrAk
+                | ModelId::Href
                 | ModelId::RrfsA
                 | ModelId::RrfsPublic
                 | ModelId::Refs
@@ -6463,6 +6800,10 @@ fn plot_recipe_fetch_defaults(
             "arw_2p5km/conus",
             PlotRecipeFetchPolicy::PreferIndexedSubset,
         ),
+        (ModelId::Href, _, _) if has_probability_selector => (
+            "ensprod/conus/prob",
+            PlotRecipeFetchPolicy::PreferIndexedSubset,
+        ),
         (ModelId::Href, _, _) if has_ensemble_spread_selector => (
             "ensprod/conus/sprd",
             PlotRecipeFetchPolicy::PreferIndexedSubset,
@@ -6560,6 +6901,20 @@ fn wrf_gdex_recipe_product_override(
 
 fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<String> {
     match (field.key, model) {
+        (key, ModelId::Href)
+            if !key.starts_with("href_spread_") && !key.starts_with("href_probability_") =>
+        {
+            Some(format!(
+                "{} is not yet wired for HREF; HREF support is currently limited to explicit `href_sprd_*` and `href_prob_*` ensprod recipes",
+                field.label
+            ))
+        }
+        (key, model) if key.starts_with("href_probability_") && model != ModelId::Href => {
+            Some(format!(
+                "{} is only verified for HREF ensprod probability fields right now; do not route this recipe through model '{model}'",
+                field.label
+            ))
+        }
         (key, ModelId::Refs)
             if !key.starts_with("refs_spread_") && !key.starts_with("refs_probability_") =>
         {
@@ -6673,10 +7028,20 @@ fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> O
                 field.label
             ))
         }
-        (ModelId::Href, key) if !key.starts_with("href_spread_") => Some(format!(
-            "{} is not yet wired for HREF; HREF support is currently limited to explicit `href_sprd_*` ensprod spread recipes",
-            field.label
-        )),
+        (ModelId::Href, key)
+            if !key.starts_with("href_spread_") && !key.starts_with("href_probability_") =>
+        {
+            Some(format!(
+                "{} is not yet wired for HREF; HREF support is currently limited to explicit `href_sprd_*` and `href_prob_*` ensprod recipes",
+                field.label
+            ))
+        }
+        (model, key) if key.starts_with("href_probability_") && model != ModelId::Href => {
+            Some(format!(
+                "{} is only verified for HREF ensprod probability fields right now; do not route this recipe through model '{model}'",
+                field.label
+            ))
+        }
         (model, key) if key.starts_with("href_spread_") && model != ModelId::Href => Some(format!(
             "{} is only verified for HREF ensprod spread fields right now; do not route this recipe through model '{model}'",
             field.label
@@ -6798,10 +7163,20 @@ fn model_specific_surface_field_gap(field: &GribFieldSpec, model: ModelId) -> Op
                 field.label
             ))
         }
-        (ModelId::Href, key) if !key.starts_with("href_spread_") => Some(format!(
-            "{} is not yet wired for HREF; HREF support is currently limited to explicit `href_sprd_*` ensprod spread recipes",
-            field.label
-        )),
+        (ModelId::Href, key)
+            if !key.starts_with("href_spread_") && !key.starts_with("href_probability_") =>
+        {
+            Some(format!(
+                "{} is not yet wired for HREF; HREF support is currently limited to explicit `href_sprd_*` and `href_prob_*` ensprod recipes",
+                field.label
+            ))
+        }
+        (model, key) if key.starts_with("href_probability_") && model != ModelId::Href => {
+            Some(format!(
+                "{} is only verified for HREF ensprod probability fields right now; do not route this recipe through model '{model}'",
+                field.label
+            ))
+        }
         (model, key) if key.starts_with("href_spread_") && model != ModelId::Href => {
             Some(format!(
                 "{} is only verified for HREF ensprod spread fields right now; do not route this recipe through model '{model}'",
@@ -7200,10 +7575,12 @@ mod tests {
         );
 
         for slug in [
+            "href_sprd_2m_temperature",
+            "href_prob_2m_temperature_below_273p15k",
             "refs_sprd_2m_temperature",
             "refs_prob_2m_temperature_below_273p15k",
         ] {
-            let recipe = plot_recipe(slug).expect("refs recipe should exist");
+            let recipe = plot_recipe(slug).expect("experimental recipe should exist");
             let provenance = recipe.product_metadata().provenance.unwrap();
             assert_eq!(provenance.maturity, ProductMaturity::Experimental, "{slug}");
             assert!(
@@ -9102,6 +9479,106 @@ mod tests {
                 .iter()
                 .any(|blocker| { blocker.reason.contains("limited to explicit `href_sprd_*`") })
         );
+    }
+
+    #[test]
+    fn href_probability_recipes_use_prob_product_and_exact_selectors() {
+        let cases = [
+            (
+                "href_prob_uh_2to5km_above_25",
+                FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000)
+                    .with_probability(ProbabilitySelection::above_milli(25_000)),
+            ),
+            (
+                "href_prob_uh_2to5km_above_75",
+                FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000)
+                    .with_probability(ProbabilitySelection::above_milli(75_000)),
+            ),
+            (
+                "href_prob_uh_2to5km_above_150",
+                FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000)
+                    .with_probability(ProbabilitySelection::above_milli(150_000)),
+            ),
+            (
+                "href_prob_2m_temperature_below_273p15k",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2)
+                    .with_probability(ProbabilitySelection::below_milli(273_150)),
+            ),
+            (
+                "href_prob_2m_dewpoint_above_291p48k",
+                FieldSelector::height_agl(CanonicalField::Dewpoint, 2)
+                    .with_probability(ProbabilitySelection::above_milli(291_480)),
+            ),
+            (
+                "href_prob_2m_dewpoint_above_294p26k",
+                FieldSelector::height_agl(CanonicalField::Dewpoint, 2)
+                    .with_probability(ProbabilitySelection::above_milli(294_260)),
+            ),
+            (
+                "href_prob_pwat_above_25mm",
+                FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+                    .with_probability(ProbabilitySelection::above_milli(25_000)),
+            ),
+            (
+                "href_prob_pwat_above_37p5mm",
+                FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+                    .with_probability(ProbabilitySelection::above_milli(37_500)),
+            ),
+            (
+                "href_prob_pwat_above_50mm",
+                FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
+                    .with_probability(ProbabilitySelection::above_milli(50_000)),
+            ),
+            (
+                "href_prob_visibility_below_1600m",
+                FieldSelector::surface(CanonicalField::Visibility)
+                    .with_probability(ProbabilitySelection::below_milli(1_600_000)),
+            ),
+            (
+                "href_prob_visibility_below_3200m",
+                FieldSelector::surface(CanonicalField::Visibility)
+                    .with_probability(ProbabilitySelection::below_milli(3_200_000)),
+            ),
+            (
+                "href_prob_visibility_below_6400m",
+                FieldSelector::surface(CanonicalField::Visibility)
+                    .with_probability(ProbabilitySelection::below_milli(6_400_000)),
+            ),
+            (
+                "href_prob_10m_wind_speed_above_15p4ms",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+                    .with_probability(ProbabilitySelection::above_milli(15_400)),
+            ),
+            (
+                "href_prob_10m_wind_speed_above_20p6ms",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+                    .with_probability(ProbabilitySelection::above_milli(20_600)),
+            ),
+            (
+                "href_prob_10m_wind_speed_above_25p72ms",
+                FieldSelector::height_agl(CanonicalField::WindSpeed, 10)
+                    .with_probability(ProbabilitySelection::above_milli(25_720)),
+            ),
+        ];
+
+        for (slug, selector) in cases {
+            let plan = plot_recipe_fetch_plan(slug, ModelId::Href).unwrap();
+            assert_eq!(plan.product, "ensprod/conus/prob", "{slug}");
+            assert_eq!(
+                plan.fetch_policy,
+                PlotRecipeFetchPolicy::PreferIndexedSubset,
+                "{slug}"
+            );
+            assert_eq!(plan.selectors(), vec![selector], "{slug}");
+
+            let blockers = plot_recipe_fetch_blockers(slug, ModelId::Gfs).unwrap();
+            assert!(
+                blockers
+                    .iter()
+                    .any(|blocker| blocker.reason.contains("only verified for HREF")),
+                "{slug}"
+            );
+        }
     }
 
     #[test]

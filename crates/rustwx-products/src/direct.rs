@@ -1113,6 +1113,7 @@ fn direct_recipe_requires_explicit_opt_in(slug: &str) -> bool {
         || slug.starts_with("aigefs_spr_")
         || slug.starts_with("hgefs_spr_")
         || slug.starts_with("href_sprd_")
+        || slug.starts_with("href_prob_")
         || slug.starts_with("refs_sprd_")
         || slug.starts_with("refs_prob_")
 }
@@ -4950,7 +4951,7 @@ mod tests {
         assert!(
             !href_supported
                 .iter()
-                .any(|slug| slug.starts_with("href_sprd_"))
+                .any(|slug| { slug.starts_with("href_sprd_") || slug.starts_with("href_prob_") })
         );
         let refs_supported = supported_direct_recipe_slugs(ModelId::Refs);
         assert!(
@@ -4994,6 +4995,13 @@ mod tests {
         let href_planned =
             plan_direct_recipes(ModelId::Href, &["href_sprd_2m_temperature".to_string()]).unwrap();
         assert_eq!(href_planned[0].plan.product, "ensprod/conus/sprd");
+
+        let href_prob_planned = plan_direct_recipes(
+            ModelId::Href,
+            &["href_prob_2m_temperature_below_273p15k".to_string()],
+        )
+        .unwrap();
+        assert_eq!(href_prob_planned[0].plan.product, "ensprod/conus/prob");
 
         let refs_spread_planned =
             plan_direct_recipes(ModelId::Refs, &["refs_sprd_2m_temperature".to_string()]).unwrap();
