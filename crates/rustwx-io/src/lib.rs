@@ -1356,9 +1356,11 @@ fn default_product_template_match_score(
 
     if is_probability_product_template(message.product.template)
         || is_percentile_product_template(message.product.template)
-        || message.product.derived_forecast_type.is_some()
     {
         return None;
+    }
+    if message.product.derived_forecast_type.is_some() {
+        return (message.product.derived_forecast_type == Some(0)).then_some(20);
     }
 
     if !selector_prefers_instantaneous_message(selector) {
@@ -3065,15 +3067,31 @@ mod tests {
     }
 
     #[test]
-    fn default_temperature_selector_does_not_fallback_to_qmd_products() {
-        let mut percentile = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[280.0], -99.0, -99.0);
-        percentile.product.template = 6;
-        percentile.product.percentile_value = Some(50);
+    fn default_selector_can_fallback_to_ensemble_mean_when_file_is_mean_product() {
         let mut mean = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[279.0], -99.0, -99.0);
         mean.product.template = 2;
         mean.product.derived_forecast_type = Some(0);
         let grib = Grib2File {
-            messages: vec![percentile, mean],
+            messages: vec![mean],
+        };
+
+        let field = extract_field_from_grib2(
+            &grib,
+            FieldSelector::height_agl(CanonicalField::Temperature, 2),
+        )
+        .unwrap();
+
+        assert_eq!(field.selector.product, FieldProduct::Default);
+        assert_eq!(field.values, vec![279.0]);
+    }
+
+    #[test]
+    fn default_temperature_selector_does_not_fallback_to_qmd_percentiles() {
+        let mut percentile = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[280.0], -99.0, -99.0);
+        percentile.product.template = 6;
+        percentile.product.percentile_value = Some(50);
+        let grib = Grib2File {
+            messages: vec![percentile],
         };
 
         let err = extract_field_from_grib2(
