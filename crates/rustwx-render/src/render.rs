@@ -46,6 +46,7 @@ pub struct RenderOpts {
     pub colorbar_mode: crate::colormap::LegendMode,
     pub chrome_scale: ChromeScale,
     pub supersample_factor: u32,
+    pub supersample_sharpen: bool,
     pub domain_frame: Option<DomainFrame>,
     pub map_extent: Option<MapExtent>,
     pub projected_grid: Option<ProjectedGrid>,
@@ -155,6 +156,7 @@ impl Default for RenderOpts {
             colorbar_mode: crate::colormap::LegendMode::Stepped,
             chrome_scale: ChromeScale::default(),
             supersample_factor: 1,
+            supersample_sharpen: true,
             domain_frame: None,
             map_extent: None,
             projected_grid: None,
@@ -1373,6 +1375,8 @@ fn static_base_cache_key(
     let mut hasher = DefaultHasher::new();
     opts.width.hash(&mut hasher);
     opts.height.hash(&mut hasher);
+    std::mem::discriminant(&opts.presentation.mode).hash(&mut hasher);
+    std::mem::discriminant(&opts.presentation.plot_style).hash(&mut hasher);
     layout.map_x.hash(&mut hasher);
     layout.map_y.hash(&mut hasher);
     layout.map_w.hash(&mut hasher);
@@ -2165,6 +2169,52 @@ fn contour_cell_intersections(
     if count >= 2 { Some((pts, count)) } else { None }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LabelRect {
+    min_x: i32,
+    max_x: i32,
+    min_y: i32,
+    max_y: i32,
+}
+
+impl LabelRect {
+    fn padded(self, padding: i32) -> Self {
+        Self {
+            min_x: self.min_x.saturating_sub(padding),
+            max_x: self.max_x.saturating_add(padding),
+            min_y: self.min_y.saturating_sub(padding),
+            max_y: self.max_y.saturating_add(padding),
+        }
+    }
+
+    fn intersects(self, other: Self) -> bool {
+        self.min_x <= other.max_x
+            && self.max_x >= other.min_x
+            && self.min_y <= other.max_y
+            && self.max_y >= other.min_y
+    }
+}
+
+#[derive(Debug, Default)]
+struct ContourLabelPlacer {
+    occupied: Vec<LabelRect>,
+}
+
+impl ContourLabelPlacer {
+    fn can_place(&mut self, rect: LabelRect) -> bool {
+        let padded = rect.padded(4);
+        if self
+            .occupied
+            .iter()
+            .any(|existing| padded.intersects(*existing))
+        {
+            return false;
+        }
+        self.occupied.push(padded);
+        true
+    }
+}
+
 fn maybe_draw_contour_label(
     img: &mut RgbaImage,
     layout: &Layout,
@@ -2175,16 +2225,55 @@ fn maybe_draw_contour_label(
     x1: f64,
     y1: f64,
     label_drawn: &mut bool,
+    label_placer: &mut ContourLabelPlacer,
 ) {
-    if *label_drawn || (x1 - x0).abs() + (y1 - y0).abs() <= 18.0 {
+    let segment_len = (x1 - x0).hypot(y1 - y0);
+    if *label_drawn || segment_len <= 24.0 {
         return;
     }
 
     let label = text::format_tick(level);
-    let tx =
-        (layout.map_x as f64 + (x0 + x1) * 0.5) as i32 - text::text_width(&label, 1) as i32 / 2;
+    let label_w = text::text_width(&label, 1) as i32;
+    let label_h = text::regular_line_height(1) as i32;
+    if label_w <= 0 || label_h <= 0 {
+        return;
+    }
+
+    let tx = (layout.map_x as f64 + (x0 + x1) * 0.5) as i32 - label_w / 2;
     let ty = (layout.map_y as f64 + (y0 + y1) * 0.5) as i32 - 4;
-    text::draw_text(img, &label, tx, ty, overlay.color, 1);
+    let rect = LabelRect {
+        min_x: tx,
+        max_x: tx.saturating_add(label_w),
+        min_y: ty,
+        max_y: ty.saturating_add(label_h),
+    };
+    let map_rect = LabelRect {
+        min_x: layout.map_x as i32 + 2,
+        max_x: layout.map_x as i32 + layout.map_w as i32 - 3,
+        min_y: layout.map_y as i32 + 2,
+        max_y: layout.map_y as i32 + layout.map_h as i32 - 3,
+    };
+    if rect.min_x < map_rect.min_x
+        || rect.max_x > map_rect.max_x
+        || rect.min_y < map_rect.min_y
+        || rect.max_y > map_rect.max_y
+        || !label_placer.can_place(rect)
+    {
+        return;
+    }
+
+    draw_text_halo(
+        img,
+        &label,
+        tx,
+        ty,
+        overlay.color,
+        Rgba::with_alpha(255, 255, 255, 210),
+        1,
+        1,
+        1.0,
+        false,
+    );
     *label_drawn = true;
 }
 
@@ -2196,6 +2285,7 @@ fn draw_contour_segments_unmasked(
     pts: &[(f64, f64); 4],
     count: usize,
     label_drawn: &mut bool,
+    label_placer: &mut ContourLabelPlacer,
 ) {
     let segments: &[(usize, usize)] = if count == 4 {
         &[(0, 1), (2, 3)]
@@ -2215,7 +2305,18 @@ fn draw_contour_segments_unmasked(
             overlay.color,
             overlay.width,
         );
-        maybe_draw_contour_label(img, layout, overlay, level, x0, y0, x1, y1, label_drawn);
+        maybe_draw_contour_label(
+            img,
+            layout,
+            overlay,
+            level,
+            x0,
+            y0,
+            x1,
+            y1,
+            label_drawn,
+            label_placer,
+        );
     }
 }
 
@@ -2228,6 +2329,7 @@ fn draw_contour_segments_masked(
     count: usize,
     mask: &RgbaImage,
     label_drawn: &mut bool,
+    label_placer: &mut ContourLabelPlacer,
 ) {
     let segments: &[(usize, usize)] = if count == 4 {
         &[(0, 1), (2, 3)]
@@ -2250,7 +2352,18 @@ fn draw_contour_segments_masked(
             overlay.color,
             overlay.width,
         );
-        maybe_draw_contour_label(img, layout, overlay, level, x0, y0, x1, y1, label_drawn);
+        maybe_draw_contour_label(
+            img,
+            layout,
+            overlay,
+            level,
+            x0,
+            y0,
+            x1,
+            y1,
+            label_drawn,
+            label_placer,
+        );
     }
 }
 
@@ -2314,6 +2427,7 @@ fn draw_contours_bucketed(
     clip_mask: Option<&RgbaImage>,
 ) {
     let buckets = build_contour_buckets(overlay, pixel_points);
+    let mut label_placer = ContourLabelPlacer::default();
 
     if let Some(mask) = clip_mask {
         for (level_index, &level) in overlay.levels.iter().enumerate() {
@@ -2333,6 +2447,7 @@ fn draw_contours_bucketed(
                     count,
                     mask,
                     &mut label_drawn,
+                    &mut label_placer,
                 );
             }
         }
@@ -2353,6 +2468,7 @@ fn draw_contours_bucketed(
                     &pts,
                     count,
                     &mut label_drawn,
+                    &mut label_placer,
                 );
             }
         }
@@ -2366,6 +2482,7 @@ fn draw_contours_legacy(
     pixel_points: Option<&[Option<(f64, f64)>]>,
     clip_mask: Option<&RgbaImage>,
 ) {
+    let mut label_placer = ContourLabelPlacer::default();
     for &level in &overlay.levels {
         let mut label_drawn = !overlay.labels;
         for j in 0..(overlay.ny - 1) {
@@ -2388,6 +2505,7 @@ fn draw_contours_legacy(
                         count,
                         mask,
                         &mut label_drawn,
+                        &mut label_placer,
                     );
                 } else {
                     draw_contour_segments_unmasked(
@@ -2398,6 +2516,7 @@ fn draw_contours_legacy(
                         &pts,
                         count,
                         &mut label_drawn,
+                        &mut label_placer,
                     );
                 }
             }
@@ -2660,6 +2779,16 @@ fn draw_barbs(
                     continue;
                 }
             }
+            if !barb_glyph_fits_map_rect(
+                x - layout.map_x as f64,
+                y - layout.map_y as f64,
+                layout.map_w,
+                layout.map_h,
+                overlay.length_px,
+                overlay.width,
+            ) {
+                continue;
+            }
             draw::draw_wind_barb(
                 img,
                 x,
@@ -2672,6 +2801,24 @@ fn draw_barbs(
             );
         }
     }
+}
+
+fn barb_glyph_fits_map_rect(
+    local_x: f64,
+    local_y: f64,
+    map_w: u32,
+    map_h: u32,
+    length_px: f64,
+    width: u32,
+) -> bool {
+    if map_w == 0 || map_h == 0 {
+        return false;
+    }
+    let margin = length_px.max(0.0) + (width.max(1) as f64 * 4.0) + 2.0;
+    local_x >= margin
+        && local_y >= margin
+        && local_x <= map_w.saturating_sub(1) as f64 - margin
+        && local_y <= map_h.saturating_sub(1) as f64 - margin
 }
 
 fn draw_variable_layers(
@@ -3223,7 +3370,11 @@ pub fn render_to_image_profile(
     let downsample_start = Instant::now();
 
     #[cfg(feature = "cuda")]
-    let image_opt = cuda_downsample_then_sharpen(&hires, opts.width, opts.height, factor as f32);
+    let image_opt = if opts.supersample_sharpen {
+        cuda_downsample_then_sharpen(&hires, opts.width, opts.height, factor as f32)
+    } else {
+        None
+    };
     #[cfg(not(feature = "cuda"))]
     let image_opt: Option<RgbaImage> = None;
 
@@ -3231,7 +3382,11 @@ pub fn render_to_image_profile(
         Some(img) => img,
         None => {
             let image = resize(&hires, opts.width, opts.height, FilterType::Lanczos3);
-            sharpen_downsampled_image(&image)
+            if opts.supersample_sharpen {
+                sharpen_downsampled_image(&image)
+            } else {
+                image
+            }
         }
     };
 
@@ -3523,6 +3678,7 @@ mod tests {
             colorbar_mode: crate::colormap::LegendMode::Stepped,
             chrome_scale: ChromeScale::default(),
             supersample_factor: 1,
+            supersample_sharpen: true,
             domain_frame: None,
             map_extent: Some(MapExtent {
                 x_min: 0.0,
@@ -3691,6 +3847,7 @@ mod tests {
         assert_eq!(scaled.barbs[0].length_px, 36.0);
         assert_eq!(scaled.domain_frame.unwrap().outline_width, 4);
         assert_eq!(scaled.supersample_factor, 1);
+        assert_eq!(scaled.supersample_sharpen, opts.supersample_sharpen);
     }
 
     #[test]
@@ -3702,6 +3859,20 @@ mod tests {
         assert_eq!(image.width(), opts.width);
         assert_eq!(image.height(), opts.height);
         assert!(timing.postprocess_ms <= timing.total_ms);
+    }
+
+    #[test]
+    fn render_to_image_supersample_can_skip_sharpen_pass() {
+        let mut opts = sample_projected_opts();
+        opts.supersample_factor = 2;
+        opts.supersample_sharpen = false;
+        let data = vec![10.0, 20.0, 30.0, 25.0];
+
+        let (image, timing) = render_to_image_profile(&data, 2, 2, &opts);
+
+        assert_eq!(image.width(), opts.width);
+        assert_eq!(image.height(), opts.height);
+        assert!(timing.downsample_ms <= timing.total_ms);
     }
 
     #[test]
@@ -3926,6 +4097,29 @@ mod tests {
         draw_contours_bucketed(&mut bucketed, &layout, &overlay, None, None);
 
         assert_eq!(legacy, bucketed);
+    }
+
+    #[test]
+    fn contour_label_placer_rejects_overlapping_labels() {
+        let mut placer = ContourLabelPlacer::default();
+        assert!(placer.can_place(LabelRect {
+            min_x: 20,
+            max_x: 70,
+            min_y: 20,
+            max_y: 34,
+        }));
+        assert!(!placer.can_place(LabelRect {
+            min_x: 68,
+            max_x: 110,
+            min_y: 21,
+            max_y: 35,
+        }));
+        assert!(placer.can_place(LabelRect {
+            min_x: 120,
+            max_x: 160,
+            min_y: 21,
+            max_y: 35,
+        }));
     }
 
     #[test]
@@ -4205,6 +4399,42 @@ mod tests {
     }
 
     #[test]
+    fn static_base_cache_key_changes_with_plot_style() {
+        let opts = sample_projected_opts();
+        let layout = compute_layout(
+            opts.width,
+            opts.height,
+            opts.colorbar,
+            opts.title.is_some(),
+            opts.presentation,
+            opts.chrome_scale,
+        );
+        let baseline_key = static_base_cache_key(
+            &opts,
+            &layout,
+            opts.map_extent.as_ref(),
+            None,
+            opts.presentation.canvas_background,
+            opts.presentation.map_background,
+        );
+        let mut clean_opts = opts.clone();
+        clean_opts.presentation = RenderPresentation::for_mode_with_style(
+            ProductVisualMode::FilledMeteorology,
+            crate::presentation::StaticPlotStyle::CleanAtlasFast,
+        );
+        let clean_key = static_base_cache_key(
+            &clean_opts,
+            &layout,
+            clean_opts.map_extent.as_ref(),
+            None,
+            clean_opts.presentation.canvas_background,
+            clean_opts.presentation.map_background,
+        );
+
+        assert_ne!(baseline_key, clean_key);
+    }
+
+    #[test]
     fn map_frame_aspect_ratio_matches_wide_render_layout() {
         let ratio = map_frame_aspect_ratio(1200, 900, true, true);
         assert!(ratio > 1.35);
@@ -4315,6 +4545,18 @@ mod tests {
         // NaN u/v means no barb glyphs are drawn.
         let non_fill = image.pixels().filter(|px| px.0 == [0, 0, 0, 255]).count();
         assert_eq!(non_fill, 0, "NaN barb vectors should produce no glyphs");
+    }
+
+    #[test]
+    fn barb_glyph_margin_skips_map_edge_anchors() {
+        assert!(
+            !barb_glyph_fits_map_rect(10.0, 10.0, 100, 100, 18.0, 1),
+            "edge anchors can draw outside the map frame"
+        );
+        assert!(
+            barb_glyph_fits_map_rect(50.0, 50.0, 100, 100, 18.0, 1),
+            "center anchors should still render"
+        );
     }
 
     #[test]

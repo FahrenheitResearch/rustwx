@@ -55,7 +55,8 @@ use crate::severe::{
 };
 use crate::shared_context::{
     DomainSpec, WeatherPanelField, build_weather_map_request, model_time_subtitle, source_subtitle,
-    static_chrome_scale, static_supersample_factor, static_title_with_suffix,
+    static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
+    static_title_with_suffix,
 };
 use crate::source::{ProductSourceMode, ProductSourceRoute};
 use crate::thermo_native::{
@@ -4408,6 +4409,7 @@ fn build_render_artifact_with_contour_mode(
     request.height = output_height;
     request.chrome_scale = static_chrome_scale();
     request.supersample_factor = static_supersample_factor();
+    request.supersample_sharpen = static_supersample_sharpen();
     request.domain_frame = Some(DomainFrame::model_data_default());
     request.title = Some(derived_title_for_model(model, recipe.title()));
     request.subtitle_left = Some(model_time_subtitle(
@@ -4762,6 +4764,7 @@ fn build_render_artifact_with_contour_mode_profiled(
     request.height = output_height;
     request.chrome_scale = static_chrome_scale();
     request.supersample_factor = static_supersample_factor();
+    request.supersample_sharpen = static_supersample_sharpen();
     request.domain_frame = Some(DomainFrame::model_data_default());
     request.title = Some(derived_title_for_model(model, recipe.title()));
     request.subtitle_left = Some(model_time_subtitle(

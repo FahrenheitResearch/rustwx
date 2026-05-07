@@ -249,6 +249,16 @@ impl RustRenderer {
         })
     }
 
+    pub fn render_image_with_style(
+        self,
+        request: &MapRenderRequest,
+        plot_style: StaticPlotStyle,
+    ) -> Result<RgbaImage, RustwxRenderError> {
+        with_render_state_with_style(request, plot_style, |data, ny, nx, opts| {
+            Ok(native_render_to_image(data, ny, nx, opts))
+        })
+    }
+
     pub fn save_png<P: AsRef<Path>>(
         self,
         request: &MapRenderRequest,
@@ -330,6 +340,13 @@ pub fn render_image(request: &MapRenderRequest) -> Result<RgbaImage, RustwxRende
     RustRenderer.render_image(request)
 }
 
+pub fn render_image_with_style(
+    request: &MapRenderRequest,
+    plot_style: StaticPlotStyle,
+) -> Result<RgbaImage, RustwxRenderError> {
+    RustRenderer.render_image_with_style(request, plot_style)
+}
+
 pub fn save_png<P: AsRef<Path>>(
     request: &MapRenderRequest,
     output_path: P,
@@ -384,7 +401,15 @@ fn with_render_state<T>(
     request: &MapRenderRequest,
     render: impl FnOnce(&[f64], usize, usize, &RenderOpts) -> Result<T, RustwxRenderError>,
 ) -> Result<T, RustwxRenderError> {
-    with_render_state_profile(request, |data, ny, nx, opts| {
+    with_render_state_with_style(request, StaticPlotStyle::from_env(), render)
+}
+
+fn with_render_state_with_style<T>(
+    request: &MapRenderRequest,
+    plot_style: StaticPlotStyle,
+    render: impl FnOnce(&[f64], usize, usize, &RenderOpts) -> Result<T, RustwxRenderError>,
+) -> Result<T, RustwxRenderError> {
+    with_render_state_profile_with_style(request, plot_style, |data, ny, nx, opts| {
         Ok((render(data, ny, nx, opts)?, RenderPngTiming::default()))
     })
     .map(|(result, _, _)| result)
@@ -392,6 +417,19 @@ fn with_render_state<T>(
 
 fn with_render_state_profile<T>(
     request: &MapRenderRequest,
+    render: impl FnOnce(
+        &[f64],
+        usize,
+        usize,
+        &RenderOpts,
+    ) -> Result<(T, RenderPngTiming), RustwxRenderError>,
+) -> Result<(T, RenderStateTiming, RenderPngTiming), RustwxRenderError> {
+    with_render_state_profile_with_style(request, StaticPlotStyle::from_env(), render)
+}
+
+fn with_render_state_profile_with_style<T>(
+    request: &MapRenderRequest,
+    plot_style: StaticPlotStyle,
     render: impl FnOnce(
         &[f64],
         usize,
@@ -411,14 +449,14 @@ fn with_render_state_profile<T>(
     } else {
         request.visual_mode
     };
-    let presentation = RenderPresentation::for_mode_from_env(visual_mode);
+    let presentation = RenderPresentation::for_mode_with_style(visual_mode, plot_style);
     let cmap = if overlay_only {
         blank_fill_colormap()
     } else {
         build_colormap(
             &request.scale,
             ColormapBuildOptions {
-                render_density: request.render_density,
+                render_density: plot_style.render_density(request.render_density),
                 legend: request.legend,
             },
         )
@@ -606,7 +644,8 @@ fn with_render_state_profile<T>(
             cbar_tick_step: request.cbar_tick_step,
             colorbar_mode: request.legend.mode,
             chrome_scale: request.chrome_scale,
-            supersample_factor: request.supersample_factor.max(1),
+            supersample_factor: plot_style.supersample_factor(request.supersample_factor),
+            supersample_sharpen: plot_style.supersample_sharpen(request.supersample_sharpen),
             domain_frame: request.domain_frame,
             map_extent: projected_domain.map(|domain| MapExtent {
                 x_min: domain.extent.x_min,
@@ -771,8 +810,33 @@ pub fn draw_centered_text_line(img: &mut RgbaImage, text: &str, y: i32, color: C
     text::draw_text_centered(img, text, y, color.into(), scale);
 }
 
+pub fn draw_centered_text_line_with_factor(
+    img: &mut RgbaImage,
+    text: &str,
+    y: i32,
+    color: Color,
+    scale: u32,
+    size_factor: f32,
+) {
+    let width = text::text_width_bold_with_factor(text, scale, size_factor) as i32;
+    let x = ((img.width() as i32) - width) / 2;
+    text::draw_text_bold_with_factor(img, text, x, y, color.into(), scale, size_factor);
+}
+
 pub fn draw_text_line(img: &mut RgbaImage, text: &str, x: i32, y: i32, color: Color, scale: u32) {
     text::draw_text(img, text, x, y, color.into(), scale);
+}
+
+pub fn draw_text_line_with_factor(
+    img: &mut RgbaImage,
+    text: &str,
+    x: i32,
+    y: i32,
+    color: Color,
+    scale: u32,
+    size_factor: f32,
+) {
+    text::draw_text_with_factor(img, text, x, y, color.into(), scale, size_factor);
 }
 
 pub fn draw_right_text_line(
@@ -784,6 +848,27 @@ pub fn draw_right_text_line(
     scale: u32,
 ) {
     text::draw_text_right(img, text, x_right, y, color.into(), scale);
+}
+
+pub fn draw_right_text_line_with_factor(
+    img: &mut RgbaImage,
+    text: &str,
+    x_right: i32,
+    y: i32,
+    color: Color,
+    scale: u32,
+    size_factor: f32,
+) {
+    let width = text::text_width_with_factor(text, scale, size_factor) as i32;
+    text::draw_text_with_factor(
+        img,
+        text,
+        x_right - width,
+        y,
+        color.into(),
+        scale,
+        size_factor,
+    );
 }
 
 #[cfg(test)]
@@ -855,6 +940,7 @@ mod tests {
             legend: LegendControls::default(),
             chrome_scale: ChromeScale::default(),
             supersample_factor: 1,
+            supersample_sharpen: true,
             visual_mode: ProductVisualMode::FilledMeteorology,
             domain_frame: None,
             projected_domain: None,
@@ -919,6 +1005,7 @@ mod tests {
             legend: LegendControls::default(),
             chrome_scale: ChromeScale::default(),
             supersample_factor: 1,
+            supersample_sharpen: true,
             visual_mode: ProductVisualMode::FilledMeteorology,
             domain_frame: None,
             projected_domain: None,

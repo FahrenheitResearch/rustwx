@@ -695,6 +695,8 @@ pub struct MapRenderRequest {
     pub chrome_scale: ChromeScale,
     #[serde(default = "default_supersample_factor")]
     pub supersample_factor: u32,
+    #[serde(default = "default_supersample_sharpen")]
+    pub supersample_sharpen: bool,
     #[serde(default)]
     pub visual_mode: ProductVisualMode,
     #[serde(default)]
@@ -723,6 +725,10 @@ const fn default_supersample_factor() -> u32 {
     1
 }
 
+const fn default_supersample_sharpen() -> bool {
+    true
+}
+
 impl MapRenderRequest {
     pub fn new(field: Field2D, scale: ColorScale) -> Self {
         Self {
@@ -743,6 +749,7 @@ impl MapRenderRequest {
             legend: LegendControls::default(),
             chrome_scale: ChromeScale::default(),
             supersample_factor: default_supersample_factor(),
+            supersample_sharpen: default_supersample_sharpen(),
             visual_mode: ProductVisualMode::FilledMeteorology,
             domain_frame: None,
             projected_domain: None,

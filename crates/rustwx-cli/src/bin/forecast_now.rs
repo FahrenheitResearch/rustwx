@@ -35,11 +35,13 @@ use rustwx_products::derived::is_heavy_derived_recipe_slug;
 use rustwx_products::ecape::{EcapeBatchRequest, run_ecape_batch};
 use rustwx_products::heavy::{HeavyPanelHourRequest, run_heavy_panel_hour};
 use rustwx_products::non_ecape::{
-    HrrrNonEcapeHourRequest, NonEcapeHourRequest, run_hrrr_non_ecape_hour, run_model_non_ecape_hour,
+    HrrrNonEcapeHourReport, HrrrNonEcapeHourRequest, NonEcapeHourRequest, run_hrrr_non_ecape_hour,
+    run_model_non_ecape_hour,
 };
 use rustwx_products::severe::{SevereBatchRequest, run_severe_batch};
 use rustwx_products::shared_context::DomainSpec;
 use rustwx_products::source::ProductSourceMode;
+use rustwx_products::windowed::{HrrrWindowedProduct, SUPPORTED_HRRR_WINDOWED_PRODUCTS};
 use serde::Serialize;
 
 #[derive(Debug, Parser)]
@@ -121,6 +123,9 @@ struct Args {
     /// Skip ECAPE lane.
     #[arg(long, default_value_t = false)]
     skip_ecape: bool,
+    /// Skip HRRR windowed products.
+    #[arg(long, default_value_t = false)]
+    skip_windowed: bool,
 
     /// Comma-separated recipe slugs for the direct lane. Defaults to a
     /// curated severe-weather set.
@@ -137,6 +142,11 @@ struct Args {
     /// for benchmark runs ("every product of every model").
     #[arg(long, default_value_t = false)]
     all_supported: bool,
+
+    /// HRRR windowed products. Accepts product slugs plus presets:
+    /// normal/short, all-normal/all-non-vpd, all, none.
+    #[arg(long, value_delimiter = ',')]
+    windowed_products: Option<Vec<String>>,
 
     /// Product source mode for derived/non-ECAPE execution.
     #[arg(long = "source-mode", alias = "thermo-path", value_enum, default_value_t = SourceModeArg::Canonical)]
@@ -254,6 +264,74 @@ fn default_derived_recipes() -> Vec<String> {
     .collect()
 }
 
+fn default_windowed_products() -> Vec<HrrrWindowedProduct> {
+    vec![
+        HrrrWindowedProduct::Qpf1h,
+        HrrrWindowedProduct::QpfTotal,
+        HrrrWindowedProduct::Uh25km1h,
+        HrrrWindowedProduct::Uh25kmRunMax,
+        HrrrWindowedProduct::Wind10m1hMax,
+        HrrrWindowedProduct::Wind10mRunMax,
+    ]
+}
+
+fn all_non_vpd_windowed_products() -> Vec<HrrrWindowedProduct> {
+    SUPPORTED_HRRR_WINDOWED_PRODUCTS
+        .iter()
+        .copied()
+        .filter(|product| !is_vpd_windowed_product(*product))
+        .collect()
+}
+
+fn is_vpd_windowed_product(product: HrrrWindowedProduct) -> bool {
+    product.slug().contains("_vpd_")
+}
+
+fn parse_windowed_products(
+    values: Option<&[String]>,
+) -> Result<Vec<HrrrWindowedProduct>, Box<dyn std::error::Error>> {
+    let Some(values) = values else {
+        return Ok(default_windowed_products());
+    };
+
+    let mut products = Vec::new();
+    for value in values {
+        let token = normalize_windowed_token(value);
+        let expanded = match token.as_str() {
+            "" => Vec::new(),
+            "none" | "off" | "false" | "0" => {
+                products.clear();
+                continue;
+            }
+            "normal" | "short" | "default" => default_windowed_products(),
+            "all_normal" | "all_non_vpd" | "non_vpd" | "no_vpd" => all_non_vpd_windowed_products(),
+            "all" => SUPPORTED_HRRR_WINDOWED_PRODUCTS.to_vec(),
+            _ => vec![parse_windowed_product_token(&token)?],
+        };
+
+        for product in expanded {
+            if !products.contains(&product) {
+                products.push(product);
+            }
+        }
+    }
+    Ok(products)
+}
+
+fn parse_windowed_product_token(
+    token: &str,
+) -> Result<HrrrWindowedProduct, Box<dyn std::error::Error>> {
+    SUPPORTED_HRRR_WINDOWED_PRODUCTS
+        .iter()
+        .copied()
+        .find(|product| normalize_windowed_token(product.slug()) == token)
+        .ok_or_else(|| format!("unknown HRRR windowed product or preset '{token}'").into())
+}
+
+fn normalize_windowed_token(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace(['-', ' '], "_")
+}
+
 fn forecast_now_required_products(model: ModelId, args: &Args) -> Vec<String> {
     let mut products = Vec::new();
     if matches!(model, ModelId::RrfsA) {
@@ -326,6 +404,27 @@ struct LaneOutcome {
     outputs: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     blockers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    product_timings: Vec<ProductTimingSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProductTimingSummary {
+    category: String,
+    product_slug: String,
+    output_path: PathBuf,
+    render_ms: u128,
+    total_ms: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    render_to_image_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data_layer_draw_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    overlay_draw_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    png_encode_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_write_ms: Option<u128>,
 }
 
 fn lane_outcome_from_pinned(
@@ -355,6 +454,7 @@ fn lane_outcome_from_pinned(
         error,
         outputs,
         blockers,
+        product_timings: Vec::new(),
     }
 }
 
@@ -363,6 +463,58 @@ fn merge_counts(dst: &mut ModelCounts, src: &ModelCounts) {
     dst.failed += src.failed;
     dst.blocked_recipes += src.blocked_recipes;
     dst.outputs += src.outputs;
+}
+
+fn hrrr_non_ecape_product_timings(report: &HrrrNonEcapeHourReport) -> Vec<ProductTimingSummary> {
+    let mut timings = Vec::new();
+    if let Some(direct) = &report.direct {
+        timings.extend(direct.recipes.iter().map(|recipe| ProductTimingSummary {
+            category: "direct".to_string(),
+            product_slug: recipe.recipe_slug.clone(),
+            output_path: recipe.output_path.clone(),
+            render_ms: recipe.timing.render_ms,
+            total_ms: recipe.timing.total_ms,
+            render_to_image_ms: Some(recipe.timing.render_to_image_ms),
+            data_layer_draw_ms: Some(recipe.timing.data_layer_draw_ms),
+            overlay_draw_ms: Some(recipe.timing.overlay_draw_ms),
+            png_encode_ms: Some(recipe.timing.png_encode_ms),
+            file_write_ms: Some(recipe.timing.file_write_ms),
+        }));
+    }
+    if let Some(derived) = &report.derived {
+        timings.extend(derived.recipes.iter().map(|recipe| ProductTimingSummary {
+            category: "derived".to_string(),
+            product_slug: recipe.recipe_slug.clone(),
+            output_path: recipe.output_path.clone(),
+            render_ms: recipe.timing.render_ms,
+            total_ms: recipe.timing.total_ms,
+            render_to_image_ms: Some(recipe.timing.render_to_image_ms),
+            data_layer_draw_ms: Some(recipe.timing.data_layer_draw_ms),
+            overlay_draw_ms: Some(recipe.timing.overlay_draw_ms),
+            png_encode_ms: Some(recipe.timing.png_encode_ms),
+            file_write_ms: Some(recipe.timing.file_write_ms),
+        }));
+    }
+    if let Some(windowed) = &report.windowed {
+        timings.extend(
+            windowed
+                .products
+                .iter()
+                .map(|product| ProductTimingSummary {
+                    category: "windowed".to_string(),
+                    product_slug: product.product.slug().to_string(),
+                    output_path: product.output_path.clone(),
+                    render_ms: product.timing.render_ms,
+                    total_ms: product.timing.total_ms,
+                    render_to_image_ms: None,
+                    data_layer_draw_ms: None,
+                    overlay_draw_ms: None,
+                    png_encode_ms: None,
+                    file_write_ms: None,
+                }),
+        );
+    }
+    timings
 }
 
 fn run_forecast_job(job: ForecastJob, config: &ExecConfig) -> ForecastJobResult {
@@ -607,6 +759,7 @@ struct RunSummary {
     allow_large_heavy_domain: bool,
     direct_recipes: Vec<String>,
     derived_recipes: Vec<String>,
+    windowed_products: Vec<String>,
     route_policy: RoutePolicyArg,
     outcomes: Vec<LaneOutcome>,
     counts_by_model: BTreeMap<String, ModelCounts>,
@@ -639,6 +792,7 @@ struct ExecConfig {
     skip_ecape: bool,
     skip_direct: bool,
     skip_derived: bool,
+    windowed_products: Vec<HrrrWindowedProduct>,
     source_mode: ProductSourceMode,
     route_policy: RoutePolicyArg,
     surface_product_override: Option<String>,
@@ -727,14 +881,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
     };
     let derived_recipes = filter_heavy_derived_recipes(derived_recipes, args.skip_ecape);
+    let windowed_products = if args.skip_windowed {
+        Vec::new()
+    } else {
+        parse_windowed_products(args.windowed_products.as_deref())?
+    };
 
     println!(
-        "[forecast-now] date={date} regions={:?} hours={:?} models={:?} direct={} derived={} route_policy={:?} allow_large_heavy_domain={} size={}x{} job_concurrency={} render_threads={:?}",
+        "[forecast-now] date={date} regions={:?} hours={:?} models={:?} direct={} derived={} windowed={} route_policy={:?} allow_large_heavy_domain={} size={}x{} job_concurrency={} render_threads={:?}",
         args.regions.iter().map(|r| r.slug()).collect::<Vec<_>>(),
         hours,
         args.models,
         direct_recipes.len(),
         derived_recipes.len(),
+        windowed_products.len(),
         args.route_policy,
         args.allow_large_heavy_domain,
         args.width,
@@ -812,6 +972,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         skip_ecape: args.skip_ecape,
         skip_direct: args.skip_direct,
         skip_derived: args.skip_derived,
+        windowed_products: windowed_products.clone(),
         source_mode: args.source_mode.into(),
         route_policy: args.route_policy,
         surface_product_override: args.surface_product.clone(),
@@ -943,6 +1104,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         allow_large_heavy_domain: args.allow_large_heavy_domain,
         direct_recipes,
         derived_recipes,
+        windowed_products: windowed_products
+            .iter()
+            .map(|product| product.slug().to_string())
+            .collect(),
         route_policy: args.route_policy,
         outcomes,
         counts_by_model,
@@ -974,11 +1139,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PinResolution, PinnedRunRequest, RoutePolicyArg, RouteSelection,
-        filter_heavy_derived_recipes, select_non_hrrr_non_ecape_route,
+        PinResolution, PinnedRunRequest, RoutePolicyArg, RouteSelection, default_windowed_products,
+        filter_heavy_derived_recipes, parse_windowed_products, select_non_hrrr_non_ecape_route,
         supports_unified_non_hrrr_non_ecape,
     };
     use rustwx_core::{ModelId, SourceId};
+    use rustwx_products::windowed::HrrrWindowedProduct;
 
     #[test]
     fn pinned_request_uses_resolved_cycle_date() {
@@ -1003,6 +1169,39 @@ mod tests {
         assert_eq!(
             filtered,
             vec!["sbcape".to_string(), "stp_fixed".to_string()]
+        );
+    }
+
+    #[test]
+    fn default_windowed_products_are_short_non_vpd_operational_products() {
+        let products = default_windowed_products();
+
+        assert!(products.contains(&HrrrWindowedProduct::Qpf1h));
+        assert!(products.contains(&HrrrWindowedProduct::QpfTotal));
+        assert!(products.contains(&HrrrWindowedProduct::Uh25km1h));
+        assert!(products.contains(&HrrrWindowedProduct::Wind10mRunMax));
+        assert!(
+            products
+                .iter()
+                .all(|product| !product.slug().contains("_vpd_"))
+        );
+    }
+
+    #[test]
+    fn windowed_product_parser_supports_presets_and_slugs() {
+        assert_eq!(
+            parse_windowed_products(None).unwrap(),
+            default_windowed_products()
+        );
+        assert_eq!(
+            parse_windowed_products(Some(&["qpf-1h".to_string()])).unwrap(),
+            vec![HrrrWindowedProduct::Qpf1h]
+        );
+        assert!(
+            parse_windowed_products(Some(&["all-normal".to_string()]))
+                .unwrap()
+                .iter()
+                .all(|product| !product.slug().contains("_vpd_"))
         );
     }
 
@@ -1651,7 +1850,13 @@ fn run_hrrr_unified(
     // direct + derived via run_hrrr_non_ecape_hour (shared bundle load)
     let want_direct = !config.skip_direct && !direct_recipes.is_empty();
     let want_derived = !config.skip_derived && !derived_recipes.is_empty();
-    if want_direct || want_derived {
+    let windowed_products = if fh == 0 {
+        Vec::new()
+    } else {
+        config.windowed_products.clone()
+    };
+    let want_windowed = !windowed_products.is_empty();
+    if want_direct || want_derived || want_windowed {
         let start = Instant::now();
         let request = HrrrNonEcapeHourRequest {
             date_yyyymmdd: pinned.date_yyyymmdd.clone(),
@@ -1672,7 +1877,7 @@ fn run_hrrr_unified(
             } else {
                 Vec::new()
             },
-            windowed_products: Vec::new(),
+            windowed_products,
             source_mode: config.source_mode,
             output_width: config.output_width,
             output_height: config.output_height,
@@ -1730,7 +1935,7 @@ fn run_hrrr_unified(
                 } else {
                     counts.failed += 1;
                 }
-                outcomes.push(lane_outcome_from_pinned(
+                let mut outcome = lane_outcome_from_pinned(
                     pinned,
                     ModelId::Hrrr,
                     fh,
@@ -1741,7 +1946,9 @@ fn run_hrrr_unified(
                     None,
                     outputs,
                     blockers,
-                ));
+                );
+                outcome.product_timings = hrrr_non_ecape_product_timings(&report);
+                outcomes.push(outcome);
             }
             Err(err) => {
                 eprintln!("[fail] hrrr f{fh:03} hrrr_non_ecape_hour: {err}");

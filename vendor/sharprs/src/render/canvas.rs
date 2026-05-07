@@ -989,10 +989,10 @@ fn sounding_font() -> Option<&'static Font<'static>> {
 
 fn font_px(scale_tag: i32) -> f32 {
     match scale_tag.max(1) {
-        1 => 14.0,
-        2 => 22.0,
-        3 => 31.0,
-        value => 14.0 + (value as f32 - 1.0) * 8.0,
+        1 => 22.0,
+        2 => 42.0,
+        3 => 62.0,
+        value => 22.0 + (value as f32 - 1.0) * 20.0,
     }
 }
 

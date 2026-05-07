@@ -215,6 +215,17 @@ pub(crate) fn static_supersample_factor() -> u32 {
         .unwrap_or(2)
 }
 
+pub(crate) fn static_supersample_sharpen() -> bool {
+    std::env::var("RUSTWX_SUPERSAMPLE_SHARPEN")
+        .ok()
+        .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
+        .unwrap_or(true)
+}
+
 pub(crate) fn static_chrome_scale() -> ChromeScale {
     let scale = std::env::var("RUSTWX_CHROME_SCALE")
         .ok()
@@ -258,6 +269,7 @@ pub fn build_weather_map_request(
     request.width = width;
     request.height = height;
     request.supersample_factor = static_supersample_factor();
+    request.supersample_sharpen = static_supersample_sharpen();
     request.domain_frame = Some(DomainFrame::model_data_default());
     request.visual_mode = ProductVisualMode::SevereDiagnostic;
     request.title = Some(field_spec.display_title().to_string());

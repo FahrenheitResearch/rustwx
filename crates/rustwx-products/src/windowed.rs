@@ -12,7 +12,8 @@ use crate::runtime::{
 };
 use crate::shared_context::{
     DomainSpec, ProjectedMap, model_time_subtitle_with_lead_label, source_subtitle,
-    static_chrome_scale, static_supersample_factor, static_title_with_suffix,
+    static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
+    static_title_with_suffix,
 };
 use crate::windowed_decoder::{
     HrrrApcpDecode, HrrrSurfaceSnapshotDecode, HrrrUhDecode, HrrrWind10mMaxDecode,
@@ -1818,6 +1819,7 @@ fn build_windowed_render_request(
         mode: LegendMode::Stepped,
     };
     render_request.supersample_factor = static_supersample_factor();
+    render_request.supersample_sharpen = static_supersample_sharpen();
     render_request.domain_frame = Some(DomainFrame::model_data_default());
     render_request.visual_mode =
         if product.is_qpf() || product.is_wind10m() || product.is_surface_snapshot() {

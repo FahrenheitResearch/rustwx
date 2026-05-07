@@ -34,6 +34,10 @@ proof/*.bin
 proof/tmp_*
 proof/CONFIRMED_*
 proof/*decode_stats.json
+/cache/
+/scratch/
+/bench_*/
+/proof_*/
 *.bundle
 *_review_flat*/
 *_gpt*_review*/

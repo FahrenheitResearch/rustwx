@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 #[path = "../region.rs"]
 mod region;
@@ -22,9 +23,9 @@ use rustwx_products::shared_context::model_time_subtitle;
 use rustwx_render::{
     Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode, LevelDensity,
     LineworkRole, MapRenderRequest, ProductVisualMode, ProjectedDomain, ProjectedMap,
-    RenderDensity, WindBarbLayer, build_projected_map as build_projected_map_from_latlon,
-    map_frame_aspect_ratio_for_mode, render_image, weather::WeatherPalette,
-    weather::weather_palette,
+    RenderDensity, StaticPlotStyle, WindBarbLayer,
+    build_projected_map as build_projected_map_from_latlon, map_frame_aspect_ratio_for_mode,
+    render_image_with_style, weather::WeatherPalette, weather::weather_palette,
 };
 use serde::Serialize;
 
@@ -49,6 +50,8 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     forecast_hour: u16,
     #[arg(long)]
+    product: Option<String>,
+    #[arg(long)]
     source: Option<SourceId>,
     #[arg(long, value_enum, default_value_t = RegionPreset::Conus)]
     region: RegionPreset,
@@ -58,44 +61,84 @@ struct Args {
     cache_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     no_cache: bool,
+    #[arg(long, default_value_t = false)]
+    no_html: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum ProofVariant {
     Baseline,
+    CleanAtlas,
     DenseColors,
+    CleanAtlasDense,
     LineHierarchy,
+    CleanAtlasFast,
     Supersample2x,
+    LineHierarchySupersample2x,
+    CleanAtlasQuality2x,
     Sharpen,
     Combined,
+    CleanAtlasCombined,
 }
 
 impl ProofVariant {
     fn slug(self) -> &'static str {
         match self {
             Self::Baseline => "baseline",
+            Self::CleanAtlas => "clean_atlas",
             Self::DenseColors => "dense_colors",
+            Self::CleanAtlasDense => "clean_atlas_dense",
             Self::LineHierarchy => "line_hierarchy",
+            Self::CleanAtlasFast => "clean_atlas_fast",
             Self::Supersample2x => "supersample_2x",
+            Self::LineHierarchySupersample2x => "line_hierarchy_supersample_2x",
+            Self::CleanAtlasQuality2x => "clean_atlas_quality_2x",
             Self::Sharpen => "sharpen",
             Self::Combined => "combined",
+            Self::CleanAtlasCombined => "clean_atlas_combined",
         }
     }
 
     fn description(self) -> &'static str {
         match self {
             Self::Baseline => "Current request as rendered by production defaults.",
+            Self::CleanAtlas => "Current request through the Clean Atlas presentation style.",
             Self::DenseColors => {
                 "Increase stepped fill density only; no smoothing, no line changes."
+            }
+            Self::CleanAtlasDense => {
+                "Clean Atlas chrome plus denser stepped fill levels for smoother gradients."
             }
             Self::LineHierarchy => {
                 "Make coast/state/frame linework more deliberate via request-side width/color tuning."
             }
+            Self::CleanAtlasFast => {
+                "Renderer-level Clean Atlas Fast style; intended as the fast production candidate."
+            }
             Self::Supersample2x => "Render the full map at 2x and downsample back to 1200x900.",
+            Self::LineHierarchySupersample2x => {
+                "Tuned map line hierarchy plus 2x supersampling and Lanczos downsampling; no sharpen pass."
+            }
+            Self::CleanAtlasQuality2x => {
+                "Clean Atlas Fast plus tuned line hierarchy and 2x supersampling; no sharpen pass."
+            }
             Self::Sharpen => "Apply a mild post-render sharpen kernel to the final PNG.",
             Self::Combined => {
                 "Dense stepped fills + tuned line hierarchy + 2x supersample + mild sharpen."
             }
+            Self::CleanAtlasCombined => {
+                "Clean Atlas + dense fills + tuned line hierarchy + 2x supersample + mild sharpen."
+            }
+        }
+    }
+
+    fn plot_style(self) -> StaticPlotStyle {
+        match self {
+            Self::CleanAtlas | Self::CleanAtlasDense => StaticPlotStyle::CleanAtlas,
+            Self::CleanAtlasFast => StaticPlotStyle::CleanAtlasFast,
+            Self::CleanAtlasQuality2x => StaticPlotStyle::CleanAtlasQuality2x,
+            Self::CleanAtlasCombined => StaticPlotStyle::CleanAtlasCombined,
+            _ => StaticPlotStyle::Default,
         }
     }
 }
@@ -105,6 +148,13 @@ struct VariantRecord {
     variant: String,
     description: String,
     output_path: PathBuf,
+    output_file: String,
+    width: u32,
+    height: u32,
+    bytes: u64,
+    render_ms: u128,
+    save_ms: u128,
+    total_ms: u128,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -120,7 +170,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let recipe =
         plot_recipe(&args.recipe).ok_or_else(|| format!("unknown recipe '{}'", args.recipe))?;
-    let (product, selectors, variable_patterns) = fetch_recipe_inputs(recipe, args.model)?;
+    let (default_product, selectors, variable_patterns) = fetch_recipe_inputs(recipe, args.model)?;
+    let product = args.product.as_deref().unwrap_or(default_product);
 
     let latest = match args.cycle {
         Some(hour) => rustwx_models::LatestRun {
@@ -142,46 +193,79 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &cache_root,
         &latest,
     )?;
+    let product_slug = filename_slug(product);
 
     let variants = [
         ProofVariant::Baseline,
+        ProofVariant::CleanAtlas,
         ProofVariant::DenseColors,
+        ProofVariant::CleanAtlasDense,
         ProofVariant::LineHierarchy,
+        ProofVariant::CleanAtlasFast,
         ProofVariant::Supersample2x,
+        ProofVariant::LineHierarchySupersample2x,
+        ProofVariant::CleanAtlasQuality2x,
         ProofVariant::Sharpen,
         ProofVariant::Combined,
+        ProofVariant::CleanAtlasCombined,
     ];
     let mut records = Vec::with_capacity(variants.len());
     for variant in variants {
+        let render_start = Instant::now();
         let image = render_variant(&request, variant)?;
+        let render_ms = render_start.elapsed().as_millis();
+        let width = image.width();
+        let height = image.height();
         let output_path = args.out_dir.join(format!(
-            "rustwx_{}_{}_{}z_f{:03}_{}_{}_{}.png",
+            "rustwx_{}_{}_{}z_f{:03}_{}_{}_{}_{}.png",
             args.model.as_str().replace('-', "_"),
             args.date,
             latest.cycle.hour_utc,
             args.forecast_hour,
             args.region.slug(),
             recipe.slug,
+            product_slug,
             variant.slug()
         ));
+        let save_start = Instant::now();
         DynamicImage::ImageRgba8(image).save(&output_path)?;
+        let save_ms = save_start.elapsed().as_millis();
+        let bytes = fs::metadata(&output_path)?.len();
+        let output_file = output_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string();
         records.push(VariantRecord {
             variant: variant.slug().to_string(),
             description: variant.description().to_string(),
             output_path,
+            output_file,
+            width,
+            height,
+            bytes,
+            render_ms,
+            save_ms,
+            total_ms: render_ms.saturating_add(save_ms),
         });
     }
 
     let manifest_path = args.out_dir.join(format!(
-        "rustwx_{}_{}_{}z_f{:03}_{}_{}_variants.json",
+        "rustwx_{}_{}_{}z_f{:03}_{}_{}_{}_variants.json",
         args.model.as_str().replace('-', "_"),
         args.date,
         latest.cycle.hour_utc,
         args.forecast_hour,
         args.region.slug(),
-        recipe.slug
+        recipe.slug,
+        product_slug
     ));
     fs::write(&manifest_path, serde_json::to_vec_pretty(&records)?)?;
+
+    if !args.no_html {
+        let html_path = write_lab_html(&args, recipe, &latest, product, &manifest_path, &records)?;
+        println!("{}", html_path.display());
+    }
 
     for record in &records {
         println!("{}", record.output_path.display());
@@ -193,7 +277,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn build_request(
     args: &Args,
     recipe: &PlotRecipe,
-    product: &'static str,
+    product: &str,
     selectors: Vec<FieldSelector>,
     variable_patterns: Vec<&'static str>,
     cache_root: &std::path::Path,
@@ -281,7 +365,7 @@ fn build_request(
         latest.cycle.hour_utc,
         args.forecast_hour,
     ));
-    render_request.subtitle_right = Some(format!("source: {}", latest.source));
+    render_request.subtitle_right = Some(format!("{} | source: {}", product, latest.source));
     Ok(render_request)
 }
 
@@ -290,53 +374,69 @@ fn render_variant(
     variant: ProofVariant,
 ) -> Result<RgbaImage, Box<dyn std::error::Error>> {
     match variant {
-        ProofVariant::Baseline => Ok(render_image(base_request)?),
-        ProofVariant::DenseColors => {
+        ProofVariant::Baseline | ProofVariant::CleanAtlas => {
+            render_styled_image(base_request, variant)
+        }
+        ProofVariant::DenseColors | ProofVariant::CleanAtlasDense => {
             let mut request = base_request.clone();
-            request.render_density = RenderDensity {
-                fill: LevelDensity {
-                    multiplier: 16,
-                    min_source_level_count: 5,
-                },
-                palette_multiplier: 16,
-            };
-            Ok(render_image(&request)?)
+            apply_dense_colors(&mut request);
+            render_styled_image(&request, variant)
         }
         ProofVariant::LineHierarchy => {
             let mut request = base_request.clone();
             apply_line_hierarchy(&mut request);
-            Ok(render_image(&request)?)
+            render_styled_image(&request, variant)
         }
-        ProofVariant::Supersample2x => render_supersampled(base_request, 2),
+        ProofVariant::CleanAtlasFast
+        | ProofVariant::CleanAtlasQuality2x
+        | ProofVariant::CleanAtlasCombined => render_styled_image(base_request, variant),
+        ProofVariant::Supersample2x => render_supersampled(base_request, 2, variant),
+        ProofVariant::LineHierarchySupersample2x => {
+            let mut request = base_request.clone();
+            apply_line_hierarchy(&mut request);
+            render_supersampled(&request, 2, variant)
+        }
         ProofVariant::Sharpen => {
-            let image = render_image(base_request)?;
+            let image = render_styled_image(base_request, variant)?;
             Ok(sharpen_image(&image))
         }
         ProofVariant::Combined => {
             let mut request = base_request.clone();
-            request.render_density = RenderDensity {
-                fill: LevelDensity {
-                    multiplier: 16,
-                    min_source_level_count: 5,
-                },
-                palette_multiplier: 16,
-            };
+            apply_dense_colors(&mut request);
             apply_line_hierarchy(&mut request);
-            let image = render_supersampled(&request, 2)?;
+            let image = render_supersampled(&request, 2, variant)?;
             Ok(sharpen_image(&image))
         }
     }
 }
 
+fn render_styled_image(
+    request: &MapRenderRequest,
+    variant: ProofVariant,
+) -> Result<RgbaImage, Box<dyn std::error::Error>> {
+    Ok(render_image_with_style(request, variant.plot_style())?)
+}
+
+fn apply_dense_colors(request: &mut MapRenderRequest) {
+    request.render_density = RenderDensity {
+        fill: LevelDensity {
+            multiplier: 16,
+            min_source_level_count: 5,
+        },
+        palette_multiplier: 16,
+    };
+}
+
 fn render_supersampled(
     request: &MapRenderRequest,
     factor: u32,
+    variant: ProofVariant,
 ) -> Result<RgbaImage, Box<dyn std::error::Error>> {
     let mut hires = request.clone();
     hires.width = request.width.saturating_mul(factor);
     hires.height = request.height.saturating_mul(factor);
     scale_overlay_dimensions(&mut hires, factor);
-    let rendered = render_image(&hires)?;
+    let rendered = render_styled_image(&hires, variant)?;
     Ok(resize(
         &rendered,
         request.width,
@@ -748,4 +848,218 @@ fn visible_grid_span(
     }
 
     (max_i - min_i + 1, max_j - min_j + 1)
+}
+
+fn write_lab_html(
+    args: &Args,
+    recipe: &PlotRecipe,
+    latest: &rustwx_models::LatestRun,
+    product: &str,
+    manifest_path: &Path,
+    records: &[VariantRecord],
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let html_path = args.out_dir.join("index.html");
+    let manifest_file = manifest_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("variants.json");
+    let run_label = format!(
+        "{} {} {:02}z f{:03} {} {} {}",
+        args.model.as_str(),
+        args.date,
+        latest.cycle.hour_utc,
+        args.forecast_hour,
+        args.region.slug(),
+        recipe.slug,
+        product
+    );
+
+    let baseline = records
+        .iter()
+        .find(|record| record.variant == "baseline")
+        .or_else(|| records.first());
+    let mut cards = String::new();
+    for record in records {
+        let is_baseline = record.variant == "baseline";
+        let baseline_src = baseline
+            .map(|record| record.output_file.as_str())
+            .unwrap_or(record.output_file.as_str());
+        cards.push_str(&format!(
+            r#"
+<article class="card {baseline_class}" data-variant="{variant}">
+  <div class="card-head">
+    <div>
+      <h2>{variant_title}</h2>
+      <p>{description}</p>
+    </div>
+    <div class="bench">
+      <span>{render_ms} ms render</span>
+      <span>{save_ms} ms save</span>
+      <span>{total_ms} ms total</span>
+      <span>{bytes_kb} KB</span>
+    </div>
+  </div>
+  <div class="compare">
+    <figure>
+      <figcaption>Baseline</figcaption>
+      <img src="{baseline_src}" alt="baseline plot">
+    </figure>
+    <figure>
+      <figcaption>{variant_title}</figcaption>
+      <img src="{src}" alt="{variant_title} plot">
+    </figure>
+  </div>
+  <div class="vote-row">
+    <button type="button" onclick="vote('{variant}', 1)">Upvote this style</button>
+    <button type="button" onclick="vote('{variant}', -1)">Downvote</button>
+    <strong id="score-{variant}">0</strong>
+  </div>
+  <textarea id="note-{variant}" placeholder="What looks better or worse? Label density, colors, contrast, map clarity, artifacts..." oninput="saveNote('{variant}')"></textarea>
+</article>
+"#,
+            baseline_class = if is_baseline { "baseline" } else { "" },
+            variant = html_attr(&record.variant),
+            variant_title = html_text(&record.variant.replace('_', " ")),
+            description = html_text(&record.description),
+            render_ms = record.render_ms,
+            save_ms = record.save_ms,
+            total_ms = record.total_ms,
+            bytes_kb = (record.bytes + 1023) / 1024,
+            baseline_src = html_attr(baseline_src),
+            src = html_attr(&record.output_file),
+        ));
+    }
+
+    let html = format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rustwx Plot Style Lab</title>
+  <style>
+    :root {{ color-scheme: light; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+    body {{ margin: 0; background: #f4f6f8; color: #121820; }}
+    header {{ padding: 20px 24px 14px; border-bottom: 1px solid #d8dde3; background: #ffffff; position: sticky; top: 0; z-index: 2; }}
+    h1 {{ margin: 0 0 6px; font-size: 22px; letter-spacing: 0; }}
+    p {{ margin: 0; color: #4d5967; }}
+    main {{ padding: 18px 24px 36px; display: grid; gap: 18px; }}
+    .toolbar {{ display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }}
+    .toolbar a, button {{ border: 1px solid #aeb7c2; background: #fff; color: #17202a; padding: 8px 10px; border-radius: 6px; cursor: pointer; text-decoration: none; font-weight: 600; }}
+    .toolbar button:hover, .toolbar a:hover {{ background: #edf2f7; }}
+    .card {{ background: #fff; border: 1px solid #d7dde5; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06); }}
+    .card.baseline {{ border-color: #7c8a9a; }}
+    .card-head {{ display: flex; justify-content: space-between; gap: 18px; padding: 14px 16px; border-bottom: 1px solid #e2e7ee; }}
+    h2 {{ margin: 0 0 4px; font-size: 18px; text-transform: capitalize; }}
+    .bench {{ min-width: 150px; display: grid; gap: 4px; font-variant-numeric: tabular-nums; color: #26313d; }}
+    .bench span {{ background: #eef2f6; border-radius: 5px; padding: 3px 7px; text-align: right; }}
+    .compare {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; background: #101418; }}
+    figure {{ margin: 0; padding: 10px; border-right: 1px solid #2a333d; }}
+    figure:last-child {{ border-right: 0; }}
+    figcaption {{ color: #e9eef5; font-size: 13px; margin-bottom: 8px; text-transform: capitalize; }}
+    img {{ width: 100%; display: block; background: #fff; }}
+    .vote-row {{ display: flex; gap: 10px; align-items: center; padding: 12px 16px; border-top: 1px solid #e2e7ee; }}
+    textarea {{ box-sizing: border-box; width: calc(100% - 32px); min-height: 72px; margin: 0 16px 16px; padding: 10px; border: 1px solid #cad2dc; border-radius: 6px; font: inherit; resize: vertical; }}
+    pre {{ white-space: pre-wrap; background: #101418; color: #e6edf3; padding: 12px; border-radius: 8px; }}
+    @media (max-width: 900px) {{ .compare {{ grid-template-columns: 1fr; }} figure {{ border-right: 0; border-bottom: 1px solid #2a333d; }} .card-head {{ flex-direction: column; }} }}
+  </style>
+</head>
+<body data-run="{run_key}">
+  <header>
+    <h1>rustwx Plot Style Lab</h1>
+    <p>{run_label}</p>
+    <div class="toolbar">
+      <a href="{manifest_file}">Manifest JSON</a>
+      <button type="button" onclick="exportVotes()">Export votes/notes</button>
+      <button type="button" onclick="resetVotes()">Reset local votes</button>
+    </div>
+  </header>
+  <main>
+    {cards}
+    <section>
+      <h2>Preference export</h2>
+      <pre id="export-box">No export yet.</pre>
+    </section>
+  </main>
+  <script>
+    const runKey = document.body.dataset.run;
+    const key = (name) => `rustwx-style-lab:${{runKey}}:${{name}}`;
+    function scoreId(variant) {{ return `score-${{variant}}`; }}
+    function noteId(variant) {{ return `note-${{variant}}`; }}
+    function loadAll() {{
+      document.querySelectorAll('[data-variant]').forEach(card => {{
+        const variant = card.dataset.variant;
+        const score = Number(localStorage.getItem(key(`score:${{variant}}`)) || '0');
+        const note = localStorage.getItem(key(`note:${{variant}}`)) || '';
+        document.getElementById(scoreId(variant)).textContent = String(score);
+        document.getElementById(noteId(variant)).value = note;
+      }});
+    }}
+    function vote(variant, delta) {{
+      const scoreKey = key(`score:${{variant}}`);
+      const next = Number(localStorage.getItem(scoreKey) || '0') + delta;
+      localStorage.setItem(scoreKey, String(next));
+      document.getElementById(scoreId(variant)).textContent = String(next);
+    }}
+    function saveNote(variant) {{
+      localStorage.setItem(key(`note:${{variant}}`), document.getElementById(noteId(variant)).value);
+    }}
+    function exportVotes() {{
+      const result = {{ run: runKey, exported_at: new Date().toISOString(), preferences: [] }};
+      document.querySelectorAll('[data-variant]').forEach(card => {{
+        const variant = card.dataset.variant;
+        result.preferences.push({{
+          variant,
+          score: Number(localStorage.getItem(key(`score:${{variant}}`)) || '0'),
+          note: localStorage.getItem(key(`note:${{variant}}`)) || ''
+        }});
+      }});
+      document.getElementById('export-box').textContent = JSON.stringify(result, null, 2);
+    }}
+    function resetVotes() {{
+      document.querySelectorAll('[data-variant]').forEach(card => {{
+        const variant = card.dataset.variant;
+        localStorage.removeItem(key(`score:${{variant}}`));
+        localStorage.removeItem(key(`note:${{variant}}`));
+      }});
+      loadAll();
+      exportVotes();
+    }}
+    loadAll();
+    exportVotes();
+  </script>
+</body>
+</html>
+"#,
+        run_key = html_attr(&run_label.replace(' ', "_")),
+        run_label = html_text(&run_label),
+        manifest_file = html_attr(manifest_file),
+        cards = cards,
+    );
+
+    fs::write(&html_path, html)?;
+    Ok(html_path)
+}
+
+fn html_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn html_attr(value: &str) -> String {
+    html_text(value).replace('"', "&quot;")
+}
+
+fn filename_slug(value: &str) -> String {
+    let mut slug = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+        } else if !slug.ends_with('_') {
+            slug.push('_');
+        }
+    }
+    slug.trim_matches('_').to_string()
 }

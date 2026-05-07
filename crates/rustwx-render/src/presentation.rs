@@ -1,4 +1,5 @@
 use crate::color::Rgba;
+use crate::colormap::{LevelDensity, RenderDensity};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,6 +25,9 @@ pub enum StaticPlotStyle {
     #[default]
     Default,
     CleanAtlas,
+    CleanAtlasFast,
+    CleanAtlasQuality2x,
+    CleanAtlasCombined,
 }
 
 impl StaticPlotStyle {
@@ -39,7 +43,66 @@ impl StaticPlotStyle {
         match normalized.as_str() {
             "" | "default" | "classic" | "baseline" | "standard" => Some(Self::Default),
             "clean" | "atlas" | "clean_atlas" | "pivotal" => Some(Self::CleanAtlas),
+            "fast" | "clean_fast" | "atlas_fast" | "clean_atlas_fast" | "production" => {
+                Some(Self::CleanAtlasFast)
+            }
+            "quality"
+            | "quality_2x"
+            | "beauty"
+            | "export"
+            | "clean_quality"
+            | "clean_quality_2x"
+            | "clean_atlas_quality"
+            | "clean_atlas_quality_2x" => Some(Self::CleanAtlasQuality2x),
+            "combined"
+            | "clean_combined"
+            | "atlas_combined"
+            | "clean_atlas_combined"
+            | "presentation"
+            | "best" => Some(Self::CleanAtlasCombined),
             _ => None,
+        }
+    }
+
+    pub fn uses_clean_atlas_presentation(self) -> bool {
+        matches!(
+            self,
+            Self::CleanAtlas
+                | Self::CleanAtlasFast
+                | Self::CleanAtlasQuality2x
+                | Self::CleanAtlasCombined
+        )
+    }
+
+    pub fn render_density(self, requested: RenderDensity) -> RenderDensity {
+        if !matches!(
+            self,
+            Self::CleanAtlasFast | Self::CleanAtlasQuality2x | Self::CleanAtlasCombined
+        ) {
+            return requested;
+        }
+
+        RenderDensity {
+            fill: LevelDensity {
+                multiplier: requested.fill.multiplier.max(16),
+                min_source_level_count: requested.fill.min_source_level_count.min(5),
+            },
+            palette_multiplier: requested.palette_multiplier.max(16),
+        }
+    }
+
+    pub fn supersample_factor(self, requested: u32) -> u32 {
+        match self {
+            Self::CleanAtlasQuality2x | Self::CleanAtlasCombined => requested.max(2),
+            _ => requested.max(1),
+        }
+    }
+
+    pub fn supersample_sharpen(self, requested: bool) -> bool {
+        match self {
+            Self::CleanAtlasQuality2x => false,
+            Self::CleanAtlasCombined => true,
+            _ => requested,
         }
     }
 }
@@ -157,7 +220,7 @@ impl RenderPresentation {
     }
 
     fn apply_static_plot_style(&mut self) {
-        if self.plot_style != StaticPlotStyle::CleanAtlas {
+        if !self.plot_style.uses_clean_atlas_presentation() {
             return;
         }
 
@@ -192,7 +255,7 @@ impl RenderPresentation {
     }
 
     pub fn polygon_style(self, role: PolygonRole, fallback: Rgba) -> PolygonStyle {
-        if self.plot_style == StaticPlotStyle::CleanAtlas {
+        if self.plot_style.uses_clean_atlas_presentation() {
             return clean_atlas_polygon_style(self.mode, role, fallback);
         }
 
@@ -300,7 +363,7 @@ impl RenderPresentation {
         fallback: Rgba,
         fallback_width: u32,
     ) -> LineworkStyle {
-        if self.plot_style == StaticPlotStyle::CleanAtlas {
+        if self.plot_style.uses_clean_atlas_presentation() {
             return clean_atlas_linework_style(self.mode, role, fallback, fallback_width);
         }
 
@@ -354,7 +417,7 @@ impl RenderPresentation {
     }
 
     pub fn domain_frame_style(self, requested: Rgba, requested_width: u32) -> LineworkStyle {
-        if self.plot_style != StaticPlotStyle::CleanAtlas {
+        if !self.plot_style.uses_clean_atlas_presentation() {
             return LineworkStyle {
                 visible: true,
                 color: requested,
@@ -420,6 +483,18 @@ mod tests {
             Some(StaticPlotStyle::CleanAtlas)
         );
         assert_eq!(
+            StaticPlotStyle::parse("clean_atlas_fast"),
+            Some(StaticPlotStyle::CleanAtlasFast)
+        );
+        assert_eq!(
+            StaticPlotStyle::parse("clean_atlas_quality_2x"),
+            Some(StaticPlotStyle::CleanAtlasQuality2x)
+        );
+        assert_eq!(
+            StaticPlotStyle::parse("clean_atlas_combined"),
+            Some(StaticPlotStyle::CleanAtlasCombined)
+        );
+        assert_eq!(
             StaticPlotStyle::parse("default"),
             Some(StaticPlotStyle::Default)
         );
@@ -438,6 +513,35 @@ mod tests {
         assert!(clean.layout.title_h > default.layout.title_h);
         assert!(clean.layout.footer_h > default.layout.footer_h);
         assert!(clean.chrome.frame_color.is_some());
+    }
+
+    #[test]
+    fn clean_atlas_fast_uses_clean_atlas_presentation_and_dense_rendering() {
+        let clean = RenderPresentation::for_mode_with_style(
+            ProductVisualMode::FilledMeteorology,
+            StaticPlotStyle::CleanAtlasFast,
+        );
+        let density = StaticPlotStyle::CleanAtlasFast.render_density(RenderDensity {
+            fill: LevelDensity::default(),
+            palette_multiplier: 1,
+        });
+
+        assert_eq!(clean.plot_style, StaticPlotStyle::CleanAtlasFast);
+        assert!(clean.chrome.frame_color.is_some());
+        assert_eq!(density.fill.multiplier, 16);
+        assert_eq!(density.fill.min_source_level_count, 5);
+        assert_eq!(density.palette_multiplier, 16);
+    }
+
+    #[test]
+    fn quality_styles_are_first_class_supersample_modes() {
+        assert_eq!(
+            StaticPlotStyle::CleanAtlasQuality2x.supersample_factor(1),
+            2
+        );
+        assert_eq!(StaticPlotStyle::CleanAtlasCombined.supersample_factor(1), 2);
+        assert!(!StaticPlotStyle::CleanAtlasQuality2x.supersample_sharpen(true));
+        assert!(StaticPlotStyle::CleanAtlasCombined.supersample_sharpen(false));
     }
 
     #[test]

@@ -46,7 +46,7 @@ use crate::runtime::{
 };
 use crate::shared_context::{
     DomainSpec, ProjectedMapProvider, model_time_subtitle, source_subtitle, static_chrome_scale,
-    static_supersample_factor, static_title_with_suffix,
+    static_supersample_factor, static_supersample_sharpen, static_title_with_suffix,
 };
 use crate::source::{ProductSourceRoute, direct_route_for_recipe_slug};
 use crate::spec::direct_product_specs;
@@ -2642,6 +2642,7 @@ fn build_render_request(
         };
     }
     request.supersample_factor = static_supersample_factor();
+    request.supersample_sharpen = static_supersample_sharpen();
     request.domain_frame = model_data_domain_frame_for_projection(filled.projection.as_ref());
     request.projected_domain = Some(ProjectedDomain {
         x: projected.projected_x,

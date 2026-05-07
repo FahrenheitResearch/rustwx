@@ -69,12 +69,12 @@ const LABELED_PRESSURES: &[f64] = &[1000.0, 850.0, 700.0, 500.0, 300.0, 200.0, 1
 // =========================================================================
 
 const COL_BG: [u8; 4] = [10, 10, 22, 255];
-const COL_GRID: [u8; 4] = [45, 45, 55, 255];
-const COL_GRID_ZERO: [u8; 4] = [100, 150, 255, 220]; // brighter 0C isotherm
-const COL_ISOBAR: [u8; 4] = [50, 50, 60, 255];
-const COL_DRY_AD: [u8; 4] = [140, 100, 60, 110];
-const COL_MOIST_AD: [u8; 4] = [40, 140, 60, 120];
-const COL_MIX_RATIO: [u8; 4] = [40, 130, 60, 90];
+const COL_GRID: [u8; 4] = [38, 42, 52, 175];
+const COL_GRID_ZERO: [u8; 4] = [90, 135, 230, 210];
+const COL_ISOBAR: [u8; 4] = [58, 62, 76, 215];
+const COL_DRY_AD: [u8; 4] = [120, 90, 55, 70];
+const COL_MOIST_AD: [u8; 4] = [35, 120, 70, 62];
+const COL_MIX_RATIO: [u8; 4] = [35, 110, 65, 55];
 const COL_TEMP: [u8; 4] = [255, 50, 50, 255]; // bright red
 const COL_DEWP: [u8; 4] = [50, 255, 50, 255]; // bright green
 const COL_WETBULB: [u8; 4] = [0, 220, 220, 180];
@@ -665,7 +665,7 @@ fn draw_temp_labels(c: &mut Canvas, plot_w: f64, plot_h: f64) {
 }
 
 fn draw_dry_adiabats(c: &mut Canvas, plot_w: f64, plot_h: f64) {
-    for start_t in (-40..=80).step_by(10) {
+    for start_t in (-40..=80).step_by(20) {
         let th = (start_t as f64) + ZEROCNK;
         let mut prev: Option<(i32, i32)> = None;
         let mut p = P_BOT;
@@ -682,11 +682,10 @@ fn draw_dry_adiabats(c: &mut Canvas, plot_w: f64, plot_h: f64) {
 }
 
 fn draw_moist_adiabats(c: &mut Canvas, plot_w: f64, plot_h: f64) {
-    // Finer interval for more moist adiabat lines (every 2C instead of 4C)
-    for start_t in (-30..=36).step_by(2) {
+    for start_t in (-28..=36).step_by(4) {
         let mut t = start_t as f64;
         let mut p = 1050.0;
-        let dp = -5.0;
+        let dp = -10.0;
         let mut prev: Option<(i32, i32)> = None;
         while p > P_TOP {
             if !t.is_finite() {
@@ -868,8 +867,8 @@ fn draw_cape_cin_fills(
 fn draw_wind_barbs(c: &mut Canvas, prof: &Profile, plot_w: f64, plot_h: f64, skewt_w: u32) {
     let bx = (skewt_w as f64 - MARGIN_RIGHT / 2.0) as f64;
     let barb_pressures = [
-        1000.0, 975.0, 950.0, 925.0, 900.0, 875.0, 850.0, 825.0, 800.0, 775.0, 750.0, 700.0, 650.0,
-        600.0, 550.0, 500.0, 450.0, 400.0, 350.0, 300.0, 250.0, 200.0, 150.0,
+        1000.0, 925.0, 850.0, 800.0, 750.0, 700.0, 650.0, 600.0, 550.0, 500.0, 450.0, 400.0,
+        350.0, 300.0, 250.0, 200.0, 150.0,
     ];
 
     for &p in &barb_pressures {
@@ -881,8 +880,7 @@ fn draw_wind_barbs(c: &mut Canvas, prof: &Profile, plot_w: f64, plot_h: f64, ske
             continue;
         }
         let (_, sy) = tp_to_screen(0.0, p, plot_w, plot_h);
-        // Use the canvas wind barb renderer for proper flag/feather sizing
-        c.draw_wind_barb_met(bx, sy, wdir, wspd, COL_WIND_BARB, 28.0, 2);
+        c.draw_wind_barb_met(bx, sy, wdir, wspd, COL_WIND_BARB, 23.0, 1);
     }
 }
 
