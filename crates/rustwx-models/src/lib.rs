@@ -369,7 +369,7 @@ const RAP_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 ];
 const NAM_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
-const HIRESW_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
+const HIRESW_CYCLE_HOURS: &[u8] = &[0, 12];
 const SREF_CYCLE_HOURS: &[u8] = &[3, 9, 15, 21];
 const HOURLY_ANALYSIS_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
@@ -5274,6 +5274,14 @@ mod tests {
         let summary = model_summary(ModelId::EcmwfOpenData);
         assert_eq!(summary.cycle_hours_utc, &[0, 6, 12, 18]);
         assert_eq!(summary.max_forecast_hour, 360);
+    }
+
+    #[test]
+    fn hiresw_summary_matches_default_conus_arw_cycles_and_horizon() {
+        let summary = model_summary(ModelId::Hiresw);
+        assert_eq!(summary.default_product, "arw_2p5km/conus");
+        assert_eq!(summary.cycle_hours_utc, &[0, 12]);
+        assert_eq!(summary.max_forecast_hour, 48);
     }
 
     #[test]

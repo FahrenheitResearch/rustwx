@@ -1,5 +1,8 @@
 use crate::{FetchRequest, FetchResult, IoError};
-use rustwx_core::{FieldSelector, GridProjection, GridShape, LatLonGrid, SelectedField2D};
+use rustwx_core::{
+    CanonicalField, FieldProduct, FieldSelector, GridProjection, GridShape, LatLonGrid,
+    SelectedField2D, VerticalSelector,
+};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
@@ -9,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const FETCH_METADATA_SCHEMA_VERSION: u32 = 2;
 const GRID_PAYLOAD_SCHEMA_VERSION: u32 = 2;
-const FIELD_PAYLOAD_SCHEMA_VERSION: u32 = 3;
+const FIELD_PAYLOAD_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CachedFetchMetadata {
@@ -50,10 +53,35 @@ struct CachedGridPayload {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct CachedFieldPayload {
-    selector: FieldSelector,
+    selector: CachedFieldSelector,
     units: String,
     values: Vec<f32>,
     grid_key: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct CachedFieldSelector {
+    field: CanonicalField,
+    vertical: VerticalSelector,
+    product: FieldProduct,
+}
+
+impl CachedFieldSelector {
+    fn from_selector(selector: FieldSelector) -> Self {
+        Self {
+            field: selector.field,
+            vertical: selector.vertical,
+            product: selector.product,
+        }
+    }
+
+    fn as_selector(self) -> FieldSelector {
+        FieldSelector {
+            field: self.field,
+            vertical: self.vertical,
+            product: self.product,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,13 +115,50 @@ struct LegacyCachedGridPayload {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct LegacySelectedField2D {
-    selector: FieldSelector,
+    selector: LegacyFieldSelector,
     units: String,
     grid: LatLonGrid,
     values: Vec<f32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct LegacyFieldSelector {
+    field: CanonicalField,
+    vertical: VerticalSelector,
+}
+
+impl LegacyFieldSelector {
+    fn as_selector(self) -> FieldSelector {
+        FieldSelector {
+            field: self.field,
+            vertical: self.vertical,
+            product: FieldProduct::Default,
+        }
+    }
+}
+
 pub fn artifact_cache_dir(cache_root: &Path, fetch: &FetchRequest) -> PathBuf {
+    artifact_cache_dir_with_forecast_component(
+        cache_root,
+        fetch,
+        &format!("f{:03}", fetch.request.forecast_hour),
+    )
+}
+
+fn fetch_artifact_cache_dir(cache_root: &Path, fetch: &FetchRequest) -> PathBuf {
+    let forecast_component = if fetch_uses_shared_forecast_cache(fetch) {
+        "all_forecast_hours".to_string()
+    } else {
+        format!("f{:03}", fetch.request.forecast_hour)
+    };
+    artifact_cache_dir_with_forecast_component(cache_root, fetch, &forecast_component)
+}
+
+fn artifact_cache_dir_with_forecast_component(
+    cache_root: &Path,
+    fetch: &FetchRequest,
+    forecast_component: &str,
+) -> PathBuf {
     let product = sanitize_component(&fetch.request.product);
     let source = sanitize_component(
         fetch
@@ -106,7 +171,7 @@ pub fn artifact_cache_dir(cache_root: &Path, fetch: &FetchRequest) -> PathBuf {
         .join(sanitize_component(fetch.request.model.as_str()))
         .join(&fetch.request.cycle.date_yyyymmdd)
         .join(format!("{:02}z", fetch.request.cycle.hour_utc))
-        .join(format!("f{:03}", fetch.request.forecast_hour))
+        .join(forecast_component)
         .join(product)
         .join(source);
     if let Some(selector) = fetch.earth2_ensemble {
@@ -116,7 +181,7 @@ pub fn artifact_cache_dir(cache_root: &Path, fetch: &FetchRequest) -> PathBuf {
 }
 
 pub fn fetch_cache_paths(cache_root: &Path, fetch: &FetchRequest) -> (PathBuf, PathBuf) {
-    let root = artifact_cache_dir(cache_root, fetch);
+    let root = fetch_artifact_cache_dir(cache_root, fetch);
     (root.join("fetch.grib2"), root.join("fetch_meta.json"))
 }
 
@@ -172,7 +237,7 @@ pub fn load_cached_fetch(
         return Ok(None);
     };
     if metadata.bytes_len != bytes.len()
-        || metadata.request != fetch.request
+        || !cached_fetch_request_matches(&metadata.request, &fetch.request, fetch)
         || metadata.source_override != fetch.source_override
         || metadata.variable_patterns != fetch.variable_patterns
         || metadata.earth2_ensemble != fetch.earth2_ensemble
@@ -192,6 +257,26 @@ pub fn load_cached_fetch(
         bytes_path,
         metadata_path,
     }))
+}
+
+fn cached_fetch_request_matches(
+    cached: &rustwx_core::ModelRunRequest,
+    requested: &rustwx_core::ModelRunRequest,
+    fetch: &FetchRequest,
+) -> bool {
+    if fetch_uses_shared_forecast_cache(fetch) {
+        return cached.model == requested.model
+            && cached.cycle == requested.cycle
+            && cached.product == requested.product;
+    }
+    cached == requested
+}
+
+fn fetch_uses_shared_forecast_cache(fetch: &FetchRequest) -> bool {
+    fetch.request.model == rustwx_core::ModelId::Sref
+        && fetch.request.product.starts_with("ensprod/pgrb212/")
+        && fetch.request.product.ends_with("_3hrly")
+        && fetch.earth2_ensemble.is_none()
 }
 
 pub fn store_cached_fetch(
@@ -284,7 +369,7 @@ pub fn store_cached_selected_field(
     }
 
     let field_payload = CachedFieldPayload {
-        selector: field.selector,
+        selector: CachedFieldSelector::from_selector(field.selector),
         units: field.units.clone(),
         values: field.values.clone(),
         grid_key,
@@ -341,7 +426,8 @@ fn load_cached_selected_field_payload(
     if let Some(payload) =
         load_binary_payload::<CachedFieldPayload>(bytes, FIELD_PAYLOAD_SCHEMA_VERSION)
     {
-        if payload.selector != expected_selector {
+        let payload_selector = payload.selector.as_selector();
+        if payload_selector != expected_selector {
             quarantine_cache_paths(&[field_path], "selected_field_selector_mismatch");
             return Ok(None);
         }
@@ -384,7 +470,7 @@ fn load_cached_selected_field_payload(
             }
         };
         let field =
-            match SelectedField2D::new(payload.selector, payload.units, grid, payload.values) {
+            match SelectedField2D::new(payload_selector, payload.units, grid, payload.values) {
                 Ok(field) => {
                     if let Some(projection) = grid_payload.projection {
                         field.with_projection(projection)
@@ -408,8 +494,9 @@ fn load_cached_selected_field_payload(
     }
 
     if let Ok(field) = bincode::deserialize::<LegacySelectedField2D>(bytes) {
+        let legacy_selector = field.selector.as_selector();
         let field =
-            match SelectedField2D::new(field.selector, field.units, field.grid, field.values) {
+            match SelectedField2D::new(legacy_selector, field.units, field.grid, field.values) {
                 Ok(field) => field,
                 Err(_) => {
                     quarantine_cache_paths(&[field_path], "legacy_selected_field_invalid");
@@ -765,7 +852,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("rustwx_io_cache_test_{unique}"))
+        std::env::temp_dir().join(format!(
+            "rustwx_io_cache_test_{}_{unique}",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -821,6 +911,43 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(grid_files.len(), 1);
+
+        fs::remove_dir_all(cache_root).ok();
+    }
+
+    #[test]
+    fn sref_multilead_fetch_cache_reuses_bytes_across_forecast_hours() {
+        let cache_root = temp_cache_root();
+        let mut first = sample_fetch_request();
+        first.request = ModelRunRequest::new(
+            ModelId::Sref,
+            CycleSpec::new("20260507", 3).unwrap(),
+            3,
+            "ensprod/pgrb212/prob_3hrly",
+        )
+        .unwrap();
+        first.source_override = Some(SourceId::Nomads);
+        first.variable_patterns = Vec::new();
+        let mut second = first.clone();
+        second.request.forecast_hour = 24;
+
+        let (first_bytes_path, _) = fetch_cache_paths(&cache_root, &first);
+        let (second_bytes_path, _) = fetch_cache_paths(&cache_root, &second);
+        assert_eq!(first_bytes_path, second_bytes_path);
+
+        let first_field_path = field_cache_path(&cache_root, &first, sample_field().selector);
+        let second_field_path = field_cache_path(&cache_root, &second, sample_field().selector);
+        assert_ne!(first_field_path, second_field_path);
+
+        let result = FetchResult {
+            source: SourceId::Nomads,
+            url: "https://example.test/sref.t03z.pgrb212.prob_3hrly.grib2".to_string(),
+            bytes: vec![42, 43, 44],
+        };
+        store_cached_fetch(&cache_root, &first, &result).unwrap();
+        let loaded = load_cached_fetch(&cache_root, &second).unwrap().unwrap();
+        assert!(loaded.cache_hit);
+        assert_eq!(loaded.result, result);
 
         fs::remove_dir_all(cache_root).ok();
     }
