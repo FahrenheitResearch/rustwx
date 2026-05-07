@@ -511,8 +511,9 @@ pub struct ParamTableData {
     pub k_index: f64,          // K-Index
     pub t_totals: f64,         // Total Totals
     pub tei: f64,              // Theta-E Index (K)
-    pub tehi: f64,             // Theta-E / helicity index placeholder
-    pub tts: f64,              // Thunderstorm threat score placeholder
+    pub tehi: f64,             // Tornadic 0-1 km EHI
+    pub tts: f64,              // Tornadic Tilting and Stretching
+    pub vtp_mod: f64,          // Modified Violent Tornado Parameter
     pub conv_t: f64,           // Convective temperature (F or C)
     pub max_t: f64,            // Forecast max temperature (F or C)
     pub mmp: f64,              // MCS Maintenance Probability
@@ -902,6 +903,7 @@ pub fn render_sized(data: &ParamTableData, width: usize, height: usize) -> Pixel
             ("STP(fix)", fmt_1f(data.stp_fix), stp_color(data.stp_fix)),
             ("SHIP", fmt_1f(data.ship), ship_color(data.ship)),
             ("Supercell", fmt_1f(data.scp), scp_color(data.scp)),
+            ("VTP mod", fmt_1f(data.vtp_mod), stp_color(data.vtp_mod)),
             ("DCP", fmt_1f(data.dcp), WHITE),
             ("LHP", fmt_1f(data.lhp), WHITE),
             ("BRN Shear", fmt_1f(data.brn_shear), WHITE),
@@ -1066,6 +1068,7 @@ mod tests {
             tei: 28.0,
             tehi: f64::NAN,
             tts: f64::NAN,
+            vtp_mod: f64::NAN,
             conv_t: 84.0,
             max_t: 88.0,
             mmp: 0.72,

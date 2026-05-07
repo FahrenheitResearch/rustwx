@@ -7,13 +7,10 @@
 //! | OMEGA |         SKEW-T              | BARBS |  HODOGRAPH            |
 //! | (thin)|    (main diagram)           |(right)|  (top-right)          |
 //! |       |                             |       |                       |
-//! |       |                             |       +-----------+-----------+
-//! |       |                             |       | Inf.Temp  | Stm Slnky|
-//! |       |                             |       +-----------+-----------+
-//! |       |                             |       | SARS      | Eff STP  |
-//! |       |                             |       | Analogs   | BoxPlot  |
-//! |       |                             |       +-----------+-----------+
-//! |       |                             |       |   Psbl Haz. Type      |
+//! |       |                             |       +-----------------------+
+//! |       |                             |       |                       |
+//! |       |                             |       |     STORM SLINKY      |
+//! |       |                             |       |                       |
 //! +-------+-----------------------------+-------+-----------------------+
 //! | PARAMETER TABLE (full width)                                        |
 //! +---------------------------------------------------------------------+
@@ -124,6 +121,8 @@ pub struct ComputedParams {
 
     // -- Effective inflow layer --
     pub eff_inflow: (f64, f64),
+    pub effective_srh: Option<f64>,
+    pub effective_bwd: Option<f64>,
 
     // -- Stability indices --
     pub k_index: Option<f64>,
@@ -145,6 +144,9 @@ pub struct ComputedParams {
     pub stp_cin: Option<f64>,
     pub scp: Option<f64>,
     pub ship: Option<f64>,
+    pub tehi: Option<f64>,
+    pub tts: Option<f64>,
+    pub vtp_mod: Option<f64>,
 
     // -- EHI --
     pub ehi01: Option<f64>,
@@ -280,6 +282,23 @@ pub fn compute_all_params(profile: &Profile) -> ComputedParams {
     let shr06 = winds::wind_shear(profile, p_sfc, p6km).unwrap_or((f64::NAN, f64::NAN));
     let shr08 = winds::wind_shear(profile, p_sfc, p8km).unwrap_or((f64::NAN, f64::NAN));
 
+    let eff_bot_h = profile.to_agl(profile.interp_hght(eff_inflow.0));
+    let eff_top_h = profile.to_agl(profile.interp_hght(eff_inflow.1));
+    let effective_srh = if eff_bot_h.is_finite() && eff_top_h.is_finite() && eff_top_h > eff_bot_h {
+        winds::helicity(profile, eff_bot_h, eff_top_h, rstu, rstv, -1.0, false)
+            .ok()
+            .map(|value| value.0)
+    } else {
+        None
+    };
+    let effective_bwd = if eff_inflow.0.is_finite() && eff_inflow.1.is_finite() {
+        winds::wind_shear(profile, eff_inflow.0, eff_inflow.1)
+            .ok()
+            .map(|(u, v)| (u * u + v * v).sqrt() * 0.514_444)
+    } else {
+        None
+    };
+
     // -- Mean wind --
     let mean_wind_06 =
         winds::mean_wind(profile, p_sfc, p6km, -1.0, 0.0, 0.0).unwrap_or((f64::NAN, f64::NAN));
@@ -314,10 +333,17 @@ pub fn compute_all_params(profile: &Profile) -> ComputedParams {
     let shr06_mag = composites::shr_sfc_to_6km(shr06.0, shr06.1);
     let stp_fixed = shr06_mag
         .and_then(|bwd6| composites::stp_fixed(sfcpcl.bplus, sfcpcl.lclhght, srh01.0, bwd6));
-    let stp_cin = shr06_mag.and_then(|ebwd| {
-        composites::stp_cin(mlpcl.bplus, srh01.0, ebwd, mlpcl.lclhght, mlpcl.bminus)
+    let stp_cin = effective_bwd.and_then(|ebwd| {
+        composites::stp_cin(
+            mlpcl.bplus,
+            effective_srh.unwrap_or(f64::NAN),
+            ebwd,
+            mlpcl.lclhght,
+            mlpcl.bminus,
+        )
     });
-    let scp = shr06_mag.and_then(|ebwd| composites::scp(mupcl.bplus, srh03.0, ebwd));
+    let scp = effective_bwd
+        .and_then(|ebwd| composites::scp(mupcl.bplus, effective_srh.unwrap_or(f64::NAN), ebwd));
     let ship = {
         let mu_mr = if mupcl.pres.is_finite() && mupcl.dwpc.is_finite() {
             crate::profile::mixratio(mupcl.pres, mupcl.dwpc)
@@ -335,6 +361,40 @@ pub fn compute_all_params(profile: &Profile) -> ComputedParams {
     // -- EHI --
     let ehi01 = composites::ehi(sfcpcl.bplus, srh01.0);
     let ehi03 = composites::ehi(sfcpcl.bplus, srh03.0);
+    let tehi = shr06_mag.and_then(|shear06| {
+        composites::tehi(
+            srh01.0,
+            mlpcl.bplus,
+            mlpcl.b3km,
+            shear06,
+            mlpcl.lclhght,
+            mlpcl.bminus,
+            sfcpcl.bminus,
+        )
+    });
+    let tts = shr06_mag.and_then(|shear06| {
+        composites::tts(
+            srh01.0,
+            mlpcl.b3km,
+            mlpcl.bplus,
+            shear06,
+            mlpcl.lclhght,
+            mlpcl.bminus,
+            sfcpcl.bminus,
+        )
+    });
+    let vtp_mod = match (effective_srh, effective_bwd, lr75) {
+        (Some(esrh), Some(ebwd), Some(lr75)) => composites::vtp_mod(
+            mlpcl.bplus,
+            esrh,
+            ebwd,
+            mlpcl.lclhght,
+            mlpcl.bminus,
+            mlpcl.b3km,
+            lr75,
+        ),
+        _ => None,
+    };
 
     // -- TEI --
     let tei = indices::thetae_diff(profile);
@@ -419,6 +479,8 @@ pub fn compute_all_params(profile: &Profile) -> ComputedParams {
         shr08,
         mean_wind_06,
         eff_inflow,
+        effective_srh,
+        effective_bwd,
         k_index,
         t_totals,
         v_totals,
@@ -434,6 +496,9 @@ pub fn compute_all_params(profile: &Profile) -> ComputedParams {
         stp_cin,
         scp,
         ship,
+        tehi,
+        tts,
+        vtp_mod,
         ehi01,
         ehi03,
         frz_lvl,
@@ -578,7 +643,7 @@ fn build_param_table(profile: &Profile, p: &ComputedParams) -> ParamTableData {
         shear_row("1km-3km", p1km, p3km, 1000.0, 3000.0),
         shear_row("3km-6km", p3km, p6km, 3000.0, 6000.0),
         shear_row("SFC-6km", p_sfc, p6km, 0.0, 6000.0),
-        shear_row("C 0-2km", p_sfc, p2km, 0.0, 2000.0),
+        shear_row("SFC-2km", p_sfc, p2km, 0.0, 2000.0),
     ];
     let lr03_table = p
         .lr03
@@ -672,8 +737,9 @@ fn build_param_table(profile: &Profile, p: &ComputedParams) -> ParamTableData {
         k_index: opt_or(p.k_index),
         t_totals: opt_or(p.t_totals),
         tei: opt_or(p.tei),
-        tehi: f64::NAN,
-        tts: f64::NAN,
+        tehi: opt_or(p.tehi),
+        tts: opt_or(p.tts),
+        vtp_mod: opt_or(p.vtp_mod),
         conv_t: opt_or(p.conv_t),
         max_t: opt_or(p.max_temp),
         mmp: nan_or(mmp),

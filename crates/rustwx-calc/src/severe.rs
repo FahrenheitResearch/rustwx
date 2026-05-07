@@ -92,6 +92,30 @@ pub struct EffectiveSevereInputs<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct TornadicBetaInputs<'a> {
+    pub grid: GridShape,
+    pub srh_1km_m2s2: &'a [f64],
+    pub mlcape_jkg: &'a [f64],
+    pub mlcape_03km_jkg: &'a [f64],
+    pub shear_6km_ms: &'a [f64],
+    pub ml_lcl_m: &'a [f64],
+    pub mlcin_jkg: &'a [f64],
+    pub sbcin_jkg: &'a [f64],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct VtpModInputs<'a> {
+    pub grid: GridShape,
+    pub mlcape_jkg: &'a [f64],
+    pub effective_srh_m2s2: &'a [f64],
+    pub effective_bulk_wind_difference_ms: &'a [f64],
+    pub ml_lcl_m: &'a [f64],
+    pub mlcin_jkg: &'a [f64],
+    pub mlcape_03km_jkg: &'a [f64],
+    pub lapse_rate_700_500_cpkm: &'a [f64],
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct ScpEhiInputs<'a> {
     pub grid: GridShape,
     pub scp_cape_jkg: &'a [f64],
@@ -130,6 +154,12 @@ pub struct CapeCinOutputs {
 pub struct EffectiveSevereOutputs {
     pub stp_effective: Vec<f64>,
     pub scp_effective: Vec<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TornadicBetaOutputs {
+    pub tehi: Vec<f64>,
+    pub tts: Vec<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -417,6 +447,78 @@ pub fn compute_scp(
         effective_srh_m2s2,
         effective_bulk_wind_difference_ms,
     })
+}
+
+/// Compute SPC beta tornado composites from precomputed ingredient grids.
+///
+/// `TEHI` is Tornadic 0-1 km EHI and `TTS` is Tornadic Tilting and Stretching;
+/// this is not the Total Totals index. The inputs are model-agnostic, so HRRR,
+/// RAP, GFS, WRF, or any other source can use this once the required parcel and
+/// kinematic ingredients have been derived upstream.
+pub fn compute_tornadic_beta(
+    inputs: TornadicBetaInputs<'_>,
+) -> Result<TornadicBetaOutputs, CalcError> {
+    validate_tornadic_beta_inputs(inputs)?;
+
+    let n = inputs.grid.len();
+    let pairs = (0..n)
+        .into_par_iter()
+        .map(|idx| {
+            (
+                tehi_value(
+                    inputs.srh_1km_m2s2[idx],
+                    inputs.mlcape_jkg[idx],
+                    inputs.mlcape_03km_jkg[idx],
+                    inputs.shear_6km_ms[idx],
+                    inputs.ml_lcl_m[idx],
+                    inputs.mlcin_jkg[idx],
+                    inputs.sbcin_jkg[idx],
+                ),
+                tts_value(
+                    inputs.srh_1km_m2s2[idx],
+                    inputs.mlcape_03km_jkg[idx],
+                    inputs.mlcape_jkg[idx],
+                    inputs.shear_6km_ms[idx],
+                    inputs.ml_lcl_m[idx],
+                    inputs.mlcin_jkg[idx],
+                    inputs.sbcin_jkg[idx],
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let mut tehi = Vec::with_capacity(n);
+    let mut tts = Vec::with_capacity(n);
+    for (tehi_value, tts_value) in pairs {
+        tehi.push(tehi_value);
+        tts.push(tts_value);
+    }
+
+    Ok(TornadicBetaOutputs { tehi, tts })
+}
+
+/// Compute modified Violent Tornado Parameter from precomputed ingredient
+/// grids.
+///
+/// This mirrors the local `wrf-rust` `vtp_mod` math but is not tied to WRF
+/// files. Effective SRH/BWD, MLCAPE/CIN/LCL, 0-3 km MLCAPE, and 700-500 hPa
+/// lapse rate should all come from the same model/sample definition.
+pub fn compute_vtp_mod(inputs: VtpModInputs<'_>) -> Result<Vec<f64>, CalcError> {
+    validate_vtp_mod_inputs(inputs)?;
+    Ok((0..inputs.grid.len())
+        .into_par_iter()
+        .map(|idx| {
+            vtp_mod_value(
+                inputs.mlcape_jkg[idx],
+                inputs.effective_srh_m2s2[idx],
+                inputs.effective_bulk_wind_difference_ms[idx],
+                inputs.ml_lcl_m[idx],
+                inputs.mlcin_jkg[idx],
+                inputs.mlcape_03km_jkg[idx],
+                inputs.lapse_rate_700_500_cpkm[idx],
+            )
+        })
+        .collect())
 }
 
 /// Compute SCP and EHI together from precomputed grids.
@@ -734,6 +836,126 @@ fn effective_stp_value(
     cape_term * lcl_term * srh_term * shear_term * cin_term
 }
 
+fn fixed_layer_tornado_shear_term(shear_6km_ms: f64) -> f64 {
+    if shear_6km_ms < 12.5 {
+        0.0
+    } else if shear_6km_ms > 30.0 {
+        1.5
+    } else {
+        shear_6km_ms / 20.0
+    }
+}
+
+fn tornadic_low_level_limit_exceeded(ml_lcl_m: f64, mlcin_jkg: f64, sbcin_jkg: f64) -> bool {
+    ml_lcl_m > 1700.0 || mlcin_jkg < -100.0 || sbcin_jkg < -200.0
+}
+
+fn tehi_value(
+    srh_1km_m2s2: f64,
+    mlcape_jkg: f64,
+    mlcape_03km_jkg: f64,
+    shear_6km_ms: f64,
+    ml_lcl_m: f64,
+    mlcin_jkg: f64,
+    sbcin_jkg: f64,
+) -> f64 {
+    let mut mlcape_03km_term = if mlcape_03km_jkg > 300.0 {
+        1.5
+    } else {
+        mlcape_03km_jkg / 200.0
+    };
+    if mlcape_jkg > 1500.0 {
+        mlcape_03km_term = mlcape_03km_term.max(1.0);
+    }
+
+    let value = ((srh_1km_m2s2 * mlcape_jkg) / 160000.0)
+        * mlcape_03km_term
+        * fixed_layer_tornado_shear_term(shear_6km_ms);
+
+    if tornadic_low_level_limit_exceeded(ml_lcl_m, mlcin_jkg, sbcin_jkg) || value < 0.0 {
+        0.0
+    } else {
+        value
+    }
+}
+
+fn tts_value(
+    srh_1km_m2s2: f64,
+    mlcape_03km_jkg: f64,
+    mlcape_jkg: f64,
+    shear_6km_ms: f64,
+    ml_lcl_m: f64,
+    mlcin_jkg: f64,
+    sbcin_jkg: f64,
+) -> f64 {
+    let mlcape_03km_capped = mlcape_03km_jkg.min(150.0);
+    let mlcape_term = if mlcape_jkg < 2000.0 {
+        1.0
+    } else if mlcape_jkg > 3000.0 {
+        1.5
+    } else {
+        mlcape_jkg / 2000.0
+    };
+
+    let value = ((srh_1km_m2s2 * mlcape_03km_capped) / 6500.0)
+        * mlcape_term
+        * fixed_layer_tornado_shear_term(shear_6km_ms);
+
+    if tornadic_low_level_limit_exceeded(ml_lcl_m, mlcin_jkg, sbcin_jkg) || value < 0.0 {
+        0.0
+    } else {
+        value
+    }
+}
+
+fn vtp_mod_value(
+    mlcape_jkg: f64,
+    effective_srh_m2s2: f64,
+    effective_bulk_wind_difference_ms: f64,
+    ml_lcl_m: f64,
+    mlcin_jkg: f64,
+    mlcape_03km_jkg: f64,
+    lapse_rate_700_500_cpkm: f64,
+) -> f64 {
+    let ebwd_term = if effective_bulk_wind_difference_ms <= 20.0 {
+        0.0
+    } else if effective_bulk_wind_difference_ms >= 45.0 {
+        1.5
+    } else {
+        effective_bulk_wind_difference_ms / 30.0
+    };
+    let mllcl_term = if ml_lcl_m >= 1750.0 {
+        0.0
+    } else if ml_lcl_m <= 750.0 {
+        1.0
+    } else {
+        (1750.0 - ml_lcl_m) / 750.0
+    };
+    let mlcin_term = if mlcin_jkg <= -200.0 {
+        0.0
+    } else if mlcin_jkg >= -50.0 {
+        1.0
+    } else {
+        (mlcin_jkg + 200.0) / 150.0
+    };
+    let mlcape_03km_term = if mlcape_03km_jkg >= 100.0 {
+        2.0
+    } else {
+        mlcape_03km_jkg / 50.0
+    };
+    let lr_term = if lapse_rate_700_500_cpkm <= 4.5 {
+        0.0
+    } else if lapse_rate_700_500_cpkm >= 8.5 {
+        2.0
+    } else {
+        (lapse_rate_700_500_cpkm - 4.5) / 2.0
+    };
+
+    let p1 = (mlcape_jkg / 1700.0) * (effective_srh_m2s2 / 250.0) * ebwd_term * mllcl_term;
+    let p2 = mlcin_term * mlcape_03km_term * lr_term;
+    p1 * p2
+}
+
 fn ehi_value(cape_jkg: f64, srh_m2s2: f64) -> f64 {
     (cape_jkg * srh_m2s2) / 160000.0
 }
@@ -865,6 +1087,39 @@ fn validate_effective_severe_inputs(inputs: EffectiveSevereInputs<'_>) -> Result
     )
 }
 
+fn validate_tornadic_beta_inputs(inputs: TornadicBetaInputs<'_>) -> Result<(), CalcError> {
+    validate_grid_fields(
+        inputs.grid,
+        &[
+            ("srh_1km_m2s2", inputs.srh_1km_m2s2),
+            ("mlcape_jkg", inputs.mlcape_jkg),
+            ("mlcape_03km_jkg", inputs.mlcape_03km_jkg),
+            ("shear_6km_ms", inputs.shear_6km_ms),
+            ("ml_lcl_m", inputs.ml_lcl_m),
+            ("mlcin_jkg", inputs.mlcin_jkg),
+            ("sbcin_jkg", inputs.sbcin_jkg),
+        ],
+    )
+}
+
+fn validate_vtp_mod_inputs(inputs: VtpModInputs<'_>) -> Result<(), CalcError> {
+    validate_grid_fields(
+        inputs.grid,
+        &[
+            ("mlcape_jkg", inputs.mlcape_jkg),
+            ("effective_srh_m2s2", inputs.effective_srh_m2s2),
+            (
+                "effective_bulk_wind_difference_ms",
+                inputs.effective_bulk_wind_difference_ms,
+            ),
+            ("ml_lcl_m", inputs.ml_lcl_m),
+            ("mlcin_jkg", inputs.mlcin_jkg),
+            ("mlcape_03km_jkg", inputs.mlcape_03km_jkg),
+            ("lapse_rate_700_500_cpkm", inputs.lapse_rate_700_500_cpkm),
+        ],
+    )
+}
+
 fn validate_scp_ehi_inputs(inputs: ScpEhiInputs<'_>) -> Result<(), CalcError> {
     validate_grid_fields(
         inputs.grid,
@@ -945,6 +1200,54 @@ mod tests {
         assert_close(scp_effective_value(3000.0, 150.0, 8.0), 0.0);
         assert_close(scp_effective_value(3000.0, 150.0, 20.0), 9.0);
         assert_close(scp_effective_value(3000.0, 150.0, 30.0), 9.0);
+    }
+
+    #[test]
+    fn tornadic_beta_matches_wrf_rust_formula_cases() {
+        let outputs = compute_tornadic_beta(TornadicBetaInputs {
+            grid: GridShape::new(3, 1).unwrap(),
+            srh_1km_m2s2: &[200.0, 160.0, 200.0],
+            mlcape_jkg: &[1000.0, 1600.0, 1000.0],
+            mlcape_03km_jkg: &[100.0, 50.0, 100.0],
+            shear_6km_ms: &[20.0, 20.0, 10.0],
+            ml_lcl_m: &[1000.0, 1000.0, 1000.0],
+            mlcin_jkg: &[-50.0, -50.0, -50.0],
+            sbcin_jkg: &[-50.0, -50.0, -50.0],
+        })
+        .unwrap();
+
+        assert_vec_close(&outputs.tehi, &[0.625, 1.6, 0.0]);
+
+        let outputs = compute_tornadic_beta(TornadicBetaInputs {
+            grid: GridShape::new(3, 1).unwrap(),
+            srh_1km_m2s2: &[100.0, 100.0, -100.0],
+            mlcape_jkg: &[2500.0, 1500.0, 2500.0],
+            mlcape_03km_jkg: &[100.0, 200.0, 100.0],
+            shear_6km_ms: &[20.0, 35.0, 20.0],
+            ml_lcl_m: &[1000.0, 1000.0, 1000.0],
+            mlcin_jkg: &[-50.0, -50.0, -50.0],
+            sbcin_jkg: &[-50.0, -50.0, -50.0],
+        })
+        .unwrap();
+
+        assert_vec_close(&outputs.tts, &[1.9230769230769231, 3.4615384615384617, 0.0]);
+    }
+
+    #[test]
+    fn vtp_mod_matches_wrf_rust_formula_cases() {
+        let vtp = compute_vtp_mod(VtpModInputs {
+            grid: GridShape::new(5, 1).unwrap(),
+            mlcape_jkg: &[1700.0, 1700.0, 1700.0, 1700.0, 1700.0],
+            effective_srh_m2s2: &[250.0, 250.0, 250.0, 250.0, 250.0],
+            effective_bulk_wind_difference_ms: &[30.0, 20.0, 45.0, 30.0, 30.0],
+            ml_lcl_m: &[1000.0, 1000.0, 1000.0, 1750.0, 1000.0],
+            mlcin_jkg: &[-100.0, -50.0, -50.0, -50.0, -200.0],
+            mlcape_03km_jkg: &[50.0, 50.0, 50.0, 50.0, 50.0],
+            lapse_rate_700_500_cpkm: &[6.5, 6.5, 6.5, 6.5, 6.5],
+        })
+        .unwrap();
+
+        assert_vec_close(&vtp, &[2.0 / 3.0, 0.0, 1.5, 0.0, 0.0]);
     }
 
     #[test]

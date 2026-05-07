@@ -1,10 +1,7 @@
 use std::io::Cursor;
 
 use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
-use rustwx_render::{
-    BasemapStyle, Color, draw_centered_text_line, draw_right_text_line, draw_text_line,
-    load_styled_basemap_features_for,
-};
+use rustwx_render::{BasemapStyle, Color, load_styled_basemap_features_for};
 use sharprs::Profile as SharprsProfile;
 use sharprs::params::{cape, composites, indices};
 use sharprs::render::ComputedParams;
@@ -22,6 +19,13 @@ const LOCATOR_X: i32 = 1176;
 const LOCATOR_Y: i32 = TITLE_H;
 const LOCATOR_W: i32 = 504;
 const LOCATOR_H: i32 = 560;
+const TITLE_SCALE: u32 = 3;
+const SECTION_SCALE: u32 = 4;
+const LABEL_SCALE: u32 = 3;
+const BODY_SCALE: u32 = 3;
+const SAMPLE_BODY_SCALE: u32 = 3;
+const UNIT_SCALE: u32 = 2;
+const TEXT_SIZE_FACTOR: f32 = 1.42;
 
 const BG: Color = Color {
     r: 7,
@@ -111,9 +115,43 @@ pub(crate) fn replace_title_and_table(
     let data = build_table_data(profile, params, ecape);
     draw_title(&mut image, profile);
     draw_locator_map(&mut image, profile, metadata);
-    draw_locator_summary(&mut image, &data);
+    draw_locator_summary(&mut image, &data, metadata);
     draw_table(&mut image, &data);
     encode_png(image).map_err(Into::into)
+}
+
+fn draw_centered_text_line(image: &mut RgbaImage, text: &str, y: i32, color: Color, scale: u32) {
+    rustwx_render::draw_centered_text_line_with_factor(
+        image,
+        text,
+        y,
+        color,
+        scale,
+        TEXT_SIZE_FACTOR,
+    );
+}
+
+fn draw_text_line(image: &mut RgbaImage, text: &str, x: i32, y: i32, color: Color, scale: u32) {
+    rustwx_render::draw_text_line_with_factor(image, text, x, y, color, scale, TEXT_SIZE_FACTOR);
+}
+
+fn draw_right_text_line(
+    image: &mut RgbaImage,
+    text: &str,
+    x_right: i32,
+    y: i32,
+    color: Color,
+    scale: u32,
+) {
+    rustwx_render::draw_right_text_line_with_factor(
+        image,
+        text,
+        x_right,
+        y,
+        color,
+        scale,
+        TEXT_SIZE_FACTOR,
+    );
 }
 
 fn draw_title(image: &mut RgbaImage, profile: &SharprsProfile) {
@@ -128,7 +166,7 @@ fn draw_title(image: &mut RgbaImage, profile: &SharprsProfile) {
         (true, false) => format!("rustwx Sounding Analysis - {valid}"),
         (false, false) => format!("rustwx Sounding Analysis - {station} - {valid}"),
     };
-    draw_centered_text_line(image, &title, 8, TEXT, 2);
+    draw_centered_text_line(image, &title, 3, TEXT, TITLE_SCALE);
 }
 
 fn draw_locator_map(image: &mut RgbaImage, profile: &SharprsProfile, metadata: &SoundingMetadata) {
@@ -141,9 +179,9 @@ fn draw_locator_map(image: &mut RgbaImage, profile: &SharprsProfile, metadata: &
     let w = LOCATOR_W;
     let h = LOCATOR_H;
     let map_x = x + 12;
-    let map_y = y + 54;
+    let map_y = y + 66;
     let map_w = w - 24;
-    let map_h = h - 78;
+    let map_h = h - 94;
     let bounds = locator_bounds(lat, lon, metadata, map_w, map_h);
     let is_box = is_box_sample(metadata);
 
@@ -152,17 +190,17 @@ fn draw_locator_map(image: &mut RgbaImage, profile: &SharprsProfile, metadata: &
     draw_text_line(
         image,
         if is_box {
-            "SOUNDING BOX FOOTPRINT"
+            "BOX FOOTPRINT"
         } else {
             "SOUNDING LOCATION"
         },
         x + 14,
         y + 14,
         LABEL,
-        3,
+        SECTION_SCALE,
     );
     let coord = format!("{lat:.3}, {lon:.3}");
-    draw_right_text_line(image, &coord, x + w - 14, y + 16, MUTED, 2);
+    draw_right_text_line(image, &coord, x + w - 14, y + 20, MUTED, BODY_SCALE);
 
     fill_rect(image, map_x, map_y, map_w, map_h, BG);
     draw_rect_border(image, map_x, map_y, map_w, map_h, LINE_DIM, 1);
@@ -177,10 +215,10 @@ fn draw_locator_map(image: &mut RgbaImage, profile: &SharprsProfile, metadata: &
     draw_locator_marker(image, &bounds, map_x, map_y, map_w, map_h, lat, lon);
 
     let caption = if is_box { "box mean" } else { "point sample" };
-    draw_text_line(image, caption, x + 14, y + h - 28, MUTED, 2);
+    draw_text_line(image, caption, x + 14, y + h - 36, MUTED, BODY_SCALE);
 }
 
-fn draw_locator_summary(image: &mut RgbaImage, data: &TableData) {
+fn draw_locator_summary(image: &mut RgbaImage, data: &TableData, metadata: &SoundingMetadata) {
     let x = LOCATOR_X;
     let y = LOCATOR_Y + LOCATOR_H;
     let w = LOCATOR_W;
@@ -189,8 +227,15 @@ fn draw_locator_summary(image: &mut RgbaImage, data: &TableData) {
     fill_rect(image, x, y, w, h, PANEL_BG);
     draw_rect_border(image, x, y, w, h, LINE, 1);
 
-    draw_text_line(image, "SOUNDING SUMMARY", x + 14, y + 14, LABEL, 3);
-    hline(image, x + 10, x + w - 10, y + 48, LINE_DIM);
+    draw_text_line(
+        image,
+        "SOUNDING SUMMARY",
+        x + 14,
+        y + 14,
+        LABEL,
+        SECTION_SCALE,
+    );
+    hline(image, x + 10, x + w - 10, y + 58, LINE_DIM);
 
     let sb = find_parcel_row(data, "Surface");
     let ml = find_parcel_row(data, "Mixed-Layer");
@@ -207,7 +252,7 @@ fn draw_locator_summary(image: &mut RgbaImage, data: &TableData) {
     draw_summary_column(
         image,
         x + 14,
-        y + 66,
+        y + 78,
         222,
         "ENERGY",
         &[
@@ -245,7 +290,7 @@ fn draw_locator_summary(image: &mut RgbaImage, data: &TableData) {
     draw_summary_column(
         image,
         x + 264,
-        y + 66,
+        y + 78,
         222,
         "LEVELS",
         &[
@@ -272,7 +317,7 @@ fn draw_locator_summary(image: &mut RgbaImage, data: &TableData) {
     draw_summary_column(
         image,
         x + 14,
-        y + 250,
+        y + 282,
         472,
         "SHEAR / MOTION",
         &[
@@ -299,31 +344,64 @@ fn draw_locator_summary(image: &mut RgbaImage, data: &TableData) {
         ],
     );
 
-    draw_summary_column(
+    draw_sample_info_panel(image, metadata, x + 14, y + 430, 472, 112);
+}
+
+fn draw_sample_info_panel(
+    image: &mut RgbaImage,
+    metadata: &SoundingMetadata,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) {
+    fill_rect(image, x, y, w, h, PANEL_BG);
+    draw_rect_border(image, x, y, w, h, LINE, 1);
+    draw_text_line(image, "SOURCE", x + 10, y + 10, LABEL, SECTION_SCALE);
+    draw_right_text_line(
         image,
-        x + 14,
-        y + 400,
-        472,
-        "MOISTURE / COMPOSITES",
-        &[
-            ("PWAT".to_string(), fmt_unit(data.pw, "in", 2), TEXT),
-            (
-                "Mean MixR".to_string(),
-                fmt_unit(data.mean_mixr, "g/kg", 1),
-                GOOD,
-            ),
-            (
-                "STP cin".to_string(),
-                fmt_1f(data.stp_cin),
-                stp_color(data.stp_cin),
-            ),
-            (
-                "Supercell".to_string(),
-                fmt_1f(data.scp),
-                scp_color(data.scp),
-            ),
-        ],
+        "MODEL PROFILE",
+        x + w - 10,
+        y + 12,
+        TEXT,
+        LABEL_SCALE,
     );
+    hline(image, x + 8, x + w - 8, y + 54, LINE_DIM);
+
+    let mut yy = y + 60;
+    let method = metadata
+        .sample_method
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("point");
+    draw_text_line(
+        image,
+        &format!("method  {}", method.replace('_', "-")),
+        x + 10,
+        yy,
+        TEXT,
+        SAMPLE_BODY_SCALE,
+    );
+    yy += 31;
+
+    let lat_radius = finite_positive(metadata.box_radius_lat_deg);
+    let lon_radius = finite_positive(metadata.box_radius_lon_deg);
+    let box_text = match (lat_radius, lon_radius) {
+        (Some(lat), Some(lon)) => format!("box     {:.2} x {:.2} deg", lat * 2.0, lon * 2.0),
+        _ => "box     --".to_string(),
+    };
+    draw_text_line(image, &box_text, x + 10, yy, TEXT, SAMPLE_BODY_SCALE);
+    yy += 31;
+
+    let coord_text = match (metadata.latitude_deg, metadata.longitude_deg) {
+        (Some(lat), Some(lon)) if lat.is_finite() && lon.is_finite() => {
+            format!("center  {lat:.3}, {lon:.3}")
+        }
+        _ => "center  --".to_string(),
+    };
+    if yy <= y + h - 18 {
+        draw_text_line(image, &coord_text, x + 10, yy, MUTED, SAMPLE_BODY_SCALE);
+    }
 }
 
 fn draw_summary_column(
@@ -334,14 +412,14 @@ fn draw_summary_column(
     title: &str,
     rows: &[(String, String, Color)],
 ) {
-    draw_text_line(image, title, x, y, LABEL, 2);
-    hline(image, x, x + w, y + 27, LINE_DIM);
+    draw_text_line(image, title, x, y, LABEL, LABEL_SCALE);
+    hline(image, x, x + w, y + 34, LINE_DIM);
 
-    let mut yy = y + 40;
+    let mut yy = y + 48;
     for (label, value, color) in rows {
-        draw_text_line(image, label, x, yy, LABEL, 2);
-        draw_right_text_line(image, value, x + w, yy - 1, *color, 2);
-        yy += 28;
+        draw_text_line(image, label, x, yy, LABEL, BODY_SCALE);
+        draw_right_text_line(image, value, x + w, yy - 1, *color, BODY_SCALE);
+        yy += 36;
     }
 }
 
@@ -569,7 +647,14 @@ fn draw_locator_marker(
     hline(image, px + 5, px + 18, py, TEXT);
     vline(image, px, py - 18, py - 5, TEXT);
     vline(image, px, py + 5, py + 18, TEXT);
-    draw_text_line(image, "POI", (px + 16).min(x + w - 44), py - 14, TEXT, 2);
+    draw_text_line(
+        image,
+        "POI",
+        (px + 16).min(x + w - 58),
+        py - 18,
+        TEXT,
+        LABEL_SCALE,
+    );
 }
 
 fn project_lon_lat(
@@ -704,17 +789,17 @@ fn draw_table(image: &mut RgbaImage, data: &TableData) {
     vline(image, right - 1, TABLE_Y + 14, bottom - 14, LINE_DIM);
 
     draw_parcels(image, left, TABLE_Y + 20, data);
-    draw_storm_motions(image, left, TABLE_Y + 232, data);
-    draw_lapse_rates(image, left + 430, TABLE_Y + 232, data);
+    draw_storm_motions(image, left, TABLE_Y + 284, data);
+    draw_lapse_rates(image, left + 430, TABLE_Y + 284, data);
     draw_shear(image, mid + 24, TABLE_Y + 20, data);
     draw_indices(image, right + 24, TABLE_Y + 20, data);
-    draw_composites(image, right + 24, TABLE_Y + 360, data);
+    draw_composites(image, right + 24, TABLE_Y + 378, data);
 }
 
 fn draw_parcels(image: &mut RgbaImage, x: i32, y: i32, data: &TableData) {
     section_title(image, "PARCELS", x, y, 1060);
-    let header_y = y + 42;
-    let row_y = header_y + 48;
+    let header_y = y + 54;
+    let row_y = header_y + 58;
     let cols = [
         x + 42,
         x + 162,
@@ -728,7 +813,7 @@ fn draw_parcels(image: &mut RgbaImage, x: i32, y: i32, data: &TableData) {
         x + 928,
     ];
 
-    draw_text_line(image, "PCL", x, header_y, LABEL, 2);
+    draw_text_line(image, "PCL", x, header_y, LABEL, LABEL_SCALE);
     for (label, col) in [
         ("ECAPE", cols[1]),
         ("NCAPE", cols[2]),
@@ -740,7 +825,7 @@ fn draw_parcels(image: &mut RgbaImage, x: i32, y: i32, data: &TableData) {
         ("LFC", cols[8]),
         ("EL", cols[9]),
     ] {
-        draw_right_text_line(image, label, col, header_y, LABEL, 2);
+        draw_right_text_line(image, label, col, header_y, LABEL, LABEL_SCALE);
     }
     for (unit, col) in [
         ("J/kg", cols[1]),
@@ -753,13 +838,18 @@ fn draw_parcels(image: &mut RgbaImage, x: i32, y: i32, data: &TableData) {
         ("m", cols[8]),
         ("m", cols[9]),
     ] {
-        draw_right_text_line(image, unit, col, header_y + 18, MUTED, 1);
+        draw_right_text_line(image, unit, col, header_y + 26, MUTED, UNIT_SCALE);
     }
-    hline(image, x, x + 1030, header_y + 36, LINE_DIM);
+    hline(image, x, x + 1030, header_y + 46, LINE_DIM);
 
     for (i, parcel) in data.parcels.iter().enumerate() {
-        let yy = row_y + i as i32 * 38;
-        draw_text_line(image, &parcel.label, x, yy, TEXT, 3);
+        let yy = row_y + i as i32 * 48;
+        let label = if parcel.label == "Most-Unstable" {
+            "Most-Unstbl"
+        } else {
+            parcel.label.as_str()
+        };
+        draw_text_line(image, label, x, yy, TEXT, BODY_SCALE);
         draw_right_text_line(
             image,
             &fmt_int(parcel.ecape),
@@ -795,7 +885,7 @@ fn draw_parcels(image: &mut RgbaImage, x: i32, y: i32, data: &TableData) {
 
 fn draw_storm_motions(image: &mut RgbaImage, x: i32, y: i32, data: &TableData) {
     section_title(image, "STORM MOTIONS", x, y, 370);
-    let mut yy = y + 46;
+    let mut yy = y + 56;
     for motion in &data.storm_motions {
         draw_text_line(image, &motion.label, x, yy, LABEL, 3);
         draw_right_text_line(
@@ -806,7 +896,7 @@ fn draw_storm_motions(image: &mut RgbaImage, x: i32, y: i32, data: &TableData) {
             TEXT,
             3,
         );
-        yy += 40;
+        yy += 46;
     }
     yy += 8;
     draw_text_line(image, "1km wind", x, yy, LABEL, 3);
@@ -818,7 +908,7 @@ fn draw_storm_motions(image: &mut RgbaImage, x: i32, y: i32, data: &TableData) {
         GOOD,
         3,
     );
-    yy += 40;
+    yy += 46;
     draw_text_line(image, "6km wind", x, yy, LABEL, 3);
     draw_right_text_line(
         image,
@@ -832,7 +922,7 @@ fn draw_storm_motions(image: &mut RgbaImage, x: i32, y: i32, data: &TableData) {
 
 fn draw_lapse_rates(image: &mut RgbaImage, x: i32, y: i32, data: &TableData) {
     section_title(image, "LAPSE RATES", x, y, 600);
-    let mut yy = y + 46;
+    let mut yy = y + 56;
     for row in &data.lapse_rates {
         draw_text_line(image, &row.label, x, yy, LABEL, 3);
         draw_right_text_line(
@@ -843,17 +933,17 @@ fn draw_lapse_rates(image: &mut RgbaImage, x: i32, y: i32, data: &TableData) {
             lapse_color(row.value),
             3,
         );
-        yy += 40;
+        yy += 46;
     }
 }
 
 fn draw_shear(image: &mut RgbaImage, x: i32, y: i32, data: &TableData) {
     section_title(image, "SHEAR / HELICITY", x, y, 560);
-    let header_y = y + 42;
-    let row_y = header_y + 48;
+    let header_y = y + 54;
+    let row_y = header_y + 58;
     let cols = [x, x + 190, x + 270, x + 350, x + 430, x + 540];
 
-    draw_text_line(image, "Layer", cols[0], header_y, LABEL, 2);
+    draw_text_line(image, "Layer", cols[0], header_y, LABEL, LABEL_SCALE);
     for (label, col) in [
         ("EHI", cols[1]),
         ("SRH", cols[2]),
@@ -861,7 +951,7 @@ fn draw_shear(image: &mut RgbaImage, x: i32, y: i32, data: &TableData) {
         ("Mean", cols[4]),
         ("SRWind", cols[5]),
     ] {
-        draw_right_text_line(image, label, col, header_y, LABEL, 2);
+        draw_right_text_line(image, label, col, header_y, LABEL, LABEL_SCALE);
     }
     for (unit, col) in [
         ("", cols[1]),
@@ -870,12 +960,12 @@ fn draw_shear(image: &mut RgbaImage, x: i32, y: i32, data: &TableData) {
         ("kt", cols[4]),
         ("deg/kt", cols[5]),
     ] {
-        draw_right_text_line(image, unit, col, header_y + 18, MUTED, 1);
+        draw_right_text_line(image, unit, col, header_y + 26, MUTED, UNIT_SCALE);
     }
-    hline(image, x, x + 560, header_y + 36, LINE_DIM);
+    hline(image, x, x + 560, header_y + 46, LINE_DIM);
 
     for (i, row) in data.shear_layers.iter().enumerate() {
-        let yy = row_y + i as i32 * 38;
+        let yy = row_y + i as i32 * 48;
         draw_text_line(image, &row.label, cols[0], yy, TEXT, 3);
         draw_right_text_line(image, &fmt_1f(row.ehi), cols[1], yy - 2, TEXT, 3);
         draw_right_text_line(
@@ -927,10 +1017,10 @@ fn draw_indices(image: &mut RgbaImage, x: i32, y: i32, data: &TableData) {
         ("K Index", fmt_1f(data.k_index), TEXT),
         ("TotTots", fmt_1f(data.t_totals), TEXT),
         ("TEI", fmt_1f(data.tei), TEXT),
-        ("TEHI", fmt_1f(data.tehi), MUTED),
-        ("TTS", fmt_1f(data.tts), MUTED),
+        ("TEHI", fmt_1f(data.tehi), stp_color(data.tehi)),
+        ("TTS", fmt_1f(data.tts), stp_color(data.tts)),
     ];
-    draw_key_columns(image, x, y + 42, &left, &right);
+    draw_key_columns(image, x, y + 54, &left, &right);
 }
 
 fn draw_composites(image: &mut RgbaImage, x: i32, y: i32, data: &TableData) {
@@ -948,6 +1038,7 @@ fn draw_composites(image: &mut RgbaImage, x: i32, y: i32, data: &TableData) {
         ("WNDG", fmt_1f(data.wndg), TEXT),
     ];
     let right = [
+        ("VTP mod", fmt_1f(data.vtp_mod), stp_color(data.vtp_mod)),
         ("DCAPE", fmt_unit(data.dcape, "J/kg", 0), TEXT),
         ("DownT", fmt_unit(data.down_t, "C", 1), TEXT),
         ("MMP", fmt_2f(data.mmp), TEXT),
@@ -955,7 +1046,7 @@ fn draw_composites(image: &mut RgbaImage, x: i32, y: i32, data: &TableData) {
         ("SigSvr", fmt_int(data.sig_svr), MUTED),
         ("LHP", fmt_1f(data.lhp), MUTED),
     ];
-    draw_key_columns(image, x, y + 42, &left, &right);
+    draw_key_columns(image, x, y + 54, &left, &right);
 }
 
 fn draw_key_columns(
@@ -980,8 +1071,8 @@ fn draw_key_columns(
 }
 
 fn section_title(image: &mut RgbaImage, title: &str, x: i32, y: i32, width: i32) {
-    draw_text_line(image, title, x, y, LABEL, 3);
-    hline(image, x, x + width, y + 34, LINE);
+    draw_text_line(image, title, x, y, LABEL, SECTION_SCALE);
+    hline(image, x, x + width, y + 44, LINE);
 }
 
 fn build_table_data(
@@ -1067,7 +1158,7 @@ fn build_table_data(
             shear_row(profile, p, "1km-3km", p1km, p3km, 1000.0, 3000.0),
             shear_row(profile, p, "3km-6km", p3km, p6km, 3000.0, 6000.0),
             shear_row(profile, p, "Sfc-6km", p_sfc, p6km, 0.0, 6000.0),
-            shear_row(profile, p, "C 0-2km", p_sfc, p2km, 0.0, 2000.0),
+            shear_row(profile, p, "Sfc-2km", p_sfc, p2km, 0.0, 2000.0),
         ],
         lapse_rates: vec![
             LapseRateRow {
@@ -1133,8 +1224,9 @@ fn build_table_data(
         k_index: p.k_index.unwrap_or(f64::NAN),
         t_totals: p.t_totals.unwrap_or(f64::NAN),
         tei: p.tei.unwrap_or(f64::NAN),
-        tehi: f64::NAN,
-        tts: f64::NAN,
+        tehi: p.tehi.unwrap_or(f64::NAN),
+        tts: p.tts.unwrap_or(f64::NAN),
+        vtp_mod: p.vtp_mod.unwrap_or(f64::NAN),
         stp_cin: p.stp_cin.unwrap_or(f64::NAN),
         stp_fixed: p.stp_fixed.unwrap_or(f64::NAN),
         scp: p.scp.unwrap_or(f64::NAN),
@@ -1662,6 +1754,7 @@ struct TableData {
     tei: f64,
     tehi: f64,
     tts: f64,
+    vtp_mod: f64,
     stp_cin: f64,
     stp_fixed: f64,
     scp: f64,

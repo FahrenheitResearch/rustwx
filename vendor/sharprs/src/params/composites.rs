@@ -35,16 +35,6 @@ fn qc(v: f64) -> bool {
     v.is_finite() && (v - crate::constants::MISSING).abs() > 1.0
 }
 
-/// Wraps a raw f64 into `Some` only if it passes QC.
-#[inline]
-fn qc_opt(v: f64) -> Option<f64> {
-    if qc(v) {
-        Some(v)
-    } else {
-        None
-    }
-}
-
 // =========================================================================
 // Significant Tornado Parameter — fixed layer  (Thompson et al. 2003)
 // =========================================================================
@@ -173,6 +163,183 @@ pub fn stp_cin(mlcape: f64, esrh: f64, ebwd: f64, mllcl: f64, mlcinh: f64) -> Op
 
     let val = cape_term * eshr_term * ebwd_term * lcl_term * cinh_term;
     Some(val.max(0.0))
+}
+
+// =========================================================================
+// SPC beta tornado composites
+// =========================================================================
+
+fn fixed_layer_tornado_shear_term(shear6: f64) -> f64 {
+    if shear6 < 12.5 {
+        0.0
+    } else if shear6 > 30.0 {
+        1.5
+    } else {
+        shear6 / 20.0
+    }
+}
+
+fn tornadic_low_level_limit_exceeded(mllcl: f64, mlcin: f64, sbcin: f64) -> bool {
+    mllcl > 1700.0 || mlcin < -100.0 || sbcin < -200.0
+}
+
+/// Tornadic 0-1 km Energy-Helicity Index.
+///
+/// Mirrors the SPC beta `tehi` product:
+///
+/// ```text
+/// TEHI = ((SRH1 * MLCAPE) / 160000) * ML3CAPE_term * 6BWD_term
+/// ```
+///
+/// The low-level tornado gates zero the output when MLLCL is too high or
+/// CIN is too strong.
+pub fn tehi(
+    srh01: f64,
+    mlcape: f64,
+    mlcape_03: f64,
+    shear06: f64,
+    mllcl: f64,
+    mlcin: f64,
+    sbcin: f64,
+) -> Option<f64> {
+    if !qc(srh01)
+        || !qc(mlcape)
+        || !qc(mlcape_03)
+        || !qc(shear06)
+        || !qc(mllcl)
+        || !qc(mlcin)
+        || !qc(sbcin)
+    {
+        return None;
+    }
+
+    let mut mlcape_03_term = if mlcape_03 > 300.0 {
+        1.5
+    } else {
+        mlcape_03 / 200.0
+    };
+    if mlcape > 1500.0 {
+        mlcape_03_term = mlcape_03_term.max(1.0);
+    }
+
+    let value =
+        ((srh01 * mlcape) / 160000.0) * mlcape_03_term * fixed_layer_tornado_shear_term(shear06);
+
+    if tornadic_low_level_limit_exceeded(mllcl, mlcin, sbcin) || value < 0.0 {
+        Some(0.0)
+    } else {
+        Some(value)
+    }
+}
+
+/// Tornadic Tilting and Stretching.
+///
+/// Mirrors the SPC beta `tts` product, not the Total Totals index:
+///
+/// ```text
+/// TTS = ((SRH1 * min(ML3CAPE, 150)) / 6500) * MLCAPE_term * 6BWD_term
+/// ```
+pub fn tts(
+    srh01: f64,
+    mlcape_03: f64,
+    mlcape: f64,
+    shear06: f64,
+    mllcl: f64,
+    mlcin: f64,
+    sbcin: f64,
+) -> Option<f64> {
+    if !qc(srh01)
+        || !qc(mlcape_03)
+        || !qc(mlcape)
+        || !qc(shear06)
+        || !qc(mllcl)
+        || !qc(mlcin)
+        || !qc(sbcin)
+    {
+        return None;
+    }
+
+    let mlcape_03_capped = mlcape_03.min(150.0);
+    let mlcape_term = if mlcape < 2000.0 {
+        1.0
+    } else if mlcape > 3000.0 {
+        1.5
+    } else {
+        mlcape / 2000.0
+    };
+
+    let value = ((srh01 * mlcape_03_capped) / 6500.0)
+        * mlcape_term
+        * fixed_layer_tornado_shear_term(shear06);
+
+    if tornadic_low_level_limit_exceeded(mllcl, mlcin, sbcin) || value < 0.0 {
+        Some(0.0)
+    } else {
+        Some(value)
+    }
+}
+
+/// Modified Violent Tornado Parameter.
+///
+/// Inputs are MLCAPE, effective SRH, effective bulk wind difference, MLLCL,
+/// MLCIN, 0-3 km MLCAPE, and the 700-500 hPa lapse rate.
+pub fn vtp_mod(
+    mlcape: f64,
+    esrh: f64,
+    ebwd: f64,
+    mllcl: f64,
+    mlcin: f64,
+    mlcape_03: f64,
+    lr700_500: f64,
+) -> Option<f64> {
+    if !qc(mlcape)
+        || !qc(esrh)
+        || !qc(ebwd)
+        || !qc(mllcl)
+        || !qc(mlcin)
+        || !qc(mlcape_03)
+        || !qc(lr700_500)
+    {
+        return None;
+    }
+
+    let ebwd_term = if ebwd <= 20.0 {
+        0.0
+    } else if ebwd >= 45.0 {
+        1.5
+    } else {
+        ebwd / 30.0
+    };
+    let mllcl_term = if mllcl >= 1750.0 {
+        0.0
+    } else if mllcl <= 750.0 {
+        1.0
+    } else {
+        (1750.0 - mllcl) / 750.0
+    };
+    let mlcin_term = if mlcin <= -200.0 {
+        0.0
+    } else if mlcin >= -50.0 {
+        1.0
+    } else {
+        (mlcin + 200.0) / 150.0
+    };
+    let mlcape_03_term = if mlcape_03 >= 100.0 {
+        2.0
+    } else {
+        mlcape_03 / 50.0
+    };
+    let lr_term = if lr700_500 <= 4.5 {
+        0.0
+    } else if lr700_500 >= 8.5 {
+        2.0
+    } else {
+        (lr700_500 - 4.5) / 2.0
+    };
+
+    let p1 = (mlcape / 1700.0) * (esrh / 250.0) * ebwd_term * mllcl_term;
+    let p2 = mlcin_term * mlcape_03_term * lr_term;
+    Some(p1 * p2)
 }
 
 // =========================================================================
@@ -861,6 +1028,13 @@ mod tests {
 
     const EPS: f64 = 1e-6;
 
+    fn assert_close(actual: f64, expected: f64, eps: f64, name: &str) {
+        assert!(
+            (actual - expected).abs() < eps,
+            "{name}: expected {expected}, got {actual}"
+        );
+    }
+
     // ---- STP fixed ----
 
     #[test]
@@ -980,6 +1154,104 @@ mod tests {
         let result = scp(1000.0, 50.0, 25.0).unwrap();
         let expected = 1.0 * 1.0 * 1.0;
         assert!((result - expected).abs() < EPS);
+    }
+
+    // ---- SPC beta tornado composites ----
+
+    #[test]
+    fn tehi_matches_spc_beta_formula() {
+        let result = tehi(200.0, 1000.0, 100.0, 20.0, 1000.0, -50.0, -50.0).unwrap();
+        assert_close(result, 0.625, 1e-12, "tehi formula");
+    }
+
+    #[test]
+    fn tehi_uses_mlcape3_floor_when_total_mlcape_is_large() {
+        let result = tehi(160.0, 1600.0, 50.0, 20.0, 1000.0, -50.0, -50.0).unwrap();
+        assert_close(result, 1.6, 1e-12, "tehi mlcape3 floor");
+    }
+
+    #[test]
+    fn tehi_applies_limiters_and_shear_gate() {
+        let cases = [
+            tehi(200.0, 1000.0, 100.0, 10.0, 1000.0, -50.0, -50.0).unwrap(),
+            tehi(200.0, 1000.0, 100.0, 20.0, 1800.0, -50.0, -50.0).unwrap(),
+            tehi(200.0, 1000.0, 100.0, 20.0, 1000.0, -150.0, -50.0).unwrap(),
+            tehi(200.0, 1000.0, 100.0, 20.0, 1000.0, -50.0, -250.0).unwrap(),
+        ];
+        for value in cases {
+            assert_close(value, 0.0, 1e-12, "tehi limiter");
+        }
+    }
+
+    #[test]
+    fn tts_matches_spc_beta_formula() {
+        let result = tts(100.0, 100.0, 2500.0, 20.0, 1000.0, -50.0, -50.0).unwrap();
+        assert_close(result, 1.9230769230769231, 1e-12, "tts formula");
+    }
+
+    #[test]
+    fn tts_uses_mlcape_floor_and_caps_mlcape3_and_shear() {
+        let result = tts(100.0, 200.0, 1500.0, 35.0, 1000.0, -50.0, -50.0).unwrap();
+        assert_close(result, 3.4615384615384617, 1e-12, "tts caps");
+    }
+
+    #[test]
+    fn tts_applies_limiters_and_negative_floor() {
+        let cases = [
+            tts(-100.0, 100.0, 2500.0, 20.0, 1000.0, -50.0, -50.0).unwrap(),
+            tts(100.0, 100.0, 2500.0, 20.0, 1800.0, -50.0, -50.0).unwrap(),
+            tts(100.0, 100.0, 2500.0, 20.0, 1000.0, -150.0, -50.0).unwrap(),
+            tts(100.0, 100.0, 2500.0, 20.0, 1000.0, -50.0, -250.0).unwrap(),
+        ];
+        for value in cases {
+            assert_close(value, 0.0, 1e-12, "tts limiter");
+        }
+    }
+
+    #[test]
+    fn vtp_mod_matches_in_range_formula() {
+        let result = vtp_mod(1700.0, 250.0, 30.0, 1000.0, -100.0, 50.0, 6.5).unwrap();
+        assert_close(result, 2.0 / 3.0, 1e-12, "vtp_mod formula");
+    }
+
+    #[test]
+    fn vtp_mod_applies_component_cutoffs_and_caps() {
+        assert_close(
+            vtp_mod(1700.0, 250.0, 20.0, 1000.0, -50.0, 50.0, 6.5).unwrap(),
+            0.0,
+            1e-12,
+            "vtp ebwd cutoff",
+        );
+        assert_close(
+            vtp_mod(1700.0, 250.0, 45.0, 1000.0, -50.0, 50.0, 6.5).unwrap(),
+            1.5,
+            1e-12,
+            "vtp ebwd cap",
+        );
+        assert_close(
+            vtp_mod(1700.0, 250.0, 30.0, 1750.0, -50.0, 50.0, 6.5).unwrap(),
+            0.0,
+            1e-12,
+            "vtp lcl cutoff",
+        );
+        assert_close(
+            vtp_mod(1700.0, 250.0, 30.0, 1000.0, -200.0, 50.0, 6.5).unwrap(),
+            0.0,
+            1e-12,
+            "vtp cin cutoff",
+        );
+        assert_close(
+            vtp_mod(1700.0, 250.0, 30.0, 1000.0, -50.0, 100.0, 6.5).unwrap(),
+            2.0,
+            1e-12,
+            "vtp ml3cape cap",
+        );
+        assert_close(
+            vtp_mod(1700.0, 250.0, 30.0, 1000.0, -50.0, 50.0, 8.5).unwrap(),
+            2.0,
+            1e-12,
+            "vtp lapse cap",
+        );
     }
 
     // ---- SHIP ----
