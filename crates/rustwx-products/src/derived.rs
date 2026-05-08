@@ -7,9 +7,9 @@ use rayon::prelude::*;
 use rustwx_calc::{
     CalcError, EcapeVolumeInputs, FixedStpInputs, GridShape as CalcGridShape, SurfaceInputs,
     TemperatureAdvectionInputs, VolumeShape, WindGridInputs, compute_2m_apparent_temperature,
-    compute_ehi_01km, compute_ehi_03km, compute_lapse_rate_0_3km, compute_lapse_rate_700_500,
-    compute_lifted_index, compute_mlcape_cin, compute_mucape_cin, compute_sbcape_cin,
-    compute_shear_01km, compute_shear_06km, compute_srh_01km_hemispheric,
+    compute_dcape, compute_ehi_01km, compute_ehi_03km, compute_lapse_rate_0_3km,
+    compute_lapse_rate_700_500, compute_lifted_index, compute_mlcape_cin, compute_mucape_cin,
+    compute_sbcape_cin, compute_shear_01km, compute_shear_06km, compute_srh_01km_hemispheric,
     compute_srh_03km_hemispheric, compute_stp_fixed, compute_surface_thermo,
 };
 use rustwx_core::{
@@ -264,6 +264,12 @@ const SUPPORTED_DERIVED_RECIPE_INVENTORY: &[DerivedRecipeInventoryEntry] = &[
     DerivedRecipeInventoryEntry {
         slug: "mucin",
         title: "MUCIN",
+        experimental: false,
+        heavy: false,
+    },
+    DerivedRecipeInventoryEntry {
+        slug: "dcape",
+        title: "DCAPE",
         experimental: false,
         heavy: false,
     },
@@ -837,6 +843,7 @@ pub(crate) enum DerivedRecipe {
     Mlcin,
     Mucape,
     Mucin,
+    Dcape,
     Sbecape,
     Mlecape,
     Muecape,
@@ -887,6 +894,7 @@ impl DerivedRecipe {
             "mlcin" => Ok(Self::Mlcin),
             "mucape" => Ok(Self::Mucape),
             "mucin" => Ok(Self::Mucin),
+            "dcape" | "downdraft_cape" => Ok(Self::Dcape),
             "sbecape" => Ok(Self::Sbecape),
             "mlecape" => Ok(Self::Mlecape),
             "muecape" => Ok(Self::Muecape),
@@ -965,6 +973,7 @@ impl DerivedRecipe {
             Self::Mlcin => "mlcin",
             Self::Mucape => "mucape",
             Self::Mucin => "mucin",
+            Self::Dcape => "dcape",
             Self::Sbecape => "sbecape",
             Self::Mlecape => "mlecape",
             Self::Muecape => "muecape",
@@ -1014,6 +1023,7 @@ impl DerivedRecipe {
             Self::Mlcin => "MLCIN",
             Self::Mucape => "MUCAPE",
             Self::Mucin => "MUCIN",
+            Self::Dcape => "DCAPE",
             Self::Sbecape => "SBECAPE",
             Self::Mlecape => "MLECAPE",
             Self::Muecape => "MUECAPE",
@@ -1101,6 +1111,7 @@ struct DerivedComputedFields {
     mlcin_jkg: Option<Vec<f64>>,
     mucape_jkg: Option<Vec<f64>>,
     mucin_jkg: Option<Vec<f64>>,
+    dcape_jkg: Option<Vec<f64>>,
     theta_e_2m_k: Option<Vec<f64>>,
     vpd_2m_hpa: Option<Vec<f64>>,
     dewpoint_depression_2m_c: Option<Vec<f64>>,
@@ -1133,6 +1144,7 @@ struct DerivedRequirements {
     mu: bool,
     surface_thermo: bool,
     surface_winds: bool,
+    dcape: bool,
     lifted_index: bool,
     lapse_rate_700_500: bool,
     lapse_rate_0_3km: bool,
@@ -1161,6 +1173,9 @@ impl DerivedRequirements {
                 }
                 DerivedRecipe::Mucape | DerivedRecipe::Mucin => {
                     requirements.mu = true;
+                }
+                DerivedRecipe::Dcape => {
+                    requirements.dcape = true;
                 }
                 DerivedRecipe::ThetaE2m10mWinds => {
                     requirements.surface_thermo = true;
@@ -1249,6 +1264,7 @@ impl DerivedRequirements {
         self.sb
             || self.ml
             || self.mu
+            || self.dcape
             || self.lifted_index
             || self.lapse_rate_700_500
             || self.lapse_rate_0_3km
@@ -3495,6 +3511,9 @@ where
         computed.mucape_jkg = Some(mu.cape_jkg.clone());
         computed.mucin_jkg = Some(mu.cin_jkg.clone());
     }
+    if requirements.dcape {
+        computed.dcape_jkg = Some(compute_dcape(grid, make_volume()?, surface_inputs)?);
+    }
 
     if requirements.surface_thermo {
         let surface_thermo = compute_surface_thermo(grid, surface_inputs)?;
@@ -3930,6 +3949,10 @@ fn derived_query_field_from_computed(
             take_values(&computed.mucin_jkg, recipe, "mucin_jkg")?,
             "J/kg",
         ),
+        DerivedRecipe::Dcape => (
+            take_values(&computed.dcape_jkg, recipe, "dcape_jkg")?,
+            "J/kg",
+        ),
         DerivedRecipe::ThetaE2m10mWinds => (
             take_values(&computed.theta_e_2m_k, recipe, "theta_e_2m_k")?,
             "K",
@@ -4170,6 +4193,16 @@ fn build_render_artifact_with_contour_mode(
             "J/kg",
             required_values(&computed.mucin_jkg, recipe, "mucin_jkg")?.clone(),
             WeatherProduct::Mucin,
+        )?,
+        DerivedRecipe::Dcape => custom_scale_request(
+            recipe,
+            grid,
+            "J/kg",
+            required_values(&computed.dcape_jkg, recipe, "dcape_jkg")?.clone(),
+            range_step(0.0, 2501.0, 100.0),
+            dcape_scale_colors(),
+            ExtendMode::Max,
+            Some(250.0),
         )?,
         DerivedRecipe::ThetaE2m10mWinds => palette_request(
             recipe,
@@ -4526,6 +4559,16 @@ fn build_render_artifact_with_contour_mode_profiled(
             required_values(&computed.mucin_jkg, recipe, "mucin_jkg")?.clone(),
             WeatherProduct::Mucin,
         )?,
+        DerivedRecipe::Dcape => custom_scale_request(
+            recipe,
+            grid,
+            "J/kg",
+            required_values(&computed.dcape_jkg, recipe, "dcape_jkg")?.clone(),
+            range_step(0.0, 2501.0, 100.0),
+            dcape_scale_colors(),
+            ExtendMode::Max,
+            Some(250.0),
+        )?,
         DerivedRecipe::ThetaE2m10mWinds => palette_request(
             recipe,
             grid,
@@ -4845,6 +4888,7 @@ struct NativeContourProductConfig {
 
 const STP_NATIVE_LINE_LEVELS: &[f64] = &[1.0, 3.0, 5.0];
 const CAPE_NATIVE_LINE_LEVELS: &[f64] = &[500.0, 1000.0, 2000.0, 3000.0, 4000.0];
+const DCAPE_NATIVE_LINE_LEVELS: &[f64] = &[500.0, 1000.0, 1500.0, 2000.0];
 const SRH_NATIVE_LINE_LEVELS: &[f64] = &[150.0, 250.0, 350.0, 450.0];
 const EHI_NATIVE_LINE_LEVELS: &[f64] = &[1.0, 2.0, 3.0, 5.0];
 
@@ -4877,6 +4921,20 @@ fn native_contour_product_config(recipe: DerivedRecipe) -> Option<NativeContourP
                 width: 2,
             },
             tick_step: Some(500.0),
+        }),
+        DerivedRecipe::Dcape => Some(NativeContourProductConfig {
+            scale: rustwx_render::ColorScale::Discrete(rustwx_render::DiscreteColorScale {
+                levels: range_step(0.0, 2501.0, 100.0),
+                colors: dcape_scale_colors(),
+                extend: ExtendMode::Max,
+                mask_below: None,
+            }),
+            line_levels: DCAPE_NATIVE_LINE_LEVELS,
+            line_style: ProjectedContourLineStyle {
+                color: Color::rgba(70, 40, 20, 215),
+                width: 2,
+            },
+            tick_step: Some(250.0),
         }),
         DerivedRecipe::Srh01km | DerivedRecipe::Srh03km => Some(NativeContourProductConfig {
             scale: rustwx_render::ColorScale::Discrete(rustwx_render::palette_scale(
@@ -5239,6 +5297,7 @@ fn crop_computed_fields(
         mlcin_jkg: crop_optional_values(&computed.mlcin_jkg, source_nx, crop),
         mucape_jkg: crop_optional_values(&computed.mucape_jkg, source_nx, crop),
         mucin_jkg: crop_optional_values(&computed.mucin_jkg, source_nx, crop),
+        dcape_jkg: crop_optional_values(&computed.dcape_jkg, source_nx, crop),
         theta_e_2m_k: crop_optional_values(&computed.theta_e_2m_k, source_nx, crop),
         vpd_2m_hpa: crop_optional_values(&computed.vpd_2m_hpa, source_nx, crop),
         dewpoint_depression_2m_c: crop_optional_values(
@@ -5547,6 +5606,27 @@ fn dewpoint_depression_scale_colors() -> Vec<Color> {
         Color::rgba(244, 109, 67, 255),
         Color::rgba(215, 48, 39, 255),
         Color::rgba(165, 0, 38, 255),
+    ]
+}
+
+fn dcape_scale_colors() -> Vec<Color> {
+    vec![
+        Color::rgba(245, 250, 255, 255),
+        Color::rgba(218, 237, 251, 255),
+        Color::rgba(185, 219, 241, 255),
+        Color::rgba(142, 195, 222, 255),
+        Color::rgba(102, 170, 200, 255),
+        Color::rgba(83, 157, 176, 255),
+        Color::rgba(95, 169, 139, 255),
+        Color::rgba(132, 188, 103, 255),
+        Color::rgba(184, 205, 82, 255),
+        Color::rgba(226, 211, 77, 255),
+        Color::rgba(245, 186, 70, 255),
+        Color::rgba(238, 145, 61, 255),
+        Color::rgba(220, 100, 57, 255),
+        Color::rgba(190, 63, 62, 255),
+        Color::rgba(150, 42, 72, 255),
+        Color::rgba(105, 31, 80, 255),
     ]
 }
 

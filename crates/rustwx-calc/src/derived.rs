@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use rustwx_core::GridShape;
 
 use crate::ecape::{EcapeVolumeInputs, SurfaceInputs, validate_inputs, validate_len};
@@ -234,6 +235,46 @@ pub fn compute_lifted_index(
     }
 
     Ok(out)
+}
+
+pub fn compute_dcape(
+    grid: GridShape,
+    volume: EcapeVolumeInputs<'_>,
+    surface: SurfaceInputs<'_>,
+) -> Result<Vec<f64>, CalcError> {
+    validate_inputs(grid, volume, surface)?;
+
+    let nxy = grid.len();
+    Ok((0..nxy)
+        .into_par_iter()
+        .map(|ij| {
+            let p_prof =
+                column_with_surface_hpa(volume.pressure_pa, surface.psfc_pa, nxy, volume.nz, ij);
+            let mut t_prof = Vec::with_capacity(volume.nz + 1);
+            let mut td_prof = Vec::with_capacity(volume.nz + 1);
+            t_prof.push(surface.t2_k[ij] - 273.15);
+            td_prof.push(dewpoint_from_mixing_ratio(
+                surface.psfc_pa[ij] / 100.0,
+                surface.q2_kgkg[ij],
+            ));
+            for k in 0..volume.nz {
+                let idx = k * nxy + ij;
+                let p_hpa = volume.pressure_pa[idx] / 100.0;
+                t_prof.push(volume.temperature_c[idx]);
+                td_prof.push(dewpoint_from_mixing_ratio(p_hpa, volume.qvapor_kgkg[idx]));
+            }
+
+            if p_prof.len() < 3
+                || p_prof.iter().any(|value| !value.is_finite())
+                || t_prof.iter().any(|value| !value.is_finite())
+                || td_prof.iter().any(|value| !value.is_finite())
+            {
+                return f64::NAN;
+            }
+
+            metrust::calc::thermo::downdraft_cape(&p_prof, &t_prof, &td_prof)
+        })
+        .collect())
 }
 
 pub fn compute_lapse_rate_700_500(
@@ -749,6 +790,32 @@ mod tests {
         let values = [20.0, 14.0, 8.0, -8.0];
         assert_eq!(interp_at_pressure(&pressures, &values, 700.0), Some(8.0));
         assert!(interp_at_pressure(&pressures, &values, 925.0).is_some());
+    }
+
+    #[test]
+    fn dcape_grid_wrapper_returns_non_negative_values() {
+        let grid = GridShape::new(1, 1).unwrap();
+        let volume = EcapeVolumeInputs {
+            pressure_pa: &[92500.0, 85000.0, 70000.0, 50000.0, 30000.0],
+            temperature_c: &[25.0, 20.0, 5.0, -15.0, -40.0],
+            qvapor_kgkg: &[0.008, 0.005, 0.003, 0.001, 0.0004],
+            height_agl_m: &[700.0, 1500.0, 3000.0, 5500.0, 9000.0],
+            u_ms: &[5.0, 10.0, 15.0, 20.0, 25.0],
+            v_ms: &[0.0, 3.0, 8.0, 12.0, 15.0],
+            nz: 5,
+        };
+        let surface = SurfaceInputs {
+            psfc_pa: &[100000.0],
+            t2_k: &[303.15],
+            q2_kgkg: &[0.014],
+            u10_ms: &[5.0],
+            v10_ms: &[0.0],
+        };
+
+        let dcape = compute_dcape(grid, volume, surface).unwrap();
+        assert_eq!(dcape.len(), 1);
+        assert!(dcape[0].is_finite());
+        assert!(dcape[0] >= 0.0);
     }
 
     #[test]
