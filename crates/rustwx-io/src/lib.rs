@@ -1500,6 +1500,15 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
                 units: "gpm",
             }),
             FieldSelector {
+                field: CanonicalField::GeopotentialHeight,
+                vertical: VerticalSelector::Surface,
+                ..
+            } => Ok(Self {
+                parameters: PARAMETER_HGT,
+                level: LevelMatch::Surface,
+                units: "gpm",
+            }),
+            FieldSelector {
                 field: CanonicalField::Temperature,
                 vertical: VerticalSelector::IsobaricHpa(level_hpa),
                 ..
@@ -2429,6 +2438,13 @@ mod tests {
         .unwrap();
         let lsm_message = ieee_f32_message(PARAMETER_LANDSEA_MASK[0], 1, 0.0, &[1.0], -99.0, -99.0);
         assert!(lsm_surface.matches(&lsm_message));
+
+        let terrain_surface = StructuredMessageSelector::try_from(FieldSelector::surface(
+            CanonicalField::GeopotentialHeight,
+        ))
+        .unwrap();
+        let terrain_message = ieee_f32_message(PARAMETER_HGT[0], 1, 0.0, &[326.0], -99.0, -99.0);
+        assert!(terrain_surface.matches(&terrain_message));
 
         let temp_2m = StructuredMessageSelector::try_from(FieldSelector::height_agl(
             CanonicalField::Temperature,

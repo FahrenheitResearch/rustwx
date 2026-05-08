@@ -14,7 +14,9 @@ pub use batch::{
     GoesSatelliteArtifact, GoesSatelliteBatchReport, GoesSatelliteBatchRequest,
     GoesSatelliteProduct, run_goes_satellite_batch,
 };
-pub use geostationary::{SweepAngleAxis, scan_angles_to_lat_lon};
+pub use geostationary::{
+    SweepAngleAxis, lat_lon_to_scan_angles, lat_lon_to_scan_angles_fast, scan_angles_to_lat_lon,
+};
 pub use goes::{GoesAbiFilename, GoesSatellite, parse_goes_abi_filename};
 pub use netcdf::{ScaledVariable, open_goes_netcdf_lossy, read_scaled_f32};
 pub use render::{
