@@ -73,6 +73,24 @@ impl From<CompareArg> for CompareOp {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+enum PngCompressionArg {
+    Default,
+    Fast,
+    Fastest,
+}
+
+impl From<PngCompressionArg> for rustwx_render::PngCompressionMode {
+    fn from(value: PngCompressionArg) -> Self {
+        match value {
+            PngCompressionArg::Default => Self::Default,
+            PngCompressionArg::Fast => Self::Fast,
+            PngCompressionArg::Fastest => Self::Fastest,
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "grib-ensemble-reduce",
@@ -115,6 +133,8 @@ struct Args {
     no_cache: bool,
     #[arg(long = "place-label-density", default_value_t = 1, value_parser = clap::value_parser!(u8).range(0..=3))]
     place_label_density: u8,
+    #[arg(long = "png-compression", value_enum, default_value_t = PngCompressionArg::Fast)]
+    png_compression: PngCompressionArg,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -152,7 +172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         use_cache: !args.no_cache,
         output_width: 1200,
         output_height: 900,
-        png_compression: rustwx_render::PngCompressionMode::Default,
+        png_compression: args.png_compression.into(),
         place_label_overlay: default_place_label_overlay_for_domain(
             &domain,
             PlaceLabelDensityTier::from_numeric(args.place_label_density),

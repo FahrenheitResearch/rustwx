@@ -47,6 +47,24 @@ impl From<PlaceLabelDensityArg> for PlaceLabelDensityTier {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+enum PngCompressionArg {
+    Default,
+    Fast,
+    Fastest,
+}
+
+impl From<PngCompressionArg> for rustwx_render::PngCompressionMode {
+    fn from(value: PngCompressionArg) -> Self {
+        match value {
+            PngCompressionArg::Default => Self::Default,
+            PngCompressionArg::Fast => Self::Fast,
+            PngCompressionArg::Fastest => Self::Fastest,
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "hrrr-direct-batch",
@@ -82,6 +100,8 @@ struct Args {
         help = "Place-label density: none, major, major-and-aux, or dense. Numeric aliases 0-3 also work."
     )]
     place_label_density: PlaceLabelDensityArg,
+    #[arg(long = "png-compression", value_enum, default_value_t = PngCompressionArg::Fast)]
+    png_compression: PngCompressionArg,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -133,7 +153,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         native_fill_level_multiplier: args.native_fill_level_multiplier.max(1),
         output_width: 1200,
         output_height: 900,
-        png_compression: rustwx_render::PngCompressionMode::Default,
+        png_compression: args.png_compression.into(),
         custom_poi_overlay: None,
         place_label_overlay: default_place_label_overlay_for_domain(
             &domain,
