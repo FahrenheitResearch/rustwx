@@ -68,6 +68,16 @@ struct Args {
         help = "Allow full-disk high-resolution visible channels such as C02"
     )]
     allow_high_resolution_full_disk: bool,
+    #[arg(
+        long,
+        default_value_t = 1,
+        help = "Render the latest N complete ABI scans, useful for 1-minute mesoscale sequences"
+    )]
+    sequence_count: usize,
+    #[arg(long, help = "Write an animated GIF from the rendered sequence frames")]
+    sequence_gif: bool,
+    #[arg(long, default_value_t = 180)]
+    sequence_gif_delay_ms: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -113,6 +123,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         skip_scan_id: args.skip_scan_id,
         auto_bounds: args.auto_bounds,
         allow_high_resolution_full_disk: args.allow_high_resolution_full_disk,
+        sequence_count: args.sequence_count,
+        sequence_gif: args.sequence_gif,
+        sequence_gif_delay_ms: args.sequence_gif_delay_ms,
     };
     let report = run_goes_satellite_batch(&request)?;
     println!("{}", serde_json::to_string_pretty(&report)?);

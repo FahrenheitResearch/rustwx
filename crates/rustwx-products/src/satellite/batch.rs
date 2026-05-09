@@ -1,9 +1,16 @@
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
-use rustwx_render::{PngCompressionMode, PngWriteOptions, save_png_profile_with_options};
+use image::RgbaImage;
+use image::codecs::gif::{GifEncoder, Repeat};
+use image::{Delay, Frame, ImageReader};
+use rustwx_render::{
+    PngCompressionMode, PngWriteOptions, save_png_profile_with_options,
+    save_rgba_png_profile_with_options,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
+use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -11,7 +18,7 @@ use std::time::Instant;
 
 use crate::publication::atomic_write_json;
 
-use super::abi::read_goes_abi_scene;
+use super::abi::{read_goes_abi_field, read_goes_abi_scene};
 use super::goes::{GoesSatellite, parse_goes_abi_filename};
 use super::render::{GoesAbiBandMapRequest, build_goes_abi_band_render_request};
 use super::rgb::{
@@ -31,6 +38,7 @@ const DEFAULT_GLM_FETCH_COUNT: usize = 90;
 const DEFAULT_GLM_LOOKBACK_HOURS: u32 = 3;
 const DEFAULT_GLM_MAX_AGE_MIN: f64 = 30.0;
 const DEFAULT_AUTO_BOUNDS_SAMPLE_AXIS: usize = 96;
+const DEFAULT_SEQUENCE_GIF_DELAY_MS: u32 = 180;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoesSatelliteBatchRequest {
@@ -78,6 +86,12 @@ pub struct GoesSatelliteBatchRequest {
     pub auto_bounds: bool,
     #[serde(default)]
     pub allow_high_resolution_full_disk: bool,
+    #[serde(default = "default_sequence_count")]
+    pub sequence_count: usize,
+    #[serde(default)]
+    pub sequence_gif: bool,
+    #[serde(default = "default_sequence_gif_delay_ms")]
+    pub sequence_gif_delay_ms: u32,
 }
 
 impl GoesSatelliteBatchRequest {
@@ -106,6 +120,9 @@ impl GoesSatelliteBatchRequest {
             skip_scan_id: None,
             auto_bounds: false,
             allow_high_resolution_full_disk: false,
+            sequence_count: 1,
+            sequence_gif: false,
+            sequence_gif_delay_ms: DEFAULT_SEQUENCE_GIF_DELAY_MS,
         }
     }
 }
@@ -246,6 +263,8 @@ pub struct GoesSatelliteBatchReport {
     pub glm_source_keys: Vec<String>,
     pub channel_files: BTreeMap<u8, GoesSourceFile>,
     pub artifacts: Vec<GoesSatelliteArtifact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence_gif_path: Option<PathBuf>,
     pub report_path: Option<PathBuf>,
     pub timing: GoesSatelliteBatchTiming,
 }
@@ -351,7 +370,7 @@ pub fn run_goes_satellite_batch(
 
     let agent = build_agent();
     let discovery_start = Instant::now();
-    let scan = discover_latest_complete_scan(
+    let scans = discover_recent_complete_scans(
         &agent,
         &bucket,
         &abi_product,
@@ -359,11 +378,15 @@ pub fn run_goes_satellite_batch(
         request.scan_lookback_hours,
         request.discovery_retries,
         request.retry_sleep_ms,
+        request.sequence_count.max(1),
     )?;
     let discovery_ms = discovery_start.elapsed().as_millis();
-    let source_keys = scan
-        .channel_objects
-        .values()
+    let scan = scans
+        .last()
+        .ok_or_else(|| boxed_error("GOES ABI discovery returned no scans"))?;
+    let source_keys = scans
+        .iter()
+        .flat_map(|scan| scan.channel_objects.values())
         .map(|object| object.key.clone())
         .collect::<Vec<_>>();
 
@@ -380,7 +403,7 @@ pub fn run_goes_satellite_batch(
             source_bucket: bucket,
             abi_product,
             abi_sector,
-            scan_id: scan.scan_id,
+            scan_id: scan.scan_id.clone(),
             scan_time_utc: scan.start_time_utc,
             scan_end_time_utc: scan.end_time_utc,
             domain: request.domain_slug.clone(),
@@ -393,6 +416,7 @@ pub fn run_goes_satellite_batch(
             glm_source_keys: Vec::new(),
             channel_files: BTreeMap::new(),
             artifacts: Vec::new(),
+            sequence_gif_path: None,
             report_path: None,
             timing: GoesSatelliteBatchTiming {
                 discovery_ms,
@@ -403,14 +427,18 @@ pub fn run_goes_satellite_batch(
     }
 
     let abi_download_start = Instant::now();
-    let channel_downloads = download_abi_channels(
-        &agent,
-        &bucket,
-        &request.cache_dir,
-        &scan,
-        &required_channels,
-        request.use_cache,
-    )?;
+    let mut scan_downloads = Vec::with_capacity(scans.len());
+    for scan in &scans {
+        let channel_downloads = download_abi_channels(
+            &agent,
+            &bucket,
+            &request.cache_dir,
+            scan,
+            &required_channels,
+            request.use_cache,
+        )?;
+        scan_downloads.push((scan.clone(), channel_downloads));
+    }
     let abi_download_ms = abi_download_start.elapsed().as_millis();
 
     let include_glm = products.iter().any(GoesSatelliteProduct::uses_glm);
@@ -439,26 +467,51 @@ pub fn run_goes_satellite_batch(
         .join("satellite")
         .join(&satellite_slug)
         .join(sanitize_component(&request.domain_slug))
-        .join(scan.start_time_utc.format("%Y%m%dT%H%M%SZ").to_string());
+        .join(if scans.len() > 1 {
+            format!("sequence_{}", scan.start_time_utc.format("%Y%m%dT%H%M%SZ"))
+        } else {
+            scan.start_time_utc.format("%Y%m%dT%H%M%SZ").to_string()
+        });
     fs::create_dir_all(&run_dir)?;
 
     let render_start = Instant::now();
     let mut artifacts = Vec::new();
-    for product in &products {
-        let artifact = render_product(
-            product,
-            request,
-            &run_dir,
-            &channel_downloads,
-            glm_dir.as_ref(),
-            &satellite,
-            &scan,
-        )?;
-        artifacts.push(artifact);
+    for (scan, channel_downloads) in &scan_downloads {
+        let scan_run_dir = if scans.len() > 1 {
+            let dir = run_dir.join(scan.start_time_utc.format("%Y%m%dT%H%M%SZ").to_string());
+            fs::create_dir_all(&dir)?;
+            dir
+        } else {
+            run_dir.clone()
+        };
+        for product in &products {
+            let artifact = render_product(
+                product,
+                request,
+                &scan_run_dir,
+                channel_downloads,
+                glm_dir.as_ref(),
+                &satellite,
+                scan,
+            )?;
+            artifacts.push(artifact);
+        }
     }
+    let sequence_gif_path = if request.sequence_gif && scans.len() > 1 {
+        Some(write_sequence_gif(
+            &artifacts,
+            &run_dir.join("goes_satellite_sequence.gif"),
+            request.sequence_gif_delay_ms,
+        )?)
+    } else {
+        None
+    };
     let render_ms = render_start.elapsed().as_millis();
 
-    let channel_files = channel_downloads
+    let channel_files = scan_downloads
+        .last()
+        .map(|(_, downloads)| downloads)
+        .ok_or_else(|| boxed_error("GOES ABI downloads are empty"))?
         .iter()
         .map(|(&channel, download)| {
             (
@@ -484,7 +537,7 @@ pub fn run_goes_satellite_batch(
         source_bucket: bucket,
         abi_product,
         abi_sector: abi_sector.clone(),
-        scan_id: scan.scan_id,
+        scan_id: scan.scan_id.clone(),
         scan_time_utc: scan.start_time_utc,
         scan_end_time_utc: scan.end_time_utc,
         domain: request.domain_slug.clone(),
@@ -497,6 +550,7 @@ pub fn run_goes_satellite_batch(
         glm_source_keys,
         channel_files,
         artifacts,
+        sequence_gif_path,
         report_path: Some(report_path.clone()),
         timing: GoesSatelliteBatchTiming {
             discovery_ms,
@@ -523,6 +577,7 @@ fn render_product(
     let slug = product.slug();
     let png_path = run_dir.join(format!("{slug}.png"));
     let product_channels = product.required_channels();
+    let mut rendered_native_fixed_grid = false;
     let source_keys = product_channels
         .iter()
         .filter_map(|channel| channel_downloads.get(channel))
@@ -569,23 +624,37 @@ fn render_product(
         let download = channel_downloads
             .get(channel)
             .ok_or_else(|| boxed_error(format!("missing downloaded ABI C{channel:02}")))?;
-        let render_bounds = render_bounds_for_path(request, &download.path)?;
-        let render_request = build_goes_abi_band_render_request(&GoesAbiBandMapRequest {
-            abi_path: download.path.clone(),
-            variable_name: "CMI".to_string(),
-            channel: *channel,
-            domain_label: request.domain_label.clone(),
-            bounds: render_bounds,
-            width: request.width,
-            height: request.height,
-        })?;
-        save_png_profile_with_options(
-            &render_request,
-            &png_path,
-            &PngWriteOptions {
-                compression: request.png_compression,
-            },
-        )?;
+        if request.auto_bounds && is_native_fixed_grid_satellite_product(&download.object.key) {
+            save_goes_abi_band_native_fixed_grid_png(
+                &download.path,
+                *channel,
+                &png_path,
+                &PngWriteOptions {
+                    compression: request.png_compression,
+                },
+                request.width,
+                request.height,
+            )?;
+            rendered_native_fixed_grid = true;
+        } else {
+            let render_bounds = render_bounds_for_path(request, &download.path)?;
+            let render_request = build_goes_abi_band_render_request(&GoesAbiBandMapRequest {
+                abi_path: download.path.clone(),
+                variable_name: "CMI".to_string(),
+                channel: *channel,
+                domain_label: request.domain_label.clone(),
+                bounds: render_bounds,
+                width: request.width,
+                height: request.height,
+            })?;
+            save_png_profile_with_options(
+                &render_request,
+                &png_path,
+                &PngWriteOptions {
+                    compression: request.png_compression,
+                },
+            )?;
+        }
     }
 
     let artifact_bounds = artifact_bounds_for_product(product, request, channel_downloads)?;
@@ -593,7 +662,9 @@ fn render_product(
     Ok(GoesSatelliteArtifact {
         product: slug,
         title: product.title(),
-        kind: if product.uses_glm() {
+        kind: if rendered_native_fixed_grid {
+            "abi_native_fixed_grid".to_string()
+        } else if product.uses_glm() {
             "glm_overlay_rgb".to_string()
         } else if matches!(product, GoesSatelliteProduct::AbiBand(_)) {
             "abi_single_band".to_string()
@@ -619,7 +690,42 @@ fn render_product(
     })
 }
 
-fn discover_latest_complete_scan(
+fn write_sequence_gif(
+    artifacts: &[GoesSatelliteArtifact],
+    gif_path: &Path,
+    delay_ms: u32,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let first_product = artifacts
+        .first()
+        .map(|artifact| artifact.product.clone())
+        .ok_or_else(|| boxed_error("cannot build GOES sequence GIF without artifacts"))?;
+    let mut frames = artifacts
+        .iter()
+        .filter(|artifact| artifact.product == first_product)
+        .collect::<Vec<_>>();
+    frames.sort_by_key(|artifact| artifact.scan_time_utc);
+    if frames.len() < 2 {
+        return Err(boxed_error(
+            "GOES sequence GIF requires at least two frames for one product",
+        ));
+    }
+    if let Some(parent) = gif_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file = File::create(gif_path)?;
+    let mut encoder = GifEncoder::new(file);
+    encoder.set_repeat(Repeat::Infinite)?;
+    let delay = Delay::from_numer_denom_ms(delay_ms.max(20), 1);
+    for artifact in frames {
+        let frame_image = ImageReader::open(&artifact.png_path)?
+            .decode()?
+            .into_rgba8();
+        encoder.encode_frame(Frame::from_parts(frame_image, 0, 0, delay))?;
+    }
+    Ok(gif_path.to_path_buf())
+}
+
+fn discover_recent_complete_scans(
     agent: &ureq::Agent,
     bucket: &str,
     abi_product: &str,
@@ -627,17 +733,19 @@ fn discover_latest_complete_scan(
     lookback_hours: u32,
     retries: u32,
     retry_sleep_ms: u64,
-) -> Result<AbiScan, Box<dyn Error>> {
+    count: usize,
+) -> Result<Vec<AbiScan>, Box<dyn Error>> {
     let mut last_error = None;
     for attempt in 0..=retries {
-        match try_discover_latest_complete_scan(
+        match try_discover_recent_complete_scans(
             agent,
             bucket,
             abi_product,
             required_channels,
             lookback_hours,
+            count,
         ) {
-            Ok(scan) => return Ok(scan),
+            Ok(scans) => return Ok(scans),
             Err(err) => {
                 last_error = Some(err.to_string());
                 if attempt < retries && retry_sleep_ms > 0 {
@@ -653,13 +761,14 @@ fn discover_latest_complete_scan(
     )))
 }
 
-fn try_discover_latest_complete_scan(
+fn try_discover_recent_complete_scans(
     agent: &ureq::Agent,
     bucket: &str,
     abi_product: &str,
     required_channels: &[u8],
     lookback_hours: u32,
-) -> Result<AbiScan, Box<dyn Error>> {
+    count: usize,
+) -> Result<Vec<AbiScan>, Box<dyn Error>> {
     let now = Utc::now();
     let mut groups = BTreeMap::<DateTime<Utc>, BTreeMap<u8, S3Object>>::new();
     for offset in 0..lookback_hours.max(1) {
@@ -689,6 +798,7 @@ fn try_discover_latest_complete_scan(
         }
     }
 
+    let mut scans = Vec::new();
     for (start_time, channel_objects) in groups.into_iter().rev() {
         if required_channels
             .iter()
@@ -705,7 +815,7 @@ fn try_discover_latest_complete_scan(
                 .find_map(|object| parse_goes_abi_filename(object_filename(&object.key)).ok())
                 .map(|parsed| parsed.satellite.as_str().to_string())
                 .unwrap_or_else(|| "GOES".to_string());
-            return Ok(AbiScan {
+            scans.push(AbiScan {
                 scan_id: format!(
                     "{}_{}_{}",
                     satellite,
@@ -716,11 +826,18 @@ fn try_discover_latest_complete_scan(
                 end_time_utc: end_time,
                 channel_objects,
             });
+            if scans.len() >= count.max(1) {
+                break;
+            }
         }
     }
-    Err(boxed_error(
-        "listed recent ABI hours but did not find a complete channel set",
-    ))
+    if scans.is_empty() {
+        return Err(boxed_error(
+            "listed recent ABI hours but did not find a complete channel set",
+        ));
+    }
+    scans.sort_by_key(|scan| scan.start_time_utc);
+    Ok(scans)
 }
 
 fn download_abi_channels(
@@ -992,11 +1109,7 @@ fn product_inputs_for_request(
 }
 
 fn default_full_disk_satellite_products() -> Vec<String> {
-    vec![
-        "goes_abi_band_13".to_string(),
-        "goes_airmass_rgb".to_string(),
-        "goes_dust_rgb".to_string(),
-    ]
+    vec!["goes_abi_band_13".to_string()]
 }
 
 fn validate_requested_channels_for_product(
@@ -1027,6 +1140,111 @@ fn validate_requested_channels_for_product(
 
 fn is_full_disk_product(abi_product: &str) -> bool {
     abi_product.trim().to_ascii_uppercase().ends_with('F')
+}
+
+fn is_native_fixed_grid_satellite_product(source_key: &str) -> bool {
+    parse_goes_abi_filename(object_filename(source_key))
+        .map(|parsed| {
+            let product = parsed.product.to_ascii_uppercase();
+            product.ends_with('F')
+                || product.ends_with('M')
+                || product.ends_with("M1")
+                || product.ends_with("M2")
+        })
+        .unwrap_or(false)
+}
+
+fn save_goes_abi_band_native_fixed_grid_png(
+    abi_path: &Path,
+    channel: u8,
+    png_path: &Path,
+    png_options: &PngWriteOptions,
+    width: u32,
+    height: u32,
+) -> Result<(), Box<dyn Error>> {
+    let field = read_goes_abi_field(abi_path, "CMI")?;
+    let nx = field.scene.fixed_grid.nx;
+    let ny = field.scene.fixed_grid.ny;
+    if nx == 0 || ny == 0 || field.values.len() != nx.saturating_mul(ny) {
+        return Err(boxed_error(format!(
+            "GOES ABI native fixed grid shape is invalid for {}",
+            abi_path.display()
+        )));
+    }
+
+    let width = width.max(1);
+    let height = height.max(1);
+    let side = width.min(height);
+    let x_offset = (width - side) / 2;
+    let y_offset = (height - side) / 2;
+    let mut image = RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 255]));
+
+    for out_y in 0..side {
+        let src_y = ((f64::from(out_y) + 0.5) * ny as f64 / side as f64)
+            .floor()
+            .clamp(0.0, (ny - 1) as f64) as usize;
+        for out_x in 0..side {
+            let src_x = ((f64::from(out_x) + 0.5) * nx as f64 / side as f64)
+                .floor()
+                .clamp(0.0, (nx - 1) as f64) as usize;
+            let value = field.values[src_y * nx + src_x];
+            image.put_pixel(
+                x_offset + out_x,
+                y_offset + out_y,
+                native_abi_color(channel, value),
+            );
+        }
+    }
+
+    save_rgba_png_profile_with_options(&image, png_path, png_options)?;
+    Ok(())
+}
+
+fn native_abi_color(channel: u8, value: f32) -> image::Rgba<u8> {
+    if !value.is_finite() {
+        return image::Rgba([0, 0, 0, 255]);
+    }
+    if (1..=6).contains(&channel) {
+        let shade = (f64::from(value).clamp(0.0, 1.0) * 255.0).round() as u8;
+        return image::Rgba([shade, shade, shade, 255]);
+    }
+    let anchors = [
+        (188.0, [255, 255, 255]),
+        (202.0, [218, 239, 254]),
+        (216.0, [143, 204, 235]),
+        (230.0, [83, 146, 202]),
+        (244.0, [67, 91, 154]),
+        (258.0, [87, 76, 122]),
+        (272.0, [99, 95, 102]),
+        (288.0, [72, 72, 72]),
+        (306.0, [36, 36, 36]),
+        (328.0, [4, 4, 4]),
+    ];
+    image::Rgba(interpolate_rgb_anchors(f64::from(value), &anchors))
+}
+
+fn interpolate_rgb_anchors(value: f64, anchors: &[(f64, [u8; 3])]) -> [u8; 4] {
+    if value <= anchors[0].0 {
+        let [r, g, b] = anchors[0].1;
+        return [r, g, b, 255];
+    }
+    for window in anchors.windows(2) {
+        let (lo, lo_color) = window[0];
+        let (hi, hi_color) = window[1];
+        if value <= hi {
+            let t = ((value - lo) / (hi - lo)).clamp(0.0, 1.0);
+            let channel =
+                |a: u8, b: u8| -> u8 { (a as f64 + (b as f64 - a as f64) * t).round() as u8 };
+            return [
+                channel(lo_color[0], hi_color[0]),
+                channel(lo_color[1], hi_color[1]),
+                channel(lo_color[2], hi_color[2]),
+                255,
+            ];
+        }
+    }
+    let [r, g, b] = anchors[anchors.len() - 1].1;
+    [r, g, b, 255]
 }
 
 fn render_bounds_for_path(
@@ -1342,6 +1560,14 @@ fn default_true() -> bool {
     true
 }
 
+fn default_sequence_count() -> usize {
+    1
+}
+
+fn default_sequence_gif_delay_ms() -> u32 {
+    DEFAULT_SEQUENCE_GIF_DELAY_MS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1432,7 +1658,7 @@ mod tests {
         let products =
             product_inputs_for_request(&default_satellite_products(), "ABI-L2-CMIPF", false);
         let parsed = requested_products(&products).unwrap();
-        assert_eq!(required_channels(&parsed), vec![8, 10, 11, 12, 13, 14, 15]);
+        assert_eq!(required_channels(&parsed), vec![13]);
     }
 
     #[test]

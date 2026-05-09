@@ -503,6 +503,12 @@ struct RenderGoesSatelliteRequestJson {
     auto_bounds: Option<bool>,
     #[serde(default)]
     allow_high_resolution_full_disk: Option<bool>,
+    #[serde(default)]
+    sequence_count: Option<usize>,
+    #[serde(default)]
+    sequence_gif: Option<bool>,
+    #[serde(default)]
+    sequence_gif_delay_ms: Option<u32>,
 }
 
 #[cfg(feature = "python")]
@@ -702,6 +708,8 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
             "bounds": "optional [west,east,south,north] custom domain override",
             "auto_bounds": "infer render bounds from the ABI fixed grid scene; useful for full-disk and mesoscale sectors",
             "allow_high_resolution_full_disk": "allow full-disk high-resolution visible channels such as C02; default false",
+            "sequence_count": "optional count of latest complete ABI scans to render for one-minute mesoscale sequences",
+            "sequence_gif": "write an animated GIF from sequence_count frames",
             "products": "optional list such as goes_geocolor, goes_glm_fed_geocolor, goes_fire_temperature_rgb, goes_abi_band_13",
             "cache_dir": "shared raw NetCDF cache; default rustwx_outputs/cache, or RUSTWX_CACHE_DIR",
             "out_dir": "optional artifact output directory",
@@ -841,6 +849,13 @@ fn render_goes_satellite_json_impl(request: RenderGoesSatelliteRequestJson) -> P
     });
     batch_request.allow_high_resolution_full_disk =
         request.allow_high_resolution_full_disk.unwrap_or(false);
+    if let Some(sequence_count) = request.sequence_count {
+        batch_request.sequence_count = sequence_count.max(1);
+    }
+    batch_request.sequence_gif = request.sequence_gif.unwrap_or(false);
+    if let Some(delay_ms) = request.sequence_gif_delay_ms {
+        batch_request.sequence_gif_delay_ms = delay_ms;
+    }
 
     let report = run_goes_satellite_batch(&batch_request)
         .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
@@ -2179,7 +2194,7 @@ fn print_render_lightning_help() {
 #[cfg(feature = "python")]
 fn print_render_satellite_help() {
     println!(
-        "USAGE:\n  rustwx render-satellite [--satellite goes18] [--domain pacific_southwest] [--cache-dir DIR] [--out-dir DIR]\n  rustwx render-satellite --sector full-disk --auto-bounds [--product goes_abi_band_13]\n  rustwx render-satellite --sector meso1 --auto-bounds [--product goes_abi_band_13]\n  rustwx render-satellite --bounds west,east,south,north [--label NAME]\n  rustwx render-satellite --request request.json\n\nOptions include --sector conus|full_disk|meso1|meso2, --auto-bounds, --allow-high-resolution-full-disk, --product comma-list, --width, --height, --scan-lookback-hours, --glm-fetch-count, --no-glm, --no-cache, and --high-speed-png.\n\nDefault ABI source: NOAA noaa-goes18 / ABI-L2-CMIPC. Full-disk defaults avoid high-resolution visible channels unless explicitly allowed. Raw NetCDF cache defaults to rustwx_outputs/cache or RUSTWX_CACHE_DIR."
+        "USAGE:\n  rustwx render-satellite [--satellite goes18] [--domain pacific_southwest] [--cache-dir DIR] [--out-dir DIR]\n  rustwx render-satellite --sector full-disk --auto-bounds [--product goes_abi_band_13]\n  rustwx render-satellite --sector meso1 --auto-bounds --sequence-count 8 --sequence-gif [--product goes_abi_band_13]\n  rustwx render-satellite --bounds west,east,south,north [--label NAME]\n  rustwx render-satellite --request request.json\n\nOptions include --sector conus|full_disk|meso1|meso2, --auto-bounds, --allow-high-resolution-full-disk, --sequence-count, --sequence-gif, --product comma-list, --width, --height, --scan-lookback-hours, --glm-fetch-count, --no-glm, --no-cache, and --high-speed-png.\n\nDefault ABI source: NOAA noaa-goes18 / ABI-L2-CMIPC. Full-disk defaults avoid high-resolution visible channels unless explicitly allowed. Raw NetCDF cache defaults to rustwx_outputs/cache or RUSTWX_CACHE_DIR."
     );
 }
 
@@ -2342,6 +2357,13 @@ fn render_goes_satellite_request_from_cli(
             "--auto-bounds" => request.auto_bounds = Some(true),
             "--allow-high-resolution-full-disk" => {
                 request.allow_high_resolution_full_disk = Some(true)
+            }
+            "--sequence-count" => {
+                request.sequence_count = Some(parse_cli_value(args, &mut index, arg)?);
+            }
+            "--sequence-gif" => request.sequence_gif = Some(true),
+            "--sequence-gif-delay-ms" => {
+                request.sequence_gif_delay_ms = Some(parse_cli_value(args, &mut index, arg)?);
             }
             "--no-cache" => request.no_cache = Some(true),
             "--no-glm" => request.no_glm = Some(true),
