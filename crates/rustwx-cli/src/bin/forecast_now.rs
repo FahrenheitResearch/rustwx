@@ -103,6 +103,11 @@ struct Args {
     #[arg(long)]
     render_threads: Option<usize>,
 
+    /// PNG compression mode for rendered map output. `fast` keeps lossless
+    /// PNG output but spends less CPU per image than the default encoder.
+    #[arg(long = "png-compression", value_enum, default_value_t = PngCompressionArg::Fast)]
+    png_compression: PngCompressionArg,
+
     /// Output image width for direct/native/non-ECAPE renders.
     #[arg(long, default_value_t = 1200)]
     width: u32,
@@ -180,6 +185,24 @@ struct Args {
 enum SourceModeArg {
     Canonical,
     Fastest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+enum PngCompressionArg {
+    Default,
+    Fast,
+    Fastest,
+}
+
+impl From<PngCompressionArg> for rustwx_render::PngCompressionMode {
+    fn from(value: PngCompressionArg) -> Self {
+        match value {
+            PngCompressionArg::Default => Self::Default,
+            PngCompressionArg::Fast => Self::Fast,
+            PngCompressionArg::Fastest => Self::Fastest,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
@@ -859,6 +882,7 @@ struct ExecConfig {
     direct_product_overrides: HashMap<String, String>,
     output_width: u32,
     output_height: u32,
+    png_compression: rustwx_render::PngCompressionMode,
 }
 
 #[derive(Debug, Clone)]
@@ -947,7 +971,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!(
-        "[forecast-now] date={date} regions={:?} hours={:?} models={:?} direct={} derived={} windowed={} route_policy={:?} allow_large_heavy_domain={} size={}x{} job_concurrency={} render_threads={:?}",
+        "[forecast-now] date={date} regions={:?} hours={:?} models={:?} direct={} derived={} windowed={} route_policy={:?} allow_large_heavy_domain={} size={}x{} job_concurrency={} render_threads={:?} png_compression={:?}",
         args.regions.iter().map(|r| r.slug()).collect::<Vec<_>>(),
         hours,
         args.models,
@@ -960,6 +984,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.height,
         args.job_concurrency,
         args.render_threads,
+        args.png_compression,
     );
 
     let pin_forecast_hour = hours.iter().copied().max().unwrap_or(0);
@@ -1039,6 +1064,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         direct_product_overrides: build_direct_product_overrides(&args)?,
         output_width: args.width,
         output_height: args.height,
+        png_compression: args.png_compression.into(),
     };
 
     let mut jobs = Vec::<ForecastJob>::new();
@@ -1647,7 +1673,7 @@ fn run_non_hrrr_non_ecape_hour(
         windowed_products: Vec::new(),
         output_width: config.output_width,
         output_height: config.output_height,
-        png_compression: rustwx_render::PngCompressionMode::Default,
+        png_compression: config.png_compression,
         custom_poi_overlay: None,
         place_label_overlay: None,
         earth2_ensemble: None,
@@ -1752,7 +1778,7 @@ fn run_direct_lane(
         native_fill_level_multiplier: 1,
         output_width: config.output_width,
         output_height: config.output_height,
-        png_compression: rustwx_render::PngCompressionMode::Default,
+        png_compression: config.png_compression,
         custom_poi_overlay: None,
         place_label_overlay: None,
         output_suffix: None,
@@ -1846,7 +1872,7 @@ fn run_derived_lane(
         native_fill_level_multiplier: 1,
         output_width: config.output_width,
         output_height: config.output_height,
-        png_compression: rustwx_render::PngCompressionMode::Default,
+        png_compression: config.png_compression,
         custom_poi_overlay: None,
         place_label_overlay: None,
     };
@@ -2057,7 +2083,7 @@ fn run_hrrr_unified(
             source_mode: config.source_mode,
             output_width: config.output_width,
             output_height: config.output_height,
-            png_compression: rustwx_render::PngCompressionMode::Default,
+            png_compression: config.png_compression,
             custom_poi_overlay: None,
             place_label_overlay: None,
             earth2_ensemble: None,

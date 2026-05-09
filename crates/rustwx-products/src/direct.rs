@@ -29,7 +29,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::thread;
 use std::time::Instant;
 
@@ -1688,22 +1691,26 @@ fn render_direct_recipes(
             .collect();
     }
 
-    let chunk_size = (planned.len() + worker_count - 1) / worker_count;
+    let next_index = AtomicUsize::new(0);
     let mut rendered = vec![None; planned.len()];
 
     thread::scope(|scope| -> Result<(), std::io::Error> {
         let mut handles = Vec::new();
-        for (chunk_index, chunk) in planned.chunks(chunk_size).enumerate() {
+        for _ in 0..worker_count {
             let barb_stride_cache = Arc::clone(&barb_stride_cache);
             let contour_layer_cache = Arc::clone(&contour_layer_cache);
             let barb_layer_cache = Arc::clone(&barb_layer_cache);
             let projected_map_cache = Arc::clone(&projected_map_cache);
             let prepared_projected_maps = Arc::clone(&prepared_projected_maps);
-            let start_index = chunk_index * chunk_size;
+            let next_index = &next_index;
             handles.push(scope.spawn(
                 move || -> Result<Vec<(usize, DirectRenderedRecipe)>, std::io::Error> {
-                    let mut chunk_rendered = Vec::with_capacity(chunk.len());
-                    for (offset, item) in chunk.iter().enumerate() {
+                    let mut worker_rendered = Vec::new();
+                    loop {
+                        let index = next_index.fetch_add(1, Ordering::Relaxed);
+                        let Some(item) = planned.get(index) else {
+                            break;
+                        };
                         let rendered = render_direct_recipe(
                             request,
                             latest,
@@ -1723,9 +1730,9 @@ fn render_direct_recipes(
                                 item.recipe.slug
                             ))
                         })?;
-                        chunk_rendered.push((start_index + offset, rendered));
+                        worker_rendered.push((index, rendered));
                     }
-                    Ok(chunk_rendered)
+                    Ok(worker_rendered)
                 },
             ));
         }

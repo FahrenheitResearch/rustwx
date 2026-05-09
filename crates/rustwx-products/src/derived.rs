@@ -24,10 +24,14 @@ use rustwx_render::{
     save_png_profile_with_options, weather::temperature_palette_cropped_f,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::thread;
 use std::time::Instant;
 
@@ -2151,38 +2155,45 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
             rendered
         } else {
             thread::scope(|scope| -> Result<Vec<DerivedRenderedRecipe>, io::Error> {
-                let mut rendered = Vec::with_capacity(derived_output_recipes.len());
-                let mut pending = VecDeque::new();
-
-                for recipe in derived_output_recipes.iter().copied() {
-                    let lane_fetch_keys = input_fetch_keys.clone();
+                let next_index = Arc::new(AtomicUsize::new(0));
+                let recipe_count = derived_output_recipes.len();
+                let mut handles = Vec::with_capacity(render_parallelism);
+                for _ in 0..render_parallelism {
+                    let next_index = Arc::clone(&next_index);
                     let lane_projection = grid_projection.clone();
-                    pending.push_back(scope.spawn(move || {
-                        render_derived_output_recipe(
-                            request,
-                            recipe,
-                            grid_ref,
-                            lane_projection.as_ref(),
-                            projected_ref,
-                            date_yyyymmdd,
-                            cycle_utc,
-                            forecast_hour,
-                            source,
-                            model,
-                            computed,
-                            lane_fetch_keys,
-                        )
+                    let worker_fetch_keys = input_fetch_keys.clone();
+                    let recipes = &derived_output_recipes;
+                    handles.push(scope.spawn(move || {
+                        let mut rendered = Vec::new();
+                        loop {
+                            let index = next_index.fetch_add(1, Ordering::Relaxed);
+                            let Some(recipe) = recipes.get(index).copied() else {
+                                break;
+                            };
+                            let lane_fetch_keys = worker_fetch_keys.clone();
+                            rendered.push(render_derived_output_recipe(
+                                request,
+                                recipe,
+                                grid_ref,
+                                lane_projection.as_ref(),
+                                projected_ref,
+                                date_yyyymmdd,
+                                cycle_utc,
+                                forecast_hour,
+                                source,
+                                model,
+                                computed,
+                                lane_fetch_keys,
+                            )?);
+                        }
+                        Ok(rendered)
                     }));
-
-                    if pending.len() >= render_parallelism {
-                        rendered.push(join_render_job(pending.pop_front().unwrap())?);
-                    }
                 }
 
-                while let Some(handle) = pending.pop_front() {
-                    rendered.push(join_render_job(handle)?);
+                let mut rendered = Vec::with_capacity(recipe_count);
+                for handle in handles {
+                    rendered.extend(join_render_job(handle)?);
                 }
-
                 Ok(rendered)
             })
             .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?

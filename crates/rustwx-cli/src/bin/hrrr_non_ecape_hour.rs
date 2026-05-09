@@ -201,6 +201,8 @@ struct Args {
     no_cache: bool,
     #[arg(long = "source-mode", alias = "thermo-path", value_enum, default_value_t = SourceModeArg::Canonical)]
     source_mode: SourceModeArg,
+    #[arg(long = "png-compression", value_enum, default_value_t = PngCompressionArg::Fast)]
+    png_compression: PngCompressionArg,
     #[arg(
         long = "place-label-density",
         value_enum,
@@ -214,6 +216,24 @@ struct Args {
 enum SourceModeArg {
     Canonical,
     Fastest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+enum PngCompressionArg {
+    Default,
+    Fast,
+    Fastest,
+}
+
+impl From<PngCompressionArg> for rustwx_render::PngCompressionMode {
+    fn from(value: PngCompressionArg) -> Self {
+        match value {
+            PngCompressionArg::Default => Self::Default,
+            PngCompressionArg::Fast => Self::Fast,
+            PngCompressionArg::Fastest => Self::Fastest,
+        }
+    }
 }
 
 impl From<SourceModeArg> for ProductSourceMode {
@@ -305,7 +325,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         source_mode: args.source_mode.into(),
         output_width: 1200,
         output_height: 900,
-        png_compression: rustwx_render::PngCompressionMode::Default,
+        png_compression: args.png_compression.into(),
         custom_poi_overlay: None,
         place_label_overlay: default_place_label_overlay_for_domain(
             &domain,
