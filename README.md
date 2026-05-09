@@ -329,6 +329,35 @@ cargo run -p rustwx-cli --release --bin hrrr_non_ecape_hour -- `
   --region conus
 ```
 
+### Generate one GFS or ECMWF global fast-lane pass
+
+`non_ecape_hour` is the shared global-model fast lane. For GFS and ECMWF, use
+`--domain-set global-model` to load one model hour once and fan it out across
+global, CONUS, North America, Europe, and the other continent-scale domains.
+
+```powershell
+cargo run -p rustwx-cli --release --bin non_ecape_hour -- `
+  --model gfs `
+  --date 20260414 `
+  --cycle 0 `
+  --forecast-hour 24 `
+  --domain-set global-model `
+  --domain-jobs 4 `
+  --all-supported
+```
+
+```powershell
+cargo run -p rustwx-cli --release --bin non_ecape_hour -- `
+  --model ecmwf-open-data `
+  --source ecmwf `
+  --date 20260414 `
+  --cycle 0 `
+  --forecast-hour 24 `
+  --domain-set global-model `
+  --domain-jobs 4 `
+  --all-supported
+```
+
 ### Generate the bounded HRRR native proof bundle
 
 `hrrr_native_proof` is the weather-native 2D proof lane. It emits the curated

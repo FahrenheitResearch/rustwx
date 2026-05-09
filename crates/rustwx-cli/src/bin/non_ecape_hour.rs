@@ -223,6 +223,12 @@ struct Args {
         help = "Run only direct recipe products; disables derived and windowed products"
     )]
     direct_only: bool,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Use every supported non-ECAPE direct/derived recipe for this model instead of the operational default set"
+    )]
+    all_supported: bool,
     #[arg(long = "product-override", value_delimiter = ',', num_args = 0..)]
     product_overrides: Vec<String>,
     #[arg(long)]
@@ -312,8 +318,11 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         .source
         .unwrap_or(model_summary(args.model).sources[0].id);
     let png_compression: PngCompressionMode = args.png_compression.into();
-    let (default_direct, default_derived, default_windowed) =
-        default_non_ecape_product_sets(args.model);
+    let (default_direct, default_derived, default_windowed) = if args.all_supported {
+        all_supported_non_ecape_product_sets(args.model)
+    } else {
+        default_non_ecape_product_sets(args.model)
+    };
     let direct_recipe_slugs = if args.direct_recipes.is_empty() {
         default_direct
     } else if recipe_list_disabled(&args.direct_recipes) {
@@ -755,6 +764,52 @@ fn default_non_ecape_product_sets(
         .filter_map(|entry| windowed_product_from_slug(&entry.slug))
         .collect::<Vec<_>>();
     (direct, derived, windowed)
+}
+
+fn all_supported_non_ecape_product_sets(
+    model: ModelId,
+) -> (Vec<String>, Vec<String>, Vec<HrrrWindowedProduct>) {
+    let catalog = build_supported_products_catalog();
+    let supported_for_model = |entry: &rustwx_products::catalog::ProductCatalogEntry| {
+        entry.support.iter().any(|target| {
+            target.model == Some(model) && matches!(target.status, ProductTargetStatus::Supported)
+        })
+    };
+    let direct = catalog
+        .direct
+        .iter()
+        .filter(|entry| supported_for_model(entry))
+        .filter(|entry| !direct_recipe_requires_explicit_opt_in(&entry.slug))
+        .map(|entry| entry.slug.clone())
+        .collect::<Vec<_>>();
+    let derived = catalog
+        .derived
+        .iter()
+        .filter(|entry| supported_for_model(entry))
+        .filter(|entry| {
+            let slug = entry.slug.to_ascii_lowercase();
+            !slug.contains("ecape") && !is_heavy_derived_recipe_slug(&entry.slug)
+        })
+        .map(|entry| entry.slug.clone())
+        .collect::<Vec<_>>();
+    let windowed = catalog
+        .windowed
+        .iter()
+        .filter(|entry| supported_for_model(entry))
+        .filter_map(|entry| windowed_product_from_slug(&entry.slug))
+        .collect::<Vec<_>>();
+    (direct, derived, windowed)
+}
+
+fn direct_recipe_requires_explicit_opt_in(slug: &str) -> bool {
+    let slug = slug.to_ascii_lowercase();
+    slug.starts_with("nbm_qmd_")
+        || slug.starts_with("sref_prob_")
+        || slug.starts_with("href_")
+        || slug.starts_with("refs_")
+        || slug.starts_with("aigefs_spr_")
+        || slug.starts_with("hgefs_spr_")
+        || slug.starts_with("gefs_spr_")
 }
 
 fn include_in_operational_default(entry: &rustwx_products::catalog::ProductCatalogEntry) -> bool {
