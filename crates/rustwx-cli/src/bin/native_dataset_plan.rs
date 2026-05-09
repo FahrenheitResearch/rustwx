@@ -1,11 +1,39 @@
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use rustwx_products::native_dataset::{
-    NativeDatasetBounds, NativeDatasetBuildConfig, NativeDatasetCase, NativeDatasetShardSpec,
-    NativeDatasetSource, NativeDatasetTile, plan_native_dataset,
+    plan_native_dataset, NativeDatasetBounds, NativeDatasetBuildConfig, NativeDatasetCase,
+    NativeDatasetShardSpec, NativeDatasetSource, NativeDatasetTile,
 };
+use std::collections::BTreeSet;
 use std::path::PathBuf;
+
+const GOES_CORE_CHANNELS: &[&str] = &["C01", "C02", "C03", "C07", "C08", "C09", "C10", "C13"];
+const GOES_ALL_CHANNELS: &[&str] = &[
+    "C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C09", "C10", "C11", "C12", "C13",
+    "C14", "C15", "C16",
+];
+const GOES_DERIVED_FIELDS: &[&str] = &[
+    "btd_c13_c15",
+    "btd_c08_c10",
+    "btd_c10_c13",
+    "btd_c07_c13",
+    "ndiff_c02_c01",
+];
+const LEVEL2_CORE_PRODUCTS: &[&str] = &["reflectivity", "velocity"];
+const LEVEL2_ALL_PRODUCTS: &[&str] = &[
+    "reflectivity",
+    "velocity",
+    "spectrum_width",
+    "zdr",
+    "cc",
+    "phi",
+    "kdp",
+    "hca",
+    "srv",
+    "vil",
+    "echo_tops",
+];
 
 #[derive(Debug, Parser)]
 #[command(
@@ -63,9 +91,16 @@ struct Args {
         long,
         value_delimiter = ',',
         default_value = "C01,C02,C03,C07,C08,C09,C10,C13",
-        help = "Comma-separated GOES ABI channels; use C01-C16 when available"
+        help = "Comma-separated GOES ABI channels. Supports core, all, and ranges like C01-C16"
     )]
     goes_channels: Vec<String>,
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "",
+        help = "Comma-separated derived GOES fields. Supports all. Current derived fields: btd_c13_c15,btd_c08_c10,btd_c10_c13,btd_c07_c13,ndiff_c02_c01"
+    )]
+    goes_derived: Vec<String>,
     #[arg(
         long,
         default_value = "ABI-L2-MCMIPC",
@@ -81,7 +116,7 @@ struct Args {
         long,
         value_delimiter = ',',
         default_value = "reflectivity,velocity",
-        help = "Comma-separated NEXRAD Level-II products: reflectivity,velocity,spectrum_width,zdr,cc,phi,kdp,hca,srv,vil,echo_tops"
+        help = "Comma-separated NEXRAD Level-II products. Supports core or all."
     )]
     level2_products: Vec<String>,
     #[arg(long, default_value = "target/native_dataset_plan/dataset_plan.json")]
@@ -117,8 +152,20 @@ fn main() -> anyhow::Result<()> {
     config.sources = vec![
         NativeDatasetSource::hrrr_surface(clean_list(args.hrrr_fields)),
         NativeDatasetSource::mrms(clean_list(args.mrms_fields)),
-        NativeDatasetSource::goes_abi_product(goes_product_family, clean_list(args.goes_channels)),
-        NativeDatasetSource::nexrad_level2_products(clean_list(args.level2_products)),
+        NativeDatasetSource::goes_abi_product(goes_product_family, {
+            let mut fields = expand_goes_channels(args.goes_channels)?;
+            fields.extend(expand_named_preset_list(
+                args.goes_derived,
+                &[],
+                GOES_DERIVED_FIELDS,
+            ));
+            dedupe_preserve_order(fields)
+        }),
+        NativeDatasetSource::nexrad_level2_products(expand_named_preset_list(
+            args.level2_products,
+            LEVEL2_CORE_PRODUCTS,
+            LEVEL2_ALL_PRODUCTS,
+        )),
     ];
     let shard = NativeDatasetShardSpec::new(args.shard_index, args.shard_count)
         .map_err(anyhow::Error::msg)?;
@@ -152,6 +199,98 @@ fn clean_list(values: Vec<String>) -> Vec<String> {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .collect()
+}
+
+fn expand_named_preset_list(values: Vec<String>, core: &[&str], all: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for raw in values {
+        let value = raw.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let expanded = match value.to_ascii_lowercase().as_str() {
+            "core" | "default" => core
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>(),
+            "all" | "*" => all
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>(),
+            _ => vec![value.to_string()],
+        };
+        for item in expanded {
+            let key = item.to_ascii_lowercase();
+            if seen.insert(key) {
+                out.push(item);
+            }
+        }
+    }
+    out
+}
+
+fn dedupe_preserve_order(values: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for value in values {
+        let key = value.to_ascii_lowercase();
+        if seen.insert(key) {
+            out.push(value);
+        }
+    }
+    out
+}
+
+fn expand_goes_channels(values: Vec<String>) -> anyhow::Result<Vec<String>> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for raw in values {
+        let value = raw.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let expanded = match value.to_ascii_uppercase().as_str() {
+            "CORE" | "DEFAULT" => GOES_CORE_CHANNELS
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>(),
+            "ALL" | "*" => GOES_ALL_CHANNELS
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>(),
+            _ => expand_goes_channel_range(value)?,
+        };
+        for item in expanded {
+            let key = item.to_ascii_uppercase();
+            if seen.insert(key.clone()) {
+                out.push(key);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn expand_goes_channel_range(value: &str) -> anyhow::Result<Vec<String>> {
+    let upper = value.trim().to_ascii_uppercase();
+    let Some((start, end)) = upper.split_once('-') else {
+        return Ok(vec![upper]);
+    };
+    let start = parse_goes_channel_number(start)?;
+    let end = parse_goes_channel_number(end)?;
+    if start > end || start == 0 || end > 16 {
+        bail!("GOES channel range must be C01-C16 with start <= end: {value}");
+    }
+    Ok((start..=end)
+        .map(|channel| format!("C{channel:02}"))
+        .collect())
+}
+
+fn parse_goes_channel_number(value: &str) -> anyhow::Result<u8> {
+    let trimmed = value.trim().strip_prefix('C').unwrap_or(value.trim());
+    trimmed
+        .parse::<u8>()
+        .with_context(|| format!("invalid GOES channel: {value}"))
 }
 
 fn parse_case(value: &str) -> anyhow::Result<NativeDatasetCase> {

@@ -1,9 +1,9 @@
 use rustwx_render::{
+    build_projected_map_with_options, map_frame_aspect_ratio_for_mode_with_domain_frame,
     ChromeScale, Color, ColorScale, DiscreteColorScale, DomainFrame, ExtendMode, Field2D,
     GridShape, LambertConformal, LatLonGrid, LegendControls, LegendMode, LevelDensity,
     MapRenderRequest, ProductKey, ProductVisualMode, ProjectedMapBuildOptions, ProjectionSpec,
-    RenderDensity, RgbaGridField, build_projected_map_with_options,
-    map_frame_aspect_ratio_for_mode_with_domain_frame,
+    RenderDensity, RgbaGridField,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use crate::lightning::{collect_glm_lightning_flashes, glm_lightning_point_overlays};
 
-use super::abi::{GoesAbiField, GoesAbiScene, read_goes_abi_field};
+use super::abi::{read_goes_abi_field, GoesAbiField, GoesAbiScene};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -348,6 +348,88 @@ fn bilinear_f32(v00: f32, v10: f32, v01: f32, v11: f32, fx: f32, fy: f32) -> f32
     }
 }
 
+pub fn compose_goes_abi_rgb_pixel<F>(
+    style: GoesAbiRgbCompositeStyle,
+    mut band_value: F,
+) -> Result<Color, Box<dyn Error>>
+where
+    F: FnMut(u8) -> Result<f32, Box<dyn Error>>,
+{
+    Ok(match style {
+        GoesAbiRgbCompositeStyle::GeoColor => {
+            let c01 = reflectance_pct(band_value(1)?);
+            let c02 = reflectance_pct(band_value(2)?);
+            let c03 = reflectance_pct(band_value(3)?);
+            let r = visible_component(c02);
+            let g = visible_component(0.45 * c02 + 0.10 * c03 + 0.45 * c01);
+            let b = visible_component(c01);
+            color_or_transparent([r, g, b])
+        }
+        GoesAbiRgbCompositeStyle::FireTemperature => {
+            let r = component(k_to_c(band_value(7)?), 0.0, 60.0, 0.4);
+            let g = component(reflectance_pct(band_value(6)?), 0.0, 100.0, 1.0);
+            let b = component(reflectance_pct(band_value(5)?), 0.0, 75.0, 1.0);
+            color_or_transparent([r, g, b])
+        }
+        GoesAbiRgbCompositeStyle::AirMass => {
+            let c08 = band_value(8)?;
+            let c10 = band_value(10)?;
+            let c12 = band_value(12)?;
+            let c13 = band_value(13)?;
+            let r = component((c08 - c10) as f64, -26.2, 0.6, 1.0);
+            let g = component((c12 - c13) as f64, -43.2, 6.7, 1.0);
+            let b = component(k_to_c(c08), -29.25, -64.65, 1.0);
+            color_or_transparent([r, g, b])
+        }
+        GoesAbiRgbCompositeStyle::Dust => {
+            let c11 = band_value(11)?;
+            let c13 = band_value(13)?;
+            let c14 = band_value(14)?;
+            let c15 = band_value(15)?;
+            let r = component((c15 - c13) as f64, -6.7, 2.6, 1.0);
+            let g = component((c14 - c11) as f64, -0.5, 20.0, 2.5);
+            let b = component(k_to_c(c13), -11.95, 15.55, 1.0);
+            color_or_transparent([r, g, b])
+        }
+        GoesAbiRgbCompositeStyle::Sandwich => {
+            let visible = component(reflectance_pct(band_value(3)?), 0.0, 95.0, 1.0);
+            let ir_cold = normalized(k_to_c(band_value(13)?), 30.0, -70.0, 1.0);
+            sandwich_color(visible, ir_cold)
+        }
+        GoesAbiRgbCompositeStyle::DayCloudPhase => {
+            let r = component(k_to_c(band_value(13)?), 7.5, -53.5, 1.0);
+            let g = component(reflectance_pct(band_value(2)?), 0.0, 78.0, 1.0);
+            let b = component(reflectance_pct(band_value(5)?), 1.0, 59.0, 1.0);
+            color_or_transparent([r, g, b])
+        }
+        GoesAbiRgbCompositeStyle::DayNightCloudMicroCombo => {
+            let day_green = reflectance_pct(band_value(2)?);
+            let day_blue = reflectance_pct(band_value(5)?);
+            let c07 = band_value(7)?;
+            let c13 = band_value(13)?;
+            let c15 = band_value(15)?;
+            let daylight = normalized(day_green, 0.0, 18.0, 1.0).unwrap_or(0.0);
+            let r = component(k_to_c(c13), 12.0, -60.0, 1.0);
+            let g_day = normalized(day_green, 0.0, 80.0, 1.0).unwrap_or(0.0);
+            let b_day = normalized(day_blue, 0.0, 65.0, 1.0).unwrap_or(0.0);
+            let g_night = normalized((c15 - c13) as f64, -5.0, 12.0, 1.0).unwrap_or(0.0);
+            let b_night = normalized(k_to_c(c07), 30.0, -45.0, 1.0).unwrap_or(0.0);
+            let g = Some(((g_night * (1.0 - daylight) + g_day * daylight) * 255.0).round() as u8);
+            let b = Some(((b_night * (1.0 - daylight) + b_day * daylight) * 255.0).round() as u8);
+            color_or_transparent([r, g, b])
+        }
+        GoesAbiRgbCompositeStyle::NaturalColor => {
+            let c01 = reflectance_pct(band_value(1)?);
+            let c02 = reflectance_pct(band_value(2)?);
+            let c03 = reflectance_pct(band_value(3)?);
+            let r = visible_component(c02);
+            let g = visible_component(0.45 * c02 + 0.10 * c03 + 0.45 * c01);
+            let b = visible_component(c01);
+            color_or_transparent([r, g, b])
+        }
+    })
+}
+
 fn compose_rgb_pixels(
     style: GoesAbiRgbCompositeStyle,
     bands: &HashMap<u8, Vec<f32>>,
@@ -355,82 +437,9 @@ fn compose_rgb_pixels(
 ) -> Result<Vec<Color>, Box<dyn Error>> {
     let mut pixels = Vec::with_capacity(len);
     for idx in 0..len {
-        pixels.push(match style {
-            GoesAbiRgbCompositeStyle::GeoColor => {
-                let c01 = reflectance_pct(band_value(bands, 1, idx)?);
-                let c02 = reflectance_pct(band_value(bands, 2, idx)?);
-                let c03 = reflectance_pct(band_value(bands, 3, idx)?);
-                let r = visible_component(c02);
-                let g = visible_component(0.45 * c02 + 0.10 * c03 + 0.45 * c01);
-                let b = visible_component(c01);
-                color_or_transparent([r, g, b])
-            }
-            GoesAbiRgbCompositeStyle::FireTemperature => {
-                let r = component(k_to_c(band_value(bands, 7, idx)?), 0.0, 60.0, 0.4);
-                let g = component(reflectance_pct(band_value(bands, 6, idx)?), 0.0, 100.0, 1.0);
-                let b = component(reflectance_pct(band_value(bands, 5, idx)?), 0.0, 75.0, 1.0);
-                color_or_transparent([r, g, b])
-            }
-            GoesAbiRgbCompositeStyle::AirMass => {
-                let c08 = band_value(bands, 8, idx)?;
-                let c10 = band_value(bands, 10, idx)?;
-                let c12 = band_value(bands, 12, idx)?;
-                let c13 = band_value(bands, 13, idx)?;
-                let r = component((c08 - c10) as f64, -26.2, 0.6, 1.0);
-                let g = component((c12 - c13) as f64, -43.2, 6.7, 1.0);
-                let b = component(k_to_c(c08), -29.25, -64.65, 1.0);
-                color_or_transparent([r, g, b])
-            }
-            GoesAbiRgbCompositeStyle::Dust => {
-                let c11 = band_value(bands, 11, idx)?;
-                let c13 = band_value(bands, 13, idx)?;
-                let c14 = band_value(bands, 14, idx)?;
-                let c15 = band_value(bands, 15, idx)?;
-                let r = component((c15 - c13) as f64, -6.7, 2.6, 1.0);
-                let g = component((c14 - c11) as f64, -0.5, 20.0, 2.5);
-                let b = component(k_to_c(c13), -11.95, 15.55, 1.0);
-                color_or_transparent([r, g, b])
-            }
-            GoesAbiRgbCompositeStyle::Sandwich => {
-                let visible =
-                    component(reflectance_pct(band_value(bands, 3, idx)?), 0.0, 95.0, 1.0);
-                let ir_cold = normalized(k_to_c(band_value(bands, 13, idx)?), 30.0, -70.0, 1.0);
-                sandwich_color(visible, ir_cold)
-            }
-            GoesAbiRgbCompositeStyle::DayCloudPhase => {
-                let r = component(k_to_c(band_value(bands, 13, idx)?), 7.5, -53.5, 1.0);
-                let g = component(reflectance_pct(band_value(bands, 2, idx)?), 0.0, 78.0, 1.0);
-                let b = component(reflectance_pct(band_value(bands, 5, idx)?), 1.0, 59.0, 1.0);
-                color_or_transparent([r, g, b])
-            }
-            GoesAbiRgbCompositeStyle::DayNightCloudMicroCombo => {
-                let day_green = reflectance_pct(band_value(bands, 2, idx)?);
-                let day_blue = reflectance_pct(band_value(bands, 5, idx)?);
-                let c07 = band_value(bands, 7, idx)?;
-                let c13 = band_value(bands, 13, idx)?;
-                let c15 = band_value(bands, 15, idx)?;
-                let daylight = normalized(day_green, 0.0, 18.0, 1.0).unwrap_or(0.0);
-                let r = component(k_to_c(c13), 12.0, -60.0, 1.0);
-                let g_day = normalized(day_green, 0.0, 80.0, 1.0).unwrap_or(0.0);
-                let b_day = normalized(day_blue, 0.0, 65.0, 1.0).unwrap_or(0.0);
-                let g_night = normalized((c15 - c13) as f64, -5.0, 12.0, 1.0).unwrap_or(0.0);
-                let b_night = normalized(k_to_c(c07), 30.0, -45.0, 1.0).unwrap_or(0.0);
-                let g =
-                    Some(((g_night * (1.0 - daylight) + g_day * daylight) * 255.0).round() as u8);
-                let b =
-                    Some(((b_night * (1.0 - daylight) + b_day * daylight) * 255.0).round() as u8);
-                color_or_transparent([r, g, b])
-            }
-            GoesAbiRgbCompositeStyle::NaturalColor => {
-                let c01 = reflectance_pct(band_value(bands, 1, idx)?);
-                let c02 = reflectance_pct(band_value(bands, 2, idx)?);
-                let c03 = reflectance_pct(band_value(bands, 3, idx)?);
-                let r = visible_component(c02);
-                let g = visible_component(0.45 * c02 + 0.10 * c03 + 0.45 * c01);
-                let b = visible_component(c01);
-                color_or_transparent([r, g, b])
-            }
-        });
+        pixels.push(compose_goes_abi_rgb_pixel(style, |channel| {
+            band_value(bands, channel, idx)
+        })?);
     }
     Ok(pixels)
 }

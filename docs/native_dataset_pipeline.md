@@ -30,6 +30,19 @@ GOES ABI MCMIPC: C01, C02, C03, C07, C08, C09, C10, C13
 NEXRAD Level-II: reflectivity, velocity
 ```
 
+For wider satellite/radar tensors, `native_dataset_plan` accepts presets:
+
+```powershell
+  --goes-channels C01-C16 `
+  --goes-derived all `
+  --level2-products all
+```
+
+`--goes-channels` also accepts `core`, `all`, and ranges such as `C07-C16`.
+`--goes-derived` accepts `all` for ABI-derived fields such as brightness
+temperature differences and normalized visible-channel differences.
+`--level2-products` accepts `core` and `all`.
+
 `terrain` is currently carried in the schema and filled as missing until the terrain selector is mapped.
 
 ## Materialize
@@ -95,4 +108,3 @@ manifest.json
 ```
 
 The tensor layout is recorded in `manifest.json`. Current target tensors include MRMS reflectivity/rate, GOES C13, reflectivity initiation, and current MRMS reflectivity.
-

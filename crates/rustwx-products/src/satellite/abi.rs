@@ -3,9 +3,11 @@ use std::error::Error;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::geostationary::{SweepAngleAxis, scan_angles_to_lat_lon};
-use super::goes::{GoesSatellite, parse_goes_abi_filename};
-use super::netcdf::{ScaledVariable, open_goes_netcdf_lossy, read_scaled_f32};
+use super::geostationary::{scan_angles_to_lat_lon, SweepAngleAxis};
+use super::goes::{parse_goes_abi_filename, GoesSatellite};
+use super::netcdf::{
+    open_goes_netcdf_lossy, read_scaled_f32, read_scaled_f32_window, ScaledVariable,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AbiSector {
@@ -203,6 +205,50 @@ pub fn read_goes_abi_field(
     })
 }
 
+pub fn read_goes_abi_field_window(
+    path: impl AsRef<Path>,
+    variable_name: &str,
+    x_start: usize,
+    x_count: usize,
+    y_start: usize,
+    y_count: usize,
+) -> Result<GoesAbiField, Box<dyn Error>> {
+    if x_count == 0 || y_count == 0 {
+        return Err(boxed_error(format!(
+            "empty GOES ABI window requested for {variable_name}: x_count={x_count} y_count={y_count}"
+        )));
+    }
+    let path = path.as_ref();
+    let mut scene = read_goes_abi_scene(path)?;
+    if x_start.saturating_add(x_count) > scene.fixed_grid.nx
+        || y_start.saturating_add(y_count) > scene.fixed_grid.ny
+    {
+        return Err(boxed_error(format!(
+            "GOES ABI window {x_start}..{} x {y_start}..{} exceeds grid {}x{}",
+            x_start.saturating_add(x_count),
+            y_start.saturating_add(y_count),
+            scene.fixed_grid.nx,
+            scene.fixed_grid.ny
+        )));
+    }
+    let file = open_goes_netcdf_lossy(path)?;
+    let variable =
+        read_scaled_f32_window(&file, variable_name, y_start, y_count, x_start, x_count)?;
+    validate_window_shape(variable_name, &variable, x_count, y_count)?;
+    scene.fixed_grid = AbiFixedGrid {
+        nx: x_count,
+        ny: y_count,
+        x_scan_rad: scene.fixed_grid.x_scan_rad[x_start..x_start + x_count].to_vec(),
+        y_scan_rad: scene.fixed_grid.y_scan_rad[y_start..y_start + y_count].to_vec(),
+    };
+    Ok(GoesAbiField {
+        scene,
+        variable_name: variable_name.to_string(),
+        units: variable.units,
+        values: variable.values,
+    })
+}
+
 fn validate_field_shape(
     scene: &GoesAbiScene,
     variable: &ScaledVariable,
@@ -226,6 +272,35 @@ fn validate_field_shape(
         return Err(boxed_error(format!(
             "GOES ABI variable {} shape {:?} does not match grid {}x{}",
             variable.name, variable.shape, scene.fixed_grid.nx, scene.fixed_grid.ny
+        )));
+    }
+    Ok(())
+}
+
+fn validate_window_shape(
+    variable_name: &str,
+    variable: &ScaledVariable,
+    x_count: usize,
+    y_count: usize,
+) -> Result<(), Box<dyn Error>> {
+    let expected_len = x_count.saturating_mul(y_count);
+    if variable.values.len() != expected_len {
+        return Err(boxed_error(format!(
+            "GOES ABI variable {variable_name} window length {} does not match grid {}x{}",
+            variable.values.len(),
+            x_count,
+            y_count
+        )));
+    }
+    let shape_matches = match variable.shape.as_slice() {
+        [ny, nx] => *nx == x_count && *ny == y_count,
+        [len] => *len == expected_len,
+        _ => false,
+    };
+    if !shape_matches {
+        return Err(boxed_error(format!(
+            "GOES ABI variable {variable_name} window shape {:?} does not match grid {}x{}",
+            variable.shape, x_count, y_count
         )));
     }
     Ok(())

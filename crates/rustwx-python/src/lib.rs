@@ -5,6 +5,8 @@ pub fn python_bindings_enabled() -> bool {
 #[cfg(feature = "python")]
 mod wrf_render;
 #[cfg(feature = "python")]
+use chrono::{DateTime, Utc};
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
 #[cfg(feature = "python")]
 use rustwx_core::{
@@ -14,28 +16,31 @@ use rustwx_core::{
 #[cfg(feature = "python")]
 use rustwx_io::earth2_archive::{Earth2EnsembleSelector, Earth2EnsembleStat};
 #[cfg(feature = "python")]
-use rustwx_io::{FetchRequest, available_forecast_hours, probe_sources};
+use rustwx_io::{available_forecast_hours, probe_sources, FetchRequest};
 #[cfg(feature = "python")]
 use rustwx_products::{
     derived::{
-        DerivedBatchReport, DerivedBatchRequest, NativeContourRenderMode,
         is_heavy_derived_recipe_slug, run_derived_batch, supported_derived_recipe_inventory,
-        supported_derived_recipe_slugs,
+        supported_derived_recipe_slugs, DerivedBatchReport, DerivedBatchRequest,
+        NativeContourRenderMode,
     },
     direct::supported_direct_recipe_slugs,
-    lightning::{GlmLightningRenderRequest, default_glm_data_dir, render_glm_lightning_map},
+    lightning::{default_glm_data_dir, render_glm_lightning_map, GlmLightningRenderRequest},
     named_geometry::{
-        NamedGeometryCatalog, NamedGeometryKind, find_built_in_country_domain,
-        find_built_in_named_geometry,
+        find_built_in_country_domain, find_built_in_named_geometry, NamedGeometryCatalog,
+        NamedGeometryKind,
     },
-    non_ecape::{NonEcapeMultiDomainRequest, run_model_non_ecape_hour_multi_domain},
-    places::{PlaceLabelDensityTier, default_place_label_overlay_for_domain},
+    non_ecape::{run_model_non_ecape_hour_multi_domain, NonEcapeMultiDomainRequest},
+    places::{default_place_label_overlay_for_domain, PlaceLabelDensityTier},
     point_timeseries::{
-        PointTimeseriesGridStore, PointTimeseriesGridStoreRequest, PointTimeseriesRequest,
         build_point_timeseries_grid_store, sample_point_timeseries,
-        sample_point_timeseries_grid_store,
+        sample_point_timeseries_grid_store, PointTimeseriesGridStore,
+        PointTimeseriesGridStoreRequest, PointTimeseriesRequest,
     },
-    satellite::{GoesSatelliteBatchRequest, run_goes_satellite_batch},
+    satellite::{
+        run_goes_native_sequence, run_goes_satellite_batch, GoesNativeSequenceRequest,
+        GoesSatelliteBatchRequest,
+    },
     shared_context::DomainSpec,
     source::ProductSourceMode,
     windowed::HrrrWindowedProduct,
@@ -43,7 +48,7 @@ use rustwx_products::{
 #[cfg(feature = "python")]
 use rustwx_render::PngCompressionMode;
 #[cfg(feature = "python")]
-use rustwx_sounding::{SoundingColumn, write_full_sounding_png};
+use rustwx_sounding::{write_full_sounding_png, SoundingColumn};
 #[cfg(feature = "python")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "python")]
@@ -258,6 +263,19 @@ fn render_goes_satellite_json(request_json: &str) -> PyResult<String> {
             ))
         })?;
     render_goes_satellite_json_impl(request)
+}
+
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (request_json))]
+fn render_goes_native_sequence_json(request_json: &str) -> PyResult<String> {
+    let request: RenderGoesNativeSequenceRequestJson =
+        serde_json::from_str(request_json).map_err(|err| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "Invalid render-goes-native-sequence request: {err}"
+            ))
+        })?;
+    render_goes_native_sequence_json_impl(request)
 }
 
 #[cfg(feature = "python")]
@@ -509,6 +527,69 @@ struct RenderGoesSatelliteRequestJson {
     sequence_gif: Option<bool>,
     #[serde(default)]
     sequence_gif_delay_ms: Option<u32>,
+}
+
+#[cfg(feature = "python")]
+#[derive(Debug, Clone, Default, Deserialize)]
+struct RenderGoesNativeSequenceRequestJson {
+    #[serde(default)]
+    satellite: Option<String>,
+    #[serde(default)]
+    abi_product: Option<String>,
+    #[serde(default, alias = "sector")]
+    abi_sector: Option<String>,
+    #[serde(default)]
+    product: Option<String>,
+    #[serde(default, alias = "domain")]
+    domain_slug: Option<String>,
+    #[serde(default, alias = "label")]
+    domain_label: Option<String>,
+    #[serde(default)]
+    bounds: Option<Vec<f64>>,
+    #[serde(default)]
+    west: Option<f64>,
+    #[serde(default)]
+    east: Option<f64>,
+    #[serde(default)]
+    south: Option<f64>,
+    #[serde(default)]
+    north: Option<f64>,
+    #[serde(default, alias = "out")]
+    out_dir: Option<PathBuf>,
+    #[serde(default)]
+    cache_dir: Option<PathBuf>,
+    #[serde(default, alias = "start")]
+    start_time_utc: Option<DateTime<Utc>>,
+    #[serde(default, alias = "end")]
+    end_time_utc: Option<DateTime<Utc>>,
+    #[serde(default)]
+    latest_count: Option<usize>,
+    #[serde(default)]
+    scan_lookback_hours: Option<u32>,
+    #[serde(default)]
+    min_step_minutes: Option<u32>,
+    #[serde(default)]
+    use_cache: Option<bool>,
+    #[serde(default)]
+    no_cache: Option<bool>,
+    #[serde(default)]
+    downsample: Option<f64>,
+    #[serde(default)]
+    max_width: Option<u32>,
+    #[serde(default)]
+    max_height: Option<u32>,
+    #[serde(default)]
+    download_workers: Option<usize>,
+    #[serde(default)]
+    render_workers: Option<usize>,
+    #[serde(default)]
+    discovery_retries: Option<u32>,
+    #[serde(default)]
+    retry_sleep_ms: Option<u64>,
+    #[serde(default)]
+    high_speed_png: Option<bool>,
+    #[serde(default)]
+    png_compression: Option<PngCompressionMode>,
 }
 
 #[cfg(feature = "python")]
@@ -858,6 +939,80 @@ fn render_goes_satellite_json_impl(request: RenderGoesSatelliteRequestJson) -> P
     }
 
     let report = run_goes_satellite_batch(&batch_request)
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+    serde_json::to_string_pretty(&report)
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
+}
+
+#[cfg(feature = "python")]
+fn render_goes_native_sequence_json_impl(
+    request: RenderGoesNativeSequenceRequestJson,
+) -> PyResult<String> {
+    let bounds = match request.bounds.as_deref() {
+        Some([west, east, south, north]) => (*west, *east, *south, *north),
+        Some(_) => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "bounds must be [west, east, south, north]",
+            ));
+        }
+        None => (
+            request.west.ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("west is required when bounds is omitted")
+            })?,
+            request.east.ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("east is required when bounds is omitted")
+            })?,
+            request.south.ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("south is required when bounds is omitted")
+            })?,
+            request.north.ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("north is required when bounds is omitted")
+            })?,
+        ),
+    };
+    let domain_slug = request
+        .domain_slug
+        .unwrap_or_else(|| "native_crop".to_string());
+    let mut sequence_request = GoesNativeSequenceRequest {
+        satellite: request.satellite.unwrap_or_else(|| "goes18".to_string()),
+        abi_product: request
+            .abi_product
+            .unwrap_or_else(|| "ABI-L2-CMIPC".to_string()),
+        abi_sector: request.abi_sector,
+        product: request.product.unwrap_or_else(|| "geocolor".to_string()),
+        domain_label: request
+            .domain_label
+            .unwrap_or_else(|| domain_label_for_slug(&domain_slug)),
+        domain_slug,
+        bounds,
+        out_dir: request
+            .out_dir
+            .unwrap_or_else(|| PathBuf::from("rustwx_outputs")),
+        cache_dir: request
+            .cache_dir
+            .unwrap_or_else(default_render_maps_cache_dir),
+        start_time_utc: request.start_time_utc,
+        end_time_utc: request.end_time_utc,
+        latest_count: request.latest_count.unwrap_or(1).max(1),
+        scan_lookback_hours: request.scan_lookback_hours.unwrap_or(6).max(1),
+        min_step_minutes: request.min_step_minutes,
+        use_cache: request.use_cache.unwrap_or(true) && !request.no_cache.unwrap_or(false),
+        downsample: request.downsample.unwrap_or(1.0),
+        max_width: request.max_width,
+        max_height: request.max_height,
+        download_workers: request.download_workers.unwrap_or(8),
+        render_workers: request.render_workers.unwrap_or(0),
+        discovery_retries: request.discovery_retries.unwrap_or(1),
+        retry_sleep_ms: request.retry_sleep_ms.unwrap_or(10_000),
+        png_compression: request
+            .png_compression
+            .unwrap_or_else(PngCompressionMode::default),
+    };
+    if request.high_speed_png.unwrap_or(false) {
+        sequence_request.png_compression = PngCompressionMode::Fast;
+    }
+
+    let report = run_goes_native_sequence(&sequence_request)
         .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
     serde_json::to_string_pretty(&report)
         .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
@@ -2934,6 +3089,7 @@ fn rustwx(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(render_maps_json, module)?)?;
     module.add_function(wrap_pyfunction!(render_glm_lightning_json, module)?)?;
     module.add_function(wrap_pyfunction!(render_goes_satellite_json, module)?)?;
+    module.add_function(wrap_pyfunction!(render_goes_native_sequence_json, module)?)?;
     module.add_function(wrap_pyfunction!(sample_point_timeseries_json, module)?)?;
     module.add_function(wrap_pyfunction!(warm_point_timeseries_store_json, module)?)?;
     module.add_function(wrap_pyfunction!(

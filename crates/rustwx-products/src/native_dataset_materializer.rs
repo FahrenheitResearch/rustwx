@@ -9,13 +9,13 @@
 use chrono::{DateTime, Datelike, Utc};
 use rayon::prelude::*;
 use rustwx_core::{CycleSpec, GridShape, LatLonGrid, ModelId, ModelRunRequest, SourceId};
-use rustwx_io::{FetchRequest, fetch_bytes_with_cache};
+use rustwx_io::{fetch_bytes_with_cache, FetchRequest};
 use rustwx_radar::batch::{
-    CartesianGridSpec, Level2TensorProduct, build_level2_cartesian_tensors,
-    parse_level2_object_name_scan_time,
+    build_level2_cartesian_tensors, parse_level2_object_name_scan_time, CartesianGridSpec,
+    Level2TensorProduct,
 };
 use rustwx_radar::nexrad::sites::{find_nearest_site, find_site};
-use rustwx_radar::{Level2File, aws as nexrad_aws};
+use rustwx_radar::{aws as nexrad_aws, Level2File};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -28,12 +28,12 @@ use crate::native_dataset::{
     NativeHourOutput, NativeHourProcessor,
 };
 use crate::native_dataset_hrrr::{
-    HrrrHourCache, NativeDatasetTileGrid, RemapMethod, decode_hrrr_hour_once,
-    precompute_tile_remap_with_projection, remap_hrrr_hour_to_tile,
+    decode_hrrr_hour_once, precompute_tile_remap_with_projection, remap_hrrr_hour_to_tile,
+    HrrrHourCache, NativeDatasetTileGrid, RemapMethod,
 };
 use crate::native_dataset_obs::{
-    GOES_MCMIPC_CHANNELS, GoesAbiChannelSpec, NativeObsTileGrid, read_goes_multiband_hour,
-    read_mrms_product_hour, remap_goes_hour_to_tile, remap_mrms_hour_to_tile,
+    read_goes_multiband_hour, read_mrms_product_hour, remap_goes_hour_to_tile,
+    remap_mrms_hour_to_tile, GoesAbiChannelSpec, NativeObsTileGrid, GOES_MCMIPC_CHANNELS,
 };
 use crate::native_dataset_shard_store::{
     TrainingShardManifest, TrainingShardSampleTensor, TrainingShardTensorSpec, TrainingShardWriter,
@@ -646,13 +646,7 @@ impl NativeDatasetMaterializer {
                 );
             }
         };
-        let channels = self
-            .layout
-            .goes_channel_ids
-            .iter()
-            .filter_map(|id| GOES_MCMIPC_CHANNELS.iter().find(|channel| channel.id == id))
-            .copied()
-            .collect::<Vec<GoesAbiChannelSpec>>();
+        let channels = required_goes_channels(&self.layout.goes_channel_ids);
         match read_goes_multiband_hour(path, &channels) {
             Ok(hour) => Ok(Some(hour)),
             Err(err) if self.config.missing_policy == NativeMaterializerMissingPolicy::FillNan => {
@@ -1084,10 +1078,114 @@ fn stack_obs_bands(
     for field_id in field_ids {
         match bands.iter().find(|band| &band.field_id == field_id) {
             Some(band) => out.extend_from_slice(&band.values),
-            None => out.extend(nan_vec(grid_size * grid_size)),
+            None => match derived_goes_values(field_id, bands, grid_size) {
+                Some(values) => out.extend(values),
+                None => out.extend(nan_vec(grid_size * grid_size)),
+            },
         }
     }
     out
+}
+
+fn required_goes_channels(field_ids: &[String]) -> Vec<GoesAbiChannelSpec> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for field_id in field_ids {
+        for channel_id in goes_raw_dependencies(field_id) {
+            if seen.insert(channel_id) {
+                if let Some(spec) = GOES_MCMIPC_CHANNELS
+                    .iter()
+                    .find(|channel| channel.id.eq_ignore_ascii_case(channel_id))
+                {
+                    out.push(*spec);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn goes_raw_dependencies(field_id: &str) -> Vec<&'static str> {
+    match normalize_goes_field_id(field_id).as_str() {
+        "btd_c13_c15" => vec!["C13", "C15"],
+        "btd_c08_c10" => vec!["C08", "C10"],
+        "btd_c10_c13" => vec!["C10", "C13"],
+        "btd_c07_c13" => vec!["C07", "C13"],
+        "ndiff_c02_c01" => vec!["C02", "C01"],
+        _ => GOES_MCMIPC_CHANNELS
+            .iter()
+            .find(|channel| channel.id.eq_ignore_ascii_case(field_id))
+            .map(|channel| vec![channel.id])
+            .unwrap_or_default(),
+    }
+}
+
+fn derived_goes_values(
+    field_id: &str,
+    bands: &[crate::native_dataset_obs::RemappedObsBand],
+    grid_size: usize,
+) -> Option<Vec<f32>> {
+    match normalize_goes_field_id(field_id).as_str() {
+        "btd_c13_c15" => binary_goes_derived(bands, grid_size, "C13", "C15", |a, b| a - b),
+        "btd_c08_c10" => binary_goes_derived(bands, grid_size, "C08", "C10", |a, b| a - b),
+        "btd_c10_c13" => binary_goes_derived(bands, grid_size, "C10", "C13", |a, b| a - b),
+        "btd_c07_c13" => binary_goes_derived(bands, grid_size, "C07", "C13", |a, b| a - b),
+        "ndiff_c02_c01" => binary_goes_derived(bands, grid_size, "C02", "C01", |a, b| {
+            let denom = a + b;
+            if denom.abs() > 1.0e-6 {
+                (a - b) / denom
+            } else {
+                f32::NAN
+            }
+        }),
+        _ => None,
+    }
+}
+
+fn binary_goes_derived<F>(
+    bands: &[crate::native_dataset_obs::RemappedObsBand],
+    grid_size: usize,
+    left_id: &str,
+    right_id: &str,
+    op: F,
+) -> Option<Vec<f32>>
+where
+    F: Fn(f32, f32) -> f32,
+{
+    let left = band_values(bands, left_id)?;
+    let right = band_values(bands, right_id)?;
+    let g2 = grid_size * grid_size;
+    Some(
+        (0..g2)
+            .map(|idx| {
+                let a = left.get(idx).copied().unwrap_or(f32::NAN);
+                let b = right.get(idx).copied().unwrap_or(f32::NAN);
+                if a.is_finite() && b.is_finite() {
+                    op(a, b)
+                } else {
+                    f32::NAN
+                }
+            })
+            .collect(),
+    )
+}
+
+fn band_values<'a>(
+    bands: &'a [crate::native_dataset_obs::RemappedObsBand],
+    field_id: &str,
+) -> Option<&'a [f32]> {
+    bands
+        .iter()
+        .find(|band| band.field_id.eq_ignore_ascii_case(field_id))
+        .map(|band| band.values.as_slice())
+}
+
+fn normalize_goes_field_id(field_id: &str) -> String {
+    field_id
+        .trim()
+        .to_ascii_lowercase()
+        .replace('-', "_")
+        .replace(' ', "_")
 }
 
 fn stack_history<'a, F>(history: &'a [&'a MaterializedFrame], field: F) -> Vec<f32>
@@ -1191,7 +1289,11 @@ fn valid_mask_all_channels(values: &[f32], channel_count: usize, grid_size: usiz
                     .copied()
                     .is_some_and(f32::is_finite)
             });
-            if valid { 1.0 } else { 0.0 }
+            if valid {
+                1.0
+            } else {
+                0.0
+            }
         })
         .collect()
 }
@@ -1209,7 +1311,11 @@ fn valid_mask_any_channel(values: &[f32], channel_count: usize, grid_size: usize
                     .copied()
                     .is_some_and(f32::is_finite)
             });
-            if valid { 1.0 } else { 0.0 }
+            if valid {
+                1.0
+            } else {
+                0.0
+            }
         })
         .collect()
 }
@@ -1229,9 +1335,17 @@ fn sanitize_mrms_channel(field_id: &str, values: &[f32]) -> Vec<f32> {
                     *value
                 }
             } else if id.contains("az") || id.contains("rotation") || id.contains("mesh") {
-                if *value <= -900.0 { 0.0 } else { *value }
+                if *value <= -900.0 {
+                    0.0
+                } else {
+                    *value
+                }
             } else if id.contains("prate") || id.contains("precip") {
-                if *value < 0.0 { 0.0 } else { *value }
+                if *value < 0.0 {
+                    0.0
+                } else {
+                    *value
+                }
             } else {
                 *value
             }
@@ -1538,8 +1652,8 @@ mod tests {
     use super::*;
     use crate::native_dataset::NativeHourProcessor;
     use crate::native_dataset::{
-        NativeDatasetBounds, NativeDatasetBuildConfig, NativeDatasetCase, NativeDatasetShardSpec,
-        NativeDatasetTile, plan_native_dataset,
+        plan_native_dataset, NativeDatasetBounds, NativeDatasetBuildConfig, NativeDatasetCase,
+        NativeDatasetShardSpec, NativeDatasetTile,
     };
 
     fn test_plan() -> NativeDatasetPlan {
@@ -1727,6 +1841,70 @@ mod tests {
             valid_mask_any_channel(&values, 2, 2),
             vec![1.0, 1.0, 1.0, 1.0]
         );
+    }
+
+    #[test]
+    fn derived_goes_fields_expand_to_raw_channel_dependencies() {
+        let fields = vec![
+            "btd_c13_c15".to_string(),
+            "C02".to_string(),
+            "ndiff_c02_c01".to_string(),
+        ];
+        let channels = required_goes_channels(&fields);
+        let ids = channels
+            .iter()
+            .map(|channel| channel.id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["C13", "C15", "C02", "C01"]);
+    }
+
+    #[test]
+    fn stack_obs_bands_computes_derived_goes_fields() {
+        let bands = vec![
+            crate::native_dataset_obs::RemappedObsBand {
+                field_id: "C13".to_string(),
+                units: Some("K".to_string()),
+                values: vec![250.0, 252.0, f32::NAN, 260.0],
+            },
+            crate::native_dataset_obs::RemappedObsBand {
+                field_id: "C15".to_string(),
+                units: Some("K".to_string()),
+                values: vec![240.0, 247.0, 240.0, f32::NAN],
+            },
+            crate::native_dataset_obs::RemappedObsBand {
+                field_id: "C02".to_string(),
+                units: None,
+                values: vec![0.6, 0.5, 0.0, f32::NAN],
+            },
+            crate::native_dataset_obs::RemappedObsBand {
+                field_id: "C01".to_string(),
+                units: None,
+                values: vec![0.2, 0.5, 0.0, 0.2],
+            },
+        ];
+        let fields = vec![
+            "C13".to_string(),
+            "btd_c13_c15".to_string(),
+            "ndiff_c02_c01".to_string(),
+            "unknown".to_string(),
+        ];
+
+        let stacked = stack_obs_bands(&fields, &bands, 2);
+
+        assert_eq!(stacked[0], 250.0);
+        assert_eq!(stacked[1], 252.0);
+        assert!(stacked[2].is_nan());
+        assert_eq!(stacked[3], 260.0);
+        assert_eq!(stacked[4], 10.0);
+        assert_eq!(stacked[5], 5.0);
+        assert!(stacked[6].is_nan());
+        assert!(stacked[7].is_nan());
+        assert!((stacked[8] - 0.5).abs() < 1.0e-6);
+        assert_eq!(stacked[9], 0.0);
+        assert!(stacked[10].is_nan());
+        assert!(stacked[11].is_nan());
+        assert!(stacked[12..16].iter().all(|value| value.is_nan()));
     }
 
     #[test]
