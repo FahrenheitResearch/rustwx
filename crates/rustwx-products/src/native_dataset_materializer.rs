@@ -136,6 +136,7 @@ fn default_true() -> bool {
 pub struct NativeDatasetMaterializerLayout {
     pub hrrr_field_ids: Vec<String>,
     pub mrms_field_ids: Vec<String>,
+    pub goes_product_family: String,
     pub goes_channel_ids: Vec<String>,
     pub level2_product_ids: Vec<String>,
     pub grid_size: usize,
@@ -616,7 +617,12 @@ impl NativeDatasetMaterializer {
     ) -> Result<Option<crate::native_dataset_obs::DecodedGoesHour>, Box<dyn Error>> {
         let root = self.obs_raw_root();
         let goes_dir = root.join("goes");
-        let path = match find_nearest_goes_file(&goes_dir, valid_time, GOES_MAX_LOCAL_DELTA_MS)? {
+        let path = match find_nearest_goes_file(
+            &goes_dir,
+            valid_time,
+            GOES_MAX_LOCAL_DELTA_MS,
+            &self.layout.goes_product_family,
+        )? {
             Some(path) => path,
             None if self.config.fetch_obs_when_missing => {
                 match self.fetch_goes(valid_time, &goes_dir) {
@@ -794,8 +800,10 @@ impl NativeDatasetMaterializer {
         valid_time: DateTime<Utc>,
         out_dir: &Path,
     ) -> Result<PathBuf, Box<dyn Error>> {
+        let product_prefix = goes_s3_prefix_product(&self.layout.goes_product_family);
         let prefix = format!(
-            "ABI-L2-MCMIPC/{:04}/{:03}/{:02}/",
+            "{}/{:04}/{:03}/{:02}/",
+            product_prefix,
             valid_time.year(),
             valid_time.ordinal(),
             valid_time.hour()
@@ -806,6 +814,12 @@ impl NativeDatasetMaterializer {
             .filter_map(|object| {
                 let name = object.key.rsplit('/').next()?;
                 let parsed = parse_goes_abi_filename(name).ok()?;
+                if !goes_filename_product_matches_request(
+                    &parsed.product,
+                    &self.layout.goes_product_family,
+                ) {
+                    return None;
+                }
                 let delta = (parsed.start_time_utc.timestamp_millis()
                     - valid_time.timestamp_millis())
                 .abs();
@@ -909,9 +923,17 @@ impl NativeDatasetMaterializerLayout {
                 .map(|source| source.fields.clone())
                 .unwrap_or_default()
         };
+        let goes_product_family = plan
+            .config
+            .sources
+            .iter()
+            .find(|source| source.kind == NativeDatasetSourceKind::GoesNetcdf)
+            .and_then(|source| source.product_family.clone())
+            .unwrap_or_else(|| "ABI-L2-MCMIPC".to_string());
         Ok(Self {
             hrrr_field_ids: source(NativeDatasetSourceKind::ModelGrib),
             mrms_field_ids: source(NativeDatasetSourceKind::MrmsGrib),
+            goes_product_family,
             goes_channel_ids: source(NativeDatasetSourceKind::GoesNetcdf),
             level2_product_ids: source(NativeDatasetSourceKind::RadarLevel2),
             grid_size,
@@ -1235,7 +1257,9 @@ fn find_nearest_goes_file(
     dir: &Path,
     target_time: DateTime<Utc>,
     max_delta_ms: i64,
+    product_family: &str,
 ) -> Result<Option<PathBuf>, Box<dyn Error>> {
+    let expected_product = product_family.trim().to_ascii_uppercase();
     let mut best: Option<(i64, PathBuf)> = None;
     for path in list_regular_files(dir)? {
         let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
@@ -1244,6 +1268,11 @@ fn find_nearest_goes_file(
         let Ok(parsed) = parse_goes_abi_filename(name) else {
             continue;
         };
+        if !expected_product.is_empty()
+            && !goes_filename_product_matches_request(&parsed.product, &expected_product)
+        {
+            continue;
+        }
         let delta =
             (parsed.start_time_utc.timestamp_millis() - target_time.timestamp_millis()).abs();
         if delta > max_delta_ms {
@@ -1257,6 +1286,24 @@ fn find_nearest_goes_file(
         }
     }
     Ok(best.map(|(_, path)| path))
+}
+
+fn goes_s3_prefix_product(product: &str) -> String {
+    let trimmed = product.trim();
+    let upper = trimmed.to_ascii_uppercase();
+    if upper.ends_with("M1") || upper.ends_with("M2") {
+        trimmed[..trimmed.len().saturating_sub(1)].to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn goes_filename_product_matches_request(actual_product: &str, requested_product: &str) -> bool {
+    let actual = actual_product.trim().to_ascii_uppercase();
+    let requested = requested_product.trim().to_ascii_uppercase();
+    actual == requested
+        || (requested.ends_with('M')
+            && (actual == format!("{requested}1") || actual == format!("{requested}2")))
 }
 
 fn find_nearest_mrms_file(
@@ -1522,6 +1569,7 @@ mod tests {
     fn materializer_manifest_matches_plan_shapes() {
         let plan = test_plan();
         let layout = NativeDatasetMaterializerLayout::from_plan(&plan).unwrap();
+        assert_eq!(layout.goes_product_family, "ABI-L2-MCMIPC");
         let manifest = training_shard_manifest_for_plan(&plan, &layout).unwrap();
         assert_eq!(
             manifest.tensor("hrrr_fields").unwrap().shape,
@@ -1551,6 +1599,50 @@ mod tests {
             manifest.tensor("target_refc_ge35").unwrap().shape,
             vec![1, 4, 4]
         );
+    }
+
+    #[test]
+    fn materializer_layout_preserves_goes_product_family() {
+        let case = NativeDatasetCase::new(
+            "case",
+            DateTime::parse_from_rfc3339("2024-05-06T12:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            4,
+        );
+        let tile = NativeDatasetTile::new(
+            "tile",
+            35.0,
+            -97.0,
+            NativeDatasetBounds::new(-97.1, -96.9, 34.9, 35.1),
+        );
+        let mut config =
+            NativeDatasetBuildConfig::hrrr_multisource_v1("goes_meso", vec![case], vec![tile]);
+        for source in &mut config.sources {
+            if source.kind == NativeDatasetSourceKind::GoesNetcdf {
+                source.product_family = Some("ABI-L2-MCMIPM1".to_string());
+            }
+        }
+        let plan = plan_native_dataset(config, NativeDatasetShardSpec::new(0, 1).unwrap()).unwrap();
+        let layout = NativeDatasetMaterializerLayout::from_plan(&plan).unwrap();
+        assert_eq!(layout.goes_product_family, "ABI-L2-MCMIPM1");
+    }
+
+    #[test]
+    fn goes_mesoscale_product_family_uses_shared_s3_prefix() {
+        assert_eq!(goes_s3_prefix_product("ABI-L2-MCMIPM1"), "ABI-L2-MCMIPM");
+        assert!(goes_filename_product_matches_request(
+            "ABI-L2-MCMIPM1",
+            "ABI-L2-MCMIPM1"
+        ));
+        assert!(!goes_filename_product_matches_request(
+            "ABI-L2-MCMIPM2",
+            "ABI-L2-MCMIPM1"
+        ));
+        assert!(goes_filename_product_matches_request(
+            "ABI-L2-MCMIPM2",
+            "ABI-L2-MCMIPM"
+        ));
     }
 
     #[test]

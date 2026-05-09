@@ -455,6 +455,8 @@ struct RenderGoesSatelliteRequestJson {
     satellite: Option<String>,
     #[serde(default)]
     abi_product: Option<String>,
+    #[serde(default, alias = "abi_sector")]
+    sector: Option<String>,
     #[serde(default)]
     domain: Option<String>,
     #[serde(default)]
@@ -497,6 +499,10 @@ struct RenderGoesSatelliteRequestJson {
     png_compression: Option<PngCompressionMode>,
     #[serde(default)]
     skip_scan_id: Option<String>,
+    #[serde(default)]
+    auto_bounds: Option<bool>,
+    #[serde(default)]
+    allow_high_resolution_full_disk: Option<bool>,
 }
 
 #[cfg(feature = "python")]
@@ -691,8 +697,11 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
         "render_goes_satellite_request_schema": {
             "satellite": "GOES satellite id; default goes18",
             "abi_product": "NOAA ABI S3 product prefix; default ABI-L2-CMIPC",
+            "sector": "optional sector shortcut: conus, full_disk, meso1, or meso2; maps to CMIPC/CMIPF/CMIPM1/CMIPM2",
             "domain": "optional built-in domain slug; default pacific_southwest",
             "bounds": "optional [west,east,south,north] custom domain override",
+            "auto_bounds": "infer render bounds from the ABI fixed grid scene; useful for full-disk and mesoscale sectors",
+            "allow_high_resolution_full_disk": "allow full-disk high-resolution visible channels such as C02; default false",
             "products": "optional list such as goes_geocolor, goes_glm_fed_geocolor, goes_fire_temperature_rgb, goes_abi_band_13",
             "cache_dir": "shared raw NetCDF cache; default rustwx_outputs/cache, or RUSTWX_CACHE_DIR",
             "out_dir": "optional artifact output directory",
@@ -778,6 +787,9 @@ fn render_goes_satellite_json_impl(request: RenderGoesSatelliteRequestJson) -> P
     if let Some(abi_product) = request.abi_product {
         batch_request.abi_product = abi_product;
     }
+    if let Some(sector) = request.sector.clone() {
+        batch_request.abi_sector = Some(sector);
+    }
     batch_request.domain_slug = domain.slug;
     batch_request.domain_label = request
         .label
@@ -821,6 +833,14 @@ fn render_goes_satellite_json_impl(request: RenderGoesSatelliteRequestJson) -> P
         batch_request.png_compression = PngCompressionMode::Fast;
     }
     batch_request.skip_scan_id = request.skip_scan_id;
+    batch_request.auto_bounds = request.auto_bounds.unwrap_or_else(|| {
+        request
+            .sector
+            .as_deref()
+            .is_some_and(|sector| is_auto_bounds_satellite_sector(sector))
+    });
+    batch_request.allow_high_resolution_full_disk =
+        request.allow_high_resolution_full_disk.unwrap_or(false);
 
     let report = run_goes_satellite_batch(&batch_request)
         .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
@@ -1405,11 +1425,56 @@ fn render_goes_satellite_domain(request: &RenderGoesSatelliteRequestJson) -> PyR
         let slug = request.domain.as_deref().unwrap_or("custom");
         return bounds_domain(slug, bounds.as_slice());
     }
+    if request.domain.is_none() {
+        if let Some(sector) = request
+            .sector
+            .as_deref()
+            .filter(|sector| is_auto_bounds_satellite_sector(sector))
+        {
+            let slug = satellite_sector_domain_slug(sector);
+            return Ok(DomainSpec::new(slug, (-180.0, 180.0, -75.0, 75.0)));
+        }
+    }
     let slug = request.domain.as_deref().unwrap_or("pacific_southwest");
     if normalize_slug(slug) == "pacific_southwest" {
         return Ok(DomainSpec::new(slug, (-127.0, -111.0, 30.0, 44.5)));
     }
     resolve_named_domain(slug)
+}
+
+#[cfg(feature = "python")]
+fn is_auto_bounds_satellite_sector(sector: &str) -> bool {
+    matches!(
+        normalize_slug(sector).as_str(),
+        "full"
+            | "full_disk"
+            | "fulldisk"
+            | "full_disc"
+            | "fulldisc"
+            | "fd"
+            | "f"
+            | "meso"
+            | "mesoscale"
+            | "meso1"
+            | "mesoscale1"
+            | "mesoscale_1"
+            | "m1"
+            | "meso2"
+            | "mesoscale2"
+            | "mesoscale_2"
+            | "m2"
+    )
+}
+
+#[cfg(feature = "python")]
+fn satellite_sector_domain_slug(sector: &str) -> String {
+    match normalize_slug(sector).as_str() {
+        "full" | "full_disk" | "fulldisk" | "full_disc" | "fulldisc" | "fd" | "f" => {
+            "goes_full_disk".to_string()
+        }
+        "meso2" | "mesoscale2" | "mesoscale_2" | "m2" => "goes_mesoscale_2".to_string(),
+        _ => "goes_mesoscale_1".to_string(),
+    }
 }
 
 #[cfg(feature = "python")]
@@ -2114,7 +2179,7 @@ fn print_render_lightning_help() {
 #[cfg(feature = "python")]
 fn print_render_satellite_help() {
     println!(
-        "USAGE:\n  rustwx render-satellite [--satellite goes18] [--domain pacific_southwest] [--cache-dir DIR] [--out-dir DIR]\n  rustwx render-satellite --bounds west,east,south,north [--label NAME]\n  rustwx render-satellite --request request.json\n\nOptions include --product comma-list, --width, --height, --scan-lookback-hours, --glm-fetch-count, --no-glm, --no-cache, and --high-speed-png.\n\nDefault ABI source: NOAA noaa-goes18 / ABI-L2-CMIPC. Raw NetCDF cache defaults to rustwx_outputs/cache or RUSTWX_CACHE_DIR."
+        "USAGE:\n  rustwx render-satellite [--satellite goes18] [--domain pacific_southwest] [--cache-dir DIR] [--out-dir DIR]\n  rustwx render-satellite --sector full-disk --auto-bounds [--product goes_abi_band_13]\n  rustwx render-satellite --sector meso1 --auto-bounds [--product goes_abi_band_13]\n  rustwx render-satellite --bounds west,east,south,north [--label NAME]\n  rustwx render-satellite --request request.json\n\nOptions include --sector conus|full_disk|meso1|meso2, --auto-bounds, --allow-high-resolution-full-disk, --product comma-list, --width, --height, --scan-lookback-hours, --glm-fetch-count, --no-glm, --no-cache, and --high-speed-png.\n\nDefault ABI source: NOAA noaa-goes18 / ABI-L2-CMIPC. Full-disk defaults avoid high-resolution visible channels unless explicitly allowed. Raw NetCDF cache defaults to rustwx_outputs/cache or RUSTWX_CACHE_DIR."
     );
 }
 
@@ -2232,6 +2297,9 @@ fn render_goes_satellite_request_from_cli(
             }
             "--satellite" => request.satellite = Some(next_cli_value(args, &mut index, arg)?),
             "--abi-product" => request.abi_product = Some(next_cli_value(args, &mut index, arg)?),
+            "--sector" | "--abi-sector" => {
+                request.sector = Some(next_cli_value(args, &mut index, arg)?)
+            }
             "--domain" | "--region" => {
                 request.domain = Some(next_cli_value(args, &mut index, arg)?)
             }
@@ -2271,6 +2339,10 @@ fn render_goes_satellite_request_from_cli(
             }
             "--skip-scan-id" => request.skip_scan_id = Some(next_cli_value(args, &mut index, arg)?),
             "--high-speed-png" => request.high_speed_png = Some(true),
+            "--auto-bounds" => request.auto_bounds = Some(true),
+            "--allow-high-resolution-full-disk" => {
+                request.allow_high_resolution_full_disk = Some(true)
+            }
             "--no-cache" => request.no_cache = Some(true),
             "--no-glm" => request.no_glm = Some(true),
             other => return Err(format!("unknown render-satellite option '{other}'")),

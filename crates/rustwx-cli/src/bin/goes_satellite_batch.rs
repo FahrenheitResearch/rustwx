@@ -14,6 +14,11 @@ struct Args {
     satellite: String,
     #[arg(long, default_value = "ABI-L2-CMIPC")]
     abi_product: String,
+    #[arg(
+        long,
+        help = "ABI sector shortcut: conus, full_disk, meso1, or meso2. Overrides --abi-product with the matching CMIP product."
+    )]
+    sector: Option<String>,
     #[arg(long, default_value = "pacific_southwest")]
     domain: String,
     #[arg(long, default_value = "Pacific Southwest")]
@@ -56,6 +61,13 @@ struct Args {
     png_compression: PngCompressionArg,
     #[arg(long)]
     skip_scan_id: Option<String>,
+    #[arg(long, help = "Infer render bounds from the ABI fixed grid scene")]
+    auto_bounds: bool,
+    #[arg(
+        long,
+        help = "Allow full-disk high-resolution visible channels such as C02"
+    )]
+    allow_high_resolution_full_disk: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -80,6 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let request = GoesSatelliteBatchRequest {
         satellite: args.satellite,
         abi_product: args.abi_product,
+        abi_sector: args.sector,
         domain_slug: args.domain,
         domain_label: args.label,
         bounds: (args.west, args.east, args.south, args.north),
@@ -98,6 +111,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         glm_max_age_min: args.glm_max_age_min,
         png_compression: args.png_compression.into(),
         skip_scan_id: args.skip_scan_id,
+        auto_bounds: args.auto_bounds,
+        allow_high_resolution_full_disk: args.allow_high_resolution_full_disk,
     };
     let report = run_goes_satellite_batch(&request)?;
     println!("{}", serde_json::to_string_pretty(&report)?);

@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use crate::publication::atomic_write_json;
 
+use super::abi::read_goes_abi_scene;
 use super::goes::{GoesSatellite, parse_goes_abi_filename};
 use super::render::{GoesAbiBandMapRequest, build_goes_abi_band_render_request};
 use super::rgb::{
@@ -29,6 +30,7 @@ const DEFAULT_RETRY_SLEEP_MS: u64 = 20_000;
 const DEFAULT_GLM_FETCH_COUNT: usize = 90;
 const DEFAULT_GLM_LOOKBACK_HOURS: u32 = 3;
 const DEFAULT_GLM_MAX_AGE_MIN: f64 = 30.0;
+const DEFAULT_AUTO_BOUNDS_SAMPLE_AXIS: usize = 96;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoesSatelliteBatchRequest {
@@ -36,6 +38,8 @@ pub struct GoesSatelliteBatchRequest {
     pub satellite: String,
     #[serde(default = "default_abi_product")]
     pub abi_product: String,
+    #[serde(default, alias = "sector")]
+    pub abi_sector: Option<String>,
     #[serde(default = "default_domain_slug")]
     pub domain_slug: String,
     #[serde(default = "default_domain_label")]
@@ -70,6 +74,10 @@ pub struct GoesSatelliteBatchRequest {
     pub png_compression: PngCompressionMode,
     #[serde(default)]
     pub skip_scan_id: Option<String>,
+    #[serde(default)]
+    pub auto_bounds: bool,
+    #[serde(default)]
+    pub allow_high_resolution_full_disk: bool,
 }
 
 impl GoesSatelliteBatchRequest {
@@ -77,6 +85,7 @@ impl GoesSatelliteBatchRequest {
         Self {
             satellite: default_satellite(),
             abi_product: default_abi_product(),
+            abi_sector: None,
             domain_slug: default_domain_slug(),
             domain_label: default_domain_label(),
             bounds: default_psw_bounds(),
@@ -95,6 +104,8 @@ impl GoesSatelliteBatchRequest {
             glm_max_age_min: DEFAULT_GLM_MAX_AGE_MIN,
             png_compression: PngCompressionMode::Fast,
             skip_scan_id: None,
+            auto_bounds: false,
+            allow_high_resolution_full_disk: false,
         }
     }
 }
@@ -221,6 +232,7 @@ pub struct GoesSatelliteBatchReport {
     pub satellite: String,
     pub source_bucket: String,
     pub abi_product: String,
+    pub abi_sector: String,
     pub scan_id: String,
     pub scan_time_utc: DateTime<Utc>,
     pub scan_end_time_utc: DateTime<Utc>,
@@ -313,12 +325,24 @@ pub fn run_goes_satellite_batch(
 ) -> Result<GoesSatelliteBatchReport, Box<dyn Error>> {
     let total_start = Instant::now();
     validate_bounds(request.bounds)?;
-    let products = requested_products(&request.products)?;
+    let abi_product = resolve_abi_product(&request.abi_product, request.abi_sector.as_deref())?;
+    let abi_sector = sector_slug_for_abi_product(&abi_product);
+    let product_inputs = product_inputs_for_request(
+        &request.products,
+        &abi_product,
+        request.allow_high_resolution_full_disk,
+    );
+    let products = requested_products(&product_inputs)?;
     let product_slugs = products
         .iter()
         .map(GoesSatelliteProduct::slug)
         .collect::<Vec<_>>();
     let required_channels = required_channels(&products);
+    validate_requested_channels_for_product(
+        &abi_product,
+        &required_channels,
+        request.allow_high_resolution_full_disk,
+    )?;
     let satellite = GoesSatellite::parse(&request.satellite);
     let satellite_slug = satellite.as_str().to_ascii_lowercase();
     let bucket = bucket_for_satellite(&request.satellite)?;
@@ -330,7 +354,7 @@ pub fn run_goes_satellite_batch(
     let scan = discover_latest_complete_scan(
         &agent,
         &bucket,
-        &request.abi_product,
+        &abi_product,
         &required_channels,
         request.scan_lookback_hours,
         request.discovery_retries,
@@ -354,7 +378,8 @@ pub fn run_goes_satellite_batch(
             generated_at_utc: Utc::now(),
             satellite: satellite.as_str().to_string(),
             source_bucket: bucket,
-            abi_product: request.abi_product.clone(),
+            abi_product,
+            abi_sector,
             scan_id: scan.scan_id,
             scan_time_utc: scan.start_time_utc,
             scan_end_time_utc: scan.end_time_utc,
@@ -457,7 +482,8 @@ pub fn run_goes_satellite_batch(
         generated_at_utc: Utc::now(),
         satellite: satellite.as_str().to_string(),
         source_bucket: bucket,
-        abi_product: request.abi_product.clone(),
+        abi_product,
+        abi_sector: abi_sector.clone(),
         scan_id: scan.scan_id,
         scan_time_utc: scan.start_time_utc,
         scan_end_time_utc: scan.end_time_utc,
@@ -513,12 +539,20 @@ fn render_product(
                     .ok_or_else(|| boxed_error(format!("missing downloaded ABI C{channel:02}")))
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let base_channel = style.base_channel();
+        let base_path = channel_paths.get(&base_channel).ok_or_else(|| {
+            boxed_error(format!(
+                "missing GOES ABI base channel C{base_channel:02} for {}",
+                product.slug()
+            ))
+        })?;
+        let render_bounds = render_bounds_for_path(request, base_path)?;
         let render_request =
             build_goes_abi_rgb_composite_render_request(&GoesAbiRgbCompositeRequest {
                 channel_paths,
                 composite_style: style,
                 domain_label: request.domain_label.clone(),
-                bounds: request.bounds,
+                bounds: render_bounds,
                 width: request.width,
                 height: request.height,
                 glm_data_dir: product.uses_glm().then(|| glm_dir.cloned()).flatten(),
@@ -535,12 +569,13 @@ fn render_product(
         let download = channel_downloads
             .get(channel)
             .ok_or_else(|| boxed_error(format!("missing downloaded ABI C{channel:02}")))?;
+        let render_bounds = render_bounds_for_path(request, &download.path)?;
         let render_request = build_goes_abi_band_render_request(&GoesAbiBandMapRequest {
             abi_path: download.path.clone(),
             variable_name: "CMI".to_string(),
             channel: *channel,
             domain_label: request.domain_label.clone(),
-            bounds: request.bounds,
+            bounds: render_bounds,
             width: request.width,
             height: request.height,
         })?;
@@ -552,6 +587,8 @@ fn render_product(
             },
         )?;
     }
+
+    let artifact_bounds = artifact_bounds_for_product(product, request, channel_downloads)?;
 
     Ok(GoesSatelliteArtifact {
         product: slug,
@@ -572,12 +609,12 @@ fn render_product(
         product_time_utc: scan.start_time_utc,
         domain: request.domain_slug.clone(),
         domain_label: request.domain_label.clone(),
-        bounds: request.bounds,
+        bounds: artifact_bounds,
         resolution: product_resolution(product),
         png_path,
         source_keys,
         generated_at_utc: Utc::now(),
-        mapbox_overlay: mapbox_overlay(request.bounds, scan.start_time_utc),
+        mapbox_overlay: mapbox_overlay(artifact_bounds, scan.start_time_utc),
         timing_ms: started.elapsed().as_millis(),
     })
 }
@@ -636,6 +673,9 @@ fn try_discover_latest_complete_scan(
                 Ok(parsed) => parsed,
                 Err(_) => continue,
             };
+            if !abi_filename_product_matches_request(&parsed.product, abi_product) {
+                continue;
+            }
             let Some(channel) = parsed.channel else {
                 continue;
             };
@@ -893,6 +933,160 @@ fn requested_products(
     Ok(parsed)
 }
 
+fn resolve_abi_product(product: &str, sector: Option<&str>) -> Result<String, Box<dyn Error>> {
+    let Some(raw_sector) = sector.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(product.trim().to_string());
+    };
+    let normalized = raw_sector
+        .to_ascii_lowercase()
+        .replace('-', "_")
+        .replace(' ', "_");
+    let suffix = match normalized.as_str() {
+        "conus" | "continental_us" | "continental_united_states" | "c" => "C",
+        "full" | "full_disk" | "fulldisk" | "full_disc" | "fulldisc" | "fd" | "f" => "F",
+        "meso" | "mesoscale" => "M",
+        "meso1" | "mesoscale1" | "mesoscale_1" | "m1" => "M1",
+        "meso2" | "mesoscale2" | "mesoscale_2" | "m2" => "M2",
+        _ => {
+            return Err(boxed_error(format!(
+                "unsupported GOES ABI sector '{raw_sector}', expected conus, full_disk, meso1, or meso2"
+            )));
+        }
+    };
+    Ok(format!("ABI-L2-CMIP{suffix}"))
+}
+
+fn sector_slug_for_abi_product(product: &str) -> String {
+    let upper = product.trim().to_ascii_uppercase();
+    if upper.ends_with("M1") {
+        "mesoscale_1".to_string()
+    } else if upper.ends_with("M2") {
+        "mesoscale_2".to_string()
+    } else if upper.ends_with('M') {
+        "mesoscale".to_string()
+    } else if upper.ends_with('F') {
+        "full_disk".to_string()
+    } else if upper.ends_with('C') {
+        "conus".to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+fn product_inputs_for_request(
+    raw_products: &[String],
+    abi_product: &str,
+    allow_high_resolution_full_disk: bool,
+) -> Vec<String> {
+    let defaults = default_satellite_products();
+    let products = if raw_products.is_empty() {
+        defaults.clone()
+    } else {
+        raw_products.to_vec()
+    };
+    if is_full_disk_product(abi_product) && !allow_high_resolution_full_disk && products == defaults
+    {
+        return default_full_disk_satellite_products();
+    }
+    products
+}
+
+fn default_full_disk_satellite_products() -> Vec<String> {
+    vec![
+        "goes_abi_band_13".to_string(),
+        "goes_airmass_rgb".to_string(),
+        "goes_dust_rgb".to_string(),
+    ]
+}
+
+fn validate_requested_channels_for_product(
+    abi_product: &str,
+    channels: &[u8],
+    allow_high_resolution_full_disk: bool,
+) -> Result<(), Box<dyn Error>> {
+    if !is_full_disk_product(abi_product) || allow_high_resolution_full_disk {
+        return Ok(());
+    }
+    let restricted = channels
+        .iter()
+        .copied()
+        .filter(|channel| matches!(channel, 1 | 2 | 3 | 5))
+        .collect::<Vec<_>>();
+    if restricted.is_empty() {
+        return Ok(());
+    }
+    Err(boxed_error(format!(
+        "full-disk GOES channels C{} are high-resolution and can require very large memory; request lower-resolution IR/RGB products or set allow_high_resolution_full_disk=true",
+        restricted
+            .iter()
+            .map(|channel| format!("{channel:02}"))
+            .collect::<Vec<_>>()
+            .join(",C")
+    )))
+}
+
+fn is_full_disk_product(abi_product: &str) -> bool {
+    abi_product.trim().to_ascii_uppercase().ends_with('F')
+}
+
+fn render_bounds_for_path(
+    request: &GoesSatelliteBatchRequest,
+    path: &Path,
+) -> Result<(f64, f64, f64, f64), Box<dyn Error>> {
+    if !request.auto_bounds {
+        return Ok(request.bounds);
+    }
+    let scene = read_goes_abi_scene(path)?;
+    let bounds = scene
+        .approximate_lat_lon_bounds(DEFAULT_AUTO_BOUNDS_SAMPLE_AXIS)
+        .ok_or_else(|| {
+            boxed_error(format!(
+                "could not infer GOES scene bounds from {}",
+                path.display()
+            ))
+        })?;
+    Ok(pad_bounds(bounds, 0.02))
+}
+
+fn artifact_bounds_for_product(
+    product: &GoesSatelliteProduct,
+    request: &GoesSatelliteBatchRequest,
+    channel_downloads: &BTreeMap<u8, DownloadedObject>,
+) -> Result<(f64, f64, f64, f64), Box<dyn Error>> {
+    if !request.auto_bounds {
+        return Ok(request.bounds);
+    }
+    let channel = product
+        .rgb_style()
+        .map(GoesAbiRgbCompositeStyle::base_channel)
+        .or_else(|| match product {
+            GoesSatelliteProduct::AbiBand(channel) => Some(*channel),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            boxed_error(format!(
+                "cannot infer artifact bounds for {}",
+                product.slug()
+            ))
+        })?;
+    let download = channel_downloads
+        .get(&channel)
+        .ok_or_else(|| boxed_error(format!("missing downloaded ABI C{channel:02}")))?;
+    render_bounds_for_path(request, &download.path)
+}
+
+fn pad_bounds(bounds: (f64, f64, f64, f64), fraction: f64) -> (f64, f64, f64, f64) {
+    let (west, east, south, north) = bounds;
+    let lon_pad = ((east - west) * fraction).max(0.1);
+    let lat_pad = ((north - south) * fraction).max(0.1);
+    (
+        (west - lon_pad).clamp(-180.0, 180.0),
+        (east + lon_pad).clamp(-180.0, 180.0),
+        (south - lat_pad).clamp(-90.0, 90.0),
+        (north + lat_pad).clamp(-90.0, 90.0),
+    )
+}
+
 fn required_channels(products: &[GoesSatelliteProduct]) -> Vec<u8> {
     let mut channels = BTreeSet::new();
     for product in products {
@@ -928,6 +1122,7 @@ fn bucket_for_satellite(satellite: &str) -> Result<String, Box<dyn Error>> {
 }
 
 fn goes_hour_prefix(product: &str, hour: DateTime<Utc>) -> String {
+    let product = goes_s3_prefix_product(product);
     format!(
         "{}/{:04}/{:03}/{:02}/",
         product,
@@ -935,6 +1130,24 @@ fn goes_hour_prefix(product: &str, hour: DateTime<Utc>) -> String {
         hour.ordinal(),
         hour.hour()
     )
+}
+
+fn goes_s3_prefix_product(product: &str) -> String {
+    let trimmed = product.trim();
+    let upper = trimmed.to_ascii_uppercase();
+    if upper.ends_with("M1") || upper.ends_with("M2") {
+        trimmed[..trimmed.len().saturating_sub(1)].to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn abi_filename_product_matches_request(actual_product: &str, requested_product: &str) -> bool {
+    let actual = actual_product.trim().to_ascii_uppercase();
+    let requested = requested_product.trim().to_ascii_uppercase();
+    actual == requested
+        || (requested.ends_with('M')
+            && (actual == format!("{requested}1") || actual == format!("{requested}2")))
 }
 
 fn object_url(bucket: &str, key: &str) -> String {
@@ -1181,5 +1394,55 @@ mod tests {
         assert_eq!(bucket_for_satellite("G18").unwrap(), "noaa-goes18");
         assert_eq!(bucket_for_satellite("goes-18").unwrap(), "noaa-goes18");
         assert_eq!(bucket_for_satellite("noaa-goes18").unwrap(), "noaa-goes18");
+    }
+
+    #[test]
+    fn sector_aliases_resolve_to_abi_products() {
+        assert_eq!(
+            resolve_abi_product("ABI-L2-CMIPC", Some("full-disk")).unwrap(),
+            "ABI-L2-CMIPF"
+        );
+        assert_eq!(
+            resolve_abi_product("ABI-L2-CMIPC", Some("meso1")).unwrap(),
+            "ABI-L2-CMIPM1"
+        );
+        assert_eq!(
+            resolve_abi_product("ABI-L2-CMIPC", Some("m2")).unwrap(),
+            "ABI-L2-CMIPM2"
+        );
+        assert_eq!(sector_slug_for_abi_product("ABI-L2-CMIPF"), "full_disk");
+        assert_eq!(sector_slug_for_abi_product("ABI-L2-CMIPM1"), "mesoscale_1");
+        assert_eq!(goes_s3_prefix_product("ABI-L2-CMIPM1"), "ABI-L2-CMIPM");
+        assert!(abi_filename_product_matches_request(
+            "ABI-L2-CMIPM1",
+            "ABI-L2-CMIPM"
+        ));
+        assert!(abi_filename_product_matches_request(
+            "ABI-L2-CMIPM1",
+            "ABI-L2-CMIPM1"
+        ));
+        assert!(!abi_filename_product_matches_request(
+            "ABI-L2-CMIPM2",
+            "ABI-L2-CMIPM1"
+        ));
+    }
+
+    #[test]
+    fn full_disk_defaults_avoid_high_resolution_visible_channels() {
+        let products =
+            product_inputs_for_request(&default_satellite_products(), "ABI-L2-CMIPF", false);
+        let parsed = requested_products(&products).unwrap();
+        assert_eq!(required_channels(&parsed), vec![8, 10, 11, 12, 13, 14, 15]);
+    }
+
+    #[test]
+    fn full_disk_rejects_high_resolution_visible_channels_without_opt_in() {
+        let err =
+            validate_requested_channels_for_product("ABI-L2-CMIPF", &[2, 13], false).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("full-disk GOES channels C02 are high-resolution")
+        );
+        validate_requested_channels_for_product("ABI-L2-CMIPF", &[2, 13], true).unwrap();
     }
 }

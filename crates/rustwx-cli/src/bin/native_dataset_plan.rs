@@ -68,6 +68,17 @@ struct Args {
     goes_channels: Vec<String>,
     #[arg(
         long,
+        default_value = "ABI-L2-MCMIPC",
+        help = "GOES ABI multichannel product family: ABI-L2-MCMIPC, ABI-L2-MCMIPF, ABI-L2-MCMIPM, ABI-L2-MCMIPM1, or ABI-L2-MCMIPM2"
+    )]
+    goes_product_family: String,
+    #[arg(
+        long,
+        help = "Shortcut for GOES multichannel sector: conus, full_disk, meso1, or meso2"
+    )]
+    goes_sector: Option<String>,
+    #[arg(
+        long,
         value_delimiter = ',',
         default_value = "reflectivity,velocity",
         help = "Comma-separated NEXRAD Level-II products: reflectivity,velocity,spectrum_width,zdr,cc,phi,kdp,hca,srv,vil,echo_tops"
@@ -101,10 +112,12 @@ fn main() -> anyhow::Result<()> {
     config.grid_size = args.grid_size;
     config.history_steps = args.history_steps;
     config.forecast_step_frames = args.forecast_step_frames;
+    let goes_product_family =
+        resolve_goes_product_family(&args.goes_product_family, args.goes_sector.as_deref())?;
     config.sources = vec![
         NativeDatasetSource::hrrr_surface(clean_list(args.hrrr_fields)),
         NativeDatasetSource::mrms(clean_list(args.mrms_fields)),
-        NativeDatasetSource::goes_abi(clean_list(args.goes_channels)),
+        NativeDatasetSource::goes_abi_product(goes_product_family, clean_list(args.goes_channels)),
         NativeDatasetSource::nexrad_level2_products(clean_list(args.level2_products)),
     ];
     let shard = NativeDatasetShardSpec::new(args.shard_index, args.shard_count)
@@ -222,4 +235,33 @@ fn parse_f64(value: &str, label: &str) -> anyhow::Result<f64> {
     value
         .parse::<f64>()
         .with_context(|| format!("invalid {label}: {value}"))
+}
+
+fn resolve_goes_product_family(
+    product_family: &str,
+    sector: Option<&str>,
+) -> anyhow::Result<String> {
+    if let Some(sector) = sector.map(str::trim).filter(|value| !value.is_empty()) {
+        let normalized = sector
+            .to_ascii_lowercase()
+            .replace('-', "_")
+            .replace(' ', "_");
+        let suffix = match normalized.as_str() {
+            "conus" | "continental_us" | "continental_united_states" | "c" => "C",
+            "full" | "full_disk" | "fulldisk" | "full_disc" | "fulldisc" | "fd" | "f" => "F",
+            "meso" | "mesoscale" => "M",
+            "meso1" | "mesoscale1" | "mesoscale_1" | "m1" => "M1",
+            "meso2" | "mesoscale2" | "mesoscale_2" | "m2" => "M2",
+            _ => bail!(
+                "unsupported GOES sector '{sector}', expected conus, full_disk, meso1, or meso2"
+            ),
+        };
+        return Ok(format!("ABI-L2-MCMIP{suffix}"));
+    }
+
+    let trimmed = product_family.trim();
+    if trimmed.is_empty() {
+        bail!("GOES product family cannot be empty");
+    }
+    Ok(trimmed.to_ascii_uppercase())
 }

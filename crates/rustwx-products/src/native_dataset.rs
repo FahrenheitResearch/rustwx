@@ -59,11 +59,18 @@ impl NativeDatasetSource {
     }
 
     pub fn goes_abi(channels: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self::goes_abi_product("ABI-L2-MCMIPC", channels)
+    }
+
+    pub fn goes_abi_product(
+        product_family: impl Into<String>,
+        channels: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
         Self {
             id: "goes_abi".to_string(),
             kind: NativeDatasetSourceKind::GoesNetcdf,
             model: None,
-            product_family: Some("ABI-L2-MCMIPC".to_string()),
+            product_family: Some(product_family.into()),
             fields: channels.into_iter().map(Into::into).collect(),
         }
     }
@@ -1010,6 +1017,16 @@ mod tests {
         assert!(sources.contains("mrms"));
         assert!(sources.contains("goes_abi"));
         assert!(sources.contains("nexrad_level2"));
+    }
+
+    #[test]
+    fn goes_abi_source_can_select_full_disk_or_mesoscale_family() {
+        let full_disk = NativeDatasetSource::goes_abi_product("ABI-L2-MCMIPF", ["C08", "C13"]);
+        assert_eq!(full_disk.product_family.as_deref(), Some("ABI-L2-MCMIPF"));
+        assert_eq!(full_disk.fields, vec!["C08", "C13"]);
+
+        let meso = NativeDatasetSource::goes_abi_product("ABI-L2-MCMIPM1", ["C13"]);
+        assert_eq!(meso.product_family.as_deref(), Some("ABI-L2-MCMIPM1"));
     }
 
     #[test]
