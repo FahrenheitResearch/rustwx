@@ -1667,9 +1667,18 @@ fn validate_requested_domains(domains: &[DomainSpec]) -> Result<(), Box<dyn std:
 
 fn source_preparation_domain(model: ModelId) -> Option<DomainSpec> {
     match model {
-        ModelId::Hrrr | ModelId::Rap | ModelId::RrfsA | ModelId::Nam | ModelId::Hiresw => {
-            Some(DomainSpec::new("conus_source", (-127.0, -66.0, 23.0, 51.5)))
-        }
+        ModelId::Hrrr
+        | ModelId::Rap
+        | ModelId::RrfsA
+        | ModelId::RrfsPublic
+        | ModelId::RrfsFireWx
+        | ModelId::Nam
+        | ModelId::Hiresw
+        | ModelId::Nbm => Some(DomainSpec::new("conus_source", (-127.0, -66.0, 23.0, 51.5))),
+        ModelId::HrrrAk => Some(DomainSpec::new(
+            "alaska_source",
+            (-180.0, -100.0, 40.0, 75.0),
+        )),
         ModelId::Gfs
         | ModelId::Gdas
         | ModelId::Gefs

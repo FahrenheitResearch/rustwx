@@ -652,6 +652,21 @@ fn domain(region: RegionPreset) -> DomainSpec {
     DomainSpec::new(region.slug(), region.bounds())
 }
 
+fn supports_regional_domain_set(model: ModelId) -> bool {
+    matches!(
+        model,
+        ModelId::Hrrr
+            | ModelId::HrrrAk
+            | ModelId::Rap
+            | ModelId::RrfsA
+            | ModelId::RrfsPublic
+            | ModelId::RrfsFireWx
+            | ModelId::Nam
+            | ModelId::Hiresw
+            | ModelId::Nbm
+    )
+}
+
 fn domains_for_request(
     model: ModelId,
     region: RegionPreset,
@@ -665,16 +680,15 @@ fn domains_for_request(
         return Ok(regions.iter().copied().map(domain).collect());
     }
 
-    if matches!(model, ModelId::Hrrr | ModelId::Rap)
-        && matches!(domain_set, DomainSetArg::GlobalModel)
-    {
+    let regional_model = supports_regional_domain_set(model);
+    if regional_model && matches!(domain_set, DomainSetArg::GlobalModel) {
         return Err(format!(
             "{} should use --domain-set hrrr-rap-regions or --domain-set us-regions, not global-model",
             model.as_str()
         )
         .into());
     }
-    if !matches!(model, ModelId::Hrrr | ModelId::Rap)
+    if !regional_model
         && matches!(
             domain_set,
             DomainSetArg::HrrrRapRegions | DomainSetArg::UsRegions
@@ -864,4 +878,71 @@ fn parse_product_overrides(
         parsed.insert(planned.to_string(), actual.to_string());
     }
     Ok(parsed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn regional_models_accept_regional_domain_sets() {
+        for model in [
+            ModelId::Hrrr,
+            ModelId::Rap,
+            ModelId::RrfsA,
+            ModelId::RrfsPublic,
+            ModelId::RrfsFireWx,
+            ModelId::Nam,
+            ModelId::Hiresw,
+        ] {
+            let domains =
+                domains_for_request(model, RegionPreset::Conus, &[], DomainSetArg::UsRegions)
+                    .unwrap();
+            assert!(domains.iter().any(|domain| domain.slug == "conus"));
+            assert!(
+                domains_for_request(model, RegionPreset::Conus, &[], DomainSetArg::GlobalModel)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn global_models_accept_global_domain_set_only() {
+        let domains = domains_for_request(
+            ModelId::Gfs,
+            RegionPreset::Global,
+            &[],
+            DomainSetArg::GlobalModel,
+        )
+        .unwrap();
+        assert!(domains.iter().any(|domain| domain.slug == "global"));
+        assert!(
+            domains_for_request(
+                ModelId::Gfs,
+                RegionPreset::Global,
+                &[],
+                DomainSetArg::UsRegions
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_regions_work_for_any_model() {
+        let regions = [RegionPreset::Conus, RegionPreset::Europe];
+        let domains = domains_for_request(
+            ModelId::Gfs,
+            RegionPreset::Global,
+            &regions,
+            DomainSetArg::Single,
+        )
+        .unwrap();
+        assert_eq!(
+            domains
+                .iter()
+                .map(|domain| domain.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["conus", "europe"]
+        );
+    }
 }
