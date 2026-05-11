@@ -1,12 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::nexrad::level2::MomentData;
-use crate::nexrad::{Level2Sweep, RadarProduct, RadarSite, radar_site_elevation_m};
+use crate::nexrad::{radar_site_elevation_m, Level2Sweep, RadarProduct, RadarSite};
 
 pub const RADAR_POLAR_SIDECAR_SCHEMA: &str = "rustwx.radar.polar_sidecar.v2";
 const VALUES_FILE_NAME: &str = "polar_values_f32le.bin";
@@ -156,6 +156,7 @@ pub struct RadarPolarSample {
     pub site: RadarPolarSidecarSite,
 }
 
+#[derive(Debug)]
 pub struct RadarPolarSidecar {
     pub manifest: RadarPolarSidecarManifest,
     values: Vec<f32>,
@@ -305,10 +306,28 @@ impl RadarPolarSidecar {
         if manifest.schema != RADAR_POLAR_SIDECAR_SCHEMA {
             bail!("unsupported radar sidecar schema {}", manifest.schema);
         }
+        if manifest.sidecar_version != 2 {
+            bail!(
+                "unsupported radar sidecar version {}",
+                manifest.sidecar_version
+            );
+        }
+        if !manifest.ok {
+            bail!("radar sidecar manifest is not ok");
+        }
+        if manifest.radials.len() != manifest.radial_count {
+            bail!(
+                "radar sidecar radial metadata mismatch: got {}, expected {}",
+                manifest.radials.len(),
+                manifest.radial_count
+            );
+        }
         let root = manifest_path.parent().unwrap_or_else(|| Path::new("."));
-        let values = read_f32_le(&root.join(&manifest.values_path))?;
-        let gate_flags = fs::read(root.join(&manifest.gate_flags_path))
-            .with_context(|| format!("read {}", root.join(&manifest.gate_flags_path).display()))?;
+        let values_path = sidecar_data_path(root, &manifest.values_path, "values")?;
+        let gate_flags_path = sidecar_data_path(root, &manifest.gate_flags_path, "gate flags")?;
+        let values = read_f32_le(&values_path)?;
+        let gate_flags = fs::read(&gate_flags_path)
+            .with_context(|| format!("read {}", gate_flags_path.display()))?;
         let expected = manifest.radial_count * manifest.max_gate_count;
         if values.len() != expected {
             bail!(
@@ -643,6 +662,29 @@ fn write_f32_le(path: &Path, values: &[f32]) -> anyhow::Result<()> {
     fs::write(path, bytes).with_context(|| format!("write {}", path.display()))
 }
 
+fn sidecar_data_path(root: &Path, value: &str, label: &str) -> anyhow::Result<PathBuf> {
+    let root = fs::canonicalize(root)
+        .with_context(|| format!("canonicalize sidecar root {}", root.display()))?;
+    let value_path = Path::new(value);
+    let candidate = if value_path.is_absolute() {
+        value_path.to_path_buf()
+    } else {
+        root.join(value_path)
+    };
+    let path = fs::canonicalize(&candidate)
+        .with_context(|| format!("radar sidecar {label} not found: {}", candidate.display()))?;
+    if !path.starts_with(&root) {
+        bail!(
+            "radar sidecar {label} path escapes sidecar root: {}",
+            path.display()
+        );
+    }
+    if !path.is_file() {
+        bail!("radar sidecar {label} path is missing: {}", path.display());
+    }
+    Ok(path)
+}
+
 fn read_f32_le(path: &Path) -> anyhow::Result<Vec<f32>> {
     let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
     if bytes.len() % 4 != 0 {
@@ -774,6 +816,107 @@ mod tests {
         assert_eq!(sample.units, "dBZ");
         assert!(sample.gate_flags.iter().any(|flag| flag == "valid"));
 
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn polar_sidecar_rejects_invalid_manifest_shape_and_escaping_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "rustwx-radar-sidecar-invalid-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(VALUES_FILE_NAME), []).unwrap();
+        fs::write(root.join(GATE_FLAGS_FILE_NAME), []).unwrap();
+        let manifest_path = root.join("polar_sidecar_manifest.json");
+        let mut manifest = serde_json::json!({
+            "schema": RADAR_POLAR_SIDECAR_SCHEMA,
+            "sidecar_version": 1,
+            "ok": true,
+            "name": "bad",
+            "site": {
+                "id": "KTLX",
+                "name": "Oklahoma City",
+                "state": "OK",
+                "lat": 35.0,
+                "lon": -97.0,
+                "elevation_m": 370.0,
+                "feedhorn_height_m": 20.0,
+                "antenna_elevation_m": 390.0
+            },
+            "product": "ref",
+            "product_name": "Reflectivity",
+            "units": "dBZ",
+            "product_provenance": {"source": "native", "derived": false},
+            "source_key_or_url": "s3://nexrad/KTLX",
+            "scan_time_utc": "2026-05-11T00:00:00Z",
+            "sweep_index": 0,
+            "elevation_deg": 0.0,
+            "nyquist_velocity_ms": null,
+            "processing_state": "raw",
+            "radial_count": 0,
+            "max_gate_count": 0,
+            "gate_count": 0,
+            "values_path": VALUES_FILE_NAME,
+            "values_encoding": "f32_le_row_major_radial_gate_nan_missing",
+            "gate_flags_path": GATE_FLAGS_FILE_NAME,
+            "gate_flags_encoding": "u8_bitmask_row_major_radial_gate",
+            "radials": [],
+            "qc": {}
+        });
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let err = RadarPolarSidecar::open(&manifest_path).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("unsupported radar sidecar version"));
+
+        manifest["sidecar_version"] = serde_json::json!(2);
+        manifest["ok"] = serde_json::json!(false);
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let err = RadarPolarSidecar::open(&manifest_path).unwrap_err();
+        assert!(err.to_string().contains("manifest is not ok"));
+
+        manifest["ok"] = serde_json::json!(true);
+        manifest["radial_count"] = serde_json::json!(1);
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let err = RadarPolarSidecar::open(&manifest_path).unwrap_err();
+        assert!(err.to_string().contains("radial metadata mismatch"));
+
+        let outside_values = root
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(format!(
+                "rustwx-radar-sidecar-outside-values-{}",
+                std::process::id()
+            ));
+        fs::write(&outside_values, []).unwrap();
+        manifest["radial_count"] = serde_json::json!(0);
+        manifest["values_path"] = serde_json::json!(format!(
+            "../{}",
+            outside_values.file_name().unwrap().to_string_lossy()
+        ));
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let err = RadarPolarSidecar::open(&manifest_path).unwrap_err();
+        assert!(err.to_string().contains("escapes sidecar root"));
+
+        let _ = fs::remove_file(outside_values);
         let _ = fs::remove_dir_all(&root);
     }
 }
