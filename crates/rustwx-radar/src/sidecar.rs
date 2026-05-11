@@ -20,6 +20,14 @@ pub const GATE_FLAG_DERIVED: u8 = 0b0001_0000;
 pub const GATE_FLAG_DEALIASED: u8 = 0b0010_0000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RadarPolarGateFlagMeaning {
+    pub bit: u8,
+    pub mask: u8,
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RadarPolarSidecarRecord {
     pub schema: String,
     pub manifest_path: PathBuf,
@@ -74,6 +82,8 @@ pub struct RadarPolarSidecarManifest {
     pub values_encoding: String,
     pub gate_flags_path: String,
     pub gate_flags_encoding: String,
+    #[serde(default = "gate_flag_meanings")]
+    pub gate_flag_meanings: Vec<RadarPolarGateFlagMeaning>,
     pub radials: Vec<RadarPolarRadialMeta>,
     pub qc: RadarPolarSidecarQc,
 }
@@ -283,6 +293,7 @@ pub fn write_polar_sidecar(
         values_encoding: "f32_le_row_major_radial_gate_nan_missing".to_string(),
         gate_flags_path: GATE_FLAGS_FILE_NAME.to_string(),
         gate_flags_encoding: "u8_bitmask_row_major_radial_gate".to_string(),
+        gate_flag_meanings: gate_flag_meanings(),
         radials: radial_meta,
         qc: RadarPolarSidecarQc {
             product_qc: options.product_qc,
@@ -715,6 +726,55 @@ fn gate_flag_names(flags: u8) -> Vec<String> {
     out
 }
 
+fn gate_flag_meanings() -> Vec<RadarPolarGateFlagMeaning> {
+    [
+        (
+            0,
+            GATE_FLAG_VALID,
+            "valid",
+            "Decoded finite value is present for this gate.",
+        ),
+        (
+            1,
+            GATE_FLAG_MISSING,
+            "missing",
+            "Gate is absent, below threshold, or encoded as missing.",
+        ),
+        (
+            2,
+            GATE_FLAG_RANGE_FOLDED,
+            "range_folded",
+            "Original Level-II code marked this gate range folded.",
+        ),
+        (
+            3,
+            GATE_FLAG_FILTERED,
+            "filtered",
+            "Value was masked or removed by an explicit quality-control pass.",
+        ),
+        (
+            4,
+            GATE_FLAG_DERIVED,
+            "derived",
+            "Value came from a derived product rather than a native moment.",
+        ),
+        (
+            5,
+            GATE_FLAG_DEALIASED,
+            "dealiased",
+            "Velocity value was produced by an accepted dealiasing pass.",
+        ),
+    ]
+    .into_iter()
+    .map(|(bit, mask, name, description)| RadarPolarGateFlagMeaning {
+        bit,
+        mask,
+        name: name.to_string(),
+        description: description.to_string(),
+    })
+    .collect()
+}
+
 fn write_f32_le(path: &Path, values: &[f32]) -> anyhow::Result<()> {
     let mut bytes = Vec::with_capacity(values.len() * 4);
     for value in values {
@@ -865,6 +925,13 @@ mod tests {
         assert_eq!(sidecar.manifest.site.elevation_m, Some(389.4));
         assert_eq!(sidecar.manifest.radials[0].scale, Some(2.0));
         assert_eq!(sidecar.manifest.radials[0].offset, Some(66.0));
+        assert!(sidecar
+            .manifest
+            .gate_flag_meanings
+            .iter()
+            .any(
+                |meaning| meaning.name == "range_folded" && meaning.mask == GATE_FLAG_RANGE_FOLDED
+            ));
         assert_eq!(sidecar.gate_flags[1] & GATE_FLAG_MISSING, GATE_FLAG_MISSING);
         assert_eq!(
             sidecar.gate_flags[2] & GATE_FLAG_RANGE_FOLDED,

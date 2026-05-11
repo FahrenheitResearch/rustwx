@@ -7,6 +7,14 @@ use serde::Serialize;
 use serde_json::Value;
 
 const RADAR_POLAR_SIDECAR_SCHEMA: &str = "rustwx.radar.polar_sidecar.v2";
+const REQUIRED_GATE_FLAG_MEANINGS: &[(&str, u64)] = &[
+    ("valid", 0b0000_0001),
+    ("missing", 0b0000_0010),
+    ("range_folded", 0b0000_0100),
+    ("filtered", 0b0000_1000),
+    ("derived", 0b0001_0000),
+    ("dealiased", 0b0010_0000),
+];
 
 #[derive(Debug, Parser)]
 #[command(
@@ -762,6 +770,28 @@ fn validate_numeric_sidecar_manifest_fields(
             "{label} numeric sidecar gate_flags_encoding is not the v2 u8 mask encoding"
         ));
     }
+    match manifest.get("gate_flag_meanings").and_then(Value::as_array) {
+        Some(meanings) => {
+            for (name, mask) in REQUIRED_GATE_FLAG_MEANINGS {
+                let present = meanings.iter().any(|meaning| {
+                    meaning.get("name").and_then(Value::as_str) == Some(*name)
+                        && meaning.get("mask").and_then(Value::as_u64) == Some(*mask)
+                        && meaning
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .is_some_and(|description| !description.trim().is_empty())
+                });
+                if !present {
+                    failures.push(format!(
+                        "{label} numeric sidecar gate_flag_meanings missing {name} mask {mask}"
+                    ));
+                }
+            }
+        }
+        None => failures.push(format!(
+            "{label} numeric sidecar manifest is missing gate_flag_meanings"
+        )),
+    }
     if !manifest
         .get("source_key_or_url")
         .and_then(Value::as_str)
@@ -1222,6 +1252,14 @@ mod tests {
                 "values_encoding": "f32_le_row_major_radial_gate_nan_missing",
                 "gate_flags_path": flags_path.display().to_string(),
                 "gate_flags_encoding": "u8_bitmask_row_major_radial_gate",
+                "gate_flag_meanings": [
+                    {"bit": 0, "mask": 1, "name": "valid", "description": "finite value"},
+                    {"bit": 1, "mask": 2, "name": "missing", "description": "missing value"},
+                    {"bit": 2, "mask": 4, "name": "range_folded", "description": "range folded"},
+                    {"bit": 3, "mask": 8, "name": "filtered", "description": "filtered by QC"},
+                    {"bit": 4, "mask": 16, "name": "derived", "description": "derived product"},
+                    {"bit": 5, "mask": 32, "name": "dealiased", "description": "dealiased velocity"}
+                ],
                 "radials": [{
                     "radial_index": 0,
                     "azimuth_deg": 0.0,

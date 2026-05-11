@@ -37,11 +37,11 @@ pub use png::{
 };
 pub use render::ColorTablePreset;
 pub use sidecar::{
-    radar_lat_lon_to_polar, radar_polar_to_lat_lon, write_polar_sidecar, RadarPolarSample,
-    RadarPolarSampleMethod, RadarPolarSidecar, RadarPolarSidecarManifest, RadarPolarSidecarOptions,
-    RadarPolarSidecarRecord, RadarRelativePolar, GATE_FLAG_DEALIASED, GATE_FLAG_DERIVED,
-    GATE_FLAG_FILTERED, GATE_FLAG_MISSING, GATE_FLAG_RANGE_FOLDED, GATE_FLAG_VALID,
-    RADAR_POLAR_SIDECAR_SCHEMA,
+    radar_lat_lon_to_polar, radar_polar_to_lat_lon, write_polar_sidecar, RadarPolarGateFlagMeaning,
+    RadarPolarSample, RadarPolarSampleMethod, RadarPolarSidecar, RadarPolarSidecarManifest,
+    RadarPolarSidecarOptions, RadarPolarSidecarRecord, RadarRelativePolar, GATE_FLAG_DEALIASED,
+    GATE_FLAG_DERIVED, GATE_FLAG_FILTERED, GATE_FLAG_MISSING, GATE_FLAG_RANGE_FOLDED,
+    GATE_FLAG_VALID, RADAR_POLAR_SIDECAR_SCHEMA,
 };
 pub use tile::{
     radar_velocity_qc_summary, render_product_web_tiles, RadarTileManifest, RadarTileOptions,
