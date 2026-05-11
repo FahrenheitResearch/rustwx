@@ -11,6 +11,7 @@ use std::collections::HashSet;
 
 use crate::nexrad::RadarProduct;
 use crate::nexrad::level2::Level2Sweep;
+use crate::sidecar::radar_polar_to_lat_lon;
 
 /// Threshold cascade from high to low (dBZ). Each level finds cores within the
 /// previous level's envelope. This is what separates embedded cells within a
@@ -442,10 +443,8 @@ pub fn identify_cells(
         let range_extent = range_max - range_min;
 
         let (lat, lon) = if let (Some(slat), Some(slon)) = (site_lat, site_lon) {
-            let az_rad = (centroid_az as f64).to_radians();
-            let la = slat + (centroid_range as f64 * az_rad.cos()) / 111.139;
-            let lo =
-                slon + (centroid_range as f64 * az_rad.sin()) / (111.139 * slat.to_radians().cos());
+            let (la, lo) =
+                radar_polar_to_lat_lon(slat, slon, centroid_az, f64::from(centroid_range) * 1000.0);
             (
                 (la * 1000.0).round() / 1000.0,
                 (lo * 1000.0).round() / 1000.0,

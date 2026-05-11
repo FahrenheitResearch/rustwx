@@ -6,6 +6,7 @@ use crate::nexrad::detection::{HailDetection, MesocycloneDetection, TVSDetection
 use crate::nexrad::level2::{MomentData, RadialData};
 use crate::nexrad::{Level2File, Level2Sweep, RadarProduct, RadarSite};
 use crate::png::{lowest_sweep_with_product, sweep_contains_product};
+use crate::sidecar::radar_polar_to_lat_lon;
 
 #[derive(Debug, Clone, Copy)]
 pub struct AiExportOptions {
@@ -371,10 +372,7 @@ fn cluster_tds(candidates: Vec<TdsCandidateExport>) -> Vec<TdsCandidateExport> {
 }
 
 fn azimuth_range_to_latlon(site: &RadarSite, azimuth_deg: f32, range_km: f32) -> (f64, f64) {
-    let az_rad = (azimuth_deg as f64).to_radians();
-    let lat = site.lat + (range_km as f64 * az_rad.cos()) / 111.139;
-    let lon = site.lon + (range_km as f64 * az_rad.sin()) / (111.139 * site.lat.to_radians().cos());
-    (lat, lon)
+    radar_polar_to_lat_lon(site.lat, site.lon, azimuth_deg, f64::from(range_km) * 1000.0)
 }
 
 fn azimuth_diff(a: f32, b: f32) -> f32 {
