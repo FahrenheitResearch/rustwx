@@ -11,6 +11,7 @@ use crate::nexrad::{radar_site_elevation_m, Level2Sweep, RadarProduct, RadarSite
 pub const RADAR_POLAR_SIDECAR_SCHEMA: &str = "rustwx.radar.polar_sidecar.v2";
 const VALUES_FILE_NAME: &str = "polar_values_f32le.bin";
 const GATE_FLAGS_FILE_NAME: &str = "polar_gate_flags_u8.bin";
+const EARTH_AUTHALIC_RADIUS_M: f64 = 6_371_008.8;
 
 pub const GATE_FLAG_VALID: u8 = 0b0000_0001;
 pub const GATE_FLAG_MISSING: u8 = 0b0000_0010;
@@ -627,15 +628,27 @@ pub fn radar_lat_lon_to_polar(
     lat: f64,
     lon: f64,
 ) -> RadarRelativePolar {
-    let dy_km = (lat - site_lat) * 111.139;
-    let dx_km = normalized_lon_delta(lon - site_lon) * 111.139 * site_lat.to_radians().cos();
-    let mut azimuth = dx_km.atan2(dy_km).to_degrees();
+    let site_lat_rad = site_lat.to_radians();
+    let lat_rad = lat.to_radians();
+    let dlat = lat_rad - site_lat_rad;
+    let dlon = normalized_lon_delta(lon - site_lon).to_radians();
+
+    let half_dlat = (dlat * 0.5).sin();
+    let half_dlon = (dlon * 0.5).sin();
+    let haversine =
+        half_dlat * half_dlat + site_lat_rad.cos() * lat_rad.cos() * half_dlon * half_dlon;
+    let haversine = haversine.clamp(0.0, 1.0);
+    let central_angle = 2.0 * haversine.sqrt().atan2((1.0 - haversine).sqrt());
+
+    let y = dlon.sin() * lat_rad.cos();
+    let x = site_lat_rad.cos() * lat_rad.sin() - site_lat_rad.sin() * lat_rad.cos() * dlon.cos();
+    let mut azimuth = y.atan2(x).to_degrees();
     if azimuth < 0.0 {
         azimuth += 360.0;
     }
     RadarRelativePolar {
         azimuth_deg: azimuth as f32,
-        ground_range_m: dx_km.hypot(dy_km) * 1000.0,
+        ground_range_m: EARTH_AUTHALIC_RADIUS_M * central_angle,
     }
 }
 
@@ -645,17 +658,23 @@ pub fn radar_polar_to_lat_lon(
     azimuth_deg: f32,
     ground_range_m: f64,
 ) -> (f64, f64) {
-    let range_km = ground_range_m / 1000.0;
+    let angular_distance = (ground_range_m / EARTH_AUTHALIC_RADIUS_M).max(0.0);
+    let site_lat_rad = site_lat.to_radians();
+    let site_lon_rad = site_lon.to_radians();
     let azimuth_rad = f64::from(azimuth_deg).to_radians();
-    let dy_km = range_km * azimuth_rad.cos();
-    let dx_km = range_km * azimuth_rad.sin();
-    let lat = site_lat + dy_km / 111.139;
-    let cos_lat = site_lat.to_radians().cos().abs().max(0.01);
-    let lon = site_lon + dx_km / (111.139 * cos_lat);
-    (
-        lat,
-        normalize_lon(site_lon + normalized_lon_delta(lon - site_lon)),
-    )
+
+    let sin_site_lat = site_lat_rad.sin();
+    let cos_site_lat = site_lat_rad.cos();
+    let sin_distance = angular_distance.sin();
+    let cos_distance = angular_distance.cos();
+
+    let lat =
+        (sin_site_lat * cos_distance + cos_site_lat * sin_distance * azimuth_rad.cos()).asin();
+    let lon = site_lon_rad
+        + (azimuth_rad.sin() * sin_distance * cos_site_lat)
+            .atan2(cos_distance - sin_site_lat * lat.sin());
+
+    (lat.to_degrees(), normalize_lon(lon.to_degrees()))
 }
 
 fn gate_fraction(radial: &RadarPolarRadialMeta, slant_range_m: f64) -> Option<f64> {
@@ -938,9 +957,9 @@ mod tests {
             GATE_FLAG_RANGE_FOLDED
         );
 
-        let lat = site.lat + 750.0 / 111_139.0;
+        let (lat, lon) = radar_polar_to_lat_lon(site.lat, site.lon, 0.0, 750.0);
         let sample = sidecar
-            .sample_lat_lon(lat, site.lon, RadarPolarSampleMethod::Nearest)
+            .sample_lat_lon(lat, lon, RadarPolarSampleMethod::Nearest)
             .unwrap();
         assert_eq!(sample.value, Some(20.0));
         assert_eq!(sample.gate_index, 3);
@@ -948,7 +967,7 @@ mod tests {
         assert_eq!(sample.units, "dBZ");
         assert!(sample.gate_flags.iter().any(|flag| flag == "valid"));
         assert_eq!(sample.lat, lat);
-        assert_eq!(sample.lon, site.lon);
+        assert_eq!(sample.lon, lon);
         assert_eq!(sample.first_gate_range_m, 0);
         assert_eq!(sample.gate_spacing_m, 250);
         assert_eq!(sample.azimuth_spacing_deg, 1.0);
@@ -972,6 +991,31 @@ mod tests {
 
         assert!((polar.azimuth_deg - azimuth_deg).abs() < 0.001);
         assert!((polar.ground_range_m - range_m).abs() < 0.1);
+    }
+
+    #[test]
+    fn radar_relative_coordinates_use_great_circle_geometry_at_long_range() {
+        let site_lat = 35.333;
+        let site_lon = -97.277;
+        let azimuth_deg = 90.0;
+        let range_m = 460_000.0;
+
+        let (lat, lon) = radar_polar_to_lat_lon(site_lat, site_lon, azimuth_deg, range_m);
+        let polar = radar_lat_lon_to_polar(site_lat, site_lon, lat, lon);
+
+        assert!(lat < site_lat - 0.05);
+        assert!((polar.azimuth_deg - azimuth_deg).abs() < 0.001);
+        assert!((polar.ground_range_m - range_m).abs() < 0.1);
+    }
+
+    #[test]
+    fn radar_relative_coordinates_wrap_antimeridian() {
+        let (lat, lon) = radar_polar_to_lat_lon(20.0, 179.8, 90.0, 80_000.0);
+        let polar = radar_lat_lon_to_polar(20.0, 179.8, lat, lon);
+
+        assert!(lon < -179.0);
+        assert!((polar.azimuth_deg - 90.0).abs() < 0.001);
+        assert!((polar.ground_range_m - 80_000.0).abs() < 0.1);
     }
 
     #[test]

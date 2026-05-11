@@ -110,6 +110,7 @@ fn validate_lat_lon(lat: f64, lon: f64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustwx_radar::radar_lat_lon_to_polar;
     use serde_json::json;
 
     fn sample_manifest() -> RadarPolarSidecarManifest {
@@ -186,7 +187,10 @@ mod tests {
             summary_out: None,
         };
         let (lat, lon) = resolve_query_point(&cli, &sample_manifest()).unwrap();
-        assert!((lat - 36.333).abs() < 1.0e-6);
+        let polar = radar_lat_lon_to_polar(35.333, -97.277, lat, lon);
+        assert!((polar.azimuth_deg - 0.0).abs() < 1.0e-6);
+        assert!((polar.ground_range_m - 111_139.0).abs() < 1.0e-6);
+        assert!(lat > 36.332 && lat < 36.333);
         assert!((lon + 97.277).abs() < 1.0e-6);
     }
 }
