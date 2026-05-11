@@ -4,6 +4,8 @@ use crate::nexrad::{Level2File, Level2Sweep};
 
 /// Effective earth radius for beam height calculations (4/3 model), in km.
 const RE_PRIME: f64 = 8495.0;
+const KDP_HALF_WINDOW_GATES: usize = 4;
+const KDP_MAX_ABS_DEG_PER_KM: f32 = 50.0;
 
 pub struct DerivedProducts;
 
@@ -140,6 +142,10 @@ impl DerivedProducts {
                     gate_count: num_gates as u16,
                     first_gate_range: ref_moment.first_gate_range,
                     gate_size: ref_moment.gate_size,
+                    data_word_size: None,
+                    scale: None,
+                    offset: None,
+                    raw_data: None,
                     data: vil_data,
                 }],
             });
@@ -253,6 +259,10 @@ impl DerivedProducts {
                     gate_count: num_gates as u16,
                     first_gate_range: ref_moment.first_gate_range,
                     gate_size: ref_moment.gate_size,
+                    data_word_size: None,
+                    scale: None,
+                    offset: None,
+                    raw_data: None,
                     data: et_data,
                 }],
             });
@@ -265,6 +275,84 @@ impl DerivedProducts {
             radials: out_radials,
         }
     }
+
+    /// Compute a conservative specific differential phase estimate from PHI.
+    ///
+    /// KDP is half the range derivative of differential phase. This keeps the
+    /// derivation intentionally simple: a centered finite-window derivative,
+    /// phase-wrap handling, and a broad physical sanity cap for display/QC.
+    pub fn compute_kdp_from_phi_sweep(sweep: &Level2Sweep) -> Option<Level2Sweep> {
+        let mut out_radials = Vec::with_capacity(sweep.radials.len());
+
+        for radial in &sweep.radials {
+            let phi_moment = radial
+                .moments
+                .iter()
+                .find(|m| m.product == RadarProduct::DifferentialPhase)?;
+            let gate_count = phi_moment.gate_count as usize;
+            let gate_size_km = phi_moment.gate_size as f32 / 1000.0;
+            if gate_count == 0 || gate_size_km <= 0.0 {
+                return None;
+            }
+
+            let mut kdp_data = vec![f32::NAN; gate_count];
+            if gate_count > KDP_HALF_WINDOW_GATES * 2 {
+                let baseline_km = 2.0 * KDP_HALF_WINDOW_GATES as f32 * gate_size_km;
+                for gate_idx in KDP_HALF_WINDOW_GATES..(gate_count - KDP_HALF_WINDOW_GATES) {
+                    let left = phi_moment.data[gate_idx - KDP_HALF_WINDOW_GATES];
+                    let right = phi_moment.data[gate_idx + KDP_HALF_WINDOW_GATES];
+                    if !left.is_finite() || !right.is_finite() {
+                        continue;
+                    }
+                    let kdp = 0.5 * wrapped_phase_delta_deg(right, left) / baseline_km;
+                    if kdp.is_finite() && kdp.abs() <= KDP_MAX_ABS_DEG_PER_KM {
+                        kdp_data[gate_idx] = kdp;
+                    }
+                }
+            }
+
+            out_radials.push(RadialData {
+                azimuth: radial.azimuth,
+                elevation: radial.elevation,
+                azimuth_spacing: radial.azimuth_spacing,
+                nyquist_velocity: radial.nyquist_velocity,
+                radial_status: radial.radial_status,
+                moments: vec![MomentData {
+                    product: RadarProduct::SpecificDiffPhase,
+                    gate_count: gate_count as u16,
+                    first_gate_range: phi_moment.first_gate_range,
+                    gate_size: phi_moment.gate_size,
+                    data_word_size: None,
+                    scale: None,
+                    offset: None,
+                    raw_data: None,
+                    data: kdp_data,
+                }],
+            });
+        }
+
+        if out_radials.is_empty() {
+            return None;
+        }
+
+        Some(Level2Sweep {
+            elevation_number: sweep.elevation_number,
+            elevation_angle: sweep.elevation_angle,
+            nyquist_velocity: None,
+            radials: out_radials,
+        })
+    }
+}
+
+fn wrapped_phase_delta_deg(right: f32, left: f32) -> f32 {
+    let mut delta = right - left;
+    while delta > 180.0 {
+        delta -= 360.0;
+    }
+    while delta < -180.0 {
+        delta += 360.0;
+    }
+    delta
 }
 
 /// Compute beam height above radar in km using the 4/3 earth radius model.
@@ -316,4 +404,60 @@ fn range_to_gate_index(
         return None;
     }
     Some(idx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kdp_derivation_uses_half_phi_range_derivative() {
+        let sweep = phi_sweep((0..16).map(|idx| idx as f32 * 2.0).collect());
+
+        let derived = DerivedProducts::compute_kdp_from_phi_sweep(&sweep).unwrap();
+        let data = &derived.radials[0].moments[0].data;
+
+        assert!(data[3].is_nan());
+        assert!((data[8] - 4.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn kdp_derivation_handles_phase_wrap() {
+        let sweep = phi_sweep(vec![
+            350.0, 352.0, 354.0, 356.0, 358.0, 0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0,
+            18.0, 20.0,
+        ]);
+
+        let derived = DerivedProducts::compute_kdp_from_phi_sweep(&sweep).unwrap();
+        let data = &derived.radials[0].moments[0].data;
+
+        assert!((data[8] - 4.0).abs() < 0.001);
+    }
+
+    fn phi_sweep(data: Vec<f32>) -> Level2Sweep {
+        let gate_count = data.len() as u16;
+        Level2Sweep {
+            elevation_number: 1,
+            elevation_angle: 0.5,
+            nyquist_velocity: None,
+            radials: vec![RadialData {
+                azimuth: 0.0,
+                elevation: 0.5,
+                azimuth_spacing: 0.5,
+                nyquist_velocity: None,
+                radial_status: 0,
+                moments: vec![MomentData {
+                    product: RadarProduct::DifferentialPhase,
+                    gate_count,
+                    first_gate_range: 0,
+                    gate_size: 250,
+                    data_word_size: None,
+                    scale: None,
+                    offset: None,
+                    raw_data: None,
+                    data,
+                }],
+            }],
+        }
+    }
 }

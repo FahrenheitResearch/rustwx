@@ -592,6 +592,10 @@ mod tests {
                     gate_count: 500,
                     first_gate_range: 2125,
                     gate_size: 250,
+                    data_word_size: None,
+                    scale: None,
+                    offset: None,
+                    raw_data: None,
                     data: ref_data,
                 }],
             });

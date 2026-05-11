@@ -9,6 +9,14 @@ pub struct RadarSite {
     pub state: &'static str,
 }
 
+pub fn radar_site_elevation_m(site_id: &str) -> Option<f64> {
+    match site_id.to_ascii_uppercase().as_str() {
+        "KSJT" => Some(610.8),
+        "KTLX" => Some(389.4),
+        _ => None,
+    }
+}
+
 pub static RADAR_SITES: &[RadarSite] = &[
     RadarSite {
         id: "KABR",
@@ -1157,4 +1165,25 @@ pub fn find_nearest_sites(lat: f64, lon: f64, n: usize) -> Vec<&'static RadarSit
 /// Returns all station IDs from the RADAR_SITES table.
 pub fn all_site_ids() -> Vec<&'static str> {
     RADAR_SITES.iter().map(|s| s.id).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn site_table_has_unique_ids_and_core_sites() {
+        let ids = all_site_ids();
+        let unique = ids.iter().copied().collect::<HashSet<_>>();
+
+        assert_eq!(ids.len(), unique.len());
+        assert!(ids.len() >= 150);
+        assert!(ids.contains(&"KSJT"));
+        assert!(ids.contains(&"KTLX"));
+        assert!(find_site("ksjt").is_some());
+        assert!(find_site("KTLX").is_some());
+        assert_eq!(radar_site_elevation_m("KTLX"), Some(389.4));
+        assert_eq!(radar_site_elevation_m("ksjt"), Some(610.8));
+    }
 }

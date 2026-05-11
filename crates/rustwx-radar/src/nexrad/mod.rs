@@ -6,6 +6,6 @@ pub mod sites;
 pub mod srv;
 
 pub use detection::*;
-pub use level2::{Level2File, Level2Sweep};
+pub use level2::{Level2File, Level2SiteMetadata, Level2Sweep};
 pub use products::RadarProduct;
-pub use sites::RadarSite;
+pub use sites::{RadarSite, radar_site_elevation_m};

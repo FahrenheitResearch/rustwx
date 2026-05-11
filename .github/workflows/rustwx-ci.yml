@@ -62,6 +62,23 @@ jobs:
       - name: Test rustwx-render
         run: cargo test -p rustwx-render --lib
 
+      - name: Test rustwx-radar
+        run: cargo test -p rustwx-radar --lib
+
+      - name: Test radar CLI gates
+        run: |
+          cargo test -p rustwx-cli --bin radar_quality_gate
+          cargo test -p rustwx-cli --bin radar_benchmark_gate
+          cargo test -p rustwx-cli --bin radar_dealias_compare
+
+      - name: Build radar tile and gate runners
+        run: >-
+          cargo build --release -p rustwx-cli
+          --bin radar_web_tiles
+          --bin radar_quality_gate
+          --bin radar_benchmark_gate
+          --bin radar_dealias_compare
+
       - name: Build non-ECAPE hour runner
         run: cargo build --release -p rustwx-cli --bin hrrr_non_ecape_hour
 

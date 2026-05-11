@@ -14,6 +14,8 @@ use super::products::RadarProduct;
 
 const VOLUME_HEADER_SIZE: usize = 24;
 const MSG_HEADER_SIZE: usize = 16;
+const MAX_REASONABLE_VELOCITY_MS: f32 = 150.0;
+const MAX_REASONABLE_SPECTRUM_WIDTH_MS: f32 = 80.0;
 
 #[derive(Debug, Clone)]
 pub struct Level2File {
@@ -21,9 +23,18 @@ pub struct Level2File {
     pub volume_date: u16,
     pub volume_time: u32,
     pub vcp: Option<u16>,
+    pub site_metadata: Option<Level2SiteMetadata>,
     pub sweeps: Vec<Level2Sweep>,
     /// True if parsing stopped early due to a read error (truncated volume).
     pub partial: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Level2SiteMetadata {
+    pub lat: f64,
+    pub lon: f64,
+    pub elevation_m: f64,
+    pub feedhorn_height_m: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -51,7 +62,11 @@ pub struct MomentData {
     pub gate_count: u16,
     pub first_gate_range: u16, // meters
     pub gate_size: u16,        // meters
-    pub data: Vec<f32>,        // decoded values
+    pub data_word_size: Option<u16>,
+    pub scale: Option<f32>,
+    pub offset: Option<f32>,
+    pub raw_data: Option<Vec<u16>>,
+    pub data: Vec<f32>, // decoded values
 }
 
 #[derive(Debug)]
@@ -119,12 +134,16 @@ impl Level2File {
         let mut current_sweep: Option<Level2Sweep> = None;
         let mut partial = false;
         let mut vcp: Option<u16> = None;
+        let mut site_metadata: Option<Level2SiteMetadata> = None;
 
         while (cursor.position() as usize) < data.len() - MSG_HEADER_SIZE {
             match Self::read_message(&mut cursor, &data) {
-                Ok(Some((elev_num, radial, msg_vcp))) => {
+                Ok(Some((elev_num, radial, msg_vcp, msg_site_metadata))) => {
                     if vcp.is_none() {
                         vcp = msg_vcp;
+                    }
+                    if site_metadata.is_none() {
+                        site_metadata = msg_site_metadata;
                     }
                     // Start a new sweep on: radial_status 0 (start elev),
                     // 3 (start volume), 5 (start new elev same VCP),
@@ -183,6 +202,7 @@ impl Level2File {
             volume_date: header.volume_date,
             volume_time: header.volume_time,
             vcp,
+            site_metadata,
             sweeps,
             partial,
         })
@@ -252,6 +272,20 @@ impl Level2File {
     fn decompress_archive2(raw_data: &[u8]) -> Result<Vec<u8>> {
         if raw_data.len() < VOLUME_HEADER_SIZE {
             return Err(anyhow!("Data too short for volume header"));
+        }
+        if raw_data.len() < VOLUME_HEADER_SIZE + 4 {
+            return Ok(raw_data.to_vec());
+        }
+
+        let first_block_size = i32::from_be_bytes([
+            raw_data[VOLUME_HEADER_SIZE],
+            raw_data[VOLUME_HEADER_SIZE + 1],
+            raw_data[VOLUME_HEADER_SIZE + 2],
+            raw_data[VOLUME_HEADER_SIZE + 3],
+        ]);
+        let first_block_len = first_block_size.unsigned_abs() as usize;
+        if first_block_len == 0 || VOLUME_HEADER_SIZE + 4 + first_block_len > raw_data.len() {
+            return Ok(raw_data.to_vec());
         }
 
         // Phase 1: collect block boundaries (fast, single-threaded scan)
@@ -369,7 +403,7 @@ impl Level2File {
     fn read_message(
         cursor: &mut Cursor<&Vec<u8>>,
         data: &[u8],
-    ) -> Result<Option<(u8, RadialData, Option<u16>)>> {
+    ) -> Result<Option<(u8, RadialData, Option<u16>, Option<Level2SiteMetadata>)>> {
         let start_pos = cursor.position() as usize;
 
         // CTM header (12 bytes) - skip
@@ -415,6 +449,7 @@ impl Level2File {
         let mut moments = Vec::new();
         let mut nyquist_velocity: Option<f32> = None;
         let mut vcp: Option<u16> = None;
+        let mut site_metadata: Option<Level2SiteMetadata> = None;
 
         for ptr_offset in &block_pointers {
             let block_pos = msg31_start + *ptr_offset as usize;
@@ -422,10 +457,12 @@ impl Level2File {
                 continue;
             }
 
-            let block_type = data[block_pos];
+            let Some(block_id) = data.get(block_pos..block_pos + 4) else {
+                continue;
+            };
 
             // 'D' = data moment block
-            if block_type == b'D' {
+            if block_id[0] == b'D' {
                 if let Ok(moment) = Self::parse_moment_block(data, block_pos) {
                     // Filter out unknown moments (e.g. "CFP") to prevent
                     // polluting downstream product lookups
@@ -435,12 +472,13 @@ impl Level2File {
                 }
             }
             // 'R' = radial data block (contains Nyquist velocity)
-            else if block_type == b'R' {
+            else if block_id == b"RRAD" {
                 nyquist_velocity = Self::parse_radial_block_nyquist(data, block_pos);
             }
-            // 'V' = volume data block (contains VCP number)
-            else if block_type == b'V' {
+            // 'RVOL' = volume data block (contains VCP and site metadata)
+            else if block_id == b"RVOL" {
                 vcp = Self::parse_volume_block_vcp(data, block_pos);
+                site_metadata = Self::parse_volume_block_site_metadata(data, block_pos);
             }
         }
 
@@ -464,7 +502,7 @@ impl Level2File {
             moments,
         };
 
-        Ok(Some((msg31.elevation_number, radial, vcp)))
+        Ok(Some((msg31.elevation_number, radial, vcp, site_metadata)))
     }
 
     fn read_message_header(cursor: &mut Cursor<&Vec<u8>>) -> Result<MessageHeader> {
@@ -521,19 +559,20 @@ impl Level2File {
         })
     }
 
-    /// Parse a Radial Data ('R') block to extract the Nyquist velocity.
-    /// ICD 2620010H Table XVII-B: Radial Data block is at least 28 bytes.
-    /// Byte 0: 'R', Bytes 1-3: "RAD"
-    /// Bytes 16-17: Unambiguous range (km/10, u16)
-    /// Bytes 26-27: Nyquist velocity (m/s * 100, u16) — note: some docs say offset 28
+    /// Parse a Message 31 Radial Data Constant block ("RRAD") to extract
+    /// Nyquist velocity. The Message 31 block identifier includes the block
+    /// type byte and 3-byte name, then the ICD block fields follow.
+    /// Bytes 16-17: Nyquist velocity (m/s * 100, i16)
     fn parse_radial_block_nyquist(data: &[u8], offset: usize) -> Option<f32> {
-        // The 'R' block needs at least 28 bytes
-        if offset + 28 > data.len() {
+        if offset + 20 > data.len() {
             return None;
         }
-        // Nyquist velocity is at bytes 26-27 in the radial block (u16, scaled by 100)
-        let nyquist_raw = u16::from_be_bytes([data[offset + 26], data[offset + 27]]);
-        if nyquist_raw == 0 {
+        if data.get(offset..offset + 4) != Some(b"RRAD") {
+            return None;
+        }
+
+        let nyquist_raw = i16::from_be_bytes([data[offset + 16], data[offset + 17]]);
+        if nyquist_raw <= 0 {
             return None;
         }
         Some(nyquist_raw as f32 / 100.0)
@@ -557,6 +596,47 @@ impl Level2File {
             return None;
         }
         Some(vcp)
+    }
+
+    /// Parse the Message 31 Volume Data Constant block ("RVOL") site metadata.
+    /// The block carries radar latitude/longitude as f32 degrees, site base
+    /// elevation as meters above MSL, and feedhorn height above the base.
+    fn parse_volume_block_site_metadata(data: &[u8], offset: usize) -> Option<Level2SiteMetadata> {
+        if offset + 20 > data.len() {
+            return None;
+        }
+        if data.get(offset + 1..offset + 4) != Some(b"VOL") {
+            return None;
+        }
+        let lat = f32::from_be_bytes([
+            data[offset + 8],
+            data[offset + 9],
+            data[offset + 10],
+            data[offset + 11],
+        ]) as f64;
+        let lon = f32::from_be_bytes([
+            data[offset + 12],
+            data[offset + 13],
+            data[offset + 14],
+            data[offset + 15],
+        ]) as f64;
+        let elevation_m = i16::from_be_bytes([data[offset + 16], data[offset + 17]]) as f64;
+        let feedhorn_height_m = u16::from_be_bytes([data[offset + 18], data[offset + 19]]) as f64;
+        if !lat.is_finite()
+            || !lon.is_finite()
+            || !elevation_m.is_finite()
+            || !(-90.0..=90.0).contains(&lat)
+            || !(-180.0..=180.0).contains(&lon)
+            || !(-500.0..=5000.0).contains(&elevation_m)
+        {
+            return None;
+        }
+        Some(Level2SiteMetadata {
+            lat,
+            lon,
+            elevation_m,
+            feedhorn_height_m: (feedhorn_height_m > 0.0).then_some(feedhorn_height_m),
+        })
     }
 
     fn parse_moment_block(data: &[u8], offset: usize) -> Result<MomentData> {
@@ -610,6 +690,7 @@ impl Level2File {
         let raw_slice = &data[offset..];
 
         let mut decoded = Vec::with_capacity(gate_count_usize);
+        let mut raw_data = Vec::with_capacity(gate_count_usize);
 
         if data_word_size >= 16 {
             // 16-bit gates: read 2 bytes per gate directly from the slice
@@ -617,26 +698,28 @@ impl Level2File {
             let gate_bytes =
                 &raw_slice[data_start..data_start + byte_len.min(raw_slice.len() - data_start)];
             for chunk in gate_bytes.chunks_exact(2) {
-                let raw = u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
-                let value = if raw <= 1 {
-                    f32::NAN
-                } else {
-                    (raw as f32 - offset_val) * inv_scale
-                };
-                decoded.push(value);
+                let raw = u16::from_be_bytes([chunk[0], chunk[1]]);
+                raw_data.push(raw);
+                decoded.push(decode_moment_value(
+                    product,
+                    u32::from(raw),
+                    offset_val,
+                    inv_scale,
+                ));
             }
         } else {
             // 8-bit gates: read 1 byte per gate directly from the slice
             let gate_bytes = &raw_slice
                 [data_start..data_start + gate_count_usize.min(raw_slice.len() - data_start)];
             for &byte in gate_bytes {
-                let raw = byte as u32;
-                let value = if raw <= 1 {
-                    f32::NAN
-                } else {
-                    (raw as f32 - offset_val) * inv_scale
-                };
-                decoded.push(value);
+                let raw = u16::from(byte);
+                raw_data.push(raw);
+                decoded.push(decode_moment_value(
+                    product,
+                    u32::from(raw),
+                    offset_val,
+                    inv_scale,
+                ));
             }
         }
 
@@ -645,7 +728,94 @@ impl Level2File {
             gate_count,
             first_gate_range,
             gate_size,
+            data_word_size: Some(data_word_size),
+            scale: Some(scale),
+            offset: Some(offset_val),
+            raw_data: Some(raw_data),
             data: decoded,
         })
+    }
+}
+
+#[inline]
+fn decode_moment_value(product: RadarProduct, raw: u32, offset: f32, inv_scale: f32) -> f32 {
+    // RDA/RPG ICD Table XVII-I note 21: N=0 is below threshold,
+    // N=1 is range-folded, and actual integer data starts at N=2.
+    if raw <= 1 {
+        return f32::NAN;
+    }
+
+    let value = (raw as f32 - offset) * inv_scale;
+    if !value.is_finite() {
+        return f32::NAN;
+    }
+
+    match product.base_product() {
+        RadarProduct::Velocity | RadarProduct::SuperResVelocity => {
+            if value.abs() <= MAX_REASONABLE_VELOCITY_MS {
+                value
+            } else {
+                f32::NAN
+            }
+        }
+        RadarProduct::SpectrumWidth => {
+            if (0.0..=MAX_REASONABLE_SPECTRUM_WIDTH_MS).contains(&value) {
+                value
+            } else {
+                f32::NAN
+            }
+        }
+        _ => value,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Level2File;
+
+    #[test]
+    fn radial_block_nyquist_uses_rrad_offset_16() {
+        let mut data = vec![0u8; 32];
+        let block_offset = 4;
+        data[block_offset..block_offset + 4].copy_from_slice(b"RRAD");
+        data[block_offset + 16..block_offset + 18].copy_from_slice(&1604i16.to_be_bytes());
+
+        let nyquist = Level2File::parse_radial_block_nyquist(&data, block_offset).unwrap();
+        assert!((nyquist - 16.04).abs() < 0.0001);
+    }
+
+    #[test]
+    fn radial_block_nyquist_rejects_bad_block_id() {
+        let mut data = vec![0u8; 24];
+        data[0..4].copy_from_slice(b"RXXX");
+        data[16..18].copy_from_slice(&1604i16.to_be_bytes());
+
+        assert_eq!(Level2File::parse_radial_block_nyquist(&data, 0), None);
+    }
+
+    #[test]
+    fn volume_block_site_metadata_uses_rvol_offsets() {
+        let mut data = vec![0u8; 48];
+        data[0..4].copy_from_slice(b"RVOL");
+        data[8..12].copy_from_slice(&35.3331f32.to_be_bytes());
+        data[12..16].copy_from_slice(&(-97.2778f32).to_be_bytes());
+        data[16..18].copy_from_slice(&389i16.to_be_bytes());
+        data[18..20].copy_from_slice(&20u16.to_be_bytes());
+
+        let metadata = Level2File::parse_volume_block_site_metadata(&data, 0).unwrap();
+        assert!((metadata.lat - 35.3331).abs() < 0.0001);
+        assert!((metadata.lon + 97.2778).abs() < 0.0001);
+        assert_eq!(metadata.elevation_m, 389.0);
+        assert_eq!(metadata.feedhorn_height_m, Some(20.0));
+    }
+
+    #[test]
+    fn archive2_decompress_keeps_already_unblocked_streams() {
+        let mut data = vec![0u8; 64];
+        data[0..4].copy_from_slice(b"AR2V");
+        data[20..24].copy_from_slice(b"KTLX");
+
+        let out = Level2File::decompress_archive2(&data).unwrap();
+        assert_eq!(out, data);
     }
 }

@@ -50,13 +50,18 @@ pub fn fetch_object(key: &str) -> anyhow::Result<Vec<u8>> {
 }
 
 pub fn fetch_latest(site: &str) -> anyhow::Result<NexradDownload> {
+    let object = latest_object(site)?;
+    let bytes = fetch_object(&object.key)?;
+    Ok(NexradDownload { object, bytes })
+}
+
+pub fn latest_object(site: &str) -> anyhow::Result<NexradObject> {
     let today = Utc::now().date_naive();
     let yesterday = today - chrono::Duration::days(1);
     for date in [today, yesterday] {
         let objects = list_day(site, date)?;
         if let Some(object) = objects.last().cloned() {
-            let bytes = fetch_object(&object.key)?;
-            return Ok(NexradDownload { object, bytes });
+            return Ok(object);
         }
     }
     anyhow::bail!("no public NEXRAD Level-II files found for {site} today or yesterday")

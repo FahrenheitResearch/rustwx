@@ -1,13 +1,13 @@
 use std::io::Cursor;
 
-use image::{ImageBuffer, ImageFormat, Rgba};
+use image::{ImageBuffer, ImageFormat, Rgba, imageops::FilterType};
 use serde::{Deserialize, Serialize};
 
 use crate::dealias::{DealiasMethod, dealias_velocity_sweep};
 use crate::nexrad::derived::DerivedProducts;
 use crate::nexrad::srv::SRVComputer;
 use crate::nexrad::{Level2File, Level2Sweep, RadarProduct, RadarSite};
-use crate::render::{ColorTable, RadarRenderer, RenderedSweep};
+use crate::render::{ColorTable, RadarRenderer, RenderMode, RenderedSweep};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RadarFrameRender {
@@ -28,6 +28,16 @@ pub struct RadarPngOptions {
     pub min_value: Option<f32>,
     pub draw_range_rings: bool,
     pub draw_azimuth_spokes: bool,
+    pub sweep: RadarSweepSelection,
+    pub render_mode: RenderMode,
+    pub dealias_velocity: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RadarSweepSelection {
+    Lowest,
+    Index(usize),
+    NearestElevation(f32),
 }
 
 impl Default for RadarPngOptions {
@@ -37,6 +47,9 @@ impl Default for RadarPngOptions {
             min_value: None,
             draw_range_rings: true,
             draw_azimuth_spokes: true,
+            sweep: RadarSweepSelection::Lowest,
+            render_mode: RenderMode::Classic,
+            dealias_velocity: false,
         }
     }
 }
@@ -65,18 +78,23 @@ pub fn render_product_frame(
     product: RadarProduct,
     options: RadarPngOptions,
 ) -> anyhow::Result<RadarFrameRender> {
-    let resolved = resolve_render_sweep(file, product)?;
+    let resolved = resolve_render_sweep(file, product, options.sweep, options.dealias_velocity)?;
     let table = match options.min_value {
         Some(min_value) => ColorTable::for_product(product).with_min_value(min_value),
         None => ColorTable::for_product(product),
     };
-    let rendered = RadarRenderer::render_sweep_with_table(
-        resolved.sweep(),
-        product,
-        site,
-        options.size,
-        &table,
-    )
+    let rendered = match options.render_mode {
+        RenderMode::Classic => RadarRenderer::render_sweep_with_table(
+            resolved.sweep(),
+            product,
+            site,
+            options.size,
+            &table,
+        ),
+        RenderMode::Smooth => {
+            render_supersampled(resolved.sweep(), product, site, options.size, &table)
+        }
+    }
     .ok_or_else(|| anyhow::anyhow!("failed to render product {}", product.short_name()))?;
     let pixels = composite_dark_frame(&rendered, options);
     let png = encode_png(&pixels, rendered.width, rendered.height)?;
@@ -93,6 +111,36 @@ pub fn render_product_frame(
     })
 }
 
+fn render_supersampled(
+    sweep: &Level2Sweep,
+    product: RadarProduct,
+    site: &RadarSite,
+    image_size: u32,
+    table: &ColorTable,
+) -> Option<RenderedSweep> {
+    let source_size = image_size.saturating_mul(2).min(4096).max(image_size);
+    let rendered =
+        RadarRenderer::render_sweep_with_table(sweep, product, site, source_size, table)?;
+    if source_size == image_size {
+        return Some(rendered);
+    }
+
+    let image = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(
+        rendered.width,
+        rendered.height,
+        rendered.pixels,
+    )?;
+    let resized = image::imageops::resize(&image, image_size, image_size, FilterType::CatmullRom);
+    Some(RenderedSweep {
+        pixels: resized.into_raw(),
+        width: image_size,
+        height: image_size,
+        center_lat: rendered.center_lat,
+        center_lon: rendered.center_lon,
+        range_km: rendered.range_km,
+    })
+}
+
 pub fn renderable_products(file: &Level2File) -> Vec<RadarProduct> {
     let mut products = file.available_products();
     if lowest_sweep_with_product(file, RadarProduct::Velocity).is_some() {
@@ -101,6 +149,9 @@ pub fn renderable_products(file: &Level2File) -> Vec<RadarProduct> {
     if lowest_sweep_with_product(file, RadarProduct::Reflectivity).is_some() {
         push_unique(&mut products, RadarProduct::VIL);
         push_unique(&mut products, RadarProduct::EchoTops);
+    }
+    if lowest_sweep_with_product(file, RadarProduct::DifferentialPhase).is_some() {
+        push_unique(&mut products, RadarProduct::SpecificDiffPhase);
     }
     products.sort_by_key(|product| product.short_name().to_string());
     products
@@ -141,9 +192,11 @@ impl ResolvedRenderSweep<'_> {
 fn resolve_render_sweep(
     file: &Level2File,
     product: RadarProduct,
+    selection: RadarSweepSelection,
+    dealias_velocity: bool,
 ) -> anyhow::Result<ResolvedRenderSweep<'_>> {
-    if product.base_product() == RadarProduct::Velocity {
-        if let Some((sweep_index, sweep)) = lowest_sweep_with_product(file, product) {
+    if product.base_product() == RadarProduct::Velocity && dealias_velocity {
+        if let Some((sweep_index, sweep)) = select_sweep_with_product(file, product, selection) {
             return Ok(ResolvedRenderSweep::Owned {
                 sweep_index,
                 sweep: dealias_velocity_sweep(sweep, DealiasMethod::SweepContinuity),
@@ -151,7 +204,7 @@ fn resolve_render_sweep(
         }
     }
 
-    if let Some((sweep_index, sweep)) = lowest_sweep_with_product(file, product) {
+    if let Some((sweep_index, sweep)) = select_sweep_with_product(file, product, selection) {
         return Ok(ResolvedRenderSweep::Borrowed { sweep_index, sweep });
     }
 
@@ -165,9 +218,9 @@ fn resolve_render_sweep(
                 .collect();
             let velocity_sweeps: Vec<&Level2Sweep> = velocity_sweeps_owned.iter().collect();
             let (sweep_index, velocity_sweep) =
-                lowest_sweep_with_product(file, RadarProduct::Velocity).ok_or_else(|| {
-                    anyhow::anyhow!("cannot derive SRV because the volume has no velocity")
-                })?;
+                select_sweep_with_product(file, RadarProduct::Velocity, selection).ok_or_else(
+                    || anyhow::anyhow!("cannot derive SRV because the volume has no velocity"),
+                )?;
             let (storm_dir_deg, storm_speed_kts) =
                 SRVComputer::estimate_storm_motion(&velocity_sweeps);
             let velocity_sweep =
@@ -184,6 +237,16 @@ fn resolve_render_sweep(
         RadarProduct::EchoTops => {
             let sweep = DerivedProducts::compute_echo_tops(file, 18.0);
             ensure_nonempty_derived(product, sweep)
+        }
+        RadarProduct::SpecificDiffPhase => {
+            let (sweep_index, phi_sweep) =
+                select_sweep_with_product(file, RadarProduct::DifferentialPhase, selection)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("cannot derive KDP because the volume has no PHI")
+                    })?;
+            let sweep = DerivedProducts::compute_kdp_from_phi_sweep(phi_sweep)
+                .ok_or_else(|| anyhow::anyhow!("cannot derive KDP from PHI"))?;
+            Ok(ResolvedRenderSweep::Owned { sweep_index, sweep })
         }
         _ => Err(anyhow::anyhow!(
             "volume does not contain product {}",
@@ -209,15 +272,47 @@ pub fn lowest_sweep_with_product(
     file: &Level2File,
     product: RadarProduct,
 ) -> Option<(usize, &Level2Sweep)> {
+    select_sweep_with_product(file, product, RadarSweepSelection::Lowest)
+}
+
+pub fn select_sweep_with_product(
+    file: &Level2File,
+    product: RadarProduct,
+    selection: RadarSweepSelection,
+) -> Option<(usize, &Level2Sweep)> {
+    let candidates = file
+        .sweeps
+        .iter()
+        .enumerate()
+        .filter(|(_, sweep)| sweep_contains_product(sweep, product));
+    match selection {
+        RadarSweepSelection::Lowest => candidates.min_by(|(_, a), (_, b)| {
+            a.elevation_angle
+                .partial_cmp(&b.elevation_angle)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
+        RadarSweepSelection::Index(index) => file
+            .sweeps
+            .get(index)
+            .filter(|sweep| sweep_contains_product(sweep, product))
+            .map(|sweep| (index, sweep)),
+        RadarSweepSelection::NearestElevation(elevation_deg) => {
+            candidates.min_by(|(_, a), (_, b)| {
+                (a.elevation_angle - elevation_deg)
+                    .abs()
+                    .partial_cmp(&(b.elevation_angle - elevation_deg).abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        }
+    }
+}
+
+pub fn sweeps_with_product(file: &Level2File, product: RadarProduct) -> Vec<(usize, &Level2Sweep)> {
     file.sweeps
         .iter()
         .enumerate()
         .filter(|(_, sweep)| sweep_contains_product(sweep, product))
-        .min_by(|(_, a), (_, b)| {
-            a.elevation_angle
-                .partial_cmp(&b.elevation_angle)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+        .collect()
 }
 
 pub fn sweep_contains_product(sweep: &Level2Sweep, product: RadarProduct) -> bool {
@@ -369,6 +464,7 @@ mod tests {
             volume_date: 20_000,
             volume_time: 0,
             vcp: None,
+            site_metadata: None,
             sweeps: vec![sweep],
             partial: false,
         };
@@ -405,6 +501,10 @@ mod tests {
                     gate_count: data.len() as u16,
                     first_gate_range: 0,
                     gate_size: 1_000,
+                    data_word_size: None,
+                    scale: None,
+                    offset: None,
+                    raw_data: None,
                     data,
                 }],
             });

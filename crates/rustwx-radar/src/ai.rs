@@ -458,6 +458,7 @@ mod tests {
             volume_date: 20_000,
             volume_time: 0,
             vcp: Some(212),
+            site_metadata: None,
             sweeps: vec![synthetic_reflectivity_sweep()],
             partial: false,
         };
@@ -503,6 +504,10 @@ mod tests {
                     gate_count: data.len() as u16,
                     first_gate_range: 0,
                     gate_size: 1_000,
+                    data_word_size: None,
+                    scale: None,
+                    offset: None,
+                    raw_data: None,
                     data,
                 }],
             });

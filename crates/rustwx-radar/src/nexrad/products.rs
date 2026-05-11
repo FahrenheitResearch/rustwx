@@ -80,8 +80,8 @@ impl RadarProduct {
     pub fn unit(&self) -> &str {
         match self {
             RadarProduct::Reflectivity => "dBZ",
-            RadarProduct::Velocity => "kts",
-            RadarProduct::SpectrumWidth => "kts",
+            RadarProduct::Velocity => "m/s",
+            RadarProduct::SpectrumWidth => "m/s",
             RadarProduct::DifferentialReflectivity => "dB",
             RadarProduct::CorrelationCoefficient => "",
             RadarProduct::DifferentialPhase => "deg",
@@ -89,9 +89,9 @@ impl RadarProduct {
             RadarProduct::HydrometeorClass => "",
             RadarProduct::VIL => "kg/m²",
             RadarProduct::EchoTops => "km",
-            RadarProduct::StormRelativeVelocity => "kts",
+            RadarProduct::StormRelativeVelocity => "m/s",
             RadarProduct::SuperResReflectivity => "dBZ",
-            RadarProduct::SuperResVelocity => "kts",
+            RadarProduct::SuperResVelocity => "m/s",
             RadarProduct::Unknown => "",
         }
     }

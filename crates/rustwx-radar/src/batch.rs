@@ -763,6 +763,7 @@ mod tests {
             volume_date: 20_000,
             volume_time: 0,
             vcp: Some(212),
+            site_metadata: None,
             sweeps: vec![crate::nexrad::Level2Sweep {
                 elevation_number: 1,
                 elevation_angle: 0.5,
@@ -778,6 +779,10 @@ mod tests {
                         gate_count: 4,
                         first_gate_range: 0,
                         gate_size: 1_000,
+                        data_word_size: None,
+                        scale: None,
+                        offset: None,
+                        raw_data: None,
                         data: vec![1.0, 2.0, 3.0, 4.0],
                     }],
                 }],

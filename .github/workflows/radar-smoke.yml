@@ -1,0 +1,393 @@
+name: Radar real-fixture smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 10 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  ktlx-moore-velocity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      CARGO_TERM_COLOR: always
+      KTLX_MOORE_URL: https://unidata-nexrad-level2.s3.amazonaws.com/2013/05/20/KTLX/KTLX20130520_201643_V06.gz
+
+    steps:
+      - name: Check out rustwx
+        uses: actions/checkout@v4
+
+      - name: Set up stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build radar smoke tools
+        run: >-
+          cargo build --release -p rustwx-cli
+          --bin radar_web_tiles
+          --bin radar_export
+          --bin radar_quality_gate
+          --bin radar_benchmark_gate
+
+      - name: Download pinned KTLX Moore 2013 volume
+        run: |
+          mkdir -p target/radar-smoke/input
+          curl --fail --location --retry 3 --retry-delay 5 \
+            --output target/radar-smoke/input/KTLX20130520_201643_V06.gz \
+            "$KTLX_MOORE_URL"
+          gzip -dc target/radar-smoke/input/KTLX20130520_201643_V06.gz \
+            > target/radar-smoke/input/KTLX20130520_201643_V06
+
+      - name: Render bounded staged velocity tiles
+        run: >-
+          target/release/radar_web_tiles
+          --site KTLX
+          --input target/radar-smoke/input/KTLX20130520_201643_V06
+          --out-dir target/radar-smoke/tiles
+          --product vel
+          --name ci_ktlx_moore_vel
+          --west=-98.2
+          --south=34.7
+          --east=-96.6
+          --north=36.0
+          --min-zoom 8
+          --max-zoom 8
+          --sweep-index 1
+          --dealias
+          --dealias-method staged
+          --velocity-quality-filter
+          --benchmark-supersamples 1,2
+
+      - name: Gate velocity quality
+        run: >-
+          target/release/radar_quality_gate
+          --manifest target/radar-smoke/tiles/ss1/tiles_manifest.json
+          --manifest target/radar-smoke/tiles/ss2/tiles_manifest.json
+          --max-velocity-fold-fraction 0.005
+          --max-velocity-severe-jumps 200
+          --max-velocity-max-jump-ms 100
+          --require-numeric-sidecar
+          --summary-out target/radar-smoke/quality_gate.json
+
+      - name: Gate render speed
+        run: >-
+          target/release/radar_benchmark_gate
+          --manifest target/radar-smoke/tiles/supersample_benchmark.json
+          --max-total-ms 3000
+          --max-ms-per-candidate-tile 800
+          --require-sample-factor 1
+          --require-sample-factor 2
+          --summary-out target/radar-smoke/benchmark_gate.json
+
+      - name: Upload radar smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ktlx-moore-radar-smoke
+          path: |
+            target/radar-smoke/tiles/**/*.png
+            target/radar-smoke/tiles/**/*.json
+            target/radar-smoke/*_gate.json
+          if-no-files-found: error
+
+  ksjt-hard-all-tilt-velocity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      CARGO_TERM_COLOR: always
+      KSJT_HARD_URL: https://unidata-nexrad-level2.s3.amazonaws.com/2026/05/11/KSJT/KSJT20260511_043240_V06
+
+    steps:
+      - name: Check out rustwx
+        uses: actions/checkout@v4
+
+      - name: Set up stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build radar smoke tools
+        run: >-
+          cargo build --release -p rustwx-cli
+          --bin radar_web_tiles
+          --bin radar_export
+          --bin radar_quality_gate
+          --bin radar_benchmark_gate
+
+      - name: Download pinned KSJT hard velocity volume
+        run: |
+          mkdir -p target/radar-smoke/input
+          curl --fail --location --retry 3 --retry-delay 5 \
+            --output target/radar-smoke/input/KSJT20260511_043240_V06 \
+            "$KSJT_HARD_URL"
+
+      - name: Inventory KSJT radar products
+        run: >-
+          target/release/radar_export
+          --site KSJT
+          --input target/radar-smoke/input/KSJT20260511_043240_V06
+          --list-sweeps
+          > target/radar-smoke/product_inventory.txt
+
+      - name: Render bounded all-tilt staged velocity tiles
+        run: >-
+          target/release/radar_web_tiles
+          --site KSJT
+          --input target/radar-smoke/input/KSJT20260511_043240_V06
+          --out-dir target/radar-smoke/tiles
+          --product vel
+          --name ci_ksjt_hard_vel
+          --west=-102
+          --south=29
+          --east=-98
+          --north=33
+          --min-zoom 6
+          --max-zoom 6
+          --all-tilts
+          --dealias
+          --dealias-method staged
+          --velocity-quality-filter
+          --benchmark-supersamples 1,2
+
+      - name: Gate all-tilt velocity quality
+        run: >-
+          target/release/radar_quality_gate
+          --manifest target/radar-smoke/tiles/ss1/all_tilts_manifest.json
+          --manifest target/radar-smoke/tiles/ss2/all_tilts_manifest.json
+          --max-velocity-fold-fraction 0.005
+          --max-velocity-severe-jumps 200
+          --max-velocity-max-jump-ms 100
+          --require-numeric-sidecar
+          --summary-out target/radar-smoke/velocity_quality_gate.json
+
+      - name: Gate all-tilt render speed
+        run: >-
+          target/release/radar_benchmark_gate
+          --manifest target/radar-smoke/tiles/supersample_benchmark.json
+          --max-total-ms 10000
+          --max-ms-per-candidate-tile 300
+          --require-sample-factor 1
+          --require-sample-factor 2
+          --summary-out target/radar-smoke/velocity_benchmark_gate.json
+
+      - name: Render bounded despeckled reflectivity tiles
+        run: >-
+          target/release/radar_web_tiles
+          --site KSJT
+          --input target/radar-smoke/input/KSJT20260511_043240_V06
+          --out-dir target/radar-smoke/reflectivity
+          --product ref
+          --name ci_ksjt_ref_despeckle
+          --west=-102
+          --south=29
+          --east=-98
+          --north=33
+          --min-zoom 7
+          --max-zoom 7
+          --color-table gr2analyst
+          --reflectivity-despeckle
+          --benchmark-supersamples 1,2
+
+      - name: Gate reflectivity QC
+        run: >-
+          target/release/radar_quality_gate
+          --manifest target/radar-smoke/reflectivity/ss1/tiles_manifest.json
+          --manifest target/radar-smoke/reflectivity/ss2/tiles_manifest.json
+          --max-reflectivity-removed-fraction 0.05
+          --require-numeric-sidecar
+          --summary-out target/radar-smoke/reflectivity_quality_gate.json
+
+      - name: Gate reflectivity render speed
+        run: >-
+          target/release/radar_benchmark_gate
+          --manifest target/radar-smoke/reflectivity/supersample_benchmark.json
+          --max-total-ms 3000
+          --max-ms-per-candidate-tile 200
+          --require-sample-factor 1
+          --require-sample-factor 2
+          --summary-out target/radar-smoke/reflectivity_benchmark_gate.json
+
+      - name: Render bounded correlation coefficient tiles
+        run: >-
+          target/release/radar_web_tiles
+          --site KSJT
+          --input target/radar-smoke/input/KSJT20260511_043240_V06
+          --out-dir target/radar-smoke/dualpol
+          --product cc
+          --name ci_ksjt_cc
+          --west=-102
+          --south=29
+          --east=-98
+          --north=33
+          --min-zoom 7
+          --max-zoom 7
+          --benchmark-supersamples 1,2
+
+      - name: Gate correlation coefficient product QC
+        run: >-
+          target/release/radar_quality_gate
+          --manifest target/radar-smoke/dualpol/ss1/tiles_manifest.json
+          --manifest target/radar-smoke/dualpol/ss2/tiles_manifest.json
+          --min-product-finite-gates 100000
+          --min-product-min-value 0
+          --min-product-max-value 0.95
+          --max-product-max-value 1.10
+          --require-numeric-sidecar
+          --summary-out target/radar-smoke/cc_product_quality_gate.json
+
+      - name: Gate correlation coefficient render speed
+        run: >-
+          target/release/radar_benchmark_gate
+          --manifest target/radar-smoke/dualpol/supersample_benchmark.json
+          --max-total-ms 3000
+          --max-ms-per-candidate-tile 200
+          --require-sample-factor 1
+          --require-sample-factor 2
+          --summary-out target/radar-smoke/cc_benchmark_gate.json
+
+      - name: Render bounded differential reflectivity tiles
+        run: >-
+          target/release/radar_web_tiles
+          --site KSJT
+          --input target/radar-smoke/input/KSJT20260511_043240_V06
+          --out-dir target/radar-smoke/zdr
+          --product zdr
+          --name ci_ksjt_zdr
+          --west=-102
+          --south=29
+          --east=-98
+          --north=33
+          --min-zoom 7
+          --max-zoom 7
+          --benchmark-supersamples 1,2
+
+      - name: Gate differential reflectivity product QC
+        run: >-
+          target/release/radar_quality_gate
+          --manifest target/radar-smoke/zdr/ss1/tiles_manifest.json
+          --manifest target/radar-smoke/zdr/ss2/tiles_manifest.json
+          --min-product-finite-gates 100000
+          --min-product-min-value=-15
+          --min-product-max-value 8
+          --max-product-max-value 25
+          --require-numeric-sidecar
+          --summary-out target/radar-smoke/zdr_product_quality_gate.json
+
+      - name: Gate differential reflectivity render speed
+        run: >-
+          target/release/radar_benchmark_gate
+          --manifest target/radar-smoke/zdr/supersample_benchmark.json
+          --max-total-ms 3000
+          --max-ms-per-candidate-tile 200
+          --require-sample-factor 1
+          --require-sample-factor 2
+          --summary-out target/radar-smoke/zdr_benchmark_gate.json
+
+      - name: Render bounded differential phase tiles
+        run: >-
+          target/release/radar_web_tiles
+          --site KSJT
+          --input target/radar-smoke/input/KSJT20260511_043240_V06
+          --out-dir target/radar-smoke/phi
+          --product phi
+          --name ci_ksjt_phi
+          --west=-102
+          --south=29
+          --east=-98
+          --north=33
+          --min-zoom 7
+          --max-zoom 7
+          --benchmark-supersamples 1,2
+
+      - name: Gate differential phase product QC
+        run: >-
+          target/release/radar_quality_gate
+          --manifest target/radar-smoke/phi/ss1/tiles_manifest.json
+          --manifest target/radar-smoke/phi/ss2/tiles_manifest.json
+          --min-product-finite-gates 100000
+          --min-product-min-value 0
+          --min-product-max-value 300
+          --max-product-max-value 360
+          --require-numeric-sidecar
+          --summary-out target/radar-smoke/phi_product_quality_gate.json
+
+      - name: Gate differential phase render speed
+        run: >-
+          target/release/radar_benchmark_gate
+          --manifest target/radar-smoke/phi/supersample_benchmark.json
+          --max-total-ms 3000
+          --max-ms-per-candidate-tile 200
+          --require-sample-factor 1
+          --require-sample-factor 2
+          --summary-out target/radar-smoke/phi_benchmark_gate.json
+
+      - name: Render bounded derived specific differential phase tiles
+        run: >-
+          target/release/radar_web_tiles
+          --site KSJT
+          --input target/radar-smoke/input/KSJT20260511_043240_V06
+          --out-dir target/radar-smoke/kdp
+          --product kdp
+          --name ci_ksjt_kdp
+          --west=-102
+          --south=29
+          --east=-98
+          --north=33
+          --min-zoom 7
+          --max-zoom 7
+          --benchmark-supersamples 1,2
+
+      - name: Gate derived specific differential phase product QC
+        run: >-
+          target/release/radar_quality_gate
+          --manifest target/radar-smoke/kdp/ss1/tiles_manifest.json
+          --manifest target/radar-smoke/kdp/ss2/tiles_manifest.json
+          --min-product-finite-gates 100000
+          --min-product-min-value=-50
+          --min-product-max-value 10
+          --max-product-max-value 50
+          --require-product-source derived
+          --require-product-input phi
+          --require-product-method centered_phi_range_derivative
+          --require-numeric-sidecar
+          --summary-out target/radar-smoke/kdp_product_quality_gate.json
+
+      - name: Gate derived specific differential phase render speed
+        run: >-
+          target/release/radar_benchmark_gate
+          --manifest target/radar-smoke/kdp/supersample_benchmark.json
+          --max-total-ms 3000
+          --max-ms-per-candidate-tile 200
+          --require-sample-factor 1
+          --require-sample-factor 2
+          --summary-out target/radar-smoke/kdp_benchmark_gate.json
+
+      - name: Upload radar smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ksjt-hard-all-tilt-radar-smoke
+          path: |
+            target/radar-smoke/tiles/**/*.png
+            target/radar-smoke/tiles/**/*.json
+            target/radar-smoke/reflectivity/**/*.png
+            target/radar-smoke/reflectivity/**/*.json
+            target/radar-smoke/dualpol/**/*.png
+            target/radar-smoke/dualpol/**/*.json
+            target/radar-smoke/zdr/**/*.png
+            target/radar-smoke/zdr/**/*.json
+            target/radar-smoke/phi/**/*.png
+            target/radar-smoke/phi/**/*.json
+            target/radar-smoke/kdp/**/*.png
+            target/radar-smoke/kdp/**/*.json
+            target/radar-smoke/product_inventory.txt
+            target/radar-smoke/*_gate.json
+          if-no-files-found: error

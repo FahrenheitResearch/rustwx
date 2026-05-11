@@ -52,6 +52,10 @@ impl SRVComputer {
                                 gate_count: moment.gate_count,
                                 first_gate_range: moment.first_gate_range,
                                 gate_size: moment.gate_size,
+                                data_word_size: None,
+                                scale: None,
+                                offset: None,
+                                raw_data: None,
                                 data: srv_data,
                             }
                         } else {
