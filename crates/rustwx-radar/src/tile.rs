@@ -22,7 +22,9 @@ use crate::nexrad::srv::SRVComputer;
 use crate::nexrad::{Level2File, Level2Sweep, RadarProduct, RadarSite};
 use crate::png::{select_sweep_with_product, sweep_contains_product, RadarSweepSelection};
 use crate::render::{ColorTable, ColorTablePreset};
-use crate::sidecar::{write_polar_sidecar, RadarPolarSidecarOptions, RadarPolarSidecarRecord};
+use crate::sidecar::{
+    radar_lat_lon_to_polar, write_polar_sidecar, RadarPolarSidecarOptions, RadarPolarSidecarRecord,
+};
 
 const WEB_MERCATOR_LIMIT: f64 = 85.051_128_78;
 
@@ -1346,9 +1348,6 @@ fn render_tile(
     let sample_grid_size = tile_size * sample_factor;
     let lon_by_sample = tile_column_longitudes(z, x, sample_grid_size);
     let lat_by_sample = tile_row_latitudes(z, y, sample_grid_size);
-    let site_lat = site.lat;
-    let site_lon = site.lon;
-    let km_per_deg_lon = 111.139 * site.lat.to_radians().cos();
     let sample_count = f64::from(sample_factor * sample_factor);
     for py in 0..tile_size {
         for px in 0..tile_size {
@@ -1362,21 +1361,15 @@ fn render_tile(
                 if lat < bounds[1] || lat > bounds[3] {
                     continue;
                 }
-                let dy_km = (lat - site_lat) * 111.139;
                 for sx in 0..sample_factor {
                     let sample_x = px * sample_factor + sx;
                     let lon = lon_by_sample[sample_x as usize];
                     if lon < bounds[0] || lon > bounds[2] {
                         continue;
                     }
-                    let dx_km = (lon - site_lon) * km_per_deg_lon;
-                    let ground_range_m = dx_km.hypot(dy_km) * 1000.0;
-                    let mut azimuth = dx_km.atan2(dy_km).to_degrees();
-                    if azimuth < 0.0 {
-                        azimuth += 360.0;
-                    }
+                    let polar = radar_lat_lon_to_polar(site.lat, site.lon, lat, lon);
                     let Some(color) =
-                        prepared.color_at_azimuth_range(azimuth as f32, ground_range_m)
+                        prepared.color_at_azimuth_range(polar.azimuth_deg, polar.ground_range_m)
                     else {
                         continue;
                     };
