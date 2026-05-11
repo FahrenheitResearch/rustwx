@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::aws::{self, NexradObject};
 use crate::dealias::{DealiasMethod, dealias_velocity_file};
 use crate::nexrad::{Level2File, RadarProduct, RadarSite};
+use crate::sidecar::radar_lat_lon_to_polar;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -584,14 +585,8 @@ fn grid_cell_lat_lon(grid_spec: &CartesianGridSpec, row: usize, col: usize) -> (
 }
 
 fn site_to_azimuth_range(site: &RadarSite, lat: f64, lon: f64) -> (f32, f64) {
-    let dy_km = (lat - site.lat) * 111.139;
-    let dx_km = (lon - site.lon) * 111.139 * site.lat.to_radians().cos();
-    let range_m = dx_km.hypot(dy_km) * 1000.0;
-    let mut azimuth = dx_km.atan2(dy_km).to_degrees();
-    if azimuth < 0.0 {
-        azimuth += 360.0;
-    }
-    (azimuth as f32, range_m)
+    let polar = radar_lat_lon_to_polar(site.lat, site.lon, lat, lon);
+    (polar.azimuth_deg, polar.ground_range_m)
 }
 
 fn nearest_radial_by_azimuth<'a>(
