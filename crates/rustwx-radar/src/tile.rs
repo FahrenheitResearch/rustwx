@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use chrono::{DateTime, SecondsFormat, Utc};
 use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder};
@@ -13,16 +13,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::dealias::VelocityQualityMaskReport;
 use crate::dealias::{
-    DealiasAcceptancePolicy, DealiasMethod, DealiasReport, dealias_velocity_sweep,
-    dealias_velocity_sweep_with_policy, effective_nyquist, mask_velocity_sweep_quality,
+    dealias_velocity_sweep, dealias_velocity_sweep_with_policy, effective_nyquist,
+    mask_velocity_sweep_quality, DealiasAcceptancePolicy, DealiasMethod, DealiasReport,
 };
 use crate::nexrad::derived::DerivedProducts;
 use crate::nexrad::level2::{MomentData, RadialData};
 use crate::nexrad::srv::SRVComputer;
 use crate::nexrad::{Level2File, Level2Sweep, RadarProduct, RadarSite};
-use crate::png::{RadarSweepSelection, select_sweep_with_product, sweep_contains_product};
+use crate::png::{select_sweep_with_product, sweep_contains_product, RadarSweepSelection};
 use crate::render::{ColorTable, ColorTablePreset};
-use crate::sidecar::{RadarPolarSidecarOptions, RadarPolarSidecarRecord, write_polar_sidecar};
+use crate::sidecar::{write_polar_sidecar, RadarPolarSidecarOptions, RadarPolarSidecarRecord};
 
 const WEB_MERCATOR_LIMIT: f64 = 85.051_128_78;
 
@@ -50,6 +50,7 @@ pub struct RadarTileOptions {
     pub sample_factor: u8,
     pub png_compression: RadarTilePngCompression,
     pub skip_empty_tiles: bool,
+    pub clip_to_bounds: bool,
     pub sweep: RadarSweepSelection,
     pub dealias_velocity: bool,
     pub dealias_method: DealiasMethod,
@@ -76,6 +77,7 @@ impl Default for RadarTileOptions {
             sample_factor: 1,
             png_compression: RadarTilePngCompression::Fast,
             skip_empty_tiles: true,
+            clip_to_bounds: false,
             sweep: RadarSweepSelection::Lowest,
             dealias_velocity: false,
             dealias_method: DealiasMethod::SweepContinuity,
@@ -109,6 +111,8 @@ pub struct RadarTileManifest {
     pub opacity: f64,
     pub color_table: String,
     pub sample_factor: u8,
+    pub clip_to_bounds: bool,
+    pub sampling_bounds: [f64; 4],
     pub native_gate_size_m: Option<u16>,
     pub native_azimuth_spacing_deg: Option<f64>,
     pub maxzoom_site_meters_per_pixel: f64,
@@ -247,7 +251,7 @@ pub fn render_product_web_tiles(
     let processing_state =
         radar_processing_state(product, &product_provenance, &options, &resolved);
     let coverage_bounds = radar_coverage_bounds(site, prepared.max_ground_range_m);
-    let render_bounds = match options.bounds {
+    let tile_bounds = match options.bounds {
         Some(bounds) => intersect_bounds(bounds, coverage_bounds).ok_or_else(|| {
             anyhow::anyhow!(
                 "requested bounds do not intersect {} radar coverage",
@@ -256,8 +260,10 @@ pub fn render_product_web_tiles(
         })?,
         None => coverage_bounds,
     };
+    let sampling_bounds =
+        radar_sampling_bounds(tile_bounds, coverage_bounds, options.clip_to_bounds);
 
-    let jobs = tile_jobs(render_bounds, options.min_zoom, options.max_zoom)?;
+    let jobs = tile_jobs(tile_bounds, options.min_zoom, options.max_zoom)?;
     let candidate_tile_count = jobs.len();
     let rendered_pixel_count =
         candidate_tile_count as u64 * u64::from(options.tile_size) * u64::from(options.tile_size);
@@ -270,7 +276,7 @@ pub fn render_product_web_tiles(
             render_tile(
                 &prepared,
                 site,
-                render_bounds,
+                sampling_bounds,
                 z,
                 x,
                 y,
@@ -289,7 +295,7 @@ pub fn render_product_web_tiles(
             render_tile(
                 &prepared,
                 site,
-                render_bounds,
+                sampling_bounds,
                 z,
                 x,
                 y,
@@ -334,7 +340,7 @@ pub fn render_product_web_tiles(
         tiles: vec![tile_url],
         minzoom: options.min_zoom,
         maxzoom: options.max_zoom,
-        bounds: render_bounds,
+        bounds: tile_bounds,
     };
     atomic_write_json(&tilejson_path, &tilejson)?;
     let numeric_sidecar = if options.emit_numeric_sidecar {
@@ -402,13 +408,15 @@ pub fn render_product_web_tiles(
         scan_time_utc: scan_time,
         sweep_index: resolved.sweep_index(),
         elevation_deg: resolved.sweep().elevation_angle,
-        bounds: render_bounds,
+        bounds: tile_bounds,
         minzoom: options.min_zoom,
         maxzoom: options.max_zoom,
         tile_size: options.tile_size,
         opacity: options.opacity,
         color_table: prepared.color_table.name.clone(),
         sample_factor: options.sample_factor,
+        clip_to_bounds: options.clip_to_bounds,
+        sampling_bounds,
         native_gate_size_m: prepared.native_gate_size_m(),
         native_azimuth_spacing_deg: prepared.native_azimuth_spacing_deg(),
         maxzoom_site_meters_per_pixel: web_mercator_meters_per_pixel(site.lat, options.max_zoom),
@@ -1035,11 +1043,9 @@ fn radar_product_provenance(
         return RadarProductProvenance {
             source: "derived".to_string(),
             derived: true,
-            inputs: vec![
-                RadarProduct::DifferentialPhase
-                    .short_name()
-                    .to_ascii_lowercase(),
-            ],
+            inputs: vec![RadarProduct::DifferentialPhase
+                .short_name()
+                .to_ascii_lowercase()],
             method: Some("centered_phi_range_derivative".to_string()),
         };
     }
@@ -1503,6 +1509,18 @@ fn intersect_bounds(a: [f64; 4], b: [f64; 4]) -> Option<[f64; 4]> {
     (bounds[0] < bounds[2] && bounds[1] < bounds[3]).then_some(bounds)
 }
 
+fn radar_sampling_bounds(
+    tile_bounds: [f64; 4],
+    coverage_bounds: [f64; 4],
+    clip_to_bounds: bool,
+) -> [f64; 4] {
+    if clip_to_bounds {
+        tile_bounds
+    } else {
+        coverage_bounds
+    }
+}
+
 fn lon_to_tile_x(lon: f64, z: u8) -> u32 {
     let n = 2.0_f64.powi(i32::from(z));
     (((lon + 180.0) / 360.0) * n).floor().max(0.0) as u32
@@ -1633,6 +1651,22 @@ mod tests {
         assert_eq!(
             intersect_bounds([-100.0, 30.0, -90.0, 40.0], [-95.0, 32.0, -85.0, 45.0]),
             Some([-95.0, 32.0, -90.0, 40.0])
+        );
+    }
+
+    #[test]
+    fn requested_bounds_select_tiles_without_forcing_pixel_crop_by_default() {
+        let requested = [-100.0, 34.0, -99.5, 34.5];
+        let coverage = [-101.0, 33.0, -98.0, 36.0];
+        let tile_bounds = intersect_bounds(requested, coverage).unwrap();
+
+        assert_eq!(
+            radar_sampling_bounds(tile_bounds, coverage, false),
+            coverage
+        );
+        assert_eq!(
+            radar_sampling_bounds(tile_bounds, coverage, true),
+            tile_bounds
         );
     }
 

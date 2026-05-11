@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, ValueEnum};
-use rustwx_radar::nexrad::{Level2File, RadarProduct, RadarSite, sites};
+use rustwx_radar::nexrad::{sites, Level2File, RadarProduct, RadarSite};
 use rustwx_radar::{
-    ColorTablePreset, DealiasMethod, RadarSweepSelection, RadarTileManifest, RadarTileOptions,
-    RadarTilePngCompression, render_product_web_tiles, sweeps_with_product,
+    render_product_web_tiles, sweeps_with_product, ColorTablePreset, DealiasMethod,
+    RadarSweepSelection, RadarTileManifest, RadarTileOptions, RadarTilePngCompression,
 };
 use serde::Serialize;
 
@@ -88,6 +88,10 @@ struct Cli {
 
     #[arg(long, default_value_t = false)]
     keep_empty_tiles: bool,
+
+    /// Treat --west/--south/--east/--north as a hard pixel crop instead of only a tile-selection window.
+    #[arg(long, default_value_t = false)]
+    clip_to_bounds: bool,
 
     #[arg(long, default_value_t = false)]
     dealias: bool,
@@ -236,6 +240,7 @@ fn main() -> anyhow::Result<()> {
             sample_factor: cli.supersample,
             png_compression: cli.png_compression.into(),
             skip_empty_tiles: !cli.keep_empty_tiles,
+            clip_to_bounds: cli.clip_to_bounds,
             sweep,
             dealias_velocity: cli.dealias,
             dealias_method: cli.dealias_method.into(),
@@ -375,6 +380,7 @@ fn render_supersample_benchmark(
                     sample_factor,
                     png_compression: cli.png_compression.into(),
                     skip_empty_tiles: !cli.keep_empty_tiles,
+                    clip_to_bounds: cli.clip_to_bounds,
                     sweep: sweep.expect("single-sweep benchmark selection"),
                     dealias_velocity: cli.dealias,
                     dealias_method: cli.dealias_method.into(),
@@ -475,6 +481,7 @@ fn render_all_tilts(
                 sample_factor,
                 png_compression: cli.png_compression.into(),
                 skip_empty_tiles: !cli.keep_empty_tiles,
+                clip_to_bounds: cli.clip_to_bounds,
                 sweep: RadarSweepSelection::Index(sweep_index),
                 dealias_velocity: cli.dealias,
                 dealias_method: cli.dealias_method.into(),
