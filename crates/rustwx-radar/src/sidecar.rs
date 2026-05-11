@@ -134,25 +134,37 @@ impl RadarPolarSampleMethod {
 pub struct RadarPolarSample {
     pub schema: String,
     pub method: String,
+    pub lat: f64,
+    pub lon: f64,
     pub value: Option<f32>,
     pub units: String,
     pub product: String,
     pub product_name: String,
     pub sweep_index: usize,
     pub elevation_deg: f32,
+    pub nyquist_velocity_ms: Option<f32>,
     pub azimuth_deg: f32,
     pub ground_range_m: f64,
     pub range_m: f64,
     pub radial_index: usize,
     pub radial_azimuth_deg: f32,
+    pub radial_elevation_deg: f32,
+    pub azimuth_spacing_deg: f32,
     pub gate_index: usize,
     pub gate_fraction: f64,
+    pub first_gate_range_m: u16,
+    pub gate_spacing_m: u16,
     pub gate_flags: Vec<String>,
     pub gate_flag_bits: u8,
     pub processing_state: String,
+    pub raw: bool,
+    pub dealiased: bool,
+    pub filtered: bool,
+    pub derived: bool,
     pub product_provenance: Value,
     pub source_key_or_url: Option<String>,
     pub scan_time_utc: String,
+    pub qc: RadarPolarSidecarQc,
     pub site: RadarPolarSidecarSite,
 }
 
@@ -364,15 +376,19 @@ impl RadarPolarSidecar {
             .max(0.1);
         let slant_range_m = polar.ground_range_m / cos_elev;
         match method {
-            RadarPolarSampleMethod::Nearest => self.sample_nearest(polar, slant_range_m, method),
+            RadarPolarSampleMethod::Nearest => {
+                self.sample_nearest(lat, lon, polar, slant_range_m, method)
+            }
             RadarPolarSampleMethod::Interpolated => self
-                .sample_interpolated(polar, slant_range_m)
-                .or_else(|| self.sample_nearest(polar, slant_range_m, method)),
+                .sample_interpolated(lat, lon, polar, slant_range_m)
+                .or_else(|| self.sample_nearest(lat, lon, polar, slant_range_m, method)),
         }
     }
 
     fn sample_nearest(
         &self,
+        lat: f64,
+        lon: f64,
         polar: RadarRelativePolar,
         slant_range_m: f64,
         method: RadarPolarSampleMethod,
@@ -391,6 +407,8 @@ impl RadarPolarSidecar {
         Some(self.sample_response(
             method,
             value,
+            lat,
+            lon,
             polar,
             slant_range_m,
             radial,
@@ -402,6 +420,8 @@ impl RadarPolarSidecar {
 
     fn sample_interpolated(
         &self,
+        lat: f64,
+        lon: f64,
         polar: RadarRelativePolar,
         slant_range_m: f64,
     ) -> Option<RadarPolarSample> {
@@ -421,6 +441,8 @@ impl RadarPolarSidecar {
         Some(self.sample_response(
             RadarPolarSampleMethod::Interpolated,
             value.is_finite().then_some(value),
+            lat,
+            lon,
             polar,
             slant_range_m,
             radial,
@@ -434,6 +456,8 @@ impl RadarPolarSidecar {
         &self,
         method: RadarPolarSampleMethod,
         value: Option<f32>,
+        lat: f64,
+        lon: f64,
         polar: RadarRelativePolar,
         slant_range_m: f64,
         radial: &RadarPolarRadialMeta,
@@ -441,28 +465,46 @@ impl RadarPolarSidecar {
         gate_fraction: f64,
         flag_bits: u8,
     ) -> RadarPolarSample {
+        let processing_state = self.manifest.processing_state.to_ascii_lowercase();
+        let raw = processing_state.contains("raw");
+        let dealiased =
+            processing_state.contains("dealiased") || flag_bits & GATE_FLAG_DEALIASED != 0;
+        let filtered = processing_state.contains("filtered") || flag_bits & GATE_FLAG_FILTERED != 0;
+        let derived = processing_state.contains("derived") || flag_bits & GATE_FLAG_DERIVED != 0;
         RadarPolarSample {
             schema: RADAR_POLAR_SIDECAR_SCHEMA.to_string(),
             method: method.as_str().to_string(),
+            lat,
+            lon,
             value,
             units: self.manifest.units.clone(),
             product: self.manifest.product.clone(),
             product_name: self.manifest.product_name.clone(),
             sweep_index: self.manifest.sweep_index,
             elevation_deg: self.manifest.elevation_deg,
+            nyquist_velocity_ms: self.manifest.nyquist_velocity_ms,
             azimuth_deg: polar.azimuth_deg,
             ground_range_m: polar.ground_range_m,
             range_m: slant_range_m,
             radial_index: radial.radial_index,
             radial_azimuth_deg: radial.azimuth_deg,
+            radial_elevation_deg: radial.elevation_deg,
+            azimuth_spacing_deg: radial.azimuth_spacing_deg,
             gate_index,
             gate_fraction,
+            first_gate_range_m: radial.first_gate_range_m,
+            gate_spacing_m: radial.gate_spacing_m,
             gate_flags: gate_flag_names(flag_bits),
             gate_flag_bits: flag_bits,
             processing_state: self.manifest.processing_state.clone(),
+            raw,
+            dealiased,
+            filtered,
+            derived,
             product_provenance: self.manifest.product_provenance.clone(),
             source_key_or_url: self.manifest.source_key_or_url.clone(),
             scan_time_utc: self.manifest.scan_time_utc.clone(),
+            qc: self.manifest.qc.clone(),
             site: self.manifest.site.clone(),
         }
     }
@@ -584,6 +626,25 @@ pub fn radar_lat_lon_to_polar(
         azimuth_deg: azimuth as f32,
         ground_range_m: dx_km.hypot(dy_km) * 1000.0,
     }
+}
+
+pub fn radar_polar_to_lat_lon(
+    site_lat: f64,
+    site_lon: f64,
+    azimuth_deg: f32,
+    ground_range_m: f64,
+) -> (f64, f64) {
+    let range_km = ground_range_m / 1000.0;
+    let azimuth_rad = f64::from(azimuth_deg).to_radians();
+    let dy_km = range_km * azimuth_rad.cos();
+    let dx_km = range_km * azimuth_rad.sin();
+    let lat = site_lat + dy_km / 111.139;
+    let cos_lat = site_lat.to_radians().cos().abs().max(0.01);
+    let lon = site_lon + dx_km / (111.139 * cos_lat);
+    (
+        lat,
+        normalize_lon(site_lon + normalized_lon_delta(lon - site_lon)),
+    )
 }
 
 fn gate_fraction(radial: &RadarPolarRadialMeta, slant_range_m: f64) -> Option<f64> {
@@ -728,6 +789,10 @@ fn normalized_lon_delta(delta: f64) -> f64 {
     delta
 }
 
+fn normalize_lon(lon: f64) -> f64 {
+    ((lon + 180.0).rem_euclid(360.0)) - 180.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -815,8 +880,31 @@ mod tests {
         assert_eq!(sample.radial_index, 0);
         assert_eq!(sample.units, "dBZ");
         assert!(sample.gate_flags.iter().any(|flag| flag == "valid"));
+        assert_eq!(sample.lat, lat);
+        assert_eq!(sample.lon, site.lon);
+        assert_eq!(sample.first_gate_range_m, 0);
+        assert_eq!(sample.gate_spacing_m, 250);
+        assert_eq!(sample.azimuth_spacing_deg, 1.0);
+        assert_eq!(sample.raw, true);
+        assert_eq!(sample.dealiased, false);
+        assert_eq!(sample.filtered, false);
+        assert_eq!(sample.derived, false);
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn radar_relative_coordinates_round_trip_for_sidecar_queries() {
+        let site_lat = 35.333;
+        let site_lon = -97.277;
+        let azimuth_deg = 42.0;
+        let range_m = 87_500.0;
+
+        let (lat, lon) = radar_polar_to_lat_lon(site_lat, site_lon, azimuth_deg, range_m);
+        let polar = radar_lat_lon_to_polar(site_lat, site_lon, lat, lon);
+
+        assert!((polar.azimuth_deg - azimuth_deg).abs() < 0.001);
+        assert!((polar.ground_range_m - range_m).abs() < 0.1);
     }
 
     #[test]

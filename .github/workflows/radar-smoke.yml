@@ -34,6 +34,7 @@ jobs:
           --bin radar_export
           --bin radar_quality_gate
           --bin radar_benchmark_gate
+          --bin radar_sidecar_sample
 
       - name: Download pinned KTLX Moore 2013 volume
         run: |
@@ -76,6 +77,15 @@ jobs:
           --require-unclipped-bounds
           --summary-out target/radar-smoke/quality_gate.json
 
+      - name: Smoke sample velocity sidecar
+        run: >-
+          target/release/radar_sidecar_sample
+          --manifest target/radar-smoke/tiles/ss1/polar_sidecar_manifest.json
+          --azimuth-deg 0
+          --ground-range-m 50000
+          --method nearest
+          --summary-out target/radar-smoke/velocity_sidecar_sample.json
+
       - name: Gate render speed
         run: >-
           target/release/radar_benchmark_gate
@@ -95,6 +105,7 @@ jobs:
             target/radar-smoke/tiles/**/*.png
             target/radar-smoke/tiles/**/*.json
             target/radar-smoke/*_gate.json
+            target/radar-smoke/*_sample.json
           if-no-files-found: error
 
   ksjt-hard-all-tilt-velocity:
@@ -122,6 +133,7 @@ jobs:
           --bin radar_export
           --bin radar_quality_gate
           --bin radar_benchmark_gate
+          --bin radar_sidecar_sample
 
       - name: Download pinned KSJT hard velocity volume
         run: |
@@ -207,6 +219,15 @@ jobs:
           --require-numeric-sidecar
           --require-unclipped-bounds
           --summary-out target/radar-smoke/reflectivity_quality_gate.json
+
+      - name: Smoke sample reflectivity sidecar
+        run: >-
+          target/release/radar_sidecar_sample
+          --manifest target/radar-smoke/reflectivity/ss1/polar_sidecar_manifest.json
+          --azimuth-deg 0
+          --ground-range-m 50000
+          --method nearest
+          --summary-out target/radar-smoke/reflectivity_sidecar_sample.json
 
       - name: Gate reflectivity render speed
         run: >-
@@ -397,4 +418,5 @@ jobs:
             target/radar-smoke/kdp/**/*.json
             target/radar-smoke/product_inventory.txt
             target/radar-smoke/*_gate.json
+            target/radar-smoke/*_sample.json
           if-no-files-found: error
