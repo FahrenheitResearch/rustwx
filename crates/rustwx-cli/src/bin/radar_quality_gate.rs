@@ -692,6 +692,9 @@ fn validate_numeric_sidecar(
                 "{label} numeric sidecar manifest has unsupported schema"
             ));
         }
+        failures.extend(validate_numeric_sidecar_manifest_fields(
+            label, sidecar, &manifest,
+        ));
         if manifest.get("radial_count").and_then(Value::as_u64) != Some(sidecar.radial_count) {
             failures.push(format!("{label} numeric sidecar radial_count mismatch"));
         }
@@ -710,6 +713,174 @@ fn validate_numeric_sidecar(
     }
 
     Ok(failures)
+}
+
+fn validate_numeric_sidecar_manifest_fields(
+    label: &str,
+    sidecar: &NumericSidecarSummary,
+    manifest: &Value,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    if manifest.get("sidecar_version").and_then(Value::as_u64) != Some(2) {
+        failures.push(format!(
+            "{label} numeric sidecar manifest must declare sidecar_version=2"
+        ));
+    }
+    if manifest.get("ok").and_then(Value::as_bool) != Some(true) {
+        failures.push(format!("{label} numeric sidecar manifest is not ok"));
+    }
+    for field in [
+        "product",
+        "product_name",
+        "units",
+        "scan_time_utc",
+        "processing_state",
+        "values_encoding",
+        "gate_flags_encoding",
+    ] {
+        if !manifest
+            .get(field)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            failures.push(format!(
+                "{label} numeric sidecar manifest is missing string field {field}"
+            ));
+        }
+    }
+    if manifest.get("values_encoding").and_then(Value::as_str)
+        != Some("f32_le_row_major_radial_gate_nan_missing")
+    {
+        failures.push(format!(
+            "{label} numeric sidecar values_encoding is not the v2 f32 row-major encoding"
+        ));
+    }
+    if manifest.get("gate_flags_encoding").and_then(Value::as_str)
+        != Some("u8_bitmask_row_major_radial_gate")
+    {
+        failures.push(format!(
+            "{label} numeric sidecar gate_flags_encoding is not the v2 u8 mask encoding"
+        ));
+    }
+    if !manifest
+        .get("source_key_or_url")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        failures.push(format!(
+            "{label} numeric sidecar manifest is missing source_key_or_url"
+        ));
+    }
+    if !manifest
+        .get("product_provenance")
+        .is_some_and(Value::is_object)
+    {
+        failures.push(format!(
+            "{label} numeric sidecar manifest is missing product_provenance"
+        ));
+    }
+    for field in ["lat", "lon", "elevation_m"] {
+        if manifest
+            .pointer(&format!("/site/{field}"))
+            .and_then(Value::as_f64)
+            .is_none()
+        {
+            failures.push(format!(
+                "{label} numeric sidecar manifest is missing site {field}"
+            ));
+        }
+    }
+    for field in [
+        "sweep_index",
+        "radial_count",
+        "max_gate_count",
+        "gate_count",
+    ] {
+        if manifest.get(field).and_then(Value::as_u64).is_none() {
+            failures.push(format!(
+                "{label} numeric sidecar manifest is missing numeric field {field}"
+            ));
+        }
+    }
+    if manifest
+        .get("elevation_deg")
+        .and_then(Value::as_f64)
+        .is_none()
+    {
+        failures.push(format!(
+            "{label} numeric sidecar manifest is missing elevation_deg"
+        ));
+    }
+    if !manifest.get("nyquist_velocity_ms").is_some() {
+        failures.push(format!(
+            "{label} numeric sidecar manifest is missing nyquist_velocity_ms"
+        ));
+    }
+
+    let Some(radials) = manifest.get("radials").and_then(Value::as_array) else {
+        failures.push(format!(
+            "{label} numeric sidecar manifest is missing radials array"
+        ));
+        return failures;
+    };
+    if radials.len() as u64 != sidecar.radial_count {
+        failures.push(format!(
+            "{label} numeric sidecar manifest radial array length {} does not match {}",
+            radials.len(),
+            sidecar.radial_count
+        ));
+    }
+
+    let mut summed_gate_count = 0u64;
+    for (index, radial) in radials.iter().enumerate() {
+        let prefix = format!("{label} numeric sidecar radial[{index}]");
+        for field in [
+            "radial_index",
+            "gate_count",
+            "first_gate_range_m",
+            "gate_spacing_m",
+        ] {
+            if radial.get(field).and_then(Value::as_u64).is_none() {
+                failures.push(format!("{prefix} is missing numeric field {field}"));
+            }
+        }
+        for field in ["azimuth_deg", "elevation_deg", "azimuth_spacing_deg"] {
+            if radial.get(field).and_then(Value::as_f64).is_none() {
+                failures.push(format!("{prefix} is missing numeric field {field}"));
+            }
+        }
+        for field in [
+            "scale",
+            "offset",
+            "nyquist_velocity_ms",
+            "data_word_size_bits",
+        ] {
+            if !radial.get(field).is_some() {
+                failures.push(format!("{prefix} is missing field {field}"));
+            }
+        }
+        if let Some(gate_count) = radial.get("gate_count").and_then(Value::as_u64) {
+            summed_gate_count = summed_gate_count.saturating_add(gate_count);
+            if gate_count == 0 {
+                failures.push(format!("{prefix} has zero gate_count"));
+            }
+        }
+        if radial
+            .get("gate_spacing_m")
+            .and_then(Value::as_u64)
+            .is_some_and(|spacing| spacing == 0)
+        {
+            failures.push(format!("{prefix} has zero gate_spacing_m"));
+        }
+    }
+    if summed_gate_count != sidecar.gate_count {
+        failures.push(format!(
+            "{label} numeric sidecar manifest radial gate sum {summed_gate_count} does not match {}",
+            sidecar.gate_count
+        ));
+    }
+
+    failures
 }
 
 fn parse_reflectivity_qc(value: &Value) -> Result<Option<ReflectivitySummary>> {
@@ -1020,12 +1191,51 @@ mod tests {
             &sidecar_manifest,
             serde_json::to_vec_pretty(&json!({
                 "schema": RADAR_POLAR_SIDECAR_SCHEMA,
+                "sidecar_version": 2,
+                "ok": true,
+                "name": "ktlx_ref",
                 "site": {
                     "id": "KTLX",
+                    "name": "Oklahoma City",
+                    "state": "OK",
+                    "lat": 35.333,
+                    "lon": -97.277,
                     "elevation_m": 389.4
                 },
+                "product": "ref",
+                "product_name": "Reflectivity",
+                "units": "dBZ",
+                "product_provenance": {
+                    "source": "native",
+                    "derived": false
+                },
+                "source_key_or_url": "s3://nexrad/KTLX",
+                "scan_time_utc": "2026-05-11T00:00:00Z",
+                "sweep_index": 0,
+                "elevation_deg": 0.5,
+                "nyquist_velocity_ms": null,
+                "processing_state": "raw",
                 "radial_count": 1,
-                "max_gate_count": 4
+                "max_gate_count": 4,
+                "gate_count": 4,
+                "values_path": values_path.display().to_string(),
+                "values_encoding": "f32_le_row_major_radial_gate_nan_missing",
+                "gate_flags_path": flags_path.display().to_string(),
+                "gate_flags_encoding": "u8_bitmask_row_major_radial_gate",
+                "radials": [{
+                    "radial_index": 0,
+                    "azimuth_deg": 0.0,
+                    "elevation_deg": 0.5,
+                    "azimuth_spacing_deg": 1.0,
+                    "gate_count": 4,
+                    "first_gate_range_m": 0,
+                    "gate_spacing_m": 250,
+                    "nyquist_velocity_ms": null,
+                    "data_word_size_bits": 8,
+                    "scale": 2.0,
+                    "offset": 66.0
+                }],
+                "qc": {}
             }))
             .unwrap(),
         )
