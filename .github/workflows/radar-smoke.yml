@@ -73,6 +73,7 @@ jobs:
           --max-velocity-severe-jumps 200
           --max-velocity-max-jump-ms 100
           --require-numeric-sidecar
+          --require-unclipped-bounds
           --summary-out target/radar-smoke/quality_gate.json
 
       - name: Gate render speed
@@ -166,6 +167,7 @@ jobs:
           --max-velocity-severe-jumps 200
           --max-velocity-max-jump-ms 100
           --require-numeric-sidecar
+          --require-unclipped-bounds
           --summary-out target/radar-smoke/velocity_quality_gate.json
 
       - name: Gate all-tilt render speed
@@ -203,6 +205,7 @@ jobs:
           --manifest target/radar-smoke/reflectivity/ss2/tiles_manifest.json
           --max-reflectivity-removed-fraction 0.05
           --require-numeric-sidecar
+          --require-unclipped-bounds
           --summary-out target/radar-smoke/reflectivity_quality_gate.json
 
       - name: Gate reflectivity render speed
@@ -241,6 +244,7 @@ jobs:
           --min-product-max-value 0.95
           --max-product-max-value 1.10
           --require-numeric-sidecar
+          --require-unclipped-bounds
           --summary-out target/radar-smoke/cc_product_quality_gate.json
 
       - name: Gate correlation coefficient render speed
@@ -279,6 +283,7 @@ jobs:
           --min-product-max-value 8
           --max-product-max-value 25
           --require-numeric-sidecar
+          --require-unclipped-bounds
           --summary-out target/radar-smoke/zdr_product_quality_gate.json
 
       - name: Gate differential reflectivity render speed
@@ -317,6 +322,7 @@ jobs:
           --min-product-max-value 300
           --max-product-max-value 360
           --require-numeric-sidecar
+          --require-unclipped-bounds
           --summary-out target/radar-smoke/phi_product_quality_gate.json
 
       - name: Gate differential phase render speed
@@ -358,6 +364,7 @@ jobs:
           --require-product-input phi
           --require-product-method centered_phi_range_derivative
           --require-numeric-sidecar
+          --require-unclipped-bounds
           --summary-out target/radar-smoke/kdp_product_quality_gate.json
 
       - name: Gate derived specific differential phase render speed

@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use serde::Serialize;
 use serde_json::Value;
@@ -66,6 +66,10 @@ struct Cli {
     #[arg(long)]
     require_numeric_sidecar: bool,
 
+    /// Fail manifests that hard-clip pixels to the requested tile-selection bounds.
+    #[arg(long)]
+    require_unclipped_bounds: bool,
+
     /// Optional JSON summary path.
     #[arg(long)]
     summary_out: Option<PathBuf>,
@@ -85,6 +89,7 @@ struct QualityThresholds {
     require_product_input: Vec<String>,
     require_product_method: Option<String>,
     require_numeric_sidecar: bool,
+    require_unclipped_bounds: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -110,6 +115,9 @@ struct EntrySummary {
     product_qc: Option<ProductSummary>,
     product_provenance: Option<ProductProvenanceSummary>,
     numeric_sidecar: Option<NumericSidecarSummary>,
+    bounds: Option<[f64; 4]>,
+    clip_to_bounds: Option<bool>,
+    sampling_bounds: Option<[f64; 4]>,
     reflectivity_qc: Option<ReflectivitySummary>,
     velocity_qc: Option<VelocitySummary>,
     dealias_qc: Option<DealiasSummary>,
@@ -190,6 +198,7 @@ fn main() -> Result<()> {
         require_product_input: cli.require_product_input,
         require_product_method: cli.require_product_method,
         require_numeric_sidecar: cli.require_numeric_sidecar,
+        require_unclipped_bounds: cli.require_unclipped_bounds,
     };
     let summary = evaluate_manifest_paths(&cli.manifest, thresholds)?;
     let text = serde_json::to_string_pretty(&summary)?;
@@ -302,10 +311,34 @@ fn evaluate_entry(
     let product_qc = parse_product_qc(value)?;
     let product_provenance = parse_product_provenance(value)?;
     let numeric_sidecar = parse_numeric_sidecar(value)?;
+    let bounds = parse_bounds(value, "bounds")?;
+    let sampling_bounds = parse_bounds(value, "sampling_bounds")?;
+    let clip_to_bounds = value.get("clip_to_bounds").and_then(Value::as_bool);
     let reflectivity_qc = parse_reflectivity_qc(value)?;
     let velocity_qc = parse_velocity_qc(value)?;
     let dealias_qc = parse_dealias_qc(value)?;
     let mut failures = Vec::new();
+
+    if thresholds.require_unclipped_bounds {
+        if clip_to_bounds != Some(false) {
+            failures.push(format!(
+                "{label} has clip_to_bounds={:?}; expected false",
+                clip_to_bounds
+            ));
+        }
+        match (bounds, sampling_bounds) {
+            (Some(tile_bounds), Some(sample_bounds)) => {
+                if !bounds_contains(sample_bounds, tile_bounds) {
+                    failures.push(format!(
+                        "{label} sampling_bounds {:?} do not cover tile bounds {:?}",
+                        sample_bounds, tile_bounds
+                    ));
+                }
+            }
+            (None, _) => failures.push(format!("{label} is missing bounds")),
+            (_, None) => failures.push(format!("{label} is missing sampling_bounds")),
+        }
+    }
 
     if thresholds.require_numeric_sidecar {
         match numeric_sidecar.as_ref() {
@@ -465,6 +498,9 @@ fn evaluate_entry(
         product_qc,
         product_provenance,
         numeric_sidecar,
+        bounds,
+        clip_to_bounds,
+        sampling_bounds,
         reflectivity_qc,
         velocity_qc,
         dealias_qc,
@@ -552,6 +588,40 @@ fn parse_numeric_sidecar(value: &Value) -> Result<Option<NumericSidecarSummary>>
         gate_count: required_u64(sidecar, "gate_count")?,
         processing_state: required_str(sidecar, "processing_state")?.to_string(),
     }))
+}
+
+fn parse_bounds(value: &Value, field: &str) -> Result<Option<[f64; 4]>> {
+    let Some(values) = value.get(field) else {
+        return Ok(None);
+    };
+    let Some(values) = values.as_array() else {
+        bail!("{field} must be an array");
+    };
+    if values.len() != 4 {
+        bail!("{field} must contain west,south,east,north");
+    }
+    Ok(Some([
+        values[0]
+            .as_f64()
+            .ok_or_else(|| anyhow::anyhow!("{field}[0] must be a number"))?,
+        values[1]
+            .as_f64()
+            .ok_or_else(|| anyhow::anyhow!("{field}[1] must be a number"))?,
+        values[2]
+            .as_f64()
+            .ok_or_else(|| anyhow::anyhow!("{field}[2] must be a number"))?,
+        values[3]
+            .as_f64()
+            .ok_or_else(|| anyhow::anyhow!("{field}[3] must be a number"))?,
+    ]))
+}
+
+fn bounds_contains(outer: [f64; 4], inner: [f64; 4]) -> bool {
+    const EPS: f64 = 1e-9;
+    outer[0] <= inner[0] + EPS
+        && outer[1] <= inner[1] + EPS
+        && outer[2] + EPS >= inner[2]
+        && outer[3] + EPS >= inner[3]
 }
 
 fn validate_numeric_sidecar(
@@ -792,6 +862,7 @@ mod tests {
             require_product_input: Vec::new(),
             require_product_method: None,
             require_numeric_sidecar: false,
+            require_unclipped_bounds: false,
         };
 
         let summary =
@@ -848,30 +919,25 @@ mod tests {
             require_product_input: Vec::new(),
             require_product_method: None,
             require_numeric_sidecar: false,
+            require_unclipped_bounds: false,
         };
 
         let summary =
             evaluate_manifest_value(Path::new("manifest.json"), &value, &thresholds).unwrap();
 
         assert!(!summary.ok);
-        assert!(
-            summary
-                .failures
-                .iter()
-                .any(|failure| { failure.contains("reflectivity removed fraction") })
-        );
-        assert!(
-            summary
-                .failures
-                .iter()
-                .any(|failure| { failure.contains("accepted dealias increased fold-like jumps") })
-        );
-        assert!(
-            summary
-                .failures
-                .iter()
-                .any(|failure| { failure.contains("accepted dealias increased severe jumps") })
-        );
+        assert!(summary
+            .failures
+            .iter()
+            .any(|failure| { failure.contains("reflectivity removed fraction") }));
+        assert!(summary
+            .failures
+            .iter()
+            .any(|failure| { failure.contains("accepted dealias increased fold-like jumps") }));
+        assert!(summary
+            .failures
+            .iter()
+            .any(|failure| { failure.contains("accepted dealias increased severe jumps") }));
     }
 
     #[test]
@@ -901,6 +967,7 @@ mod tests {
             require_product_input: Vec::new(),
             require_product_method: None,
             require_numeric_sidecar: false,
+            require_unclipped_bounds: false,
         };
 
         let summary =
@@ -924,24 +991,18 @@ mod tests {
             evaluate_manifest_value(Path::new("manifest.json"), &too_low, &thresholds).unwrap();
 
         assert!(!summary.ok);
-        assert!(
-            summary
-                .failures
-                .iter()
-                .any(|failure| { failure.contains("product finite gates 20 below 1000") })
-        );
-        assert!(
-            summary
-                .failures
-                .iter()
-                .any(|failure| { failure.contains("product min value -0.2000 below 0.0000") })
-        );
-        assert!(
-            summary
-                .failures
-                .iter()
-                .any(|failure| { failure.contains("product max value 1.4000 exceeds 1.0500") })
-        );
+        assert!(summary
+            .failures
+            .iter()
+            .any(|failure| { failure.contains("product finite gates 20 below 1000") }));
+        assert!(summary
+            .failures
+            .iter()
+            .any(|failure| { failure.contains("product min value -0.2000 below 0.0000") }));
+        assert!(summary
+            .failures
+            .iter()
+            .any(|failure| { failure.contains("product max value 1.4000 exceeds 1.0500") }));
     }
 
     #[test]
@@ -999,6 +1060,7 @@ mod tests {
             require_product_input: Vec::new(),
             require_product_method: None,
             require_numeric_sidecar: true,
+            require_unclipped_bounds: false,
         };
 
         let summary =
@@ -1015,6 +1077,77 @@ mod tests {
         );
 
         fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn gates_unclipped_tile_bounds_metadata() {
+        let thresholds = QualityThresholds {
+            max_reflectivity_removed_fraction: None,
+            max_velocity_fold_fraction: None,
+            max_velocity_severe_jumps: None,
+            max_velocity_max_jump_ms: None,
+            min_product_finite_gates: None,
+            min_product_min_value: None,
+            min_product_max_value: None,
+            max_product_max_value: None,
+            require_product_source: None,
+            require_product_input: Vec::new(),
+            require_product_method: None,
+            require_numeric_sidecar: false,
+            require_unclipped_bounds: true,
+        };
+        let value = json!({
+            "ok": true,
+            "name": "ksjt_ref_z12",
+            "product": "ref",
+            "bounds": [-100.9, 31.0, -100.2, 31.7],
+            "clip_to_bounds": false,
+            "sampling_bounds": [-105.3, 27.2, -95.6, 35.5]
+        });
+
+        let summary =
+            evaluate_manifest_value(Path::new("manifest.json"), &value, &thresholds).unwrap();
+
+        assert!(summary.ok);
+        assert_eq!(summary.entries[0].clip_to_bounds, Some(false));
+        assert_eq!(
+            summary.entries[0].sampling_bounds,
+            Some([-105.3, 27.2, -95.6, 35.5])
+        );
+
+        let clipped = json!({
+            "ok": true,
+            "name": "bad_clip",
+            "product": "ref",
+            "bounds": [-100.9, 31.0, -100.2, 31.7],
+            "clip_to_bounds": true,
+            "sampling_bounds": [-100.9, 31.0, -100.2, 31.7]
+        });
+        let summary =
+            evaluate_manifest_value(Path::new("manifest.json"), &clipped, &thresholds).unwrap();
+
+        assert!(!summary.ok);
+        assert!(summary
+            .failures
+            .iter()
+            .any(|failure| { failure.contains("clip_to_bounds=Some(true)") }));
+
+        let too_small = json!({
+            "ok": true,
+            "name": "bad_sampling_bounds",
+            "product": "ref",
+            "bounds": [-100.9, 31.0, -100.2, 31.7],
+            "clip_to_bounds": false,
+            "sampling_bounds": [-100.8, 31.1, -100.3, 31.6]
+        });
+        let summary =
+            evaluate_manifest_value(Path::new("manifest.json"), &too_small, &thresholds).unwrap();
+
+        assert!(!summary.ok);
+        assert!(summary
+            .failures
+            .iter()
+            .any(|failure| { failure.contains("do not cover tile bounds") }));
     }
 
     #[test]
@@ -1043,6 +1176,7 @@ mod tests {
             require_product_input: vec!["phi".to_string()],
             require_product_method: Some("centered_phi_range_derivative".to_string()),
             require_numeric_sidecar: false,
+            require_unclipped_bounds: false,
         };
 
         let summary =
@@ -1066,11 +1200,9 @@ mod tests {
             evaluate_manifest_value(Path::new("manifest.json"), &missing, &thresholds).unwrap();
 
         assert!(!summary.ok);
-        assert!(
-            summary
-                .failures
-                .iter()
-                .any(|failure| { failure.contains("missing product provenance") })
-        );
+        assert!(summary
+            .failures
+            .iter()
+            .any(|failure| { failure.contains("missing product provenance") }));
     }
 }
