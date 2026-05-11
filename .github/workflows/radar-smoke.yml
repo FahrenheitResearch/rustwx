@@ -268,6 +268,15 @@ jobs:
           --require-unclipped-bounds
           --summary-out target/radar-smoke/cc_product_quality_gate.json
 
+      - name: Smoke sample correlation coefficient sidecar
+        run: >-
+          target/release/radar_sidecar_sample
+          --manifest target/radar-smoke/dualpol/ss1/polar_sidecar_manifest.json
+          --azimuth-deg 0
+          --ground-range-m 50000
+          --method nearest
+          --summary-out target/radar-smoke/cc_sidecar_sample.json
+
       - name: Gate correlation coefficient render speed
         run: >-
           target/release/radar_benchmark_gate
@@ -307,6 +316,15 @@ jobs:
           --require-unclipped-bounds
           --summary-out target/radar-smoke/zdr_product_quality_gate.json
 
+      - name: Smoke sample differential reflectivity sidecar
+        run: >-
+          target/release/radar_sidecar_sample
+          --manifest target/radar-smoke/zdr/ss1/polar_sidecar_manifest.json
+          --azimuth-deg 0
+          --ground-range-m 50000
+          --method nearest
+          --summary-out target/radar-smoke/zdr_sidecar_sample.json
+
       - name: Gate differential reflectivity render speed
         run: >-
           target/release/radar_benchmark_gate
@@ -345,6 +363,15 @@ jobs:
           --require-numeric-sidecar
           --require-unclipped-bounds
           --summary-out target/radar-smoke/phi_product_quality_gate.json
+
+      - name: Smoke sample differential phase sidecar
+        run: >-
+          target/release/radar_sidecar_sample
+          --manifest target/radar-smoke/phi/ss1/polar_sidecar_manifest.json
+          --azimuth-deg 0
+          --ground-range-m 50000
+          --method nearest
+          --summary-out target/radar-smoke/phi_sidecar_sample.json
 
       - name: Gate differential phase render speed
         run: >-
@@ -387,6 +414,15 @@ jobs:
           --require-numeric-sidecar
           --require-unclipped-bounds
           --summary-out target/radar-smoke/kdp_product_quality_gate.json
+
+      - name: Smoke sample derived specific differential phase sidecar
+        run: >-
+          target/release/radar_sidecar_sample
+          --manifest target/radar-smoke/kdp/ss1/polar_sidecar_manifest.json
+          --azimuth-deg 0
+          --ground-range-m 50000
+          --method nearest
+          --summary-out target/radar-smoke/kdp_sidecar_sample.json
 
       - name: Gate derived specific differential phase render speed
         run: >-
