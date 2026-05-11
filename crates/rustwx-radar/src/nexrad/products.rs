@@ -29,7 +29,7 @@ impl RadarProduct {
             "RHO" | "CC" => RadarProduct::CorrelationCoefficient,
             "PHI" => RadarProduct::DifferentialPhase,
             "KDP" => RadarProduct::SpecificDiffPhase,
-            "HHC" => RadarProduct::HydrometeorClass,
+            "HC" | "HCA" | "HHC" => RadarProduct::HydrometeorClass,
             "VIL" => RadarProduct::VIL,
             "ET" => RadarProduct::EchoTops,
             "SRV" => RadarProduct::StormRelativeVelocity,
@@ -123,9 +123,28 @@ impl RadarProduct {
             RadarProduct::CorrelationCoefficient,
             RadarProduct::DifferentialPhase,
             RadarProduct::SpecificDiffPhase,
+            RadarProduct::HydrometeorClass,
             RadarProduct::StormRelativeVelocity,
             RadarProduct::SuperResReflectivity,
             RadarProduct::SuperResVelocity,
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hydrometeor_class_aliases_are_discoverable() {
+        assert_eq!(
+            RadarProduct::from_name("HCA"),
+            RadarProduct::HydrometeorClass
+        );
+        assert_eq!(
+            RadarProduct::from_name("HHC"),
+            RadarProduct::HydrometeorClass
+        );
+        assert!(RadarProduct::all_products().contains(&RadarProduct::HydrometeorClass));
     }
 }

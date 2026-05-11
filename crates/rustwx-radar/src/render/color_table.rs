@@ -577,6 +577,7 @@ fn nws_table(product: RadarProduct) -> ColorTable {
                     ],
                 )
             }),
+        RadarProduct::HydrometeorClass => hca_table("Hydrometeor Class (NWS)"),
         RadarProduct::VIL => {
             embedded_pal_table("VIL (GRS)", VIL_DEFAULT_PAL).unwrap_or_else(|| {
                 ColorTable::from_entries_vec(
@@ -621,6 +622,32 @@ fn nws_table(product: RadarProduct) -> ColorTable {
         }
         _ => nws_table(RadarProduct::Reflectivity),
     }
+}
+
+fn hca_table(name: &str) -> ColorTable {
+    ColorTable::from_entries_vec(
+        name,
+        vec![
+            ce(0.0, 0, 0, 0, 0),
+            ce(0.5, 0, 0, 0, 0),
+            ce(1.0, 112, 112, 112, 255),
+            ce(2.0, 80, 160, 255, 255),
+            ce(3.0, 155, 110, 190, 255),
+            ce(4.0, 45, 180, 45, 255),
+            ce(5.0, 0, 125, 255, 255),
+            ce(6.0, 0, 210, 210, 255),
+            ce(7.0, 235, 235, 0, 255),
+            ce(8.0, 255, 150, 0, 255),
+            ce(9.0, 230, 0, 0, 255),
+            ce(10.0, 170, 0, 170, 255),
+            ce(11.0, 110, 55, 15, 255),
+            ce(12.0, 255, 95, 180, 255),
+            ce(13.0, 180, 180, 255, 255),
+            ce(14.0, 255, 255, 255, 255),
+            ce(15.0, 80, 80, 80, 255),
+            ce(16.0, 20, 20, 20, 255),
+        ],
+    )
 }
 
 fn gr2a_table(product: RadarProduct) -> ColorTable {
@@ -1027,5 +1054,18 @@ mod tests {
         assert!(inbound[1] > inbound[0]);
         assert!(outbound[0] > outbound[1]);
         assert!(outbound[3] > 0);
+    }
+
+    #[test]
+    fn hydrometeor_class_palette_is_discrete_and_visible() {
+        let hca = ColorTable::for_product(RadarProduct::HydrometeorClass);
+        let biological = hca.color_for_value(1.0);
+        let hail = hca.color_for_value(10.0);
+
+        assert!(hca.name.contains("Hydrometeor Class"));
+        assert_eq!(hca.color_for_value(0.0)[3], 0);
+        assert!(biological[3] > 0);
+        assert!(hail[3] > 0);
+        assert_ne!(biological, hail);
     }
 }
