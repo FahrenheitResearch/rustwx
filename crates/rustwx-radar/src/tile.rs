@@ -1766,6 +1766,86 @@ mod tests {
     }
 
     #[test]
+    fn native_kdp_is_preferred_over_phi_derived_kdp() {
+        let file = Level2File {
+            station_id: "KXXX".to_string(),
+            volume_date: 1,
+            volume_time: 0,
+            vcp: None,
+            site_metadata: None,
+            partial: false,
+            sweeps: vec![Level2Sweep {
+                elevation_number: 1,
+                elevation_angle: 0.5,
+                nyquist_velocity: None,
+                radials: vec![RadialData {
+                    azimuth: 0.0,
+                    elevation: 0.5,
+                    azimuth_spacing: 1.0,
+                    nyquist_velocity: None,
+                    radial_status: 1,
+                    moments: vec![
+                        MomentData {
+                            product: RadarProduct::DifferentialPhase,
+                            gate_count: 3,
+                            first_gate_range: 0,
+                            gate_size: 250,
+                            data_word_size: None,
+                            scale: None,
+                            offset: None,
+                            raw_data: None,
+                            data: vec![0.0, 1.0, 2.0],
+                        },
+                        MomentData {
+                            product: RadarProduct::SpecificDiffPhase,
+                            gate_count: 3,
+                            first_gate_range: 0,
+                            gate_size: 250,
+                            data_word_size: None,
+                            scale: None,
+                            offset: None,
+                            raw_data: None,
+                            data: vec![0.5, 1.5, 2.5],
+                        },
+                    ],
+                }],
+            }],
+        };
+
+        let provenance = radar_product_provenance(
+            &file,
+            RadarProduct::SpecificDiffPhase,
+            RadarSweepSelection::Lowest,
+        );
+
+        assert_eq!(provenance.source, "native");
+        assert!(!provenance.derived);
+        assert!(provenance.inputs.is_empty());
+        assert!(provenance.method.is_none());
+
+        let resolved = resolve_tile_sweep(
+            &file,
+            RadarProduct::SpecificDiffPhase,
+            RadarSweepSelection::Lowest,
+            false,
+            DealiasMethod::Off,
+            false,
+            false,
+            false,
+            1,
+        )
+        .unwrap();
+        let kdp = radial_moment_for_product(
+            &resolved.sweep().radials[0],
+            RadarProduct::SpecificDiffPhase,
+        )
+        .unwrap();
+
+        assert_eq!(resolved.sweep_index(), 0);
+        assert_eq!(kdp.data, vec![0.5, 1.5, 2.5]);
+    }
+
+    #[test]
     fn reflectivity_despeckle_removes_isolated_gate_only() {
         let sweep = Level2Sweep {
             elevation_number: 1,
