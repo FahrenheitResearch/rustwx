@@ -62,6 +62,11 @@ jobs:
       - name: Test rustwx-render
         run: cargo test -p rustwx-render --lib
 
+      - name: Test agent evidence tools
+        run: |
+          cargo test -p rustwx-products agent_evidence
+          cargo check -p rustwx-cli --bin agent_evidence
+
       - name: Test rustwx-radar
         run: cargo test -p rustwx-radar --lib
 

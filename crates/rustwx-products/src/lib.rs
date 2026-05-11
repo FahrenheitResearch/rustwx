@@ -1,3 +1,4 @@
+pub mod agent_evidence;
 pub mod artifact_bundle;
 pub mod cache;
 pub mod catalog;
