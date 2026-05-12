@@ -32,8 +32,9 @@ pub use dealias::{
 };
 pub use nexrad::{Level2File, Level2SiteMetadata, Level2Sweep, RadarProduct, RadarSite};
 pub use png::{
-    render_product_frame, render_product_png, select_sweep_with_product, sweeps_with_product,
-    RadarFrameRender, RadarSweepSelection,
+    render_product_frame, render_product_png, select_sweep_with_hca_inputs,
+    select_sweep_with_product, sweeps_with_hca_inputs, sweeps_with_product, RadarFrameRender,
+    RadarSweepSelection,
 };
 pub use render::ColorTablePreset;
 pub use sidecar::{

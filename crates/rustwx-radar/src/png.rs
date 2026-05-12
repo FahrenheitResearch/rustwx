@@ -1,9 +1,9 @@
 use std::io::Cursor;
 
-use image::{ImageBuffer, ImageFormat, Rgba, imageops::FilterType};
+use image::{imageops::FilterType, ImageBuffer, ImageFormat, Rgba};
 use serde::{Deserialize, Serialize};
 
-use crate::dealias::{DealiasMethod, dealias_velocity_sweep};
+use crate::dealias::{dealias_velocity_sweep, DealiasMethod};
 use crate::nexrad::derived::DerivedProducts;
 use crate::nexrad::srv::SRVComputer;
 use crate::nexrad::{Level2File, Level2Sweep, RadarProduct, RadarSite};
@@ -153,6 +153,9 @@ pub fn renderable_products(file: &Level2File) -> Vec<RadarProduct> {
     if lowest_sweep_with_product(file, RadarProduct::DifferentialPhase).is_some() {
         push_unique(&mut products, RadarProduct::SpecificDiffPhase);
     }
+    if lowest_sweep_with_hca_inputs(file).is_some() {
+        push_unique(&mut products, RadarProduct::HydrometeorClass);
+    }
     products.sort_by_key(|product| product.short_name().to_string());
     products
 }
@@ -248,6 +251,15 @@ fn resolve_render_sweep(
                 .ok_or_else(|| anyhow::anyhow!("cannot derive KDP from PHI"))?;
             Ok(ResolvedRenderSweep::Owned { sweep_index, sweep })
         }
+        RadarProduct::HydrometeorClass => {
+            let (sweep_index, dual_pol_sweep) = select_sweep_with_hca_inputs(file, selection)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("cannot derive HCA because the volume has no dual-pol inputs")
+                })?;
+            let sweep = DerivedProducts::compute_hca_from_dual_pol_sweep(dual_pol_sweep)
+                .ok_or_else(|| anyhow::anyhow!("cannot derive HCA from dual-pol inputs"))?;
+            Ok(ResolvedRenderSweep::Owned { sweep_index, sweep })
+        }
         _ => Err(anyhow::anyhow!(
             "volume does not contain product {}",
             product.short_name()
@@ -273,6 +285,10 @@ pub fn lowest_sweep_with_product(
     product: RadarProduct,
 ) -> Option<(usize, &Level2Sweep)> {
     select_sweep_with_product(file, product, RadarSweepSelection::Lowest)
+}
+
+pub fn lowest_sweep_with_hca_inputs(file: &Level2File) -> Option<(usize, &Level2Sweep)> {
+    select_sweep_with_hca_inputs(file, RadarSweepSelection::Lowest)
 }
 
 pub fn select_sweep_with_product(
@@ -307,11 +323,50 @@ pub fn select_sweep_with_product(
     }
 }
 
+pub fn select_sweep_with_hca_inputs(
+    file: &Level2File,
+    selection: RadarSweepSelection,
+) -> Option<(usize, &Level2Sweep)> {
+    let candidates = file
+        .sweeps
+        .iter()
+        .enumerate()
+        .filter(|(_, sweep)| DerivedProducts::sweep_has_hca_inputs(sweep));
+    match selection {
+        RadarSweepSelection::Lowest => candidates.min_by(|(_, a), (_, b)| {
+            a.elevation_angle
+                .partial_cmp(&b.elevation_angle)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
+        RadarSweepSelection::Index(index) => file
+            .sweeps
+            .get(index)
+            .filter(|sweep| DerivedProducts::sweep_has_hca_inputs(sweep))
+            .map(|sweep| (index, sweep)),
+        RadarSweepSelection::NearestElevation(elevation_deg) => {
+            candidates.min_by(|(_, a), (_, b)| {
+                (a.elevation_angle - elevation_deg)
+                    .abs()
+                    .partial_cmp(&(b.elevation_angle - elevation_deg).abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        }
+    }
+}
+
 pub fn sweeps_with_product(file: &Level2File, product: RadarProduct) -> Vec<(usize, &Level2Sweep)> {
     file.sweeps
         .iter()
         .enumerate()
         .filter(|(_, sweep)| sweep_contains_product(sweep, product))
+        .collect()
+}
+
+pub fn sweeps_with_hca_inputs(file: &Level2File) -> Vec<(usize, &Level2Sweep)> {
+    file.sweeps
+        .iter()
+        .enumerate()
+        .filter(|(_, sweep)| DerivedProducts::sweep_has_hca_inputs(sweep))
         .collect()
 }
 

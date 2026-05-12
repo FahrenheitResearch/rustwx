@@ -1,11 +1,19 @@
-use crate::nexrad::RadarProduct;
 use crate::nexrad::level2::{MomentData, RadialData};
+use crate::nexrad::RadarProduct;
 use crate::nexrad::{Level2File, Level2Sweep};
 
 /// Effective earth radius for beam height calculations (4/3 model), in km.
 const RE_PRIME: f64 = 8495.0;
 const KDP_HALF_WINDOW_GATES: usize = 4;
 const KDP_MAX_ABS_DEG_PER_KM: f32 = 50.0;
+const HCA_MIN_ECHO_DBZ: f32 = 5.0;
+const HCA_BIG_DROPS: f32 = 8.0;
+const HCA_BIOLOGICAL: f32 = 1.0;
+const HCA_GROUND_CLUTTER: f32 = 2.0;
+const HCA_LIGHT_MODERATE_RAIN: f32 = 6.0;
+const HCA_HEAVY_RAIN: f32 = 7.0;
+const HCA_HAIL_RAIN: f32 = 10.0;
+const HCA_LARGE_HAIL: f32 = 11.0;
 
 pub struct DerivedProducts;
 
@@ -342,6 +350,186 @@ impl DerivedProducts {
             radials: out_radials,
         })
     }
+
+    pub fn sweep_has_hca_inputs(sweep: &Level2Sweep) -> bool {
+        sweep.radials.iter().any(radial_has_hca_inputs)
+    }
+
+    /// Compute a conservative hydrometeor-class estimate from dual-pol base data.
+    ///
+    /// NEXRAD Level-II normally carries the base dual-pol moments rather than a
+    /// ready-made HCA field. This classifier keeps the output explicitly
+    /// derived and rule-based so sidecars can expose the provenance while still
+    /// giving maps and hover queries a useful categorical product.
+    pub fn compute_hca_from_dual_pol_sweep(sweep: &Level2Sweep) -> Option<Level2Sweep> {
+        if !Self::sweep_has_hca_inputs(sweep) {
+            return None;
+        }
+
+        let derived_kdp = if sweep_contains_product(sweep, RadarProduct::DifferentialPhase) {
+            Self::compute_kdp_from_phi_sweep(sweep)
+        } else {
+            None
+        };
+        let mut out_radials = Vec::with_capacity(sweep.radials.len());
+
+        for (radial_index, radial) in sweep.radials.iter().enumerate() {
+            let Some(ref_moment) = moment_for_product(radial, RadarProduct::Reflectivity) else {
+                continue;
+            };
+            let Some(zdr_moment) =
+                moment_for_product(radial, RadarProduct::DifferentialReflectivity)
+            else {
+                continue;
+            };
+            let Some(cc_moment) = moment_for_product(radial, RadarProduct::CorrelationCoefficient)
+            else {
+                continue;
+            };
+            let native_kdp = moment_for_product(radial, RadarProduct::SpecificDiffPhase);
+            let derived_kdp_moment = derived_kdp.as_ref().and_then(|sweep| {
+                sweep
+                    .radials
+                    .get(radial_index)
+                    .and_then(|radial| moment_for_product(radial, RadarProduct::SpecificDiffPhase))
+            });
+            let Some(kdp_moment) = native_kdp.or(derived_kdp_moment) else {
+                continue;
+            };
+
+            let gate_count = ref_moment.gate_count as usize;
+            let mut hca_data = vec![f32::NAN; gate_count];
+            for gate_idx in 0..gate_count {
+                let range_m = ref_moment.first_gate_range as f64
+                    + gate_idx as f64 * ref_moment.gate_size as f64;
+                let dbz = ref_moment.data.get(gate_idx).copied().unwrap_or(f32::NAN);
+                let zdr = sample_moment_at_range(zdr_moment, range_m);
+                let cc = sample_moment_at_range(cc_moment, range_m);
+                let kdp = sample_moment_at_range(kdp_moment, range_m);
+                hca_data[gate_idx] = classify_hca_gate(dbz, zdr, cc, kdp);
+            }
+
+            out_radials.push(RadialData {
+                azimuth: radial.azimuth,
+                elevation: radial.elevation,
+                azimuth_spacing: radial.azimuth_spacing,
+                nyquist_velocity: radial.nyquist_velocity,
+                radial_status: radial.radial_status,
+                moments: vec![MomentData {
+                    product: RadarProduct::HydrometeorClass,
+                    gate_count: gate_count as u16,
+                    first_gate_range: ref_moment.first_gate_range,
+                    gate_size: ref_moment.gate_size,
+                    data_word_size: None,
+                    scale: None,
+                    offset: None,
+                    raw_data: None,
+                    data: hca_data,
+                }],
+            });
+        }
+
+        if out_radials.is_empty() {
+            return None;
+        }
+
+        Some(Level2Sweep {
+            elevation_number: sweep.elevation_number,
+            elevation_angle: sweep.elevation_angle,
+            nyquist_velocity: None,
+            radials: out_radials,
+        })
+    }
+}
+
+fn classify_hca_gate(dbz: f32, zdr: f32, cc: f32, kdp: f32) -> f32 {
+    if !dbz.is_finite() {
+        return f32::NAN;
+    }
+    if dbz < HCA_MIN_ECHO_DBZ {
+        return 0.0;
+    }
+    if !zdr.is_finite() || !cc.is_finite() {
+        return f32::NAN;
+    }
+
+    if cc < 0.55 {
+        return if dbz >= 25.0 {
+            HCA_GROUND_CLUTTER
+        } else {
+            HCA_BIOLOGICAL
+        };
+    }
+    if cc < 0.80 {
+        return if dbz >= 30.0 {
+            HCA_GROUND_CLUTTER
+        } else {
+            HCA_BIOLOGICAL
+        };
+    }
+
+    let kdp = if kdp.is_finite() { kdp.max(0.0) } else { 0.0 };
+
+    if dbz >= 60.0 {
+        if cc < 0.94 || kdp >= 2.0 {
+            return if zdr <= 1.0 {
+                HCA_LARGE_HAIL
+            } else {
+                HCA_HAIL_RAIN
+            };
+        }
+        return HCA_HEAVY_RAIN;
+    }
+    if dbz >= 50.0 {
+        if zdr >= 2.5 && cc >= 0.94 {
+            return HCA_BIG_DROPS;
+        }
+        return HCA_HEAVY_RAIN;
+    }
+    if dbz >= 38.0 {
+        if zdr >= 2.2 && cc >= 0.94 {
+            return HCA_BIG_DROPS;
+        }
+        if kdp >= 1.0 {
+            return HCA_HEAVY_RAIN;
+        }
+    }
+
+    HCA_LIGHT_MODERATE_RAIN
+}
+
+fn radial_has_hca_inputs(radial: &RadialData) -> bool {
+    moment_for_product(radial, RadarProduct::Reflectivity).is_some()
+        && moment_for_product(radial, RadarProduct::DifferentialReflectivity).is_some()
+        && moment_for_product(radial, RadarProduct::CorrelationCoefficient).is_some()
+        && (moment_for_product(radial, RadarProduct::SpecificDiffPhase).is_some()
+            || moment_for_product(radial, RadarProduct::DifferentialPhase).is_some())
+}
+
+fn sweep_contains_product(sweep: &Level2Sweep, product: RadarProduct) -> bool {
+    sweep
+        .radials
+        .iter()
+        .any(|radial| moment_for_product(radial, product).is_some())
+}
+
+fn moment_for_product(radial: &RadialData, product: RadarProduct) -> Option<&MomentData> {
+    radial
+        .moments
+        .iter()
+        .find(|moment| moment.product == product)
+}
+
+fn sample_moment_at_range(moment: &MomentData, range_m: f64) -> f32 {
+    range_to_gate_index(
+        range_m,
+        moment.first_gate_range,
+        moment.gate_size,
+        moment.gate_count,
+    )
+    .and_then(|gate_idx| moment.data.get(gate_idx))
+    .copied()
+    .unwrap_or(f32::NAN)
 }
 
 fn wrapped_phase_delta_deg(right: f32, left: f32) -> f32 {
@@ -434,6 +622,46 @@ mod tests {
         assert!((data[8] - 4.0).abs() < 0.001);
     }
 
+    #[test]
+    fn hca_derivation_classifies_dual_pol_gates() {
+        let sweep = dual_pol_sweep(
+            vec![0.0, 15.0, 35.0, 30.0, 45.0, 58.0, 65.0],
+            vec![0.0, 0.3, 0.2, 0.5, 3.0, 0.8, 0.3],
+            vec![0.99, 0.45, 0.65, 0.98, 0.97, 0.97, 0.90],
+            vec![0.0, 0.0, 0.0, 0.2, 0.5, 2.0, 3.0],
+        );
+
+        let derived = DerivedProducts::compute_hca_from_dual_pol_sweep(&sweep).unwrap();
+        let data = &derived.radials[0].moments[0].data;
+
+        assert_eq!(data, &[0.0, 1.0, 2.0, 6.0, 8.0, 7.0, 11.0]);
+    }
+
+    #[test]
+    fn hca_derivation_uses_phi_when_native_kdp_is_absent() {
+        let mut sweep =
+            dual_pol_sweep(vec![55.0; 16], vec![0.8; 16], vec![0.97; 16], vec![0.0; 16]);
+        sweep.radials[0]
+            .moments
+            .retain(|moment| moment.product != RadarProduct::SpecificDiffPhase);
+        sweep.radials[0].moments.push(MomentData {
+            product: RadarProduct::DifferentialPhase,
+            gate_count: 16,
+            first_gate_range: 0,
+            gate_size: 250,
+            data_word_size: None,
+            scale: None,
+            offset: None,
+            raw_data: None,
+            data: (0..16).map(|idx| idx as f32 * 4.0).collect(),
+        });
+
+        let derived = DerivedProducts::compute_hca_from_dual_pol_sweep(&sweep).unwrap();
+        let data = &derived.radials[0].moments[0].data;
+
+        assert_eq!(data[8], 7.0);
+    }
+
     fn phi_sweep(data: Vec<f32>) -> Level2Sweep {
         let gate_count = data.len() as u16;
         Level2Sweep {
@@ -458,6 +686,59 @@ mod tests {
                     data,
                 }],
             }],
+        }
+    }
+
+    fn dual_pol_sweep(
+        reflectivity: Vec<f32>,
+        differential_reflectivity: Vec<f32>,
+        correlation_coefficient: Vec<f32>,
+        specific_diff_phase: Vec<f32>,
+    ) -> Level2Sweep {
+        let gate_count = reflectivity.len() as u16;
+        Level2Sweep {
+            elevation_number: 1,
+            elevation_angle: 0.5,
+            nyquist_velocity: None,
+            radials: vec![RadialData {
+                azimuth: 0.0,
+                elevation: 0.5,
+                azimuth_spacing: 0.5,
+                nyquist_velocity: None,
+                radial_status: 0,
+                moments: vec![
+                    moment(RadarProduct::Reflectivity, reflectivity, gate_count),
+                    moment(
+                        RadarProduct::DifferentialReflectivity,
+                        differential_reflectivity,
+                        gate_count,
+                    ),
+                    moment(
+                        RadarProduct::CorrelationCoefficient,
+                        correlation_coefficient,
+                        gate_count,
+                    ),
+                    moment(
+                        RadarProduct::SpecificDiffPhase,
+                        specific_diff_phase,
+                        gate_count,
+                    ),
+                ],
+            }],
+        }
+    }
+
+    fn moment(product: RadarProduct, data: Vec<f32>, gate_count: u16) -> MomentData {
+        MomentData {
+            product,
+            gate_count,
+            first_gate_range: 0,
+            gate_size: 250,
+            data_word_size: None,
+            scale: None,
+            offset: None,
+            raw_data: None,
+            data,
         }
     }
 }

@@ -86,6 +86,50 @@ jobs:
           --method nearest
           --summary-out target/radar-smoke/velocity_sidecar_sample.json
 
+      - name: Render bounded derived hydrometeor class tiles
+        run: >-
+          target/release/radar_web_tiles
+          --site KTLX
+          --input target/radar-smoke/input/KTLX20130520_201643_V06
+          --out-dir target/radar-smoke/hca
+          --product hca
+          --name ci_ktlx_moore_hca
+          --west=-98.2
+          --south=34.7
+          --east=-96.6
+          --north=36.0
+          --min-zoom 8
+          --max-zoom 8
+          --sweep-index 2
+          --benchmark-supersamples 1
+
+      - name: Gate derived hydrometeor class product QC
+        run: >-
+          target/release/radar_quality_gate
+          --manifest target/radar-smoke/hca/ss1/tiles_manifest.json
+          --min-product-finite-gates 100000
+          --min-product-min-value 0
+          --min-product-max-value 6
+          --max-product-max-value 11
+          --require-product-source derived
+          --require-product-input ref
+          --require-product-input zdr
+          --require-product-input cc
+          --require-product-input phi
+          --require-product-method dual_pol_rule_hca_v1
+          --require-numeric-sidecar
+          --require-unclipped-bounds
+          --summary-out target/radar-smoke/hca_product_quality_gate.json
+
+      - name: Smoke sample derived hydrometeor class sidecar
+        run: >-
+          target/release/radar_sidecar_sample
+          --manifest target/radar-smoke/hca/ss1/polar_sidecar_manifest.json
+          --azimuth-deg 255
+          --ground-range-m 30000
+          --method nearest
+          --summary-out target/radar-smoke/hca_sidecar_sample.json
+
       - name: Gate render speed
         run: >-
           target/release/radar_benchmark_gate
@@ -102,8 +146,8 @@ jobs:
         with:
           name: ktlx-moore-radar-smoke
           path: |
-            target/radar-smoke/tiles/**/*.png
-            target/radar-smoke/tiles/**/*.json
+            target/radar-smoke/**/*.png
+            target/radar-smoke/**/*.json
             target/radar-smoke/*_gate.json
             target/radar-smoke/*_sample.json
           if-no-files-found: error

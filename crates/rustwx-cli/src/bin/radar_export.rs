@@ -1,10 +1,11 @@
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
-use rustwx_radar::nexrad::{Level2File, RadarProduct, RadarSite, sites};
+use rustwx_radar::nexrad::{sites, Level2File, RadarProduct, RadarSite};
 use rustwx_radar::render::RenderMode;
 use rustwx_radar::{
-    AiExportOptions, RadarSweepSelection, build_ai_frame, render_product_frame, sweeps_with_product,
+    build_ai_frame, render_product_frame, sweeps_with_hca_inputs, sweeps_with_product,
+    AiExportOptions, RadarSweepSelection,
 };
 
 #[derive(Parser)]
@@ -243,9 +244,14 @@ fn build_render_requests(
     let mut requests = Vec::new();
     for product in products {
         if cli.all_tilts {
-            let sample_product = sweep_sample_product(*product)?;
             let before = requests.len();
-            for (sweep_index, _) in sweeps_with_product(file, sample_product) {
+            let sweeps = if *product == RadarProduct::HydrometeorClass {
+                sweeps_with_hca_inputs(file)
+            } else {
+                let sample_product = sweep_sample_product(*product)?;
+                sweeps_with_product(file, sample_product)
+            };
+            for (sweep_index, _) in sweeps {
                 requests.push(RenderRequest {
                     product: *product,
                     selection: RadarSweepSelection::Index(sweep_index),

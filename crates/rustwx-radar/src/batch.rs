@@ -5,8 +5,10 @@ use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::aws::{self, NexradObject};
-use crate::dealias::{DealiasMethod, dealias_velocity_file};
-use crate::nexrad::{Level2File, RadarProduct, RadarSite};
+use crate::dealias::{dealias_velocity_file, DealiasMethod};
+use crate::nexrad::derived::DerivedProducts;
+use crate::nexrad::{Level2File, Level2Sweep, RadarProduct, RadarSite};
+use crate::png::{lowest_sweep_with_hca_inputs, lowest_sweep_with_product};
 use crate::sidecar::radar_lat_lon_to_polar;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -524,25 +526,10 @@ fn remap_lowest_sweep_to_cartesian(
     product: RadarProduct,
     grid_spec: &CartesianGridSpec,
 ) -> Vec<f32> {
-    let Some(sweep) = file
-        .sweeps
-        .iter()
-        .filter(|sweep| {
-            sweep.radials.iter().any(|radial| {
-                radial
-                    .moments
-                    .iter()
-                    .any(|moment| moment.product == product)
-            })
-        })
-        .min_by(|a, b| {
-            a.elevation_angle
-                .partial_cmp(&b.elevation_angle)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-    else {
+    let Some(resolved_sweep) = resolve_lowest_tensor_sweep(file, product) else {
         return vec![f32::NAN; grid_spec.cell_count()];
     };
+    let sweep = resolved_sweep.sweep();
 
     let mut radials = sweep
         .radials
@@ -572,6 +559,42 @@ fn remap_lowest_sweep_to_cartesian(
         }
     }
     out
+}
+
+enum ResolvedTensorSweep<'a> {
+    Borrowed(&'a Level2Sweep),
+    Owned(Level2Sweep),
+}
+
+impl ResolvedTensorSweep<'_> {
+    fn sweep(&self) -> &Level2Sweep {
+        match self {
+            Self::Borrowed(sweep) => sweep,
+            Self::Owned(sweep) => sweep,
+        }
+    }
+}
+
+fn resolve_lowest_tensor_sweep(
+    file: &Level2File,
+    product: RadarProduct,
+) -> Option<ResolvedTensorSweep<'_>> {
+    if let Some((_, sweep)) = lowest_sweep_with_product(file, product) {
+        return Some(ResolvedTensorSweep::Borrowed(sweep));
+    }
+
+    match product {
+        RadarProduct::SpecificDiffPhase => {
+            let (_, phi_sweep) = lowest_sweep_with_product(file, RadarProduct::DifferentialPhase)?;
+            DerivedProducts::compute_kdp_from_phi_sweep(phi_sweep).map(ResolvedTensorSweep::Owned)
+        }
+        RadarProduct::HydrometeorClass => {
+            let (_, dual_pol_sweep) = lowest_sweep_with_hca_inputs(file)?;
+            DerivedProducts::compute_hca_from_dual_pol_sweep(dual_pol_sweep)
+                .map(ResolvedTensorSweep::Owned)
+        }
+        _ => None,
+    }
 }
 
 fn grid_cell_lat_lon(grid_spec: &CartesianGridSpec, row: usize, col: usize) -> (f64, f64) {
@@ -635,7 +658,11 @@ fn normalize_azimuth(value: f32) -> f32 {
 
 fn azimuth_delta(a: f32, b: f32) -> f32 {
     let delta = (a - b).abs();
-    if delta > 180.0 { 360.0 - delta } else { delta }
+    if delta > 180.0 {
+        360.0 - delta
+    } else {
+        delta
+    }
 }
 
 #[derive(Default)]
@@ -805,6 +832,70 @@ mod tests {
 
         assert_eq!(tensors.len(), 1);
         assert_eq!(tensors[0].values, vec![2.0]);
+    }
+
+    #[test]
+    fn tensor_sweep_resolver_derives_kdp_and_hca_for_agent_products() {
+        let file = Level2File {
+            station_id: "KTLX".to_string(),
+            volume_date: 20_000,
+            volume_time: 0,
+            vcp: Some(212),
+            site_metadata: None,
+            sweeps: vec![crate::nexrad::Level2Sweep {
+                elevation_number: 1,
+                elevation_angle: 0.5,
+                nyquist_velocity: None,
+                radials: vec![RadialData {
+                    azimuth: 90.0,
+                    elevation: 0.5,
+                    azimuth_spacing: 1.0,
+                    nyquist_velocity: None,
+                    radial_status: 0,
+                    moments: vec![
+                        moment(RadarProduct::Reflectivity, vec![55.0; 16]),
+                        moment(RadarProduct::DifferentialReflectivity, vec![0.8; 16]),
+                        moment(RadarProduct::CorrelationCoefficient, vec![0.97; 16]),
+                        moment(
+                            RadarProduct::DifferentialPhase,
+                            (0..16).map(|idx| idx as f32 * 4.0).collect(),
+                        ),
+                    ],
+                }],
+            }],
+            partial: false,
+        };
+
+        let kdp_sweep =
+            resolve_lowest_tensor_sweep(&file, RadarProduct::SpecificDiffPhase).unwrap();
+        let kdp = kdp_sweep.sweep().radials[0]
+            .moments
+            .iter()
+            .find(|moment| moment.product == RadarProduct::SpecificDiffPhase)
+            .unwrap();
+        let hca_sweep = resolve_lowest_tensor_sweep(&file, RadarProduct::HydrometeorClass).unwrap();
+        let hca = hca_sweep.sweep().radials[0]
+            .moments
+            .iter()
+            .find(|moment| moment.product == RadarProduct::HydrometeorClass)
+            .unwrap();
+
+        assert_eq!(kdp.data[8], 8.0);
+        assert_eq!(hca.data[8], 7.0);
+    }
+
+    fn moment(product: RadarProduct, data: Vec<f32>) -> MomentData {
+        MomentData {
+            product,
+            gate_count: data.len() as u16,
+            first_gate_range: 0,
+            gate_size: 250,
+            data_word_size: None,
+            scale: None,
+            offset: None,
+            raw_data: None,
+            data,
+        }
     }
 
     fn object(key: &str) -> NexradObject {

@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, ValueEnum};
 use rustwx_radar::nexrad::{sites, Level2File, RadarProduct, RadarSite};
 use rustwx_radar::{
-    render_product_web_tiles, sweeps_with_product, ColorTablePreset, DealiasMethod,
-    RadarSweepSelection, RadarTileManifest, RadarTileOptions, RadarTilePngCompression,
+    render_product_web_tiles, sweeps_with_hca_inputs, sweeps_with_product, ColorTablePreset,
+    DealiasMethod, RadarSweepSelection, RadarTileManifest, RadarTileOptions,
+    RadarTilePngCompression,
 };
 use serde::Serialize;
 
@@ -442,15 +443,19 @@ fn render_all_tilts(
     if cli.sweep_index.is_some() || cli.elevation_deg.is_some() {
         anyhow::bail!("--all-tilts cannot be combined with --sweep-index or --elevation-deg");
     }
-    let sample_product = sweep_sample_product(product)?;
-    let sweeps = sweeps_with_product(file, sample_product);
-    if sweeps.is_empty() {
-        anyhow::bail!("no sweeps contain {}", sample_product.short_name());
+    let sweep_entries = if product == RadarProduct::HydrometeorClass {
+        sweeps_with_hca_inputs(file)
+    } else {
+        let sample_product = sweep_sample_product(product)?;
+        sweeps_with_product(file, sample_product)
+    };
+    if sweep_entries.is_empty() {
+        anyhow::bail!("no sweeps can render {}", product.short_name());
     }
 
     std::fs::create_dir_all(out_dir)?;
-    let mut manifests = Vec::with_capacity(sweeps.len());
-    for (sweep_index, sweep) in sweeps {
+    let mut manifests = Vec::with_capacity(sweep_entries.len());
+    for (sweep_index, sweep) in sweep_entries {
         let slug = sweep_slug(sweep_index, sweep.elevation_angle);
         let out_dir = out_dir.join(&slug);
         let base_url = cli

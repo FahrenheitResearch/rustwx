@@ -20,7 +20,10 @@ use crate::nexrad::derived::DerivedProducts;
 use crate::nexrad::level2::{MomentData, RadialData};
 use crate::nexrad::srv::SRVComputer;
 use crate::nexrad::{Level2File, Level2Sweep, RadarProduct, RadarSite};
-use crate::png::{select_sweep_with_product, sweep_contains_product, RadarSweepSelection};
+use crate::png::{
+    select_sweep_with_hca_inputs, select_sweep_with_product, sweep_contains_product,
+    RadarSweepSelection,
+};
 use crate::render::{ColorTable, ColorTablePreset};
 use crate::sidecar::{
     radar_lat_lon_to_polar, write_polar_sidecar, RadarPolarSidecarOptions, RadarPolarSidecarRecord,
@@ -696,6 +699,22 @@ fn resolve_tile_sweep(
                 reflectivity_qc: None,
             })
         }
+        RadarProduct::HydrometeorClass => {
+            let (sweep_index, dual_pol_sweep) = select_sweep_with_hca_inputs(file, selection)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("cannot derive HCA because the volume has no dual-pol inputs")
+                })?;
+            let sweep = DerivedProducts::compute_hca_from_dual_pol_sweep(dual_pol_sweep)
+                .ok_or_else(|| anyhow::anyhow!("cannot derive HCA from dual-pol inputs"))?;
+            Ok(ResolvedTileSweep::Owned {
+                sweep_index,
+                sweep,
+                dealias_applied: false,
+                dealias_report: None,
+                velocity_quality_qc: None,
+                reflectivity_qc: None,
+            })
+        }
         _ => Err(anyhow::anyhow!(
             "volume does not contain product {}",
             product.short_name()
@@ -1052,6 +1071,17 @@ fn radar_product_provenance(
         };
     }
 
+    if product == RadarProduct::HydrometeorClass {
+        if let Some((_, sweep)) = select_sweep_with_hca_inputs(file, selection) {
+            return RadarProductProvenance {
+                source: "derived".to_string(),
+                derived: true,
+                inputs: hca_product_provenance_inputs(sweep),
+                method: Some("dual_pol_rule_hca_v1".to_string()),
+            };
+        }
+    }
+
     if product == RadarProduct::StormRelativeVelocity
         && select_sweep_with_product(file, RadarProduct::Velocity, selection).is_some()
     {
@@ -1082,6 +1112,16 @@ fn radar_product_provenance(
     }
 
     native_product_provenance()
+}
+
+fn hca_product_provenance_inputs(sweep: &Level2Sweep) -> Vec<String> {
+    let mut inputs = vec!["ref".to_string(), "zdr".to_string(), "cc".to_string()];
+    if sweep_contains_product(sweep, RadarProduct::SpecificDiffPhase) {
+        inputs.push("kdp".to_string());
+    } else {
+        inputs.push("phi".to_string());
+    }
+    inputs
 }
 
 fn native_product_provenance() -> RadarProductProvenance {
@@ -1846,6 +1886,54 @@ mod tests {
     }
 
     #[test]
+    fn hydrometeor_class_provenance_reports_dual_pol_derived() {
+        let file = Level2File {
+            station_id: "KXXX".to_string(),
+            volume_date: 1,
+            volume_time: 0,
+            vcp: None,
+            site_metadata: None,
+            partial: false,
+            sweeps: vec![Level2Sweep {
+                elevation_number: 1,
+                elevation_angle: 0.5,
+                nyquist_velocity: None,
+                radials: vec![dual_pol_hca_radial(0.0)],
+            }],
+        };
+
+        let provenance = radar_product_provenance(
+            &file,
+            RadarProduct::HydrometeorClass,
+            RadarSweepSelection::Lowest,
+        );
+
+        assert_eq!(provenance.source, "derived");
+        assert!(provenance.derived);
+        assert_eq!(provenance.inputs, vec!["ref", "zdr", "cc", "phi"]);
+        assert_eq!(provenance.method.as_deref(), Some("dual_pol_rule_hca_v1"));
+
+        let resolved = resolve_tile_sweep(
+            &file,
+            RadarProduct::HydrometeorClass,
+            RadarSweepSelection::Lowest,
+            false,
+            DealiasMethod::Off,
+            false,
+            false,
+            false,
+            1,
+        )
+        .unwrap();
+        let hca =
+            radial_moment_for_product(&resolved.sweep().radials[0], RadarProduct::HydrometeorClass)
+                .unwrap();
+
+        assert_eq!(resolved.sweep_index(), 0);
+        assert_eq!(hca.data[8], 7.0);
+    }
+
+    #[test]
     fn reflectivity_despeckle_removes_isolated_gate_only() {
         let sweep = Level2Sweep {
             elevation_number: 1,
@@ -1915,6 +2003,39 @@ mod tests {
                 raw_data: None,
                 data,
             }],
+        }
+    }
+
+    fn dual_pol_hca_radial(azimuth: f32) -> RadialData {
+        RadialData {
+            azimuth,
+            elevation: 0.5,
+            azimuth_spacing: 1.0,
+            nyquist_velocity: None,
+            radial_status: 1,
+            moments: vec![
+                qc_moment(RadarProduct::Reflectivity, vec![55.0; 16]),
+                qc_moment(RadarProduct::DifferentialReflectivity, vec![0.8; 16]),
+                qc_moment(RadarProduct::CorrelationCoefficient, vec![0.97; 16]),
+                qc_moment(
+                    RadarProduct::DifferentialPhase,
+                    (0..16).map(|idx| idx as f32 * 4.0).collect(),
+                ),
+            ],
+        }
+    }
+
+    fn qc_moment(product: RadarProduct, data: Vec<f32>) -> MomentData {
+        MomentData {
+            product,
+            gate_count: data.len() as u16,
+            first_gate_range: 0,
+            gate_size: 250,
+            data_word_size: None,
+            scale: None,
+            offset: None,
+            raw_data: None,
+            data,
         }
     }
 }
