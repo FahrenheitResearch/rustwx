@@ -29,6 +29,14 @@ pub struct RadarPolarGateFlagMeaning {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RadarPolarValueMeaning {
+    pub value: f32,
+    pub name: String,
+    pub label: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RadarPolarSidecarRecord {
     pub schema: String,
     pub manifest_path: PathBuf,
@@ -69,6 +77,8 @@ pub struct RadarPolarSidecarManifest {
     pub product: String,
     pub product_name: String,
     pub units: String,
+    #[serde(default)]
+    pub value_meanings: Vec<RadarPolarValueMeaning>,
     pub product_provenance: Value,
     pub source_key_or_url: Option<String>,
     pub scan_time_utc: String,
@@ -148,6 +158,7 @@ pub struct RadarPolarSample {
     pub lat: f64,
     pub lon: f64,
     pub value: Option<f32>,
+    pub value_label: Option<String>,
     pub units: String,
     pub product: String,
     pub product_name: String,
@@ -280,6 +291,7 @@ pub fn write_polar_sidecar(
         product: product.short_name().to_ascii_lowercase(),
         product_name: product.display_name().to_string(),
         units: product.unit().to_string(),
+        value_meanings: product_value_meanings(product),
         product_provenance: options.product_provenance,
         source_key_or_url: options.source_key_or_url,
         scan_time_utc: options.scan_time_utc,
@@ -391,9 +403,16 @@ impl RadarPolarSidecar {
             RadarPolarSampleMethod::Nearest => {
                 self.sample_nearest(lat, lon, polar, slant_range_m, method)
             }
-            RadarPolarSampleMethod::Interpolated => self
+            RadarPolarSampleMethod::Interpolated if self.manifest.value_meanings.is_empty() => self
                 .sample_interpolated(lat, lon, polar, slant_range_m)
                 .or_else(|| self.sample_nearest(lat, lon, polar, slant_range_m, method)),
+            RadarPolarSampleMethod::Interpolated => self.sample_nearest(
+                lat,
+                lon,
+                polar,
+                slant_range_m,
+                RadarPolarSampleMethod::Nearest,
+            ),
         }
     }
 
@@ -483,12 +502,14 @@ impl RadarPolarSidecar {
             processing_state.contains("dealiased") || flag_bits & GATE_FLAG_DEALIASED != 0;
         let filtered = processing_state.contains("filtered") || flag_bits & GATE_FLAG_FILTERED != 0;
         let derived = processing_state.contains("derived") || flag_bits & GATE_FLAG_DERIVED != 0;
+        let value_label = value.and_then(|value| self.value_label(value));
         RadarPolarSample {
             schema: RADAR_POLAR_SIDECAR_SCHEMA.to_string(),
             method: method.as_str().to_string(),
             lat,
             lon,
             value,
+            value_label,
             units: self.manifest.units.clone(),
             product: self.manifest.product.clone(),
             product_name: self.manifest.product_name.clone(),
@@ -519,6 +540,14 @@ impl RadarPolarSidecar {
             qc: self.manifest.qc.clone(),
             site: self.manifest.site.clone(),
         }
+    }
+
+    fn value_label(&self, value: f32) -> Option<String> {
+        self.manifest
+            .value_meanings
+            .iter()
+            .find(|meaning| (value - meaning.value).abs() <= 0.001)
+            .map(|meaning| meaning.label.clone())
     }
 
     fn nearest_radial_row(&self, azimuth_deg: f32) -> Option<usize> {
@@ -794,6 +823,118 @@ fn gate_flag_meanings() -> Vec<RadarPolarGateFlagMeaning> {
     .collect()
 }
 
+fn product_value_meanings(product: RadarProduct) -> Vec<RadarPolarValueMeaning> {
+    match product.base_product() {
+        RadarProduct::HydrometeorClass => hca_value_meanings(),
+        _ => Vec::new(),
+    }
+}
+
+fn hca_value_meanings() -> Vec<RadarPolarValueMeaning> {
+    [
+        (
+            0.0,
+            "no_echo",
+            "No Echo",
+            "Below HCA echo threshold or no classified echo.",
+        ),
+        (
+            1.0,
+            "biological",
+            "Biological",
+            "Low-correlation biological or non-meteorological scatter.",
+        ),
+        (
+            2.0,
+            "ground_clutter",
+            "Ground Clutter",
+            "Low-correlation high-reflectivity clutter-like return.",
+        ),
+        (
+            3.0,
+            "ice_crystals",
+            "Ice Crystals",
+            "Small ice crystal category reserved for native/derived HCA products.",
+        ),
+        (
+            4.0,
+            "dry_snow",
+            "Dry Snow",
+            "Dry snow category reserved for native/derived HCA products.",
+        ),
+        (
+            5.0,
+            "wet_snow",
+            "Wet Snow",
+            "Wet snow or melting snow category reserved for native/derived HCA products.",
+        ),
+        (
+            6.0,
+            "light_moderate_rain",
+            "Light/Moderate Rain",
+            "Meteorological rain with moderate reflectivity and high correlation.",
+        ),
+        (
+            7.0,
+            "heavy_rain",
+            "Heavy Rain",
+            "High-reflectivity rain or positive-KDP heavy rain.",
+        ),
+        (
+            8.0,
+            "big_drops",
+            "Big Drops",
+            "Large-drop rain signature with elevated ZDR and high correlation.",
+        ),
+        (
+            9.0,
+            "graupel",
+            "Graupel",
+            "Graupel or small hail category reserved for native/derived HCA products.",
+        ),
+        (
+            10.0,
+            "hail_rain",
+            "Hail/Rain",
+            "Mixed hail and rain signature.",
+        ),
+        (
+            11.0,
+            "large_hail",
+            "Large Hail",
+            "Large hail signature with high reflectivity, low ZDR, or reduced correlation.",
+        ),
+        (
+            12.0,
+            "giant_hail",
+            "Giant Hail",
+            "Giant hail category reserved for native/derived HCA products.",
+        ),
+        (
+            13.0,
+            "unknown_precip",
+            "Unknown Precip",
+            "Uncertain hydrometeor category reserved for native/derived HCA products.",
+        ),
+        (
+            14.0,
+            "range_folded",
+            "Range Folded",
+            "Categorical range-folded return.",
+        ),
+        (15.0, "unknown", "Unknown", "Unknown classified return."),
+        (16.0, "reserved", "Reserved", "Reserved HCA category."),
+    ]
+    .into_iter()
+    .map(|(value, name, label, description)| RadarPolarValueMeaning {
+        value,
+        name: name.to_string(),
+        label: label.to_string(),
+        description: description.to_string(),
+    })
+    .collect()
+}
+
 fn write_f32_le(path: &Path, values: &[f32]) -> anyhow::Result<()> {
     let mut bytes = Vec::with_capacity(values.len() * 4);
     for value in values {
@@ -944,6 +1085,7 @@ mod tests {
         assert_eq!(sidecar.manifest.site.elevation_m, Some(389.4));
         assert_eq!(sidecar.manifest.radials[0].scale, Some(2.0));
         assert_eq!(sidecar.manifest.radials[0].offset, Some(66.0));
+        assert!(sidecar.manifest.value_meanings.is_empty());
         assert!(sidecar
             .manifest
             .gate_flag_meanings
@@ -962,6 +1104,7 @@ mod tests {
             .sample_lat_lon(lat, lon, RadarPolarSampleMethod::Nearest)
             .unwrap();
         assert_eq!(sample.value, Some(20.0));
+        assert_eq!(sample.value_label, None);
         assert_eq!(sample.gate_index, 3);
         assert_eq!(sample.radial_index, 0);
         assert_eq!(sample.units, "dBZ");
@@ -975,6 +1118,91 @@ mod tests {
         assert_eq!(sample.dealiased, false);
         assert_eq!(sample.filtered, false);
         assert_eq!(sample.derived, false);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn polar_sidecar_labels_categorical_hca_values() {
+        let root =
+            std::env::temp_dir().join(format!("rustwx-radar-sidecar-hca-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let site = RadarSite {
+            id: "KTLX",
+            name: "Oklahoma City",
+            lat: 35.333,
+            lon: -97.277,
+            state: "OK",
+        };
+        let sweep = Level2Sweep {
+            elevation_number: 1,
+            elevation_angle: 0.5,
+            nyquist_velocity: None,
+            radials: vec![RadialData {
+                azimuth: 0.0,
+                elevation: 0.5,
+                azimuth_spacing: 1.0,
+                nyquist_velocity: None,
+                radial_status: 1,
+                moments: vec![MomentData {
+                    product: RadarProduct::HydrometeorClass,
+                    gate_count: 1,
+                    first_gate_range: 0,
+                    gate_size: 250,
+                    data_word_size: None,
+                    scale: None,
+                    offset: None,
+                    raw_data: None,
+                    data: vec![7.0],
+                }],
+            }],
+        };
+
+        let record = write_polar_sidecar(
+            &sweep,
+            &site,
+            RadarProduct::HydrometeorClass,
+            &root,
+            RadarPolarSidecarOptions {
+                name: "hca".to_string(),
+                source_key_or_url: Some("s3://nexrad/KTLX".to_string()),
+                scan_time_utc: "2026-05-11T00:00:00Z".to_string(),
+                site_lat: None,
+                site_lon: None,
+                site_elevation_m: None,
+                site_feedhorn_height_m: None,
+                sweep_index: 0,
+                processing_state: "derived".to_string(),
+                product_provenance: serde_json::json!({
+                    "source": "derived",
+                    "derived": true,
+                    "inputs": ["ref", "zdr", "cc", "phi"],
+                    "method": "dual_pol_rule_hca_v1"
+                }),
+                product_qc: None,
+                velocity_qc: None,
+                dealias_qc: None,
+                velocity_quality_qc: None,
+                reflectivity_qc: None,
+            },
+        )
+        .unwrap();
+
+        let sidecar = RadarPolarSidecar::open(&record.manifest_path).unwrap();
+        assert!(sidecar
+            .manifest
+            .value_meanings
+            .iter()
+            .any(|meaning| meaning.value == 7.0 && meaning.label == "Heavy Rain"));
+
+        let (lat, lon) = radar_polar_to_lat_lon(site.lat, site.lon, 0.0, 0.0);
+        let sample = sidecar
+            .sample_lat_lon(lat, lon, RadarPolarSampleMethod::Interpolated)
+            .unwrap();
+        assert_eq!(sample.method, "nearest");
+        assert_eq!(sample.value, Some(7.0));
+        assert_eq!(sample.value_label.as_deref(), Some("Heavy Rain"));
+        assert!(sample.gate_flags.iter().any(|flag| flag == "derived"));
 
         let _ = fs::remove_dir_all(&root);
     }
