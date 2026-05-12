@@ -359,6 +359,7 @@ jobs:
           --require-value
           --min-value 0
           --max-value 1.1
+          --require-units unitless
           --require-product cc
           --require-sample-method nearest
           --require-processing-state raw

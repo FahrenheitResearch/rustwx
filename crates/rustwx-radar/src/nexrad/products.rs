@@ -83,7 +83,7 @@ impl RadarProduct {
             RadarProduct::Velocity => "m/s",
             RadarProduct::SpectrumWidth => "m/s",
             RadarProduct::DifferentialReflectivity => "dB",
-            RadarProduct::CorrelationCoefficient => "",
+            RadarProduct::CorrelationCoefficient => "unitless",
             RadarProduct::DifferentialPhase => "deg",
             RadarProduct::SpecificDiffPhase => "deg/km",
             RadarProduct::HydrometeorClass => "category",
@@ -147,5 +147,6 @@ mod tests {
         );
         assert!(RadarProduct::all_products().contains(&RadarProduct::HydrometeorClass));
         assert_eq!(RadarProduct::HydrometeorClass.unit(), "category");
+        assert_eq!(RadarProduct::CorrelationCoefficient.unit(), "unitless");
     }
 }
