@@ -82,8 +82,17 @@ jobs:
           target/release/radar_sidecar_sample
           --manifest target/radar-smoke/tiles/ss1/polar_sidecar_manifest.json
           --azimuth-deg 0
-          --ground-range-m 50000
+          --ground-range-m 10000
           --method nearest
+          --require-value
+          --require-units m/s
+          --require-product vel
+          --require-sample-method nearest
+          --require-processing-state dealiased
+          --require-processing-state filtered
+          --require-dealiased
+          --require-filtered
+          --require-product-source native
           --summary-out target/radar-smoke/velocity_sidecar_sample.json
 
       - name: Render bounded derived hydrometeor class tiles
@@ -128,6 +137,23 @@ jobs:
           --azimuth-deg 255
           --ground-range-m 30000
           --method nearest
+          --require-value
+          --min-value 0
+          --max-value 16
+          --require-units category
+          --require-product hhc
+          --require-sample-method nearest
+          --require-processing-state derived
+          --require-derived
+          --require-gate-flag valid
+          --require-gate-flag derived
+          --require-product-source derived
+          --require-product-method dual_pol_rule_hca_v1
+          --require-product-input ref
+          --require-product-input zdr
+          --require-product-input cc
+          --require-product-input phi
+          --require-value-label
           --summary-out target/radar-smoke/hca_sidecar_sample.json
 
       - name: Gate render speed
@@ -271,6 +297,14 @@ jobs:
           --azimuth-deg 0
           --ground-range-m 50000
           --method nearest
+          --require-value
+          --require-units dBZ
+          --require-product ref
+          --require-sample-method nearest
+          --require-processing-state raw
+          --require-raw
+          --require-gate-flag valid
+          --require-product-source native
           --summary-out target/radar-smoke/reflectivity_sidecar_sample.json
 
       - name: Gate reflectivity render speed
@@ -319,6 +353,15 @@ jobs:
           --azimuth-deg 0
           --ground-range-m 50000
           --method nearest
+          --require-value
+          --min-value 0
+          --max-value 1.1
+          --require-product cc
+          --require-sample-method nearest
+          --require-processing-state raw
+          --require-raw
+          --require-gate-flag valid
+          --require-product-source native
           --summary-out target/radar-smoke/cc_sidecar_sample.json
 
       - name: Gate correlation coefficient render speed
@@ -367,6 +410,16 @@ jobs:
           --azimuth-deg 0
           --ground-range-m 50000
           --method nearest
+          --require-value
+          --min-value=-15
+          --max-value 25
+          --require-units dB
+          --require-product zdr
+          --require-sample-method nearest
+          --require-processing-state raw
+          --require-raw
+          --require-gate-flag valid
+          --require-product-source native
           --summary-out target/radar-smoke/zdr_sidecar_sample.json
 
       - name: Gate differential reflectivity render speed
@@ -415,6 +468,16 @@ jobs:
           --azimuth-deg 0
           --ground-range-m 50000
           --method nearest
+          --require-value
+          --min-value 0
+          --max-value 360
+          --require-units deg
+          --require-product phi
+          --require-sample-method nearest
+          --require-processing-state raw
+          --require-raw
+          --require-gate-flag valid
+          --require-product-source native
           --summary-out target/radar-smoke/phi_sidecar_sample.json
 
       - name: Gate differential phase render speed
@@ -466,6 +529,19 @@ jobs:
           --azimuth-deg 0
           --ground-range-m 50000
           --method nearest
+          --require-value
+          --min-value=-50
+          --max-value 50
+          --require-units deg/km
+          --require-product kdp
+          --require-sample-method nearest
+          --require-processing-state derived
+          --require-derived
+          --require-gate-flag valid
+          --require-gate-flag derived
+          --require-product-source derived
+          --require-product-method centered_phi_range_derivative
+          --require-product-input phi
           --summary-out target/radar-smoke/kdp_sidecar_sample.json
 
       - name: Gate derived specific differential phase render speed
