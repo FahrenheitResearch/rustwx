@@ -74,6 +74,10 @@ struct Cli {
     #[arg(long)]
     require_numeric_sidecar: bool,
 
+    /// Fail numeric sidecar manifests whose value_meanings do not include this name, label, or value.
+    #[arg(long)]
+    require_sidecar_value_meaning: Vec<String>,
+
     /// Fail manifests that hard-clip pixels to the requested tile-selection bounds.
     #[arg(long)]
     require_unclipped_bounds: bool,
@@ -97,6 +101,7 @@ struct QualityThresholds {
     require_product_input: Vec<String>,
     require_product_method: Option<String>,
     require_numeric_sidecar: bool,
+    require_sidecar_value_meaning: Vec<String>,
     require_unclipped_bounds: bool,
 }
 
@@ -206,6 +211,7 @@ fn main() -> Result<()> {
         require_product_input: cli.require_product_input,
         require_product_method: cli.require_product_method,
         require_numeric_sidecar: cli.require_numeric_sidecar,
+        require_sidecar_value_meaning: cli.require_sidecar_value_meaning,
         require_unclipped_bounds: cli.require_unclipped_bounds,
     };
     let summary = evaluate_manifest_paths(&cli.manifest, thresholds)?;
@@ -350,11 +356,18 @@ fn evaluate_entry(
 
     if thresholds.require_numeric_sidecar {
         match numeric_sidecar.as_ref() {
-            Some(sidecar) => {
-                failures.extend(validate_numeric_sidecar(&label, sidecar, manifest_dir)?)
-            }
+            Some(sidecar) => failures.extend(validate_numeric_sidecar(
+                &label,
+                sidecar,
+                manifest_dir,
+                &thresholds.require_sidecar_value_meaning,
+            )?),
             None => failures.push(format!("{label} missing numeric sidecar")),
         }
+    } else if !thresholds.require_sidecar_value_meaning.is_empty() {
+        failures.push(format!(
+            "{label} cannot require sidecar value meanings without --require-numeric-sidecar"
+        ));
     }
 
     if thresholds.require_product_source.is_some()
@@ -636,6 +649,7 @@ fn validate_numeric_sidecar(
     label: &str,
     sidecar: &NumericSidecarSummary,
     manifest_dir: &Path,
+    required_value_meanings: &[String],
 ) -> Result<Vec<String>> {
     let mut failures = Vec::new();
     if sidecar.schema != RADAR_POLAR_SIDECAR_SCHEMA {
@@ -701,7 +715,10 @@ fn validate_numeric_sidecar(
             ));
         }
         failures.extend(validate_numeric_sidecar_manifest_fields(
-            label, sidecar, &manifest,
+            label,
+            sidecar,
+            &manifest,
+            required_value_meanings,
         ));
         if manifest.get("radial_count").and_then(Value::as_u64) != Some(sidecar.radial_count) {
             failures.push(format!("{label} numeric sidecar radial_count mismatch"));
@@ -727,6 +744,7 @@ fn validate_numeric_sidecar_manifest_fields(
     label: &str,
     sidecar: &NumericSidecarSummary,
     manifest: &Value,
+    required_value_meanings: &[String],
 ) -> Vec<String> {
     let mut failures = Vec::new();
     if manifest.get("sidecar_version").and_then(Value::as_u64) != Some(2) {
@@ -792,6 +810,11 @@ fn validate_numeric_sidecar_manifest_fields(
             "{label} numeric sidecar manifest is missing gate_flag_meanings"
         )),
     }
+    failures.extend(validate_sidecar_value_meanings(
+        label,
+        manifest,
+        required_value_meanings,
+    ));
     if !manifest
         .get("source_key_or_url")
         .and_then(Value::as_str)
@@ -911,6 +934,89 @@ fn validate_numeric_sidecar_manifest_fields(
     }
 
     failures
+}
+
+fn validate_sidecar_value_meanings(
+    label: &str,
+    manifest: &Value,
+    required_value_meanings: &[String],
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    let meanings = manifest.get("value_meanings");
+    let meanings = match meanings {
+        Some(value) if value.is_null() => None,
+        Some(value) => match value.as_array() {
+            Some(meanings) => Some(meanings),
+            None => {
+                failures.push(format!(
+                    "{label} numeric sidecar value_meanings must be an array"
+                ));
+                None
+            }
+        },
+        None => None,
+    };
+
+    if let Some(meanings) = meanings {
+        for (index, meaning) in meanings.iter().enumerate() {
+            let prefix = format!("{label} numeric sidecar value_meanings[{index}]");
+            if !meaning
+                .get("value")
+                .and_then(Value::as_f64)
+                .is_some_and(f64::is_finite)
+            {
+                failures.push(format!("{prefix} is missing finite value"));
+            }
+            for field in ["name", "label", "description"] {
+                if !meaning
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty())
+                {
+                    failures.push(format!("{prefix} is missing string field {field}"));
+                }
+            }
+        }
+    }
+
+    if required_value_meanings.is_empty() {
+        return failures;
+    }
+
+    let Some(meanings) = meanings else {
+        failures.push(format!(
+            "{label} numeric sidecar manifest is missing required value_meanings"
+        ));
+        return failures;
+    };
+    for required in required_value_meanings {
+        if !meanings
+            .iter()
+            .any(|meaning| sidecar_value_meaning_matches(meaning, required))
+        {
+            failures.push(format!(
+                "{label} numeric sidecar value_meanings do not include {required}"
+            ));
+        }
+    }
+    failures
+}
+
+fn sidecar_value_meaning_matches(meaning: &Value, required: &str) -> bool {
+    for field in ["name", "label"] {
+        if meaning
+            .get(field)
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case(required))
+        {
+            return true;
+        }
+    }
+    required
+        .parse::<f64>()
+        .ok()
+        .zip(meaning.get("value").and_then(Value::as_f64))
+        .is_some_and(|(required, value)| (required - value).abs() <= 0.001)
 }
 
 fn parse_reflectivity_qc(value: &Value) -> Result<Option<ReflectivitySummary>> {
@@ -1063,6 +1169,7 @@ mod tests {
             require_product_input: Vec::new(),
             require_product_method: None,
             require_numeric_sidecar: false,
+            require_sidecar_value_meaning: Vec::new(),
             require_unclipped_bounds: false,
         };
 
@@ -1120,6 +1227,7 @@ mod tests {
             require_product_input: Vec::new(),
             require_product_method: None,
             require_numeric_sidecar: false,
+            require_sidecar_value_meaning: Vec::new(),
             require_unclipped_bounds: false,
         };
 
@@ -1168,6 +1276,7 @@ mod tests {
             require_product_input: Vec::new(),
             require_product_method: None,
             require_numeric_sidecar: false,
+            require_sidecar_value_meaning: Vec::new(),
             require_unclipped_bounds: false,
         };
 
@@ -1235,6 +1344,14 @@ mod tests {
                 "product": "ref",
                 "product_name": "Reflectivity",
                 "units": "dBZ",
+                "value_meanings": [
+                    {
+                        "value": 7.0,
+                        "name": "heavy_rain",
+                        "label": "Heavy Rain",
+                        "description": "High-reflectivity rain or positive-KDP heavy rain."
+                    }
+                ],
                 "product_provenance": {
                     "source": "native",
                     "derived": false
@@ -1308,6 +1425,11 @@ mod tests {
             require_product_input: Vec::new(),
             require_product_method: None,
             require_numeric_sidecar: true,
+            require_sidecar_value_meaning: vec![
+                "heavy_rain".to_string(),
+                "Heavy Rain".to_string(),
+                "7".to_string(),
+            ],
             require_unclipped_bounds: false,
         };
 
@@ -1323,6 +1445,20 @@ mod tests {
                 .map(|sidecar| sidecar.processing_state.as_str()),
             Some("raw")
         );
+
+        let mut missing_meaning_thresholds = thresholds.clone();
+        missing_meaning_thresholds.require_sidecar_value_meaning = vec!["large_hail".to_string()];
+        let missing = evaluate_manifest_value(
+            &root.join("tiles_manifest.json"),
+            &value,
+            &missing_meaning_thresholds,
+        )
+        .unwrap();
+        assert!(!missing.ok);
+        assert!(missing
+            .failures
+            .iter()
+            .any(|failure| { failure.contains("value_meanings do not include large_hail") }));
 
         fs::remove_dir_all(root).ok();
     }
@@ -1342,6 +1478,7 @@ mod tests {
             require_product_input: Vec::new(),
             require_product_method: None,
             require_numeric_sidecar: false,
+            require_sidecar_value_meaning: Vec::new(),
             require_unclipped_bounds: true,
         };
         let value = json!({
@@ -1424,6 +1561,7 @@ mod tests {
             require_product_input: vec!["phi".to_string()],
             require_product_method: Some("centered_phi_range_derivative".to_string()),
             require_numeric_sidecar: false,
+            require_sidecar_value_meaning: Vec::new(),
             require_unclipped_bounds: false,
         };
 

@@ -127,6 +127,9 @@ jobs:
           --require-product-input phi
           --require-product-method dual_pol_rule_hca_v1
           --require-numeric-sidecar
+          --require-sidecar-value-meaning no_echo
+          --require-sidecar-value-meaning heavy_rain
+          --require-sidecar-value-meaning large_hail
           --require-unclipped-bounds
           --summary-out target/radar-smoke/hca_product_quality_gate.json
 
