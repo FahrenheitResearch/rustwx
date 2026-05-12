@@ -304,8 +304,8 @@ jobs:
           --require-units dBZ
           --require-product ref
           --require-sample-method nearest
-          --require-processing-state raw
-          --require-raw
+          --require-processing-state filtered
+          --require-filtered
           --require-gate-flag valid
           --require-product-source native
           --summary-out target/radar-smoke/reflectivity_sidecar_sample.json
