@@ -867,8 +867,8 @@ fn draw_cape_cin_fills(
 fn draw_wind_barbs(c: &mut Canvas, prof: &Profile, plot_w: f64, plot_h: f64, skewt_w: u32) {
     let bx = (skewt_w as f64 - MARGIN_RIGHT / 2.0) as f64;
     let barb_pressures = [
-        1000.0, 925.0, 850.0, 800.0, 750.0, 700.0, 650.0, 600.0, 550.0, 500.0, 450.0, 400.0,
-        350.0, 300.0, 250.0, 200.0, 150.0,
+        1000.0, 925.0, 850.0, 800.0, 750.0, 700.0, 650.0, 600.0, 550.0, 500.0, 450.0, 400.0, 350.0,
+        300.0, 250.0, 200.0, 150.0,
     ];
 
     for &p in &barb_pressures {

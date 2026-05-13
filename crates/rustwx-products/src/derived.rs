@@ -1,27 +1,28 @@
-use crate::custom_poi::{CustomPoiOverlay, apply_custom_poi_overlay};
+use crate::custom_poi::{apply_custom_poi_overlay, CustomPoiOverlay};
 use crate::direct::{
     build_projected_map, build_projected_map_with_projection, inverse_raster_projection_for_grid,
     model_data_domain_frame_for_projection,
 };
 use rayon::prelude::*;
 use rustwx_calc::{
-    CalcError, EcapeVolumeInputs, FixedStpInputs, GridShape as CalcGridShape, SurfaceInputs,
-    TemperatureAdvectionInputs, VolumeShape, WindGridInputs, compute_2m_apparent_temperature,
-    compute_dcape, compute_ehi_01km, compute_ehi_03km, compute_lapse_rate_0_3km,
-    compute_lapse_rate_700_500, compute_lifted_index, compute_mlcape_cin, compute_mucape_cin,
-    compute_sbcape_cin, compute_shear_01km, compute_shear_06km, compute_srh_01km_hemispheric,
-    compute_srh_03km_hemispheric, compute_stp_fixed, compute_surface_thermo,
+    compute_2m_apparent_temperature, compute_dcape, compute_ehi_01km, compute_ehi_03km,
+    compute_lapse_rate_0_3km, compute_lapse_rate_700_500, compute_lifted_index, compute_mlcape_cin,
+    compute_mucape_cin, compute_sbcape_cin, compute_shear_01km, compute_shear_06km,
+    compute_srh_01km_hemispheric, compute_srh_03km_hemispheric, compute_stp_fixed,
+    compute_surface_thermo, CalcError, EcapeVolumeInputs, FixedStpInputs,
+    GridShape as CalcGridShape, SurfaceInputs, TemperatureAdvectionInputs, VolumeShape,
+    WindGridInputs,
 };
 use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId,
 };
 use rustwx_render::{
-    Color, ColorScale, DerivedProductStyle, DiscreteColorScale, DomainFrame, ExtendMode,
-    LevelDensity, MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode,
-    ProjectedContourLineStyle, ProjectedDomain, ProjectedExtent, ProjectedMap, RenderImageTiming,
-    RenderStateTiming, WeatherPalette, WeatherProduct, WindBarbLayer,
     build_projected_contour_geometry_profile, densify_discrete_scale, map_frame_aspect_ratio,
-    save_png_profile_with_options, weather::temperature_palette_cropped_f,
+    save_png_profile_with_options, weather::temperature_palette_cropped_f, Color, ColorScale,
+    DerivedProductStyle, DiscreteColorScale, DomainFrame, ExtendMode, LevelDensity,
+    MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode,
+    ProjectedContourLineStyle, ProjectedDomain, ProjectedExtent, ProjectedMap, RasterSampleMode,
+    RenderImageTiming, RenderStateTiming, WeatherPalette, WeatherProduct, WindBarbLayer,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -29,49 +30,49 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::sync::{
-    Arc,
     atomic::{AtomicUsize, Ordering},
+    Arc,
 };
 use std::thread;
 use std::time::Instant;
 
 use crate::ecape::compute_ecape_map_fields_with_prepared_volume;
 use crate::gridded::{
-    GridCrop, PressureFields as GenericPressureFields, ProjectedGridIntersection,
-    SharedTiming as GenericSharedTiming, SurfaceFields as GenericSurfaceFields,
     broadcast_levels_pa, classify_projected_grid_intersection, crop_latlon_grid, crop_values_f64,
     decode_cache_path, decode_surface_grid, fetch_family_file,
     load_or_decode_pressure_cropped_with_shape, load_or_decode_surface_cropped,
-    prepare_heavy_volume_timed, resolve_thermo_pair_run,
+    prepare_heavy_volume_timed, resolve_thermo_pair_run, GridCrop,
+    PressureFields as GenericPressureFields, ProjectedGridIntersection,
+    SharedTiming as GenericSharedTiming, SurfaceFields as GenericSurfaceFields,
 };
-use crate::heavy::{HeavyComputeTiming, crop_and_guard_heavy_domain};
+use crate::heavy::{crop_and_guard_heavy_domain, HeavyComputeTiming};
 use crate::places::PlaceLabelOverlay;
 use crate::planner::{ExecutionPlanBuilder, PlannedBundle};
 use crate::publication::{
-    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
+    artifact_identity_from_path, ArtifactContentIdentity, PublishedFetchIdentity,
 };
 use crate::runtime::{
-    BundleLoaderConfig, CroppedDecodeProfile, FetchedBundleBytes, LoadedBundleSet,
-    LoadedBundleTiming, load_execution_plan,
+    load_execution_plan, BundleLoaderConfig, CroppedDecodeProfile, FetchedBundleBytes,
+    LoadedBundleSet, LoadedBundleTiming,
 };
 use crate::severe::{
     build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
 };
 use crate::shared_context::{
-    DomainSpec, WeatherPanelField, build_weather_map_request, model_time_subtitle, source_subtitle,
-    static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
-    static_title_with_suffix,
+    build_weather_map_request, model_time_subtitle, source_subtitle, static_chrome_scale,
+    static_supersample_factor, static_supersample_sharpen, static_title_with_suffix, DomainSpec,
+    WeatherPanelField,
 };
 use crate::source::{ProductSourceMode, ProductSourceRoute};
 use crate::thermo_native::{
-    NativeSemantics, NativeThermoRecipe, extract_native_thermo_field, native_candidate,
+    extract_native_thermo_field, native_candidate, NativeSemantics, NativeThermoRecipe,
 };
 use rustwx_models::{
-    LatestRun, latest_available_run_at_forecast_hour,
-    latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
+    latest_available_run_at_forecast_hour, latest_available_run_for_products_at_forecast_hour,
+    resolve_canonical_bundle_product, LatestRun,
 };
 #[cfg(feature = "wrf")]
-use rustwx_wrf::{WrfFile, looks_like_wrf};
+use rustwx_wrf::{looks_like_wrf, WrfFile};
 
 const OUTPUT_WIDTH: u32 = 1200;
 const OUTPUT_HEIGHT: u32 = 900;
@@ -1383,18 +1384,14 @@ pub fn supported_derived_recipe_slugs(model: ModelId) -> Vec<String> {
         | ModelId::Hiresw
         | ModelId::Sref
         | ModelId::RrfsA
+        | ModelId::RrfsPublic
+        | ModelId::RrfsFireWx
         | ModelId::WrfGdex => supported_derived_recipe_inventory()
             .iter()
             .filter(|recipe| derived_recipe_supported_for_model(recipe, model))
             .map(|recipe| recipe.slug.to_string())
             .collect(),
-        ModelId::Rtma
-        | ModelId::Urma
-        | ModelId::Href
-        | ModelId::Nbm
-        | ModelId::RrfsPublic
-        | ModelId::Refs
-        | ModelId::RrfsFireWx => Vec::new(),
+        ModelId::Rtma | ModelId::Urma | ModelId::Href | ModelId::Nbm | ModelId::Refs => Vec::new(),
     }
 }
 
@@ -1467,8 +1464,10 @@ fn maybe_load_rrfs_cropped_pair_for_derived(
     latest: &rustwx_models::LatestRun,
     planned_routes: &PlannedDerivedSourceRoutes,
 ) -> Result<Option<LoadedBundleSet>, Box<dyn std::error::Error>> {
-    if request.model != ModelId::RrfsA
-        || planned_routes.compute_recipes.is_empty()
+    if !matches!(
+        request.model,
+        ModelId::RrfsA | ModelId::RrfsPublic | ModelId::RrfsFireWx
+    ) || planned_routes.compute_recipes.is_empty()
         || !derived_compute_recipes_need_pressure(&planned_routes.compute_recipes)
         || !planned_routes.native_routes.is_empty()
     {
@@ -4477,6 +4476,7 @@ fn build_render_artifact_with_contour_mode(
     });
     request.projected_lines = projected.lines.clone();
     request.projected_polygons = projected.polygons.clone();
+    apply_source_raster_policy(source, &mut request);
     maybe_apply_native_contour_fill_for_mode(
         recipe,
         &mut request,
@@ -4842,6 +4842,7 @@ fn build_render_artifact_with_contour_mode_profiled(
     });
     request.projected_lines = projected.lines.clone();
     request.projected_polygons = projected.polygons.clone();
+    apply_source_raster_policy(source, &mut request);
     let request_base_build_ms = request_base_build_start.elapsed().as_millis();
 
     let native_contour_timing = maybe_apply_native_contour_fill_for_mode_profiled(
@@ -4903,15 +4904,22 @@ const DCAPE_NATIVE_LINE_LEVELS: &[f64] = &[500.0, 1000.0, 1500.0, 2000.0];
 const SRH_NATIVE_LINE_LEVELS: &[f64] = &[150.0, 250.0, 350.0, 450.0];
 const EHI_NATIVE_LINE_LEVELS: &[f64] = &[1.0, 2.0, 3.0, 5.0];
 
+fn weather_preset_masked_scale(
+    preset: rustwx_render::weather::WeatherPreset,
+    mask_below: Option<f64>,
+) -> ColorScale {
+    let mut scale = preset.scale();
+    scale.mask_below = mask_below;
+    ColorScale::Discrete(scale)
+}
+
 fn native_contour_product_config(recipe: DerivedRecipe) -> Option<NativeContourProductConfig> {
     match recipe {
         DerivedRecipe::StpFixed => Some(NativeContourProductConfig {
-            scale: rustwx_render::ColorScale::Discrete(rustwx_render::palette_scale(
-                WeatherPalette::Stp,
-                vec![1.0, 2.0, 3.0, 5.0, 8.0, 11.0],
-                ExtendMode::Max,
-                None,
-            )),
+            scale: weather_preset_masked_scale(
+                rustwx_render::weather::WeatherPreset::Stp,
+                Some(1.0),
+            ),
             line_levels: STP_NATIVE_LINE_LEVELS,
             line_style: ProjectedContourLineStyle {
                 color: Color::rgba(55, 16, 16, 210),
@@ -4920,12 +4928,10 @@ fn native_contour_product_config(recipe: DerivedRecipe) -> Option<NativeContourP
             tick_step: Some(1.0),
         }),
         DerivedRecipe::Sbcape | DerivedRecipe::Mlcape => Some(NativeContourProductConfig {
-            scale: rustwx_render::ColorScale::Discrete(rustwx_render::palette_scale(
-                WeatherPalette::Cape,
-                vec![250.0, 500.0, 1000.0, 1500.0, 2000.0, 3000.0, 4000.0, 5000.0],
-                ExtendMode::Max,
-                None,
-            )),
+            scale: weather_preset_masked_scale(
+                rustwx_render::weather::WeatherPreset::Cape,
+                Some(250.0),
+            ),
             line_levels: CAPE_NATIVE_LINE_LEVELS,
             line_style: ProjectedContourLineStyle {
                 color: Color::rgba(84, 44, 18, 215),
@@ -4938,7 +4944,7 @@ fn native_contour_product_config(recipe: DerivedRecipe) -> Option<NativeContourP
                 levels: range_step(0.0, 2501.0, 100.0),
                 colors: dcape_scale_colors(),
                 extend: ExtendMode::Max,
-                mask_below: None,
+                mask_below: Some(500.0),
             }),
             line_levels: DCAPE_NATIVE_LINE_LEVELS,
             line_style: ProjectedContourLineStyle {
@@ -4948,12 +4954,10 @@ fn native_contour_product_config(recipe: DerivedRecipe) -> Option<NativeContourP
             tick_step: Some(250.0),
         }),
         DerivedRecipe::Srh01km | DerivedRecipe::Srh03km => Some(NativeContourProductConfig {
-            scale: rustwx_render::ColorScale::Discrete(rustwx_render::palette_scale(
-                WeatherPalette::Srh,
-                vec![100.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0],
-                ExtendMode::Max,
-                None,
-            )),
+            scale: weather_preset_masked_scale(
+                rustwx_render::weather::WeatherPreset::Srh,
+                Some(100.0),
+            ),
             line_levels: SRH_NATIVE_LINE_LEVELS,
             line_style: ProjectedContourLineStyle {
                 color: Color::rgba(15, 35, 56, 220),
@@ -4962,12 +4966,10 @@ fn native_contour_product_config(recipe: DerivedRecipe) -> Option<NativeContourP
             tick_step: Some(50.0),
         }),
         DerivedRecipe::Ehi01km | DerivedRecipe::Ehi03km => Some(NativeContourProductConfig {
-            scale: rustwx_render::ColorScale::Discrete(rustwx_render::palette_scale(
-                WeatherPalette::Ehi,
-                vec![0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0],
-                ExtendMode::Max,
-                None,
-            )),
+            scale: weather_preset_masked_scale(
+                rustwx_render::weather::WeatherPreset::Ehi,
+                Some(0.5),
+            ),
             line_levels: EHI_NATIVE_LINE_LEVELS,
             line_style: ProjectedContourLineStyle {
                 color: Color::rgba(44, 18, 66, 220),
@@ -5015,8 +5017,12 @@ fn maybe_apply_native_contour_fill_for_mode_profiled(
         return Ok(NativeContourBuildTiming::default());
     };
     let config = match contour_mode {
-        NativeContourRenderMode::Automatic | NativeContourRenderMode::Signature => {
-            return Ok(NativeContourBuildTiming::default());
+        NativeContourRenderMode::Automatic => return Ok(NativeContourBuildTiming::default()),
+        NativeContourRenderMode::Signature => {
+            let Some(config) = native_contour_product_config(recipe) else {
+                return Ok(NativeContourBuildTiming::default());
+            };
+            config
         }
         NativeContourRenderMode::ExperimentalAllProjected => native_contour_product_config(recipe)
             .unwrap_or_else(|| NativeContourProductConfig {
@@ -5464,9 +5470,49 @@ fn weather_request(
     product: WeatherProduct,
 ) -> Result<(Field2D, MapRenderRequest), Box<dyn std::error::Error>> {
     let field = core_field(recipe, units, grid, values)?;
-    let request = MapRenderRequest::for_core_weather_product(field.clone(), product)
+    let mut request = MapRenderRequest::for_core_weather_product(field.clone(), product)
         .with_visual_mode(recipe.visual_mode());
+    apply_operational_raster_scale(&mut request, product);
     Ok((field, request))
+}
+
+fn apply_operational_raster_scale(request: &mut MapRenderRequest, product: WeatherProduct) {
+    let mask_below = match product {
+        WeatherProduct::Sbcape
+        | WeatherProduct::Mlcape
+        | WeatherProduct::Mucape
+        | WeatherProduct::Sbecape
+        | WeatherProduct::Mlecape
+        | WeatherProduct::Muecape
+        | WeatherProduct::Sbncape
+        | WeatherProduct::Mlncape
+        | WeatherProduct::Muncape
+        | WeatherProduct::EcapeCape => Some(250.0),
+        WeatherProduct::Srh01km | WeatherProduct::Srh03km => Some(100.0),
+        WeatherProduct::Stp
+        | WeatherProduct::StpFixed
+        | WeatherProduct::StpEffective
+        | WeatherProduct::Tehi
+        | WeatherProduct::Tts
+        | WeatherProduct::VtpMod
+        | WeatherProduct::EcapeStpExperimental => Some(1.0),
+        WeatherProduct::Scp | WeatherProduct::EcapeScpExperimental => Some(1.0),
+        WeatherProduct::Ehi
+        | WeatherProduct::EcapeEhi01kmExperimental
+        | WeatherProduct::EcapeEhi03kmExperimental => Some(0.5),
+        _ => None,
+    };
+    if let Some(mask_below) = mask_below {
+        request.scale = weather_preset_masked_scale(product.scale_preset(), Some(mask_below));
+    }
+}
+
+fn apply_source_raster_policy(source: SourceId, request: &mut MapRenderRequest) {
+    if matches!(source, SourceId::AifsInference)
+        && request.raster_sample_mode == RasterSampleMode::Nearest
+    {
+        request.raster_sample_mode = RasterSampleMode::Linear;
+    }
 }
 
 fn weather_lapse_request(
@@ -5900,7 +5946,11 @@ fn render_derived_output_recipe(
         field: _,
         request: mut render_request,
     } = render_artifact;
-    render_request.domain_frame = model_data_domain_frame_for_projection(projection);
+    render_request.domain_frame = if crate::direct::is_global_scale_domain(request.domain.bounds) {
+        None
+    } else {
+        model_data_domain_frame_for_projection(projection)
+    };
     render_request.inverse_raster_projection =
         inverse_raster_projection_for_grid(projection, request.domain.bounds, grid_ref);
     let title = derived_title_for_request(request, recipe.title());
@@ -6243,6 +6293,25 @@ mod tests {
     }
 
     #[test]
+    fn rrfs_public_and_firewx_expose_model_agnostic_derived_inventory() {
+        for model in [ModelId::RrfsPublic, ModelId::RrfsFireWx] {
+            let slugs = supported_derived_recipe_slugs(model);
+            assert!(
+                slugs.iter().any(|slug| slug == "vpd_2m"),
+                "{model} should expose fire-weather surface diagnostics"
+            );
+            assert!(
+                slugs.iter().any(|slug| slug == "bulk_shear_0_6km"),
+                "{model} should expose profile-derived severe diagnostics"
+            );
+            assert!(
+                slugs.iter().any(|slug| slug == "stp_fixed"),
+                "{model} should expose model-agnostic severe composite diagnostics"
+            );
+        }
+    }
+
+    #[test]
     fn native_contour_config_covers_multiple_real_products() {
         for recipe in [
             DerivedRecipe::StpFixed,
@@ -6289,14 +6358,12 @@ mod tests {
         .unwrap();
 
         assert!(artifact.request.projected_data_polygons.is_empty());
-        assert!(
-            artifact
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(artifact
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
         let ColorScale::Discrete(scale) = artifact.request.scale else {
             panic!("wet-bulb scale should be discrete");
         };
@@ -6333,14 +6400,12 @@ mod tests {
         )
         .unwrap();
         assert!(automatic.request.projected_data_polygons.is_empty());
-        assert!(
-            automatic
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(automatic
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
 
         let legacy = build_native_render_artifact(
             DerivedRecipe::Sbcape,
@@ -6359,14 +6424,44 @@ mod tests {
         )
         .unwrap();
         assert!(legacy.request.projected_data_polygons.is_empty());
-        assert!(
-            legacy
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
+        assert!(legacy
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn aifs_inference_derived_policy_uses_interpolated_raster_sampling() {
+        let grid = sample_native_contour_grid();
+        let projected = sample_projected_map();
+        let values = vec![
+            0.0, 500.0, 1000.0, 250.0, 1250.0, 2250.0, 750.0, 2000.0, 3500.0,
+        ];
+
+        let artifact = build_native_render_artifact(
+            DerivedRecipe::Sbcape,
+            &grid,
+            &projected,
+            "20260414",
+            23,
+            0,
+            SourceId::AifsInference,
+            ModelId::Aifs,
+            1200,
+            900,
+            values,
+            NativeContourRenderMode::Automatic,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(
+            artifact.request.raster_sample_mode,
+            RasterSampleMode::Linear
         );
+        assert!(artifact.request.projected_data_polygons.is_empty());
     }
 
     #[test]
@@ -6410,14 +6505,12 @@ mod tests {
         )
         .unwrap();
         assert!(!experimental.request.projected_data_polygons.is_empty());
-        assert!(
-            experimental
-                .request
-                .field
-                .values
-                .iter()
-                .all(|value| value.is_nan())
-        );
+        assert!(experimental
+            .request
+            .field
+            .values
+            .iter()
+            .all(|value| value.is_nan()));
     }
 
     #[test]
@@ -6443,14 +6536,12 @@ mod tests {
         )
         .unwrap();
         assert!(signature.request.projected_data_polygons.is_empty());
-        assert!(
-            signature
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(signature
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
     }
 
     #[test]
@@ -6476,14 +6567,12 @@ mod tests {
         )
         .unwrap();
         assert!(signature.request.projected_data_polygons.is_empty());
-        assert!(
-            signature
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(signature
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
     }
 
     #[test]
@@ -6536,14 +6625,12 @@ mod tests {
         )
         .unwrap();
         assert!(signature.request.projected_data_polygons.is_empty());
-        assert!(
-            signature
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(signature
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
     }
 
     #[test]
@@ -6697,11 +6784,9 @@ mod tests {
         assert!(planned.output_recipes.is_empty());
         assert!(planned.native_routes.is_empty());
         assert_eq!(planned.blockers.len(), 1);
-        assert!(
-            planned.blockers[0]
-                .reason
-                .contains("will not fall back to canonical-derived compute")
-        );
+        assert!(planned.blockers[0]
+            .reason
+            .contains("will not fall back to canonical-derived compute"));
     }
 
     #[test]
@@ -6717,11 +6802,9 @@ mod tests {
         assert!(planned.compute_recipes.is_empty());
         assert!(planned.heavy_recipes.is_empty());
         assert_eq!(planned.blockers.len(), 1);
-        assert!(
-            planned.blockers[0]
-                .reason
-                .contains("cropped heavy ECAPE path")
-        );
+        assert!(planned.blockers[0]
+            .reason
+            .contains("cropped heavy ECAPE path"));
     }
 
     #[test]

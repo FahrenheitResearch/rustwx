@@ -17,6 +17,7 @@ use rustwx_radar::nexrad::sites::{find_nearest_site, find_site};
 use rustwx_radar::render::ColorTable;
 use serde::Serialize;
 use std::fs;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -71,6 +72,11 @@ struct Args {
     max: Option<f32>,
     #[arg(
         long,
+        help = "Optional directory for a WxStore-compatible f32 grid export manifest"
+    )]
+    grid_export_dir: Option<PathBuf>,
+    #[arg(
+        long,
         value_enum,
         default_value = "auto",
         help = "Velocity dealiasing for Level-II quicklooks"
@@ -92,6 +98,8 @@ struct PreviewReport {
     finite_count: usize,
     palette: String,
     dealias_method: Option<String>,
+    grid_export_manifest_path: Option<String>,
+    grid_export_field_count: usize,
 }
 
 struct PreviewData {
@@ -101,6 +109,7 @@ struct PreviewData {
     default_max: f32,
     palette_product: Option<RadarProduct>,
     dealias_method: Option<DealiasMethod>,
+    units: Option<String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -138,6 +147,11 @@ fn main() -> anyhow::Result<()> {
         color_table.as_ref(),
         &args.out,
     )?;
+    let grid_export = if let Some(out_dir) = args.grid_export_dir.as_ref() {
+        Some(write_preview_grid_export(&args, &preview, out_dir)?)
+    } else {
+        None
+    };
     let finite = preview
         .values
         .iter()
@@ -158,6 +172,13 @@ fn main() -> anyhow::Result<()> {
         dealias_method: preview
             .dealias_method
             .map(|method| format!("{method:?}").to_ascii_lowercase()),
+        grid_export_manifest_path: grid_export
+            .as_ref()
+            .map(|export| export.manifest_path.display().to_string()),
+        grid_export_field_count: grid_export
+            .as_ref()
+            .map(|export| export.field_count)
+            .unwrap_or(0),
     };
     fs::write(
         args.out.with_extension("json"),
@@ -206,6 +227,7 @@ fn render_goes_values(args: &Args) -> anyhow::Result<PreviewData> {
         default_max: max,
         palette_product: None,
         dealias_method: None,
+        units: band.units.clone(),
     })
 }
 
@@ -244,6 +266,7 @@ fn render_mrms_values(args: &Args) -> anyhow::Result<PreviewData> {
         default_max: max,
         palette_product,
         dealias_method: None,
+        units: remapped.units.clone(),
     })
 }
 
@@ -304,7 +327,167 @@ fn render_level2_values(args: &Args) -> anyhow::Result<PreviewData> {
         default_max: max,
         palette_product: Some(product.radar_product()),
         dealias_method,
+        units: None,
     })
+}
+
+struct GridExportInfo {
+    manifest_path: PathBuf,
+    field_count: usize,
+}
+
+fn write_preview_grid_export(
+    args: &Args,
+    preview: &PreviewData,
+    out_dir: &PathBuf,
+) -> anyhow::Result<GridExportInfo> {
+    if args.kind == PreviewKind::Level2 {
+        bail!("--grid-export-dir is only supported for georeferenced GOES/MRMS previews");
+    }
+    fs::create_dir_all(out_dir)?;
+    let bounds = parse_bounds_or_default(args.bounds.as_deref())?;
+    let product_slug = preview_grid_product_slug(args.kind, &preview.field);
+    let values_path = PathBuf::from(format!("{product_slug}_f000_values.f32"));
+    let lat_path = PathBuf::from("grid_lat.f32");
+    let lon_path = PathBuf::from("grid_lon.f32");
+    let tile = NativeObsTileGrid::new(bounds, args.size, args.size)
+        .map_err(|err| anyhow::anyhow!("{err}"))?;
+    let mut lat = Vec::with_capacity(args.size.saturating_mul(args.size));
+    let mut lon = Vec::with_capacity(args.size.saturating_mul(args.size));
+    for row in 0..args.size {
+        for col in 0..args.size {
+            let (cell_lat, cell_lon) = tile.lat_lon_at(row, col);
+            lat.push(cell_lat as f32);
+            lon.push(cell_lon as f32);
+        }
+    }
+    let no_data = no_data_info(&preview.values);
+    write_f32_file(&out_dir.join(&values_path), &preview.values)?;
+    write_f32_file(&out_dir.join(&lat_path), &lat)?;
+    write_f32_file(&out_dir.join(&lon_path), &lon)?;
+    let manifest_path = out_dir.join("manifest.json");
+    let generated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let run_id = preview_grid_run_id(args.kind, &preview.field);
+    let manifest = serde_json::json!({
+        "schema": "rustwx.native_obs_preview.grid_export.v1",
+        "model": preview_grid_model(args.kind),
+        "run_id": run_id.clone(),
+        "member": "analysis",
+        "date_yyyymmdd": chrono::Utc::now().format("%Y%m%d").to_string(),
+        "cycle_utc": 0,
+        "source": args.input.display().to_string(),
+        "forecast_hours": [0],
+        "generated_at": generated_at.clone(),
+        "manifest_path": manifest_path.clone(),
+        "fields": [
+            {
+                "product_slug": product_slug,
+                "title": preview_grid_title(args.kind, &preview.field),
+                "units": preview.units.as_deref().unwrap_or(preview_grid_default_units(args.kind, &preview.field)),
+                "model": preview_grid_model(args.kind),
+                "run_id": run_id.clone(),
+                "member": "analysis",
+                "forecast_hour": 0,
+                "valid_time": generated_at,
+                "nx": args.size,
+                "ny": args.size,
+                "crop": null,
+                "bounds": [bounds.west, bounds.east, bounds.south, bounds.north],
+                "values_path": values_path,
+                "lat_path": lat_path,
+                "lon_path": lon_path,
+                "no_data": no_data
+            }
+        ],
+        "blockers": [],
+        "timing": {
+            "total_ms": 0,
+            "write_ms": 0
+        }
+    });
+    fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+    Ok(GridExportInfo {
+        manifest_path,
+        field_count: 1,
+    })
+}
+
+fn preview_grid_model(kind: PreviewKind) -> &'static str {
+    match kind {
+        PreviewKind::Goes => "goes",
+        PreviewKind::Mrms => "mrms",
+        PreviewKind::Level2 => "level2",
+    }
+}
+
+fn preview_grid_product_slug(kind: PreviewKind, field: &str) -> String {
+    format!(
+        "{}_{}",
+        preview_grid_model(kind),
+        field
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() {
+                    ch.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>()
+            .split('_')
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("_")
+    )
+}
+
+fn preview_grid_title(kind: PreviewKind, field: &str) -> String {
+    match kind {
+        PreviewKind::Mrms => format!("MRMS {field}"),
+        PreviewKind::Goes => format!("GOES {field}"),
+        PreviewKind::Level2 => format!("Level-II {field}"),
+    }
+}
+
+fn preview_grid_run_id(kind: PreviewKind, field: &str) -> String {
+    format!(
+        "{}_{}_{}",
+        preview_grid_model(kind),
+        field
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_lowercase(),
+        chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
+    )
+}
+
+fn preview_grid_default_units(kind: PreviewKind, field: &str) -> &'static str {
+    let lower = field.to_ascii_lowercase();
+    if kind == PreviewKind::Mrms && lower.contains("reflect") {
+        "dBZ"
+    } else {
+        "unknown"
+    }
+}
+
+fn no_data_info(values: &[f32]) -> serde_json::Value {
+    let finite_count = values.iter().filter(|value| value.is_finite()).count();
+    serde_json::json!({
+        "encoding": "nan",
+        "finite_count": finite_count,
+        "nan_count": values.len().saturating_sub(finite_count)
+    })
+}
+
+fn write_f32_file(path: &PathBuf, values: &[f32]) -> anyhow::Result<()> {
+    let file = fs::File::create(path)?;
+    let mut writer = BufWriter::new(file);
+    for value in values {
+        writer.write_all(&value.to_le_bytes())?;
+    }
+    writer.flush()?;
+    Ok(())
 }
 
 fn parse_bounds_or_default(value: Option<&str>) -> anyhow::Result<NativeDatasetBounds> {

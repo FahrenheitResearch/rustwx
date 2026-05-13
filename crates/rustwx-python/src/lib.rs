@@ -16,30 +16,30 @@ use rustwx_core::{
 #[cfg(feature = "python")]
 use rustwx_io::earth2_archive::{Earth2EnsembleSelector, Earth2EnsembleStat};
 #[cfg(feature = "python")]
-use rustwx_io::{available_forecast_hours, probe_sources, FetchRequest};
+use rustwx_io::{FetchRequest, available_forecast_hours, probe_sources};
 #[cfg(feature = "python")]
 use rustwx_products::{
     derived::{
+        DerivedBatchReport, DerivedBatchRequest, NativeContourRenderMode,
         is_heavy_derived_recipe_slug, run_derived_batch, supported_derived_recipe_inventory,
-        supported_derived_recipe_slugs, DerivedBatchReport, DerivedBatchRequest,
-        NativeContourRenderMode,
+        supported_derived_recipe_slugs,
     },
     direct::supported_direct_recipe_slugs,
-    lightning::{default_glm_data_dir, render_glm_lightning_map, GlmLightningRenderRequest},
+    lightning::{GlmLightningRenderRequest, default_glm_data_dir, render_glm_lightning_map},
     named_geometry::{
-        find_built_in_country_domain, find_built_in_named_geometry, NamedGeometryCatalog,
-        NamedGeometryKind,
+        NamedGeometryCatalog, NamedGeometryKind, find_built_in_country_domain,
+        find_built_in_named_geometry,
     },
-    non_ecape::{run_model_non_ecape_hour_multi_domain, NonEcapeMultiDomainRequest},
-    places::{default_place_label_overlay_for_domain, PlaceLabelDensityTier},
+    non_ecape::{NonEcapeMultiDomainRequest, run_model_non_ecape_hour_multi_domain},
+    places::{PlaceLabelDensityTier, default_place_label_overlay_for_domain},
     point_timeseries::{
+        PointTimeseriesGridStore, PointTimeseriesGridStoreRequest, PointTimeseriesRequest,
         build_point_timeseries_grid_store, sample_point_timeseries,
-        sample_point_timeseries_grid_store, PointTimeseriesGridStore,
-        PointTimeseriesGridStoreRequest, PointTimeseriesRequest,
+        sample_point_timeseries_grid_store,
     },
     satellite::{
-        run_goes_native_sequence, run_goes_satellite_batch, GoesNativeSequenceRequest,
-        GoesSatelliteBatchRequest,
+        GoesNativeSequenceRequest, GoesSatelliteBatchRequest, run_goes_native_sequence,
+        run_goes_satellite_batch,
     },
     shared_context::DomainSpec,
     source::ProductSourceMode,
@@ -48,7 +48,7 @@ use rustwx_products::{
 #[cfg(feature = "python")]
 use rustwx_render::PngCompressionMode;
 #[cfg(feature = "python")]
-use rustwx_sounding::{write_full_sounding_png, SoundingColumn};
+use rustwx_sounding::{SoundingColumn, write_full_sounding_png};
 #[cfg(feature = "python")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "python")]

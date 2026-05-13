@@ -9,49 +9,50 @@ use rustwx_io::{
     load_cached_selected_field, store_cached_selected_field,
 };
 use rustwx_models::{
-    LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
-    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan,
+    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan, LatestRun,
+    ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
 };
 use rustwx_render::{
+    build_projected_contour_geometry_profile, densify_discrete_scale, draw_centered_text_line,
+    render_panel_grid, save_png_profile_with_options, save_rgba_png_profile_with_options,
+    weather::{
+        dewpoint_palette_params, temperature_palette_cropped_f, weather_palette,
+        winds_palette_segments, WeatherPalette,
+    },
     BasemapDetail, Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode,
     GeographicClipBounds, InverseRasterProjection, LegendControls, LegendMode, LevelDensity,
     MapRenderRequest, PanelGridLayout, PanelPadding, PngCompressionMode, PngWriteOptions,
-    ProductVisualMode, ProjectedContourLineStyle, ProjectedDomain, ProjectedMap, RenderDensity,
-    RenderImageTiming, RenderStateTiming, WindBarbLayer, build_projected_contour_geometry_profile,
-    densify_discrete_scale, draw_centered_text_line, render_panel_grid,
-    save_png_profile_with_options, save_rgba_png_profile_with_options,
-    weather::{
-        WeatherPalette, dewpoint_palette_params, temperature_palette_cropped_f, weather_palette,
-        winds_palette_segments,
-    },
+    ProductVisualMode, ProjectedContourLineStyle, ProjectedDomain, ProjectedMap,
+    ProjectedMapBuildOptions, RasterSampleMode, RenderDensity, RenderImageTiming,
+    RenderStateTiming, WindBarbLayer,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{
-    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
 };
 use std::thread;
 use std::time::Instant;
 
-use crate::custom_poi::{CustomPoiOverlay, apply_custom_poi_overlay};
-use crate::gridded::{GridCrop, crop_latlon_grid, crop_values_f32};
+use crate::custom_poi::{apply_custom_poi_overlay, CustomPoiOverlay};
+use crate::gridded::{crop_latlon_grid, crop_values_f32, GridCrop};
 use crate::places::PlaceLabelOverlay;
 use crate::planner::{ExecutionPlan, ExecutionPlanBuilder};
 use crate::publication::{
-    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
-    fetch_identity_from_cached_result_with_aliases,
+    artifact_identity_from_path, fetch_identity_from_cached_result_with_aliases,
+    ArtifactContentIdentity, PublishedFetchIdentity,
 };
 use crate::runtime::{
-    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
+    load_execution_plan, BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet,
 };
 use crate::shared_context::{
-    DomainSpec, ProjectedMapProvider, model_time_subtitle, source_subtitle, static_chrome_scale,
-    static_supersample_factor, static_supersample_sharpen, static_title_with_suffix,
+    model_time_subtitle, source_subtitle, static_chrome_scale, static_supersample_factor,
+    static_supersample_sharpen, static_title_with_suffix, DomainSpec, ProjectedMapProvider,
 };
-use crate::source::{ProductSourceRoute, direct_route_for_recipe_slug};
+use crate::source::{direct_route_for_recipe_slug, ProductSourceRoute};
 use crate::spec::direct_product_specs;
 
 const OUTPUT_WIDTH: u32 = 1600;
@@ -1401,18 +1402,31 @@ fn native_stat_label_from_product(product: &str) -> Option<String> {
         .unwrap_or(product)
         .trim()
         .to_ascii_lowercase();
-    let token = token
+    let mut token = token
         .strip_suffix("_3hrly")
         .or_else(|| token.strip_suffix("_hourly"))
         .or_else(|| token.strip_suffix("_1hrly"))
-        .unwrap_or(token.as_str());
-    let label = match token {
-        "mean" | "avg" | "avrg" => "Mean".to_string(),
+        .unwrap_or(token.as_str())
+        .to_string();
+    token = token.replace('-', "_");
+    for suffix in ["_conus", "_ak", "_hi", "_pr"] {
+        if let Some(stripped) = token.strip_suffix(suffix) {
+            token = stripped.to_string();
+            break;
+        }
+    }
+    let label = match token.as_str() {
+        "mean" => "Mean".to_string(),
+        "avg" | "avrg" => "Average".to_string(),
         "spread" | "sprd" => "Spread".to_string(),
         "std" | "stddev" | "stdev" => "Std Dev".to_string(),
         "min" | "minimum" => "Min".to_string(),
         "max" | "maximum" => "Max".to_string(),
         "prob" | "probability" => "Probability".to_string(),
+        "eas" => "EAS".to_string(),
+        "lpmm" => "Localized PMM".to_string(),
+        "pmmn" | "pmm" => "Probability-Matched Mean".to_string(),
+        "ffri" => "FFRI".to_string(),
         value if value.len() >= 2 && value.starts_with('p') => {
             let digits = &value[1..];
             if digits.chars().all(|ch| ch.is_ascii_digit()) {
@@ -2100,7 +2114,7 @@ fn normalize_longitude_for_bounds(lon: f64) -> f64 {
     lon
 }
 
-fn is_global_scale_domain(bounds: (f64, f64, f64, f64)) -> bool {
+pub(crate) fn is_global_scale_domain(bounds: (f64, f64, f64, f64)) -> bool {
     let lat_span = (bounds.3 - bounds.2).abs();
     lat_span >= 100.0 && longitude_bounds_span_deg(bounds) >= 300.0
 }
@@ -2381,6 +2395,7 @@ fn render_direct_recipe(
             request.earth2_ensemble,
         )?;
         let request_build_ms = request_build_start.elapsed().as_millis();
+        apply_source_raster_policy(latest.source, &mut render_request);
         render_request.title = Some(direct_title_for_planned_product(
             request,
             item.plan.product.as_ref(),
@@ -2594,6 +2609,7 @@ fn render_direct_composite_panel(
         build_timing.field_prepare_ms += panel_timing.field_prepare_ms;
         build_timing.contour_prepare_ms += panel_timing.contour_prepare_ms;
         build_timing.barb_prepare_ms += panel_timing.barb_prepare_ms;
+        apply_source_raster_policy(latest.source, &mut panel_request);
         panel_request.width = spec.panel_width;
         panel_request.height = spec.panel_height;
         panel_request.visual_mode = ProductVisualMode::PanelMember;
@@ -2739,7 +2755,11 @@ fn build_render_request(
     }
     request.supersample_factor = static_supersample_factor();
     request.supersample_sharpen = static_supersample_sharpen();
-    request.domain_frame = model_data_domain_frame_for_projection(filled.projection.as_ref());
+    request.domain_frame = if is_global_scale_domain(bounds) {
+        None
+    } else {
+        model_data_domain_frame_for_projection(filled.projection.as_ref())
+    };
     request.projected_domain = Some(ProjectedDomain {
         x: projected.projected_x,
         y: projected.projected_y,
@@ -2782,6 +2802,14 @@ fn build_render_request(
         timing.contour_prepare_ms += contour_fill_start.elapsed().as_millis();
     }
     Ok((request, timing))
+}
+
+fn apply_source_raster_policy(source: SourceId, request: &mut MapRenderRequest) {
+    if matches!(source, SourceId::AifsInference)
+        && request.raster_sample_mode == RasterSampleMode::Nearest
+    {
+        request.raster_sample_mode = RasterSampleMode::Linear;
+    }
 }
 
 fn maybe_apply_below_ground_mask_overlay(
@@ -3722,6 +3750,16 @@ pub fn build_projected_map_with_projection(
     bounds: (f64, f64, f64, f64),
     target_ratio: f64,
 ) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
+    if full_domain_projected_frame_enabled() {
+        return build_full_domain_projected_map_with_projection(
+            lat_deg,
+            lon_deg,
+            projection,
+            bounds,
+            target_ratio,
+        );
+    }
+
     let variant = projection_presentation_variant();
     let presentation_projection = presentation_projection_for_bounds(projection, bounds, variant);
     let frame_bounds = presentation_frame_bounds_for_projection(
@@ -3746,6 +3784,68 @@ pub fn build_projected_map_with_projection(
     projected.inverse_raster_projection =
         inverse_raster_projection_for_latlon_mesh(projection, frame_bounds, lat_deg, lon_deg);
     Ok(projected)
+}
+
+fn build_full_domain_projected_map_with_projection(
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+    projection: Option<&rustwx_core::GridProjection>,
+    bounds: (f64, f64, f64, f64),
+    target_ratio: f64,
+) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
+    let mut options = ProjectedMapBuildOptions::full_domain(target_ratio);
+    if let Some(projection) = projection {
+        options = options.with_projection(projection.clone());
+    }
+    let basemap_bounds = latlon_mesh_bounds(lat_deg, lon_deg).unwrap_or(bounds);
+    options = options.with_basemap_detail(basemap_detail_for_bounds(basemap_bounds));
+    options.domain.pad_fraction = full_domain_projected_frame_pad_fraction();
+    let mut projected =
+        rustwx_render::build_projected_map_with_options(lat_deg, lon_deg, &options)?;
+    projected.inverse_raster_projection =
+        inverse_raster_projection_for_latlon_mesh(projection, basemap_bounds, lat_deg, lon_deg);
+    Ok(projected)
+}
+
+fn full_domain_projected_frame_enabled() -> bool {
+    std::env::var("RUSTWX_PROJECTED_FRAME_SOURCE")
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "full-domain" | "full_domain" | "native" | "native-domain" | "native_domain"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn full_domain_projected_frame_pad_fraction() -> f64 {
+    std::env::var("RUSTWX_PROJECTED_FRAME_PAD_FRACTION")
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or(0.02)
+        .clamp(0.0, 0.25)
+}
+
+fn latlon_mesh_bounds(lat_deg: &[f32], lon_deg: &[f32]) -> Option<(f64, f64, f64, f64)> {
+    let mut west = f64::INFINITY;
+    let mut east = f64::NEG_INFINITY;
+    let mut south = f64::INFINITY;
+    let mut north = f64::NEG_INFINITY;
+    for (&lat, &lon) in lat_deg.iter().zip(lon_deg.iter()) {
+        let lat = lat as f64;
+        let lon = lon as f64;
+        if !lat.is_finite() || !lon.is_finite() {
+            continue;
+        }
+        south = south.min(lat);
+        north = north.max(lat);
+        west = west.min(lon);
+        east = east.max(lon);
+    }
+    (west.is_finite() && east.is_finite() && south.is_finite() && north.is_finite())
+        .then_some((west, east, south, north))
 }
 
 pub(crate) fn inverse_raster_projection_for_grid(
@@ -3864,12 +3964,9 @@ fn longitude_delta_abs_deg(a: f32, b: f32) -> f32 {
 }
 
 pub fn model_data_domain_frame_for_projection(
-    projection: Option<&GridProjection>,
+    _projection: Option<&GridProjection>,
 ) -> Option<DomainFrame> {
-    match projection {
-        Some(GridProjection::Geographic) | None => None,
-        Some(_) => Some(DomainFrame::model_data_default()),
-    }
+    Some(DomainFrame::model_data_default())
 }
 
 fn direct_map_frame_aspect_ratio(
@@ -4712,28 +4809,20 @@ mod tests {
             groups[0].fetch_mode,
             PlotRecipeFetchMode::WholeFileStructuredExtract
         );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500))
-        );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700))
-        );
-        assert!(
-            groups[0]
-                .variable_patterns
-                .iter()
-                .any(|pattern| pattern.contains("500 mb"))
-        );
-        assert!(
-            groups[0]
-                .variable_patterns
-                .iter()
-                .any(|pattern| pattern.contains("700 mb"))
-        );
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500)));
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700)));
+        assert!(groups[0]
+            .variable_patterns
+            .iter()
+            .any(|pattern| pattern.contains("500 mb")));
+        assert!(groups[0]
+            .variable_patterns
+            .iter()
+            .any(|pattern| pattern.contains("700 mb")));
     }
 
     #[test]
@@ -5006,18 +5095,14 @@ mod tests {
         let groups = group_direct_fetches(&request, &planned);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].product, "sfc");
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::entire_atmosphere(
-                    CanonicalField::LowCloudCover
-                ))
-        );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow))
-        );
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::entire_atmosphere(
+                CanonicalField::LowCloudCover
+            )));
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow)));
     }
 
     #[test]
@@ -5039,29 +5124,21 @@ mod tests {
         let supported = supported_direct_recipe_slugs(ModelId::Nbm);
         assert!(!supported.iter().any(|slug| slug.starts_with("nbm_qmd_")));
         let sref_supported = supported_direct_recipe_slugs(ModelId::Sref);
-        assert!(
-            !sref_supported
-                .iter()
-                .any(|slug| slug.starts_with("sref_prob_"))
-        );
+        assert!(!sref_supported
+            .iter()
+            .any(|slug| slug.starts_with("sref_prob_")));
         let gefs_supported = supported_direct_recipe_slugs(ModelId::Gefs);
-        assert!(
-            !gefs_supported
-                .iter()
-                .any(|slug| slug.starts_with("gefs_avg_") || slug.starts_with("gefs_spr_"))
-        );
+        assert!(!gefs_supported
+            .iter()
+            .any(|slug| slug.starts_with("gefs_avg_") || slug.starts_with("gefs_spr_")));
         let aigefs_supported = supported_direct_recipe_slugs(ModelId::Aigefs);
-        assert!(
-            !aigefs_supported
-                .iter()
-                .any(|slug| slug.starts_with("aigefs_spr_"))
-        );
+        assert!(!aigefs_supported
+            .iter()
+            .any(|slug| slug.starts_with("aigefs_spr_")));
         let hgefs_supported = supported_direct_recipe_slugs(ModelId::Hgefs);
-        assert!(
-            !hgefs_supported
-                .iter()
-                .any(|slug| slug.starts_with("hgefs_spr_"))
-        );
+        assert!(!hgefs_supported
+            .iter()
+            .any(|slug| slug.starts_with("hgefs_spr_")));
         let href_supported = supported_direct_recipe_slugs(ModelId::Href);
         assert!(!href_supported.iter().any(|slug| {
             slug.starts_with("href_sprd_")
@@ -5069,11 +5146,9 @@ mod tests {
                 || slug.starts_with("href_mean_")
         }));
         let refs_supported = supported_direct_recipe_slugs(ModelId::Refs);
-        assert!(
-            !refs_supported
-                .iter()
-                .any(|slug| { slug.starts_with("refs_sprd_") || slug.starts_with("refs_prob_") })
-        );
+        assert!(!refs_supported
+            .iter()
+            .any(|slug| { slug.starts_with("refs_sprd_") || slug.starts_with("refs_prob_") }));
 
         let planned =
             plan_direct_recipes(ModelId::Nbm, &["nbm_qmd_2m_temperature_p50".to_string()]).unwrap();
@@ -5399,5 +5474,21 @@ mod tests {
         assert!((render_field.values[1] - 19.438_445).abs() < 0.01);
         assert!((render_field.values[2] - 9.719_223).abs() < 0.01);
         assert!((render_field.values[3] - 9.719_223).abs() < 0.01);
+    }
+
+    #[test]
+    fn aifs_inference_direct_policy_uses_interpolated_raster_sampling() {
+        let field = sample_selected_field(
+            FieldSelector::height_agl(CanonicalField::Temperature, 2),
+            "K",
+            vec![290.0; 4],
+        )
+        .into_field2d();
+        let mut request = MapRenderRequest::contour_only(field.into());
+        assert_eq!(request.raster_sample_mode, RasterSampleMode::Linear);
+
+        apply_source_raster_policy(SourceId::AifsInference, &mut request);
+
+        assert_eq!(request.raster_sample_mode, RasterSampleMode::Linear);
     }
 }

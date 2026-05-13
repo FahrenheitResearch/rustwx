@@ -260,7 +260,7 @@ pub fn fetch_bytes_with_cache(
     use_cache: bool,
 ) -> Result<CachedFetchResult, IoError> {
     if earth2_archive::is_earth2_archive_fetch(fetch) {
-        let archive_path = earth2_archive::archive_path_for_request(&fetch.request)?;
+        let archive_path = earth2_archive::archive_path_for_fetch(fetch)?;
         let result = earth2_archive::fetch_archive_bytes(fetch)?;
         let (_, metadata_path) = fetch_cache_paths(cache_root, fetch);
         return Ok(CachedFetchResult {
@@ -1349,6 +1349,11 @@ fn default_product_template_match_score(
     if selector.field == CanonicalField::TotalPrecipitation {
         return match message.product.template {
             8 | 11 | 12 if message.product.derived_forecast_type.is_none() => Some(0),
+            8 | 11 | 12
+                if matches!(message.product.derived_forecast_type, Some(0) | Some(1)) =>
+            {
+                Some(20)
+            }
             0 | 1 => Some(10),
             _ => None,
         };
@@ -1360,7 +1365,7 @@ fn default_product_template_match_score(
         return None;
     }
     if message.product.derived_forecast_type.is_some() {
-        return (message.product.derived_forecast_type == Some(0)).then_some(20);
+        return matches!(message.product.derived_forecast_type, Some(0) | Some(1)).then_some(20);
     }
 
     if !selector_prefers_instantaneous_message(selector) {
@@ -3117,6 +3122,51 @@ mod tests {
 
         assert_eq!(field.selector.product, FieldProduct::Default);
         assert_eq!(field.values, vec![279.0]);
+    }
+
+    #[test]
+    fn default_selector_can_fallback_to_weighted_ensemble_mean_product() {
+        let mut mean = ieee_f32_message(PARAMETER_TMP[0], 103, 2.0, &[281.0], -99.0, -99.0);
+        mean.product.template = 2;
+        mean.product.derived_forecast_type = Some(1);
+        let grib = Grib2File {
+            messages: vec![mean],
+        };
+
+        let field = extract_field_from_grib2(
+            &grib,
+            FieldSelector::height_agl(CanonicalField::Temperature, 2),
+        )
+        .unwrap();
+
+        assert_eq!(field.selector.product, FieldProduct::Default);
+        assert_eq!(field.values, vec![281.0]);
+    }
+
+    #[test]
+    fn default_qpf_selector_can_fallback_to_ensemble_mean_accumulation() {
+        let mut qpf = ieee_f32_message(
+            PARAMETER_TOTAL_PRECIPITATION[0],
+            1,
+            0.0,
+            &[12.7],
+            -99.0,
+            -99.0,
+        );
+        qpf.product.template = 8;
+        qpf.product.derived_forecast_type = Some(1);
+        let grib = Grib2File {
+            messages: vec![qpf],
+        };
+
+        let field = extract_field_from_grib2(
+            &grib,
+            FieldSelector::surface(CanonicalField::TotalPrecipitation),
+        )
+        .unwrap();
+
+        assert_eq!(field.selector.product, FieldProduct::Default);
+        assert_eq!(field.values, vec![12.7]);
     }
 
     #[test]

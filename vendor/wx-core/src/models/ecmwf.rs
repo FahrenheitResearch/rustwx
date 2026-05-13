@@ -1,16 +1,17 @@
-/// Configuration and URL generation for ECMWF Open Data (IFS).
+/// Configuration and URL generation for ECMWF Open Data (IFS Cycle 50r1).
 ///
 /// ECMWF provides open data from its Integrated Forecasting System (IFS).
-/// HRES runs at 0.1° resolution, ENS at 0.2°. Open data is available at 0.25° globally.
-/// Initialization times: 00z and 12z, forecasts out to 240h (HRES) / 360h (ENS).
+/// Open data is available at 0.25 degrees globally for deterministic `oper`,
+/// ensemble `enfo`, and wave `wave` streams. Initialization times are
+/// 00/06/12/18 UTC; 00/12 runs extend to 360h and 06/18 runs extend to 144h.
 pub struct EcmwfConfig;
 
 impl EcmwfConfig {
     /// URL for ECMWF open data GRIB2 files.
     ///
     /// - `date`: format `"YYYYMMDD"` (e.g. `"20260310"`)
-    /// - `hour`: model initialization hour (0 or 12)
-    /// - `product`: `"oper"` (HRES) or `"enfo"` (ENS)
+    /// - `hour`: model initialization hour (0, 6, 12, or 18)
+    /// - `product`: `"oper"` (deterministic), `"enfo"` (ensemble), or `"wave"`
     /// - `fhour`: forecast hour
     pub fn open_data_url(date: &str, hour: u32, product: &str, fhour: u32) -> String {
         let stream = Self::product_stream(product);
@@ -27,7 +28,9 @@ impl EcmwfConfig {
 
     fn product_stream(product: &str) -> &str {
         match product {
+            "oper" | "hres" | "euro" | "ifs" => "oper",
             "ens" | "enfo" | "ensemble" => "enfo",
+            "wave" | "wam" => "wave",
             _ => "oper",
         }
     }
@@ -102,6 +105,13 @@ mod tests {
     fn test_open_data_url_ensemble() {
         let url = EcmwfConfig::open_data_url("20260310", 12, "ens", 48);
         assert!(url.contains("enfo"));
+    }
+
+    #[test]
+    fn test_open_data_url_wave() {
+        let url = EcmwfConfig::open_data_url("20260310", 12, "wave", 6);
+        assert!(url.contains("/wave/"));
+        assert!(url.ends_with("-wave-fc.grib2"));
     }
 
     #[test]

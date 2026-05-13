@@ -2,7 +2,7 @@ use crate::color::Rgba;
 use crate::colormap::LeveledColormap;
 use crate::overlay::MapExtent;
 use crate::projection::ProjectionProjector;
-use crate::request::GeographicClipBounds;
+use crate::request::{GeographicClipBounds, RasterSampleMode};
 use image::RgbaImage;
 
 /// Below this output-pixel count, the per-call CUDA upload + launch overhead
@@ -466,6 +466,7 @@ pub fn rasterize_grid(
     ny: usize,
     nx: usize,
     cmap: &LeveledColormap,
+    sample_mode: RasterSampleMode,
     img_w: u32,
     img_h: u32,
 ) -> RgbaImage {
@@ -473,7 +474,11 @@ pub fn rasterize_grid(
     {
         use std::sync::atomic::Ordering;
         let n_pix = (img_w as usize).saturating_mul(img_h as usize);
-        if ny != 0 && nx != 0 && data.len() == ny * nx {
+        if matches!(sample_mode, RasterSampleMode::Linear)
+            && ny != 0
+            && nx != 0
+            && data.len() == ny * nx
+        {
             if n_pix >= CUDA_MIN_PIXELS {
                 if let Some(gpu_img) = cuda_rasterize_grid(data, ny, nx, cmap, img_w, img_h) {
                     return gpu_img;
@@ -500,19 +505,28 @@ pub fn rasterize_grid(
             let gx = px as f64 / x_den * gx_den;
             let gy = (img_h.saturating_sub(1) - py) as f64 / y_den * gy_den;
 
-            let i0 = gx.floor() as usize;
-            let j0 = gy.floor() as usize;
-            let i1 = (i0 + 1).min(nx - 1);
-            let j1 = (j0 + 1).min(ny - 1);
-            let fx = gx - i0 as f64;
-            let fy = gy - j0 as f64;
+            let value = match sample_mode {
+                RasterSampleMode::Nearest => {
+                    let i = (gx.round() as usize).min(nx - 1);
+                    let j = (gy.round() as usize).min(ny - 1);
+                    data[j * nx + i]
+                }
+                RasterSampleMode::Linear => {
+                    let i0 = gx.floor() as usize;
+                    let j0 = gy.floor() as usize;
+                    let i1 = (i0 + 1).min(nx - 1);
+                    let j1 = (j0 + 1).min(ny - 1);
+                    let fx = gx - i0 as f64;
+                    let fy = gy - j0 as f64;
 
-            let v00 = data[j0 * nx + i0];
-            let v10 = data[j0 * nx + i1];
-            let v01 = data[j1 * nx + i0];
-            let v11 = data[j1 * nx + i1];
+                    let v00 = data[j0 * nx + i0];
+                    let v10 = data[j0 * nx + i1];
+                    let v01 = data[j1 * nx + i0];
+                    let v11 = data[j1 * nx + i1];
 
-            let value = bilinear(v00, v10, v01, v11, fx, fy);
+                    bilinear(v00, v10, v01, v11, fx, fy)
+                }
+            };
             let color = cmap.map(value);
             img.put_pixel(px, py, color.to_image_rgba());
         }
@@ -595,6 +609,7 @@ pub(crate) fn rasterize_inverse_projected_grid(
     clip_bounds: Option<GeographicClipBounds>,
     extent: &MapExtent,
     cmap: &LeveledColormap,
+    sample_mode: RasterSampleMode,
     img_w: u32,
     img_h: u32,
 ) -> RgbaImage {
@@ -616,7 +631,7 @@ pub(crate) fn rasterize_inverse_projected_grid(
     {
         use std::sync::atomic::Ordering;
         let n_pix = (img_w as usize).saturating_mul(img_h as usize);
-        if n_pix >= CUDA_MIN_PIXELS {
+        if matches!(sample_mode, RasterSampleMode::Linear) && n_pix >= CUDA_MIN_PIXELS {
             if let Some(gpu_img) = cuda_rasterize_inverse_projected_grid(
                 data,
                 ny,
@@ -648,7 +663,9 @@ pub(crate) fn rasterize_inverse_projected_grid(
             if clip_bounds.is_some_and(|bounds| !bounds.contains(lat, lon)) {
                 continue;
             }
-            let Some(value) = sample_regular_latlon_grid(data, &axes, lat, lon) else {
+            let Some(value) =
+                sample_regular_latlon_grid_with_mode(data, &axes, lat, lon, sample_mode)
+            else {
                 continue;
             };
             let color = cmap.map(value);
@@ -756,11 +773,22 @@ impl RegularLatLonAxes {
     }
 }
 
+#[cfg(test)]
 fn sample_regular_latlon_grid(
     data: &[f64],
     axes: &RegularLatLonAxes,
     lat: f64,
     lon: f64,
+) -> Option<f64> {
+    sample_regular_latlon_grid_with_mode(data, axes, lat, lon, RasterSampleMode::Linear)
+}
+
+fn sample_regular_latlon_grid_with_mode(
+    data: &[f64],
+    axes: &RegularLatLonAxes,
+    lat: f64,
+    lon: f64,
+    sample_mode: RasterSampleMode,
 ) -> Option<f64> {
     if !lat.is_finite() || !lon.is_finite() {
         return None;
@@ -770,6 +798,16 @@ fn sample_regular_latlon_grid(
         return None;
     }
     let gx = grid_x_for_axis_lon(lon, *axes)?;
+
+    if matches!(sample_mode, RasterSampleMode::Nearest) {
+        let i = if axes.periodic_lon {
+            (gx.round()).rem_euclid(axes.period_points) as usize
+        } else {
+            (gx.round() as usize).min(axes.nx - 1)
+        };
+        let j = (gy.round() as usize).min(axes.ny - 1);
+        return Some(data[j * axes.nx + i]);
+    }
 
     let i0 = (gx.floor() as usize).min(axes.nx - 1);
     let j0 = gy.floor() as usize;
@@ -1168,9 +1206,13 @@ fn feather_projected_raster_edges(img: &mut RgbaImage) {
 
 #[cfg(test)]
 mod tests {
-    use super::{RegularLatLonAxes, rasterize_projected_grid, sample_regular_latlon_grid};
+    use super::{
+        RegularLatLonAxes, rasterize_grid, rasterize_projected_grid, sample_regular_latlon_grid,
+        sample_regular_latlon_grid_with_mode,
+    };
     use crate::color::Rgba;
     use crate::colormap::{Extend, LeveledColormap};
+    use crate::request::RasterSampleMode;
 
     #[test]
     fn projected_raster_keeps_nan_mask_holes_transparent() {
@@ -1194,6 +1236,59 @@ mod tests {
             image.pixels().all(|px| px.0[3] == 0),
             "mixed-validity projected cells should remain masked instead of bleeding a nearby finite value",
         );
+    }
+
+    #[test]
+    fn nearest_raster_sampling_preserves_source_bins() {
+        let data = [0.0, 100.0];
+        let cmap = LeveledColormap::from_palette(
+            &[
+                Rgba::new(0, 0, 255),
+                Rgba::new(0, 255, 0),
+                Rgba::new(255, 0, 0),
+            ],
+            &[0.0, 25.0, 75.0, 100.0],
+            Extend::Neither,
+            None,
+        );
+
+        let linear = rasterize_grid(&data, 1, 2, &cmap, RasterSampleMode::Linear, 9, 1);
+        let nearest = rasterize_grid(&data, 1, 2, &cmap, RasterSampleMode::Nearest, 9, 1);
+
+        let linear_px = linear.get_pixel(3, 0).0;
+        let nearest_px = nearest.get_pixel(3, 0).0;
+        assert_ne!(linear_px, nearest_px);
+        assert_eq!(nearest_px[3], 255);
+    }
+
+    #[test]
+    fn nearest_regular_latlon_sampling_keeps_gridpoint_value() {
+        let nx = 2;
+        let ny = 2;
+        let lat = vec![0.0, 0.0, 1.0, 1.0];
+        let lon = vec![0.0, 1.0, 0.0, 1.0];
+        let data = vec![0.0, 100.0, 200.0, 300.0];
+        let axes = RegularLatLonAxes::from_grid(&lat, &lon, ny, nx).unwrap();
+
+        let linear = sample_regular_latlon_grid_with_mode(
+            &data,
+            &axes,
+            0.49,
+            0.49,
+            RasterSampleMode::Linear,
+        )
+        .unwrap();
+        let nearest = sample_regular_latlon_grid_with_mode(
+            &data,
+            &axes,
+            0.49,
+            0.49,
+            RasterSampleMode::Nearest,
+        )
+        .unwrap();
+
+        assert!(linear > 100.0);
+        assert_eq!(nearest, 0.0);
     }
 
     #[test]

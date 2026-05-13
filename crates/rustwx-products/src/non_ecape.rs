@@ -57,6 +57,14 @@ fn default_png_compression() -> PngCompressionMode {
     PngCompressionMode::Default
 }
 
+fn non_ecape_derived_contour_mode() -> crate::derived::NativeContourRenderMode {
+    crate::derived::NativeContourRenderMode::Automatic
+}
+
+fn non_ecape_native_fill_level_multiplier() -> usize {
+    1
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HrrrNonEcapeHourRequest {
     pub date_yyyymmdd: String,
@@ -966,8 +974,8 @@ fn prepare_non_ecape_hour(
         pressure_product_override: request.pressure_product_override.clone(),
         source_mode: request.source_mode,
         allow_large_heavy_domain: request.allow_large_heavy_domain,
-        contour_mode: crate::derived::NativeContourRenderMode::Automatic,
-        native_fill_level_multiplier: 1,
+        contour_mode: non_ecape_derived_contour_mode(),
+        native_fill_level_multiplier: non_ecape_native_fill_level_multiplier(),
         output_width: request.output_width,
         output_height: request.output_height,
         png_compression: request.png_compression,
@@ -1132,8 +1140,8 @@ fn prepare_non_ecape_hour(
                 use_cache: request.use_cache,
                 recipe_slugs: normalized.direct_recipe_slugs.clone(),
                 product_overrides: request.direct_product_overrides.clone(),
-                contour_mode: crate::derived::NativeContourRenderMode::Automatic,
-                native_fill_level_multiplier: 1,
+                contour_mode: non_ecape_derived_contour_mode(),
+                native_fill_level_multiplier: non_ecape_native_fill_level_multiplier(),
                 output_width: request.output_width,
                 output_height: request.output_height,
                 png_compression: request.png_compression,
@@ -1435,8 +1443,8 @@ fn run_prepared_non_ecape_domain(
                 pressure_product_override: request.pressure_product_override.clone(),
                 source_mode: request.source_mode,
                 allow_large_heavy_domain: request.allow_large_heavy_domain,
-                contour_mode: crate::derived::NativeContourRenderMode::Automatic,
-                native_fill_level_multiplier: 1,
+                contour_mode: non_ecape_derived_contour_mode(),
+                native_fill_level_multiplier: non_ecape_native_fill_level_multiplier(),
                 output_width: request.output_width,
                 output_height: request.output_height,
                 png_compression: request.png_compression,

@@ -302,16 +302,16 @@ impl RenderPresentation {
             },
             ProductVisualMode::SevereDiagnostic => match role {
                 PolygonRole::Ocean => PolygonStyle {
-                    visible: false,
-                    color: Rgba::TRANSPARENT,
+                    visible: true,
+                    color: Rgba::new(246, 250, 253),
                 },
                 PolygonRole::Land => PolygonStyle {
-                    visible: false,
-                    color: Rgba::TRANSPARENT,
+                    visible: true,
+                    color: Rgba::new(252, 252, 249),
                 },
                 PolygonRole::Lake => PolygonStyle {
                     visible: true,
-                    color: Rgba::new(241, 246, 250),
+                    color: Rgba::new(239, 246, 251),
                 },
                 PolygonRole::Generic => PolygonStyle {
                     visible: true,
@@ -385,11 +385,11 @@ impl RenderPresentation {
                 LineworkRole::Generic => (fallback, fallback_width.max(1), true),
             },
             ProductVisualMode::SevereDiagnostic => match role {
-                LineworkRole::Coast => (Rgba::with_alpha(22, 26, 31, 225), 2, true),
-                LineworkRole::Lake => (Rgba::with_alpha(50, 56, 64, 175), 2, true),
-                LineworkRole::International => (Rgba::new(72, 80, 88), 1, true),
-                LineworkRole::State => (Rgba::with_alpha(22, 26, 31, 225), 2, true),
-                LineworkRole::County => (Rgba::with_alpha(126, 134, 143, 175), 1, true),
+                LineworkRole::Coast => (Rgba::with_alpha(38, 46, 56, 185), 1, true),
+                LineworkRole::Lake => (Rgba::with_alpha(82, 96, 110, 125), 1, true),
+                LineworkRole::International => (Rgba::with_alpha(72, 82, 94, 170), 1, true),
+                LineworkRole::State => (Rgba::with_alpha(46, 54, 64, 170), 1, true),
+                LineworkRole::County => (Rgba::with_alpha(126, 134, 143, 90), 1, false),
                 LineworkRole::Generic => (fallback, fallback_width.max(1), true),
             },
             ProductVisualMode::PanelMember | ProductVisualMode::ComparisonPanel => match role {

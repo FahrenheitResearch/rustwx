@@ -25,6 +25,24 @@ use rustwx_products::publication::{
 };
 use rustwx_products::source::ProductSourceMode;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+enum PngCompressionArg {
+    Default,
+    Fast,
+    Fastest,
+}
+
+impl From<PngCompressionArg> for rustwx_render::PngCompressionMode {
+    fn from(value: PngCompressionArg) -> Self {
+        match value {
+            PngCompressionArg::Default => Self::Default,
+            PngCompressionArg::Fast => Self::Fast,
+            PngCompressionArg::Fastest => Self::Fastest,
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "derived-batch",
@@ -74,6 +92,8 @@ struct Args {
     contour_mode: ContourModeArg,
     #[arg(long, default_value_t = 1)]
     native_fill_level_multiplier: usize,
+    #[arg(long = "png-compression", value_enum, default_value_t = PngCompressionArg::Fast)]
+    png_compression: PngCompressionArg,
     #[arg(long = "place-label-density", default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=3))]
     place_label_density: u8,
 }
@@ -164,9 +184,9 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         allow_large_heavy_domain: args.allow_large_heavy_domain,
         contour_mode: args.contour_mode.into(),
         native_fill_level_multiplier: args.native_fill_level_multiplier.max(1),
-        output_width: 1200,
-        output_height: 900,
-        png_compression: rustwx_render::PngCompressionMode::Default,
+        output_width: static_output_dimension("RUSTWX_STATIC_OUTPUT_WIDTH", 1600),
+        output_height: static_output_dimension("RUSTWX_STATIC_OUTPUT_HEIGHT", 900),
+        png_compression: args.png_compression.into(),
         custom_poi_overlay: None,
         place_label_overlay: default_place_label_overlay_for_domain(
             &domain,
@@ -266,6 +286,14 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", canonical_manifest.display());
     println!("{}", attempt_manifest.display());
     Ok(())
+}
+
+fn static_output_dimension(name: &str, fallback: u32) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| *value >= 320)
+        .unwrap_or(fallback)
 }
 
 fn expected_output_relative_path(

@@ -550,18 +550,25 @@ const ECMWF_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
 
 const AIFS_SOURCES: &[SourceDescriptor] = &[
     SourceDescriptor {
-        id: SourceId::Earth2Archive,
+        id: SourceId::Ecmwf,
         idx_available: false,
         priority: 1,
         max_age_hours: None,
-        notes: "Local NetCDF archive populated by Earth2Studio or another inference harness",
+        notes: "ECMWF AIFS Single v2 open-data GRIB2 feed",
     },
     SourceDescriptor {
-        id: SourceId::Ecmwf,
+        id: SourceId::AifsInference,
         idx_available: false,
         priority: 2,
         max_age_hours: None,
-        notes: "ECMWF open data AIFS-Single GRIB2 feed",
+        notes: "Local NetCDF archive disseminated by an active AIFS-v2 inference harness",
+    },
+    SourceDescriptor {
+        id: SourceId::Earth2Archive,
+        idx_available: false,
+        priority: 3,
+        max_age_hours: None,
+        notes: "Legacy local NetCDF archive name for Earth2Studio or older inference harnesses",
     },
 ];
 
@@ -688,7 +695,7 @@ const MODELS: &[ModelSummary] = &[
     },
     ModelSummary {
         id: ModelId::EcmwfOpenData,
-        description: "ECMWF open data IFS 0.25 degree feed",
+        description: "ECMWF IFS Cycle 50r1 open-data 0.25 degree feed",
         default_product: "oper",
         cycle_hours_utc: ECMWF_CYCLE_HOURS,
         max_forecast_hour: 360,
@@ -698,13 +705,13 @@ const MODELS: &[ModelSummary] = &[
     },
     ModelSummary {
         id: ModelId::Aifs,
-        description: "AIFS-Single / AIFSENS data-driven global forecast",
+        description: "ECMWF AIFS Single v2 open-data and Earth2Archive forecast",
         default_product: "oper",
         cycle_hours_utc: AIFS_CYCLE_HOURS,
         max_forecast_hour: AIFS_LOCAL_MAX_FORECAST_HOUR,
         sources: AIFS_SOURCES,
-        runtime_family: ModelRuntimeFamily::LocalNetcdfForecast,
-        ensemble_mode: EnsembleMode::MemberDimensionNetcdf,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::Deterministic,
     },
     ModelSummary {
         id: ModelId::Rap,
@@ -808,8 +815,8 @@ const MODELS: &[ModelSummary] = &[
     },
     ModelSummary {
         id: ModelId::Refs,
-        description: "REFS RRFS ensemble post-processed spread/probability products",
-        default_product: "sprd-conus",
+        description: "REFS RRFS ensemble post-processed mean/spread/probability products",
+        default_product: "mean-conus",
         cycle_hours_utc: REFS_CYCLE_HOURS,
         max_forecast_hour: 60,
         sources: REFS_SOURCES,
@@ -2659,6 +2666,162 @@ const FIELD_REFS_PROB_PWAT_ABOVE_50MM: GribFieldSpec = field_spec(
             .with_probability(ProbabilitySelection::above_milli(50_000)),
     ),
     &["PWAT:entire atmosphere", "PWAT:"],
+);
+
+const FIELD_REFS_PROB_QPF_ABOVE_1MM: GribFieldSpec = field_spec(
+    "refs_probability_total_qpf_gt_1mm",
+    "REFS Probability Total QPF > 1 mm",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::TotalPrecipitation)
+            .with_probability(ProbabilitySelection::above_milli(1_000)),
+    ),
+    &["APCP:surface"],
+);
+
+const FIELD_REFS_PROB_QPF_ABOVE_2MM: GribFieldSpec = field_spec(
+    "refs_probability_total_qpf_gt_2mm",
+    "REFS Probability Total QPF > 2 mm",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::TotalPrecipitation)
+            .with_probability(ProbabilitySelection::above_milli(2_000)),
+    ),
+    &["APCP:surface"],
+);
+
+const FIELD_REFS_PROB_QPF_ABOVE_5MM: GribFieldSpec = field_spec(
+    "refs_probability_total_qpf_gt_5mm",
+    "REFS Probability Total QPF > 5 mm",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::TotalPrecipitation)
+            .with_probability(ProbabilitySelection::above_milli(5_000)),
+    ),
+    &["APCP:surface"],
+);
+
+const FIELD_REFS_PROB_QPF_ABOVE_10MM: GribFieldSpec = field_spec(
+    "refs_probability_total_qpf_gt_10mm",
+    "REFS Probability Total QPF > 10 mm",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::TotalPrecipitation)
+            .with_probability(ProbabilitySelection::above_milli(10_000)),
+    ),
+    &["APCP:surface"],
+);
+
+const FIELD_REFS_PROB_QPF_ABOVE_12P7MM: GribFieldSpec = field_spec(
+    "refs_probability_total_qpf_gt_12p7mm",
+    "REFS Probability Total QPF > 12.7 mm",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::TotalPrecipitation)
+            .with_probability(ProbabilitySelection::above_milli(12_700)),
+    ),
+    &["APCP:surface"],
+);
+
+const FIELD_REFS_PROB_QPF_ABOVE_25MM: GribFieldSpec = field_spec(
+    "refs_probability_total_qpf_gt_25mm",
+    "REFS Probability Total QPF > 25 mm",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::TotalPrecipitation)
+            .with_probability(ProbabilitySelection::above_milli(25_000)),
+    ),
+    &["APCP:surface"],
+);
+
+const FIELD_REFS_PROB_QPF_ABOVE_25P4MM: GribFieldSpec = field_spec(
+    "refs_probability_total_qpf_gt_25p4mm",
+    "REFS Probability Total QPF > 25.4 mm",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::TotalPrecipitation)
+            .with_probability(ProbabilitySelection::above_milli(25_400)),
+    ),
+    &["APCP:surface"],
+);
+
+const FIELD_REFS_PROB_QPF_ABOVE_50MM: GribFieldSpec = field_spec(
+    "refs_probability_total_qpf_gt_50mm",
+    "REFS Probability Total QPF > 50 mm",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::TotalPrecipitation)
+            .with_probability(ProbabilitySelection::above_milli(50_000)),
+    ),
+    &["APCP:surface"],
+);
+
+const FIELD_REFS_PROB_QPF_ABOVE_50P8MM: GribFieldSpec = field_spec(
+    "refs_probability_total_qpf_gt_50p8mm",
+    "REFS Probability Total QPF > 50.8 mm",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::TotalPrecipitation)
+            .with_probability(ProbabilitySelection::above_milli(50_800)),
+    ),
+    &["APCP:surface"],
+);
+
+const FIELD_REFS_PROB_QPF_ABOVE_76P2MM: GribFieldSpec = field_spec(
+    "refs_probability_total_qpf_gt_76p2mm",
+    "REFS Probability Total QPF > 76.2 mm",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::TotalPrecipitation)
+            .with_probability(ProbabilitySelection::above_milli(76_200)),
+    ),
+    &["APCP:surface"],
+);
+
+const FIELD_REFS_PROB_QPF_ABOVE_100MM: GribFieldSpec = field_spec(
+    "refs_probability_total_qpf_gt_100mm",
+    "REFS Probability Total QPF > 100 mm",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::TotalPrecipitation)
+            .with_probability(ProbabilitySelection::above_milli(100_000)),
+    ),
+    &["APCP:surface"],
+);
+
+const FIELD_REFS_PROB_QPF_ABOVE_127MM: GribFieldSpec = field_spec(
+    "refs_probability_total_qpf_gt_127mm",
+    "REFS Probability Total QPF > 127 mm",
+    ProductFamily::Surface,
+    GribLevelKind::Surface,
+    None,
+    Some(
+        FieldSelector::surface(CanonicalField::TotalPrecipitation)
+            .with_probability(ProbabilitySelection::above_milli(127_000)),
+    ),
+    &["APCP:surface"],
 );
 
 const FIELD_HREF_PROB_PWAT_ABOVE_50MM: GribFieldSpec = field_spec(
@@ -4631,6 +4794,114 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherProbability,
     },
     PlotRecipe {
+        slug: "refs_prob_qpf_above_1mm",
+        title: "REFS Probability Total QPF > 1 mm",
+        filled: FIELD_REFS_PROB_QPF_ABOVE_1MM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_qpf_above_2mm",
+        title: "REFS Probability Total QPF > 2 mm",
+        filled: FIELD_REFS_PROB_QPF_ABOVE_2MM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_qpf_above_5mm",
+        title: "REFS Probability Total QPF > 5 mm",
+        filled: FIELD_REFS_PROB_QPF_ABOVE_5MM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_qpf_above_10mm",
+        title: "REFS Probability Total QPF > 10 mm",
+        filled: FIELD_REFS_PROB_QPF_ABOVE_10MM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_qpf_above_12p7mm",
+        title: "REFS Probability Total QPF > 12.7 mm",
+        filled: FIELD_REFS_PROB_QPF_ABOVE_12P7MM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_qpf_above_25mm",
+        title: "REFS Probability Total QPF > 25 mm",
+        filled: FIELD_REFS_PROB_QPF_ABOVE_25MM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_qpf_above_25p4mm",
+        title: "REFS Probability Total QPF > 25.4 mm",
+        filled: FIELD_REFS_PROB_QPF_ABOVE_25P4MM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_qpf_above_50mm",
+        title: "REFS Probability Total QPF > 50 mm",
+        filled: FIELD_REFS_PROB_QPF_ABOVE_50MM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_qpf_above_50p8mm",
+        title: "REFS Probability Total QPF > 50.8 mm",
+        filled: FIELD_REFS_PROB_QPF_ABOVE_50P8MM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_qpf_above_76p2mm",
+        title: "REFS Probability Total QPF > 76.2 mm",
+        filled: FIELD_REFS_PROB_QPF_ABOVE_76P2MM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_qpf_above_100mm",
+        title: "REFS Probability Total QPF > 100 mm",
+        filled: FIELD_REFS_PROB_QPF_ABOVE_100MM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
+        slug: "refs_prob_qpf_above_127mm",
+        title: "REFS Probability Total QPF > 127 mm",
+        filled: FIELD_REFS_PROB_QPF_ABOVE_127MM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherProbability,
+    },
+    PlotRecipe {
         slug: "refs_prob_visibility_below_1600m",
         title: "REFS Probability Visibility < 1600 m",
         filled: FIELD_REFS_PROB_VISIBILITY_BELOW_1600M,
@@ -5507,11 +5778,16 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
                 | FieldProduct::EnsembleSpread
                 | FieldProduct::Probability(_),
             ) => {}
-            (ModelId::Refs, FieldProduct::EnsembleSpread | FieldProduct::Probability(_)) => {}
+            (
+                ModelId::Refs,
+                FieldProduct::EnsembleMean
+                | FieldProduct::EnsembleSpread
+                | FieldProduct::Probability(_),
+            ) => {}
             _ => return false,
         }
     }
-    if matches!(model, ModelId::Href | ModelId::Refs) && selector.product.is_default() {
+    if matches!(model, ModelId::Href) && selector.product.is_default() {
         return false;
     }
     if matches!(
@@ -5605,6 +5881,7 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
                     | ModelId::HrrrAk
                     | ModelId::RrfsA
                     | ModelId::RrfsPublic
+                    | ModelId::Refs
                     | ModelId::RrfsFireWx
                     | ModelId::WrfGdex
             )
@@ -5616,6 +5893,7 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
                     | ModelId::HrrrAk
                     | ModelId::RrfsA
                     | ModelId::RrfsPublic
+                    | ModelId::Refs
                     | ModelId::RrfsFireWx
                     | ModelId::WrfGdex
             )
@@ -5786,7 +6064,7 @@ fn default_canonical_bundle_product(
         (ModelId::RrfsPublic, CanonicalBundleDescriptor::SurfaceAnalysis) => "2dfld-conus",
         (ModelId::RrfsPublic, CanonicalBundleDescriptor::PressureAnalysis) => "prs-conus",
         (ModelId::RrfsPublic, CanonicalBundleDescriptor::NativeAnalysis) => "prs-conus",
-        (ModelId::Refs, _) => "sprd-conus",
+        (ModelId::Refs, _) => "mean-conus",
         (ModelId::RrfsFireWx, CanonicalBundleDescriptor::SurfaceAnalysis) => "2dfld-firewx",
         (ModelId::RrfsFireWx, CanonicalBundleDescriptor::PressureAnalysis) => "prs-firewx",
         (ModelId::RrfsFireWx, CanonicalBundleDescriptor::NativeAnalysis) => "2dfld-firewx",
@@ -6616,8 +6894,9 @@ fn build_ecmwf_url(source: SourceId, request: &ModelRunRequest) -> Result<String
         });
     }
     let stream = match normalize_token(&request.product).as_str() {
-        "oper" | "hres" => "oper",
+        "oper" | "hres" | "euro" | "ifs" | "ecmwf" => "oper",
         "ens" | "enfo" | "ensemble" => "enfo",
+        "wave" | "wam" => "wave",
         other => {
             return Err(ModelError::UnsupportedProduct {
                 model: request.model,
@@ -6650,6 +6929,10 @@ fn ecmwf_open_data_forecast_hour_supported(cycle_hour_utc: u8, forecast_hour: u1
 
 fn build_aifs_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
     match source {
+        SourceId::AifsInference => Ok(format!(
+            "aifs-inference://aifs/{}T{:02}Z/lead{:03}.nc",
+            request.cycle.date_yyyymmdd, request.cycle.hour_utc, request.forecast_hour
+        )),
         SourceId::Earth2Archive => Ok(format!(
             "earth2-archive://aifs/{}T{:02}Z/lead{:03}.nc",
             request.cycle.date_yyyymmdd, request.cycle.hour_utc, request.forecast_hour
@@ -6663,11 +6946,13 @@ fn build_aifs_url(source: SourceId, request: &ModelRunRequest) -> Result<String,
                     model: request.model,
                     cycle_hour: request.cycle.hour_utc,
                     forecast_hour: request.forecast_hour,
-                    reason: "AIFS-Single open data follows the ECMWF open-data step cadence; use Earth2Archive for experimental multi-year AIFS runs".to_string(),
+                    reason: "AIFS-Single open data follows the ECMWF open-data step cadence; use aifs-inference for experimental multi-year AIFS NetCDF runs".to_string(),
                 });
             }
             let stream = match normalize_token(&request.product).as_str() {
-                "oper" | "hres" | "aifs" | "aifs_single" => "oper",
+                "oper" | "hres" | "aifs" | "aifs_v2" | "aifsv2" | "aifs_single"
+                | "aifs_single_v2" => "oper",
+                "wave" | "wam" => "wave",
                 other => {
                     return Err(ModelError::UnsupportedProduct {
                         model: request.model,
@@ -7158,32 +7443,43 @@ fn build_refs_url(source: SourceId, request: &ModelRunRequest) -> Result<String,
     }
 
     let token = normalize_token(&request.product);
-    let (product_kind, domain) = match token.as_str() {
-        "sprd" | "sprd_conus" | "spread_conus" | "enspost/sprd" | "enspost/sprd_conus" => {
-            ("sprd", "conus")
-        }
-        "prob" | "prob_conus" | "probability_conus" | "enspost/prob" | "enspost/prob_conus" => {
-            ("prob", "conus")
-        }
-        "avrg" | "avg_conus" | "mean_conus" | "enspost/avrg" | "enspost/avrg_conus" => {
-            ("avrg", "conus")
-        }
-        "eas" | "eas_conus" | "enspost/eas" | "enspost/eas_conus" => ("eas", "conus"),
-        "lpmm" | "lpmm_conus" | "enspost/lpmm" | "enspost/lpmm_conus" => ("lpmm", "conus"),
-        "ffri" | "ffri_conus" | "enspost/ffri" | "enspost/ffri_conus" => ("ffri", "conus"),
-        "sprd_ak" | "spread_ak" => ("sprd", "ak"),
-        "prob_ak" | "probability_ak" => ("prob", "ak"),
-        "sprd_hi" | "spread_hi" => ("sprd", "hi"),
-        "prob_hi" | "probability_hi" => ("prob", "hi"),
-        "sprd_pr" | "spread_pr" => ("sprd", "pr"),
-        "prob_pr" | "probability_pr" => ("prob", "pr"),
-        other => {
-            return Err(ModelError::UnsupportedProduct {
-                model: request.model,
-                product: other.to_string(),
-            });
-        }
+    let mut product_kind = None;
+    let mut domain = if token.contains("puerto_rico") {
+        Some("pr")
+    } else {
+        None
     };
+
+    for part in token.split(['/', '_']) {
+        match part {
+            "sprd" | "spread" => product_kind = Some("sprd"),
+            "prob" | "probability" => product_kind = Some("prob"),
+            "mean" => product_kind = Some("mean"),
+            "avrg" | "avg" | "average" => product_kind = Some("avrg"),
+            "eas" => product_kind = Some("eas"),
+            "lpmm" => product_kind = Some("lpmm"),
+            "pmmn" | "pmm" | "probabilitymatchedmean" => product_kind = Some("pmmn"),
+            "ffri" => product_kind = Some("ffri"),
+            "conus" => domain = Some("conus"),
+            "ak" | "alaska" => domain = Some("ak"),
+            "hi" | "hawaii" => domain = Some("hi"),
+            "pr" => domain = Some("pr"),
+            _ => {}
+        }
+    }
+
+    let product_kind = product_kind.ok_or_else(|| ModelError::UnsupportedProduct {
+        model: request.model,
+        product: token.clone(),
+    })?;
+    let domain = domain.unwrap_or("conus");
+
+    if product_kind == "ffri" && domain != "conus" {
+        return Err(ModelError::UnsupportedProduct {
+            model: request.model,
+            product: token,
+        });
+    }
 
     Ok(format!(
         "https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_public/refs.{}/{:02}/enspost/refs.t{:02}z.{}.f{:02}.{}.grib2",
@@ -7455,7 +7751,8 @@ fn plot_recipe_fetch_defaults(
         (ModelId::Refs, _, _) if has_ensemble_spread_selector => {
             ("sprd-conus", PlotRecipeFetchPolicy::PreferIndexedSubset)
         }
-        (ModelId::Refs, _, _) => ("sprd-conus", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Refs, true, _) => ("pmmn-conus", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Refs, _, _) => ("mean-conus", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Rtma, _, _) => ("2dvaranl_ndfd", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Urma, _, _) => ("2dvaranl_ndfd", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Nbm, _, _) if has_product_selector => {
@@ -7550,14 +7847,6 @@ fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<Stri
                 field.label
             ))
         }
-        (key, ModelId::Refs)
-            if !key.starts_with("refs_spread_") && !key.starts_with("refs_probability_") =>
-        {
-            Some(format!(
-                "{} is not yet wired for REFS; REFS support is currently limited to explicit `refs_sprd_*` and `refs_prob_*` enspost recipes",
-                field.label
-            ))
-        }
         (key, model)
             if (key.starts_with("refs_spread_") || key.starts_with("refs_probability_"))
                 && model != ModelId::Refs =>
@@ -7646,14 +7935,6 @@ fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<Stri
 
 fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> Option<String> {
     match (model, field.key) {
-        (ModelId::Refs, key)
-            if !key.starts_with("refs_spread_") && !key.starts_with("refs_probability_") =>
-        {
-            Some(format!(
-                "{} is not yet wired for REFS; REFS support is currently limited to explicit `refs_sprd_*` and `refs_prob_*` enspost recipes",
-                field.label
-            ))
-        }
         (model, key)
             if (key.starts_with("refs_spread_") || key.starts_with("refs_probability_"))
                 && model != ModelId::Refs =>
@@ -7787,14 +8068,6 @@ fn model_specific_pressure_field_gap(field: &GribFieldSpec, model: ModelId) -> O
 
 fn model_specific_surface_field_gap(field: &GribFieldSpec, model: ModelId) -> Option<String> {
     match (model, field.key) {
-        (ModelId::Refs, key)
-            if !key.starts_with("refs_spread_") && !key.starts_with("refs_probability_") =>
-        {
-            Some(format!(
-                "{} is not yet wired for REFS; REFS support is currently limited to explicit `refs_sprd_*` and `refs_prob_*` enspost recipes",
-                field.label
-            ))
-        }
         (model, key)
             if (key.starts_with("refs_spread_") || key.starts_with("refs_probability_"))
                 && model != ModelId::Refs =>
@@ -8048,7 +8321,7 @@ mod tests {
             model_summary(ModelId::RrfsPublic).cycle_hours_utc,
             RRFS_PUBLIC_CYCLE_HOURS
         );
-        assert_eq!(model_summary(ModelId::Refs).default_product, "sprd-conus");
+        assert_eq!(model_summary(ModelId::Refs).default_product, "mean-conus");
         assert_eq!(
             model_summary(ModelId::Refs).cycle_hours_utc,
             REFS_CYCLE_HOURS
@@ -8700,8 +8973,20 @@ mod tests {
     #[test]
     fn ecmwf_summary_matches_current_open_data_cycles_and_horizon() {
         let summary = model_summary(ModelId::EcmwfOpenData);
+        assert!(summary.description.contains("50r1"));
         assert_eq!(summary.cycle_hours_utc, &[0, 6, 12, 18]);
         assert_eq!(summary.max_forecast_hour, 360);
+    }
+
+    #[test]
+    fn aifs_summary_defaults_to_operational_v2_open_data() {
+        let summary = model_summary(ModelId::Aifs);
+        assert!(summary.description.contains("v2"));
+        assert_eq!(summary.sources[0].id, SourceId::Ecmwf);
+        assert_eq!(summary.sources[1].id, SourceId::AifsInference);
+        assert_eq!(summary.sources[2].id, SourceId::Earth2Archive);
+        assert_eq!(summary.runtime_family, ModelRuntimeFamily::Grib2Forecast);
+        assert_eq!(summary.ensemble_mode, EnsembleMode::Deterministic);
     }
 
     #[test]
@@ -8882,6 +9167,26 @@ mod tests {
             "https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_public/refs.20260502/00/enspost/refs.t00z.prob.f24.conus.grib2"
         );
 
+        let refs_hi = ModelRunRequest::new(ModelId::Refs, cycle.clone(), 24, "mean-hi").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Aws, &refs_hi).unwrap(),
+            "https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_public/refs.20260502/00/enspost/refs.t00z.mean.f24.hi.grib2"
+        );
+
+        let refs_pr =
+            ModelRunRequest::new(ModelId::Refs, cycle.clone(), 24, "pmmn-puerto-rico").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Aws, &refs_pr).unwrap(),
+            "https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_public/refs.20260502/00/enspost/refs.t00z.pmmn.f24.pr.grib2"
+        );
+
+        let refs_ffri_ak =
+            ModelRunRequest::new(ModelId::Refs, cycle.clone(), 24, "ffri-ak").unwrap();
+        assert!(matches!(
+            build_grib_url(SourceId::Aws, &refs_ffri_ak),
+            Err(ModelError::UnsupportedProduct { .. })
+        ));
+
         let nbm = ModelRunRequest::new(ModelId::Nbm, cycle.clone(), 24, "core/co").unwrap();
         assert_eq!(
             build_grib_url(SourceId::Aws, &nbm).unwrap(),
@@ -8915,6 +9220,10 @@ mod tests {
             build_grib_url(SourceId::Earth2Archive, &local).unwrap(),
             "earth2-archive://aifs/20260502T00Z/lead43848.nc"
         );
+        assert_eq!(
+            build_grib_url(SourceId::AifsInference, &local).unwrap(),
+            "aifs-inference://aifs/20260502T00Z/lead43848.nc"
+        );
 
         let open_data = ModelRunRequest::new(
             ModelId::Aifs,
@@ -8926,6 +9235,18 @@ mod tests {
         assert_eq!(
             build_grib_url(SourceId::Ecmwf, &open_data).unwrap(),
             "https://data.ecmwf.int/forecasts/20260502/00z/aifs-single/0p25/oper/20260502000000-24h-oper-fc.grib2"
+        );
+
+        let wave = ModelRunRequest::new(
+            ModelId::Aifs,
+            rustwx_core::CycleSpec::new("20260502", 0).unwrap(),
+            24,
+            "wave",
+        )
+        .unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Ecmwf, &wave).unwrap(),
+            "https://data.ecmwf.int/forecasts/20260502/00z/aifs-single/0p25/wave/20260502000000-24h-wave-fc.grib2"
         );
 
         assert!(matches!(
@@ -10483,12 +10804,15 @@ mod tests {
             );
         }
 
-        let generic = plot_recipe_fetch_blockers("2m_temperature", ModelId::Refs).unwrap();
-        assert!(
-            generic
-                .iter()
-                .any(|blocker| { blocker.reason.contains("limited to explicit `refs_sprd_*`") })
-        );
+        let generic = plot_recipe_fetch_plan("2m_temperature_10m_winds", ModelId::Refs).unwrap();
+        assert_eq!(generic.product, "mean-conus");
+
+        let pressure = plot_recipe_fetch_plan("700mb_temperature_height_winds", ModelId::Refs)
+            .unwrap();
+        assert_eq!(pressure.product, "mean-conus");
+
+        let radar = plot_recipe_fetch_plan("composite_reflectivity", ModelId::Refs).unwrap();
+        assert_eq!(radar.product, "pmmn-conus");
     }
 
     #[test]
@@ -10538,6 +10862,66 @@ mod tests {
                 "refs_prob_pwat_above_50mm",
                 FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)
                     .with_probability(ProbabilitySelection::above_milli(50_000)),
+            ),
+            (
+                "refs_prob_qpf_above_1mm",
+                FieldSelector::surface(CanonicalField::TotalPrecipitation)
+                    .with_probability(ProbabilitySelection::above_milli(1_000)),
+            ),
+            (
+                "refs_prob_qpf_above_2mm",
+                FieldSelector::surface(CanonicalField::TotalPrecipitation)
+                    .with_probability(ProbabilitySelection::above_milli(2_000)),
+            ),
+            (
+                "refs_prob_qpf_above_5mm",
+                FieldSelector::surface(CanonicalField::TotalPrecipitation)
+                    .with_probability(ProbabilitySelection::above_milli(5_000)),
+            ),
+            (
+                "refs_prob_qpf_above_10mm",
+                FieldSelector::surface(CanonicalField::TotalPrecipitation)
+                    .with_probability(ProbabilitySelection::above_milli(10_000)),
+            ),
+            (
+                "refs_prob_qpf_above_12p7mm",
+                FieldSelector::surface(CanonicalField::TotalPrecipitation)
+                    .with_probability(ProbabilitySelection::above_milli(12_700)),
+            ),
+            (
+                "refs_prob_qpf_above_25mm",
+                FieldSelector::surface(CanonicalField::TotalPrecipitation)
+                    .with_probability(ProbabilitySelection::above_milli(25_000)),
+            ),
+            (
+                "refs_prob_qpf_above_25p4mm",
+                FieldSelector::surface(CanonicalField::TotalPrecipitation)
+                    .with_probability(ProbabilitySelection::above_milli(25_400)),
+            ),
+            (
+                "refs_prob_qpf_above_50mm",
+                FieldSelector::surface(CanonicalField::TotalPrecipitation)
+                    .with_probability(ProbabilitySelection::above_milli(50_000)),
+            ),
+            (
+                "refs_prob_qpf_above_50p8mm",
+                FieldSelector::surface(CanonicalField::TotalPrecipitation)
+                    .with_probability(ProbabilitySelection::above_milli(50_800)),
+            ),
+            (
+                "refs_prob_qpf_above_76p2mm",
+                FieldSelector::surface(CanonicalField::TotalPrecipitation)
+                    .with_probability(ProbabilitySelection::above_milli(76_200)),
+            ),
+            (
+                "refs_prob_qpf_above_100mm",
+                FieldSelector::surface(CanonicalField::TotalPrecipitation)
+                    .with_probability(ProbabilitySelection::above_milli(100_000)),
+            ),
+            (
+                "refs_prob_qpf_above_127mm",
+                FieldSelector::surface(CanonicalField::TotalPrecipitation)
+                    .with_probability(ProbabilitySelection::above_milli(127_000)),
             ),
             (
                 "refs_prob_visibility_below_1600m",
@@ -10777,6 +11161,19 @@ mod tests {
         assert_eq!(
             urls[0].grib_url,
             "https://data.ecmwf.int/forecasts/20260414/12z/ifs/0p25/oper/20260414120000-6h-oper-fc.grib2"
+        );
+
+        let wave = ModelRunRequest::new(
+            ModelId::EcmwfOpenData,
+            CycleSpec::new("20260414", 12).unwrap(),
+            6,
+            "wave",
+        )
+        .unwrap();
+        let urls = resolve_urls(&wave).unwrap();
+        assert_eq!(
+            urls[0].grib_url,
+            "https://data.ecmwf.int/forecasts/20260414/12z/ifs/0p25/wave/20260414120000-6h-wave-fc.grib2"
         );
     }
 

@@ -9,13 +9,13 @@
 use chrono::{DateTime, Datelike, Utc};
 use rayon::prelude::*;
 use rustwx_core::{CycleSpec, GridShape, LatLonGrid, ModelId, ModelRunRequest, SourceId};
-use rustwx_io::{fetch_bytes_with_cache, FetchRequest};
+use rustwx_io::{FetchRequest, fetch_bytes_with_cache};
 use rustwx_radar::batch::{
-    build_level2_cartesian_tensors, parse_level2_object_name_scan_time, CartesianGridSpec,
-    Level2TensorProduct,
+    CartesianGridSpec, Level2TensorProduct, build_level2_cartesian_tensors,
+    parse_level2_object_name_scan_time,
 };
 use rustwx_radar::nexrad::sites::{find_nearest_site, find_site};
-use rustwx_radar::{aws as nexrad_aws, Level2File};
+use rustwx_radar::{Level2File, aws as nexrad_aws};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -28,12 +28,12 @@ use crate::native_dataset::{
     NativeHourOutput, NativeHourProcessor,
 };
 use crate::native_dataset_hrrr::{
-    decode_hrrr_hour_once, precompute_tile_remap_with_projection, remap_hrrr_hour_to_tile,
-    HrrrHourCache, NativeDatasetTileGrid, RemapMethod,
+    HrrrHourCache, NativeDatasetTileGrid, RemapMethod, decode_hrrr_hour_once,
+    precompute_tile_remap_with_projection, remap_hrrr_hour_to_tile,
 };
 use crate::native_dataset_obs::{
-    read_goes_multiband_hour, read_mrms_product_hour, remap_goes_hour_to_tile,
-    remap_mrms_hour_to_tile, GoesAbiChannelSpec, NativeObsTileGrid, GOES_MCMIPC_CHANNELS,
+    GOES_MCMIPC_CHANNELS, GoesAbiChannelSpec, NativeObsTileGrid, read_goes_multiband_hour,
+    read_mrms_product_hour, remap_goes_hour_to_tile, remap_mrms_hour_to_tile,
 };
 use crate::native_dataset_shard_store::{
     TrainingShardManifest, TrainingShardSampleTensor, TrainingShardTensorSpec, TrainingShardWriter,
@@ -1289,11 +1289,7 @@ fn valid_mask_all_channels(values: &[f32], channel_count: usize, grid_size: usiz
                     .copied()
                     .is_some_and(f32::is_finite)
             });
-            if valid {
-                1.0
-            } else {
-                0.0
-            }
+            if valid { 1.0 } else { 0.0 }
         })
         .collect()
 }
@@ -1311,11 +1307,7 @@ fn valid_mask_any_channel(values: &[f32], channel_count: usize, grid_size: usize
                     .copied()
                     .is_some_and(f32::is_finite)
             });
-            if valid {
-                1.0
-            } else {
-                0.0
-            }
+            if valid { 1.0 } else { 0.0 }
         })
         .collect()
 }
@@ -1335,17 +1327,9 @@ fn sanitize_mrms_channel(field_id: &str, values: &[f32]) -> Vec<f32> {
                     *value
                 }
             } else if id.contains("az") || id.contains("rotation") || id.contains("mesh") {
-                if *value <= -900.0 {
-                    0.0
-                } else {
-                    *value
-                }
+                if *value <= -900.0 { 0.0 } else { *value }
             } else if id.contains("prate") || id.contains("precip") {
-                if *value < 0.0 {
-                    0.0
-                } else {
-                    *value
-                }
+                if *value < 0.0 { 0.0 } else { *value }
             } else {
                 *value
             }
@@ -1652,8 +1636,8 @@ mod tests {
     use super::*;
     use crate::native_dataset::NativeHourProcessor;
     use crate::native_dataset::{
-        plan_native_dataset, NativeDatasetBounds, NativeDatasetBuildConfig, NativeDatasetCase,
-        NativeDatasetShardSpec, NativeDatasetTile,
+        NativeDatasetBounds, NativeDatasetBuildConfig, NativeDatasetCase, NativeDatasetShardSpec,
+        NativeDatasetTile, plan_native_dataset,
     };
 
     fn test_plan() -> NativeDatasetPlan {

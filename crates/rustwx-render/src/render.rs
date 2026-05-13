@@ -10,7 +10,7 @@ use crate::presentation::{ProductVisualMode, RenderPresentation, TitleAnchor};
 use crate::rasterize;
 use crate::request::{
     ChromeScale, DomainFrame, ProjectedLabelPlacement, ProjectedMarkerShape,
-    ProjectedPlaceLabelPriority,
+    ProjectedPlaceLabelPriority, RasterSampleMode,
 };
 use crate::text;
 use image::ExtendedColorType;
@@ -47,6 +47,7 @@ pub struct RenderOpts {
     pub chrome_scale: ChromeScale,
     pub supersample_factor: u32,
     pub supersample_sharpen: bool,
+    pub raster_sample_mode: RasterSampleMode,
     pub domain_frame: Option<DomainFrame>,
     pub map_extent: Option<MapExtent>,
     pub projected_grid: Option<ProjectedGrid>,
@@ -157,6 +158,7 @@ impl Default for RenderOpts {
             chrome_scale: ChromeScale::default(),
             supersample_factor: 1,
             supersample_sharpen: true,
+            raster_sample_mode: RasterSampleMode::default(),
             domain_frame: None,
             map_extent: None,
             projected_grid: None,
@@ -2872,6 +2874,7 @@ fn draw_variable_layers(
             inverse.clip_bounds,
             extent,
             &opts.cmap,
+            opts.raster_sample_mode,
             layout.map_w,
             layout.map_h,
         ),
@@ -2884,16 +2887,23 @@ fn draw_variable_layers(
             layout.map_w,
             layout.map_h,
         ),
-        (None, None, _, _) => {
-            rasterize::rasterize_grid(data, ny, nx, &opts.cmap, layout.map_w, layout.map_h)
-        }
+        (None, None, _, _) => rasterize::rasterize_grid(
+            data,
+            ny,
+            nx,
+            &opts.cmap,
+            opts.raster_sample_mode,
+            layout.map_w,
+            layout.map_h,
+        ),
     };
     let rasterize_ms = rasterize_start.elapsed().as_millis();
-    let projection_clip_mask = if opts.inverse_projected_grid.is_some() {
-        build_alpha_clip_mask(&map_img)
-    } else {
-        None
-    };
+    let projection_clip_mask =
+        if opts.inverse_projected_grid.is_some() && opts.cmap.mask_below.is_none() {
+            build_alpha_clip_mask(&map_img)
+        } else {
+            None
+        };
 
     let frame_clip_rect = match opts.domain_frame {
         Some(frame) if frame.clear_outside => domain_frame_rect,
@@ -2904,6 +2914,9 @@ fn draw_variable_layers(
             .domain_boundary
             .and_then(|domain_boundary| {
                 if !domain_boundary.visible {
+                    return None;
+                }
+                if opts.cmap.mask_below.is_some() {
                     return None;
                 }
                 let inset = domain_boundary.width.saturating_add(3);
@@ -3679,6 +3692,7 @@ mod tests {
             chrome_scale: ChromeScale::default(),
             supersample_factor: 1,
             supersample_sharpen: true,
+            raster_sample_mode: RasterSampleMode::default(),
             domain_frame: None,
             map_extent: Some(MapExtent {
                 x_min: 0.0,

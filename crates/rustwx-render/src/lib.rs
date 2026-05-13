@@ -65,8 +65,8 @@ pub use request::{
     MapRenderRequest, ProductKey, ProductMaturity, ProductSemanticFlag, ProductSemantics,
     ProjectedDomain, ProjectedExtent, ProjectedLabelPlacement, ProjectedLineOverlay,
     ProjectedMarkerShape, ProjectedPlaceLabel, ProjectedPlaceLabelPriority,
-    ProjectedPlaceLabelStyle, ProjectedPointOverlay, ProjectedPolygonFill, RgbaGridField,
-    WindBarbLayer, WindBarbStyle,
+    ProjectedPlaceLabelStyle, ProjectedPointOverlay, ProjectedPolygonFill, RasterSampleMode,
+    RgbaGridField, WindBarbLayer, WindBarbStyle,
 };
 pub use rustwx_core::{
     Field2D as CoreField2D, GridProjection as CoreGridProjection, GridShape as CoreGridShape,
@@ -646,6 +646,7 @@ fn with_render_state_profile_with_style<T>(
             chrome_scale: request.chrome_scale,
             supersample_factor: plot_style.supersample_factor(request.supersample_factor),
             supersample_sharpen: plot_style.supersample_sharpen(request.supersample_sharpen),
+            raster_sample_mode: request.raster_sample_mode,
             domain_frame: request.domain_frame,
             map_extent: projected_domain.map(|domain| MapExtent {
                 x_min: domain.extent.x_min,
@@ -942,6 +943,7 @@ mod tests {
             supersample_factor: 1,
             supersample_sharpen: true,
             visual_mode: ProductVisualMode::FilledMeteorology,
+            raster_sample_mode: RasterSampleMode::default(),
             domain_frame: None,
             projected_domain: None,
             projected_polygons: Vec::new(),
@@ -1007,6 +1009,7 @@ mod tests {
             supersample_factor: 1,
             supersample_sharpen: true,
             visual_mode: ProductVisualMode::FilledMeteorology,
+            raster_sample_mode: RasterSampleMode::default(),
             domain_frame: None,
             projected_domain: None,
             projected_polygons: Vec::new(),

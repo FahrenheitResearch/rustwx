@@ -779,6 +779,14 @@ const BUILT_IN_ALL_REGION_PRESETS: &[BuiltInBoundsPreset] = &[
         bounds: NamedGeoBounds::new(-109.0, -90.0, 25.0, 40.5),
     },
     BuiltInBoundsPreset {
+        slug: "oklahoma",
+        label: "Oklahoma",
+        kind: NamedGeometryKind::Region,
+        groups: GROUPS_US_REGION_AND_SPLIT,
+        tags: TAG_US_SPLIT_REGION,
+        bounds: NamedGeoBounds::new(-103.75, -93.5, 32.75, 38.25),
+    },
+    BuiltInBoundsPreset {
         slug: "northeast",
         label: "Northeast",
         kind: NamedGeometryKind::Region,

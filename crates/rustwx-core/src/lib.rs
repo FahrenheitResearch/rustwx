@@ -1658,8 +1658,10 @@ impl std::str::FromStr for ModelId {
             "hgefs" | "hybrid-gefs" | "hybrid_gefs" | "hybrid-ai-gefs" | "hybrid_ai_gefs" => {
                 Ok(Self::Hgefs)
             }
-            "ecmwf" | "ifs" | "ecmwf-open-data" | "ecmwf_open_data" => Ok(Self::EcmwfOpenData),
-            "aifs" | "aifs-single" | "aifs_single" | "aifs-single-1.1" => Ok(Self::Aifs),
+            "ecmwf" | "ifs" | "euro" | "european" | "ecmwf-ifs" | "ecmwf_ifs"
+            | "ecmwf-open-data" | "ecmwf_open_data" => Ok(Self::EcmwfOpenData),
+            "aifs" | "aifs-v2" | "aifsv2" | "aifs_single_v2" | "aifs-single" | "aifs_single"
+            | "aifs-single-1.1" => Ok(Self::Aifs),
             "rap" => Ok(Self::Rap),
             "nam" => Ok(Self::Nam),
             "hiresw" | "hires" | "hires-window" | "hires_window" => Ok(Self::Hiresw),
@@ -1825,6 +1827,9 @@ pub enum SourceId {
     Ecmwf,
     Ncei,
     Gdex,
+    /// Local NetCDF archive populated by an active AIFS-v2 inference/dissemination harness.
+    /// Layout: `$RUSTWX_AIFS_INFERENCE_ARCHIVE/{model}/{YYYYMMDD}T{HH}Z/lead{HHH}.nc`.
+    AifsInference,
     /// Local NetCDF archive populated by data-driven weather-model inference.
     /// Layout: `$RUSTWX_EARTH2_ARCHIVE/{model}/{YYYYMMDD}T{HH}Z/lead{HHH}.nc`.
     Earth2Archive,
@@ -1840,6 +1845,7 @@ impl SourceId {
             Self::Ecmwf => "ecmwf",
             Self::Ncei => "ncei",
             Self::Gdex => "gdex",
+            Self::AifsInference => "aifs-inference",
             Self::Earth2Archive => "earth2-archive",
         }
     }
@@ -1863,6 +1869,10 @@ impl std::str::FromStr for SourceId {
             "ecmwf" => Ok(Self::Ecmwf),
             "ncei" => Ok(Self::Ncei),
             "gdex" => Ok(Self::Gdex),
+            "aifs-inference" | "aifs_inference" | "aifsinference" | "inferenced-aifs"
+            | "inferenced_aifs" | "aifsv2-inference" | "aifsv2_inference" => {
+                Ok(Self::AifsInference)
+            }
             "earth2-archive" | "earth2_archive" | "earth2archive" | "earth2" => {
                 Ok(Self::Earth2Archive)
             }
@@ -2090,6 +2100,8 @@ mod tests {
         assert_eq!("hybrid_gefs".parse::<ModelId>().unwrap(), ModelId::Hgefs);
         assert_eq!("firewx".parse::<ModelId>().unwrap(), ModelId::RrfsFireWx);
         assert_eq!("ecmwf".parse::<ModelId>().unwrap(), ModelId::EcmwfOpenData);
+        assert_eq!("euro".parse::<ModelId>().unwrap(), ModelId::EcmwfOpenData);
+        assert_eq!("aifs-v2".parse::<ModelId>().unwrap(), ModelId::Aifs);
         assert_eq!("wrf".parse::<ModelId>().unwrap(), ModelId::WrfGdex);
         assert_eq!(ModelId::Hrrr.to_string(), "hrrr");
         assert_eq!(ModelId::Hgefs.to_string(), "hgefs");
@@ -2099,6 +2111,11 @@ mod tests {
         assert_eq!(ModelId::WrfGdex.to_string(), "wrf-gdex");
         assert_eq!("gdex".parse::<SourceId>().unwrap(), SourceId::Gdex);
         assert_eq!(SourceId::Gdex.to_string(), "gdex");
+        assert_eq!(
+            "aifsv2-inference".parse::<SourceId>().unwrap(),
+            SourceId::AifsInference
+        );
+        assert_eq!(SourceId::AifsInference.to_string(), "aifs-inference");
     }
 
     #[test]

@@ -271,7 +271,7 @@ fn ecmwf_sources() -> Vec<DataSource> {
         name: "ecmwf",
         url_fn: ecmwf_url,
         idx_fn: None,
-        idx_available: true,
+        idx_available: false,
         priority: 1,
         max_age_hours: None,
     }]
@@ -367,7 +367,9 @@ pub fn model_sources(model: &str) -> Vec<DataSource> {
         "gfs" => gfs_sources(),
         "nam" => nam_sources(),
         "rap" => rap_sources(),
-        "ecmwf" | "ifs" => ecmwf_sources(),
+        "ecmwf" | "ifs" | "euro" | "european" | "ecmwf-open-data" | "ecmwf_open_data" => {
+            ecmwf_sources()
+        }
         "nbm" | "blend" => nbm_sources(),
         "rrfs" => rrfs_sources(),
         "rtma" => rtma_sources(),

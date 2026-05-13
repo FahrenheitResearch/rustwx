@@ -317,6 +317,14 @@ pub struct DiscreteColorScale {
     pub mask_below: Option<f64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RasterSampleMode {
+    #[default]
+    Linear,
+    Nearest,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ColorScale {
     Weather(crate::weather::WeatherPreset),
@@ -700,6 +708,8 @@ pub struct MapRenderRequest {
     #[serde(default)]
     pub visual_mode: ProductVisualMode,
     #[serde(default)]
+    pub raster_sample_mode: RasterSampleMode,
+    #[serde(default)]
     pub domain_frame: Option<DomainFrame>,
     pub projected_domain: Option<ProjectedDomain>,
     /// Filled polygon basemap layers (ocean/land/lakes). Drawn BEFORE the
@@ -751,6 +761,7 @@ impl MapRenderRequest {
             supersample_factor: default_supersample_factor(),
             supersample_sharpen: default_supersample_sharpen(),
             visual_mode: ProductVisualMode::FilledMeteorology,
+            raster_sample_mode: RasterSampleMode::default(),
             domain_frame: None,
             projected_domain: None,
             projected_polygons: Vec::new(),
@@ -838,6 +849,11 @@ impl MapRenderRequest {
 
     pub fn with_visual_mode(mut self, visual_mode: ProductVisualMode) -> Self {
         self.visual_mode = visual_mode;
+        self
+    }
+
+    pub fn with_raster_sample_mode(mut self, raster_sample_mode: RasterSampleMode) -> Self {
+        self.raster_sample_mode = raster_sample_mode;
         self
     }
 

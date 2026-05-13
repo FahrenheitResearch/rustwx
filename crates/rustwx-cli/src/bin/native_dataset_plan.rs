@@ -1,9 +1,9 @@
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use rustwx_products::native_dataset::{
-    plan_native_dataset, NativeDatasetBounds, NativeDatasetBuildConfig, NativeDatasetCase,
-    NativeDatasetShardSpec, NativeDatasetSource, NativeDatasetTile,
+    NativeDatasetBounds, NativeDatasetBuildConfig, NativeDatasetCase, NativeDatasetShardSpec,
+    NativeDatasetSource, NativeDatasetTile, plan_native_dataset,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;

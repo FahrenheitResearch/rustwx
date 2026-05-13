@@ -21,7 +21,6 @@ use crate::windowed::{
 use chrono::{Duration, NaiveDate, Utc};
 use rustwx_core::{BundleRequirement, Field2D, ModelId, SourceId};
 use rustwx_models::{LatestRun, plot_recipe, plot_recipe_fetch_blockers, plot_recipe_fetch_plan};
-use rustwx_render::{ProductMaturity, ProductSemanticFlag};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -971,12 +970,6 @@ fn excluded_from_wxstore_grid_export(entry: &ProductCatalogEntry) -> bool {
     matches!(entry.kind, ProductCatalogKind::Heavy)
         || normalize_product_slug(&entry.slug).contains("ecape")
         || is_heavy_derived_recipe_slug(&entry.slug)
-        || entry.maturity != ProductMaturity::Operational
-        || entry
-            .flags
-            .iter()
-            .any(|flag| matches!(flag, ProductSemanticFlag::Proxy))
-        || entry.slug == "total_qpf"
 }
 
 fn catalog_model_blocker_reason(entry: &ProductCatalogEntry, model: ModelId) -> Option<String> {
@@ -1507,8 +1500,8 @@ mod tests {
         assert!(products.contains(&"2m_temperature".to_string()));
         assert!(products.contains(&"mlcape".to_string()));
         assert!(products.contains(&"qpf_1h".to_string()));
-        assert!(!products.contains(&"total_qpf".to_string()));
-        assert!(!products.contains(&"scp_mu_0_3km_0_6km_proxy".to_string()));
+        assert!(products.contains(&"total_qpf".to_string()));
+        assert!(products.contains(&"scp_mu_0_3km_0_6km_proxy".to_string()));
         assert!(!products.contains(&"sbecape".to_string()));
         assert!(!products.contains(&"severe_proof_panel".to_string()));
         assert!(!products.contains(&"cloud_cover_levels".to_string()));

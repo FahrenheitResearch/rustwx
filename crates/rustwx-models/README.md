@@ -15,12 +15,14 @@
 
 - `HRRR`
 - `GFS`
-- `ECMWF open data`
+- `ECMWF IFS Cycle 50r1 open data`
+- `ECMWF AIFS Single v2 open data`
 - `RRFS-A`
 
 ## What is implemented
 
-- URL resolution for all built-in models
+- URL resolution for all built-in models, including ECMWF IFS/AIFS operational
+  `oper` and `wave` streams
 - NOAA-style latest/probe/hour checks
 - recipe planning for selector-backed upper-air plots
 - direct-plot recipe registry coverage for:
@@ -33,7 +35,8 @@
 
 ## Current limits
 
-- ECMWF latest-run probing is still weaker than the NOAA feeds
+- ECMWF open data is whole-file fetch only because `.idx` sidecars are not
+  published with the feed
 - recipe coverage is not uniform across all models
 - many direct surface/radar recipes are cataloged before extractor/render support
   is complete, so they currently resolve to explicit blockers rather than fetch plans

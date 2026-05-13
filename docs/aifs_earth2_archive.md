@@ -16,7 +16,7 @@ runner plotting paths. They are not separate plotting scripts.
 Set:
 
 ```powershell
-$env:RUSTWX_AIFS_INFERENCE_ARCHIVE = "C:\Users\drew\rustwx-runner\data\aifs_inference_archive"
+$env:RUSTWX_AIFS_INFERENCE_ARCHIVE = "$env:RUSTWX_RUNNER_DATA\aifs_inference_archive"
 $env:RUSTWX_EARTH2_ARCHIVE = "$env:USERPROFILE\aifs-earth2-archive"
 ```
 
@@ -90,7 +90,7 @@ cargo run -p rustwx-cli --bin direct_batch -- `
 Direct product:
 
 ```powershell
-$env:RUSTWX_AIFS_INFERENCE_ARCHIVE = "C:\Users\drew\rustwx-runner\data\aifs_inference_archive"
+$env:RUSTWX_AIFS_INFERENCE_ARCHIVE = "$env:RUSTWX_RUNNER_DATA\aifs_inference_archive"
 cargo run -p rustwx-cli --bin direct_batch -- `
   --model aifs --date 20260512 --cycle 12 --forecast-hour 6 `
   --source aifs-inference --region conus `

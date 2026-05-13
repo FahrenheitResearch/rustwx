@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+const AIFS_INFERENCE_ARCHIVE_ENV: &str = "RUSTWX_AIFS_INFERENCE_ARCHIVE";
 const ARCHIVE_ENV: &str = "RUSTWX_EARTH2_ARCHIVE";
 const GEOPOTENTIAL_M2S2_TO_M: f64 = 1.0 / 9.806_65;
 const EPSILON: f64 = 0.622;
@@ -152,6 +153,7 @@ enum Transform {
     FractionToPercent,
     GeopotentialToHeight,
     KelvinToCelsius,
+    MetersToMillimeters,
 }
 
 impl Transform {
@@ -161,14 +163,16 @@ impl Transform {
             Self::FractionToPercent => value * 100.0,
             Self::GeopotentialToHeight => value * GEOPOTENTIAL_M2S2_TO_M,
             Self::KelvinToCelsius => value - 273.15,
+            Self::MetersToMillimeters => value * 1000.0,
         }
     }
 }
 
 pub fn is_earth2_archive_fetch(fetch: &FetchRequest) -> bool {
-    fetch.source_override == Some(SourceId::Earth2Archive)
-        || (fetch.request.model == ModelId::Aifs
-            && fetch.source_override.unwrap_or(SourceId::Earth2Archive) == SourceId::Earth2Archive)
+    matches!(
+        fetch.source_override,
+        Some(SourceId::AifsInference | SourceId::Earth2Archive)
+    )
 }
 
 pub fn archive_root() -> Result<PathBuf, IoError> {
@@ -177,8 +181,30 @@ pub fn archive_root() -> Result<PathBuf, IoError> {
         .ok_or_else(|| IoError::Earth2Archive(format!("{ARCHIVE_ENV} is not set")))
 }
 
+pub fn archive_root_for_source(source: SourceId) -> Result<PathBuf, IoError> {
+    match source {
+        SourceId::AifsInference => std::env::var_os(AIFS_INFERENCE_ARCHIVE_ENV)
+            .or_else(|| std::env::var_os(ARCHIVE_ENV))
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                IoError::Earth2Archive(format!(
+                    "{AIFS_INFERENCE_ARCHIVE_ENV} is not set for aifs-inference source"
+                ))
+            }),
+        SourceId::Earth2Archive => archive_root(),
+        other => Err(IoError::Earth2Archive(format!(
+            "{other} is not a local AIFS NetCDF archive source"
+        ))),
+    }
+}
+
 pub fn archive_path_for_request(request: &ModelRunRequest) -> Result<PathBuf, IoError> {
     archive_path_with_root(archive_root()?, request)
+}
+
+pub fn archive_path_for_fetch(fetch: &FetchRequest) -> Result<PathBuf, IoError> {
+    let source = local_archive_source(fetch)?;
+    archive_path_with_root(archive_root_for_source(source)?, &fetch.request)
 }
 
 pub fn archive_path_with_root(
@@ -194,6 +220,22 @@ pub fn archive_path_with_root(
         .join(request.model.as_str())
         .join(init)
         .join(format!("lead{:03}.nc", request.forecast_hour)))
+}
+
+fn local_archive_source(fetch: &FetchRequest) -> Result<SourceId, IoError> {
+    match fetch.source_override {
+        Some(SourceId::AifsInference | SourceId::Earth2Archive) => {
+            Ok(fetch.source_override.expect("checked source override"))
+        }
+        Some(other) => Err(IoError::Earth2Archive(format!(
+            "{} is local-archive only; requested source {other}",
+            fetch.request.model
+        ))),
+        None => Err(IoError::Earth2Archive(format!(
+            "{} local AIFS NetCDF reads require --source aifs-inference or --source earth2-archive",
+            fetch.request.model
+        ))),
+    }
 }
 
 pub fn available_leads_for_cycle(model: ModelId, cycle: &CycleSpec) -> Result<Vec<u16>, IoError> {
@@ -354,9 +396,10 @@ fn is_leap_year(year: i32) -> bool {
 }
 
 pub fn probe_archive(fetch: &FetchRequest) -> Result<crate::ProbeResult, IoError> {
-    let path = archive_path_for_request(&fetch.request)?;
+    let source = local_archive_source(fetch)?;
+    let path = archive_path_for_fetch(fetch)?;
     Ok(crate::ProbeResult {
-        source: SourceId::Earth2Archive,
+        source,
         available: path.is_file(),
         grib_url: file_url(&path),
         idx_url: None,
@@ -364,21 +407,14 @@ pub fn probe_archive(fetch: &FetchRequest) -> Result<crate::ProbeResult, IoError
 }
 
 pub fn archive_fetch_available(fetch: &FetchRequest) -> bool {
-    archive_path_for_request(&fetch.request)
+    archive_path_for_fetch(fetch)
         .map(|path| path.is_file())
         .unwrap_or(false)
 }
 
 pub fn fetch_archive_bytes(fetch: &FetchRequest) -> Result<FetchResult, IoError> {
-    if let Some(source) = fetch.source_override {
-        if source != SourceId::Earth2Archive {
-            return Err(IoError::Earth2Archive(format!(
-                "{} is local-archive only; requested source {source}",
-                fetch.request.model
-            )));
-        }
-    }
-    let path = archive_path_for_request(&fetch.request)?;
+    let source = local_archive_source(fetch)?;
+    let path = archive_path_for_fetch(fetch)?;
     if !path.is_file() {
         return Err(IoError::Earth2Archive(format!(
             "archive file is missing: {}",
@@ -389,7 +425,7 @@ pub fn fetch_archive_bytes(fetch: &FetchRequest) -> Result<FetchResult, IoError>
         validate_ensemble_selector_for_path(&path, selector)?;
     }
     Ok(FetchResult {
-        source: SourceId::Earth2Archive,
+        source,
         url: file_url(&path),
         // Earth2 archives are local NetCDF files. Downstream readers use
         // `CachedFetchResult.bytes_path` to open the file selectively, so
@@ -826,8 +862,24 @@ fn read_selector(
             .map_units("%")
         }
         (CanonicalField::TotalPrecipitation, VerticalSelector::Surface) => {
-            read_optional_transformed(file, grid, "tp06", Transform::Identity, ensemble_selector)
+            if let Some(values) = read_optional_transformed(
+                file,
+                grid,
+                "tp06",
+                Transform::Identity,
+                ensemble_selector,
+            )? {
+                Ok(Some((values, "kg/m^2")))
+            } else {
+                read_optional_transformed(
+                    file,
+                    grid,
+                    "tp",
+                    Transform::MetersToMillimeters,
+                    ensemble_selector,
+                )
                 .map_units("kg/m^2")
+            }
         }
         (field, VerticalSelector::IsobaricHpa(level)) => {
             read_pressure_selector(file, grid, field, level, ensemble_selector)
@@ -1822,6 +1874,11 @@ mod tests {
         let q = specific_humidity_from_dewpoint(pressure, dewpoint);
         let decoded = dewpoint_from_specific_humidity(pressure, q);
         assert!((decoded - dewpoint).abs() < 0.01);
+    }
+
+    #[test]
+    fn earth2_total_precipitation_tp_units_are_render_ready() {
+        assert_eq!(Transform::MetersToMillimeters.apply(0.012), 12.0);
     }
 
     #[test]

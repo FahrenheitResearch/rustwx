@@ -34,6 +34,7 @@ const REGION_PLACE_LABEL_SLUGS: &[&str] = &[
     "rockies_high_plains",
     "southeast",
     "southern_plains",
+    "oklahoma",
     "northeast",
     "great_lakes",
 ];
@@ -1758,6 +1759,7 @@ mod tests {
         for (slug, bounds) in [
             ("california_square", CALIFORNIA_SQUARE),
             ("southern_plains", (-109.5, -89.5, 24.5, 40.5)),
+            ("oklahoma", (-103.75, -93.5, 32.75, 38.25)),
         ] {
             let domain = DomainSpec::new(slug, bounds);
             let major_and_aux = PlaceLabelOverlay::major_us_cities()

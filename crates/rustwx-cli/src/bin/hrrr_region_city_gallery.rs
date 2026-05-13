@@ -491,6 +491,13 @@ fn build_domain_catalog() -> DomainCatalog {
     push_region_entry(
         &mut entries,
         &mut seen,
+        region::RegionPreset::Oklahoma.slug(),
+        "Oklahoma",
+        region::RegionPreset::Oklahoma.bounds(),
+    );
+    push_region_entry(
+        &mut entries,
+        &mut seen,
         region::RegionPreset::Northeast.slug(),
         "Northeast",
         region::RegionPreset::Northeast.bounds(),
