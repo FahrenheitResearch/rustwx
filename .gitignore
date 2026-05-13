@@ -1,5 +1,6 @@
 /target/
 **/target/
+/target_native/
 crates/rustwx-python/dist/
 Cargo.lock
 .DS_Store
@@ -37,12 +38,17 @@ proof/*decode_stats.json
 /cache/
 /data/
 /scratch/
+/aifs_inference_archive/
+/earth2_archive/
+/node_local/
 /bench_*/
 /proof_*/
 *.bundle
 *_review_flat*/
 *_gpt*_review*/
 *_node_backup*/
+*.local.toml
 *.local.md
 INTERNAL_*
+*.secret.*
 _tmp_check.rs

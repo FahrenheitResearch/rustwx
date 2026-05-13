@@ -63,7 +63,7 @@ $RUSTWX_EARTH2_ARCHIVE/{model}/{YYYYMMDD}T{HH}Z/lead{HHH}.nc
 Example:
 
 ```text
-C:\Users\drew\aifs-vast\earth2_archive\aifs\20160822T00Z\lead024.nc
+C:\wxdata\aifs-earth2-archive\aifs\20160822T00Z\lead024.nc
 ```
 
 Long inference runs can use more than three lead digits:

@@ -1,20 +1,29 @@
-# AIFS / Earth2 Archive Runbook
+# AIFS Local NetCDF Archive Runbook
 
-rustwx treats AIFS as a local archive model. Inference is done outside rustwx,
-then NetCDF fields are placed into a stable layout that the normal map and
-derived-product pipelines can read.
+rustwx treats operational AIFS Single v2 as an ECMWF open-data model by
+default. Local AIFS NetCDFs are first-class through two explicit local sources:
+
+- `aifs-inference` for actively generated/inferenced AIFS-v2 NetCDFs that are
+  disseminated into a local archive while rustwx-runner watches and plots them.
+- `earth2-archive` for older Earth2Archive-style experimental or hindcast
+  NetCDF runs.
+
+Both sources use the normal rustwx direct, derived, WxStore-grid-export, and
+runner plotting paths. They are not separate plotting scripts.
 
 ## Archive Layout
 
 Set:
 
 ```powershell
-$env:RUSTWX_EARTH2_ARCHIVE = "C:\Users\drew\aifs-vast\earth2_archive"
+$env:RUSTWX_AIFS_INFERENCE_ARCHIVE = "C:\Users\drew\rustwx-runner\data\aifs_inference_archive"
+$env:RUSTWX_EARTH2_ARCHIVE = "$env:USERPROFILE\aifs-earth2-archive"
 ```
 
 Files live at:
 
 ```text
+{RUSTWX_AIFS_INFERENCE_ARCHIVE}/{model}/{YYYYMMDD}T{HH}Z/lead{HHH}.nc
 {RUSTWX_EARTH2_ARCHIVE}/{model}/{YYYYMMDD}T{HH}Z/lead{HHH}.nc
 ```
 
@@ -24,15 +33,15 @@ the same layout, for example `lead8640.nc` for a 360-day run.
 Example:
 
 ```text
-C:\Users\drew\aifs-vast\earth2_archive\aifs\20160822T00Z\lead024.nc
+C:\wxdata\aifs-earth2-archive\aifs\20160822T00Z\lead024.nc
 ```
 
 Use the writer to organize an already-generated Earth2Studio file:
 
 ```powershell
 python scripts\earth2_archive_writer.py `
-  --input-netcdf C:\Users\drew\aifs-vast\aifs_global_20160822T000000Z_lead024.nc `
-  --archive-root C:\Users\drew\aifs-vast\earth2_archive `
+  --input-netcdf C:\wxdata\aifs-input\aifs_global_20160822T000000Z_lead024.nc `
+  --archive-root C:\wxdata\aifs-earth2-archive `
   --model aifs `
   --init-time 2016-08-22T00:00:00Z `
   --lead 24
@@ -60,7 +69,7 @@ t{level}, q{level}, u{level}, v{level}, w{level}, z{level}
 Pressure levels currently recognized:
 
 ```text
-1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50 hPa
+1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50, 10 hPa
 ```
 
 `z{level}` is treated as geopotential in `m2/s2` and converted to height in
@@ -68,10 +77,27 @@ meters. `tcc/lcc/mcc/hcc` are treated as fractions and converted to percent.
 
 ## Smoke Commands
 
+Operational AIFS Single v2 open data:
+
+```powershell
+cargo run -p rustwx-cli --bin direct_batch -- `
+  --model aifs --date 20260512 --cycle 12 --forecast-hour 6 `
+  --source ecmwf --region global `
+  --recipe 2m_temperature_10m_winds `
+  --out-dir target\aifs-v2-smoke --cache-dir target\aifs-v2-smoke-cache
+```
+
 Direct product:
 
 ```powershell
-$env:RUSTWX_EARTH2_ARCHIVE = "C:\Users\drew\aifs-vast\earth2_archive"
+$env:RUSTWX_AIFS_INFERENCE_ARCHIVE = "C:\Users\drew\rustwx-runner\data\aifs_inference_archive"
+cargo run -p rustwx-cli --bin direct_batch -- `
+  --model aifs --date 20260512 --cycle 12 --forecast-hour 6 `
+  --source aifs-inference --region conus `
+  --recipe 2m_temperature_10m_winds `
+  --out-dir target\aifs-inference-smoke --cache-dir target\aifs-inference-smoke-cache --no-cache
+
+$env:RUSTWX_EARTH2_ARCHIVE = "$env:USERPROFILE\aifs-earth2-archive"
 cargo run -p rustwx-cli --bin direct_batch -- `
   --model aifs --date 20160822 --cycle 0 --forecast-hour 24 `
   --source earth2-archive --country usa `
@@ -126,6 +152,11 @@ rustwx render-maps --model aifs --date 20160822 --cycle 0 --forecast-hour 24 `
 Derived product:
 
 ```powershell
+cargo run -p rustwx-cli --bin non_ecape_hour -- `
+  --model aifs --date 20260512 --cycle 12 --forecast-hour 6 `
+  --source aifs-inference --region conus --all-supported --skip-windowed `
+  --out-dir target\aifs-inference-non-ecape
+
 cargo run -p rustwx-cli --bin derived_batch -- `
   --model aifs --date 20160822 --cycle 0 --forecast-hour 24 `
   --source earth2-archive --country usa `
@@ -135,7 +166,9 @@ cargo run -p rustwx-cli --bin derived_batch -- `
 
 ## Caveats
 
-- AIFS is local-archive only; rustwx does not fetch it from NOMADS/AWS.
+- Operational AIFS Single v2 is fetched from ECMWF open data. Earth2Archive is
+  still the explicit source for legacy local NetCDF experiments and long
+  hindcast runs. Use `aifs-inference` for active inferred AIFS-v2 output.
 - The archive reader supports AIFS-Single-style deterministic 2D fields and
   direct-map member/stat selection for files shaped `(member, lat, lon)`.
   Deterministic requests against a member-shaped field intentionally select
