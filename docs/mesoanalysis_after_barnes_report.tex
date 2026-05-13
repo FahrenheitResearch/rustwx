@@ -1,0 +1,340 @@
+
+\documentclass[11pt]{article}
+\usepackage[margin=0.8in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{float}
+\usepackage{caption}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.65em}
+\renewcommand{\arraystretch}{1.18}
+\sloppy
+
+\title{\textbf{From Barnes to Source-Aware OI}\\RustWX Surface Mesoanalysis Research Report}
+\author{Prepared for Drew / FahrenheitResearch}
+\date{Generated 2026-05-12 22:12:30}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report explains what changed after the original Barnes interpolation prototype.
+The short version: RustWX moved from a station-smoothing demo to a local, model-agnostic,
+source-aware surface diagnostic correction and reliability layer. It now treats the
+model as the dynamically assimilated background, applies bounded OI/kriging-like
+increments to near-surface fields, and emits validation and confidence metadata for
+agent packets. The remaining hard problem is not just faster math; it is proving,
+case by case and source by source, when those corrections deserve trust.
+\end{abstract}
+
+\section{Executive Summary}
+
+The first Barnes prototype answered: ``Can we spread model-minus-observation residuals
+onto a grid?'' The current RustWX system asks a stricter question: ``Given a model
+background, observation source quality, observation age, terrain/flow context, and
+held-out validation, should this surface correction be trusted?'' That is the major
+conceptual shift.
+
+Implemented pieces now visible in local docs, code, tests, and smoke artifacts:
+\begin{itemize}
+  \item Barnes remains available as a baseline, but the main method is a local
+  full-matrix optimal-interpolation solve with explicit background and observation
+  errors.
+  \item The correction layer is model-agnostic. HRRR, RAP, RRFS, GFS, or other grids
+  are background providers; the product is not named around HRRR.
+  \item Observation handling now includes source error profiles, freshness gates,
+  time-representativeness weighting, and cross-source duplicate filtering.
+  \item Covariance can be terrain/flow-aware: flow-aligned anisotropy and
+  terrain-pressure damping reduce physically suspect spreading.
+  \item Validation now includes station-hash, spatial-block, source-provider, and
+  repeated holdout modes. Same-observation fit is no longer treated as proof of skill.
+  \item Confidence is deliberately conservative. In the current packet, ranked
+  confidence reliability failed for temperature, dewpoint, and wind, so confidence
+  must be consumed as uncalibrated support metadata.
+\end{itemize}
+
+\section{What This Layer Is, And Is Not}
+
+RustWX surface mesoanalysis is a \textbf{post-processed near-surface diagnostic analysis}.
+It starts with a model background and applies bounded source-aware increments to fields
+such as 2 m temperature, 2 m dewpoint, and 10 m wind. The layer can produce raw model
+fields, residuals, corrected fields, confidence/support grids, validation summaries,
+and compact agent packets.
+
+It is \textbf{not} a full 3D data-assimilation system. Correcting 2 m temperature
+after the model run does not automatically rebalance the PBL, pressure, soil state,
+moisture profile, storm evolution, or derived severe-weather fields. Agent packets
+should preserve that distinction.
+
+\section{RTMA / 3D-RTMA Distinction}
+
+NOAA's operational RTMA/URMA family is an operational analysis system. The EMC RTMA
+overview describes RTMA/URMA as 2DVar analysis systems for NDFD parameters, with RTMA
+run hourly for situational awareness and URMA run later to include late-arriving data.
+The same EMC page describes RTMA as an hourly two-dimensional variational analysis of
+surface sensible weather fields, generally at 2.5 km grid spacing, with operational
+distribution latency. The NCO product inventory also lists RTMA/URMA GRIB2 product
+paths and hourly/15-minute product families. The EMC graphics portal identifies
+experimental 3D-RTMA/3D-URMA configurations that use HRRR or developmental RRFS first
+guesses and additional observational components.
+
+\begin{table}[H]
+\centering
+\caption{RustWX surface layer vs. 3D-RTMA-style analysis}
+\begin{tabular}{p{0.28\linewidth} p{0.32\linewidth} p{0.32\linewidth}}
+\toprule
+Dimension & RustWX current layer & 3D-RTMA-style system \\
+\midrule
+Core role & Fast local diagnostic surface correction and reliability metadata & Full operational or experimental analysis cycle \\
+Background & Model-agnostic: HRRR/RAP/RRFS/etc. & Specific operational/prototype first-guess systems \\
+Vertical consistency & Near-surface post-processing only & 3D prototype aims at volumetric analysis behavior \\
+Observation use & Source-aware correction layer with freshness, errors, validation & Mature operational DA/QC pipelines and monitored products \\
+Strength & Local, reproducible, agent-readable, easy to run/tune by domain & Operational maturity, broad assimilation/QC, analysis-of-record lineage \\
+Risk & Can double-count already assimilated obs or break physical consistency if over-trusted & Less local/custom/agent-native, constrained by operational products \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Official references checked: EMC RTMA/URMA overview
+\url{https://www.emc.ncep.noaa.gov/emc/pages/numerical_forecast_systems/rtma.php},
+NCO RTMA product inventory \url{https://www.nco.ncep.noaa.gov/pmb/products/rtma/},
+and EMC RTMA/URMA graphics portal
+\url{https://www.emc.ncep.noaa.gov/mmb/rtma/rtma_graphics/main.php}.
+
+\section{Architecture}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth]{target/reports/mesoanalysis_after_barnes_assets/architecture_flow.png}
+\caption{High-level RustWX mesoanalysis flow. The product is a focused packet and artifact builder, not a giant raw dump.}
+\end{figure}
+
+\section{Feature Timeline}
+
+\begin{longtable}{p{0.18\linewidth} p{0.36\linewidth} p{0.36\linewidth}}
+\caption{What changed after Barnes interpolation}\\
+\toprule
+Stage & What changed & Why it matters \\
+\midrule
+\endfirsthead
+\toprule
+Stage & What changed & Why it matters \\
+\midrule
+\endhead
+Barnes prototype & Distance-weighted residual interpolation & Good first visual correction; weak error model and validation semantics. \\
+Full-matrix OI & Local dense covariance solve with Cholesky & Turns smoothing into an explicit background-plus-observation error problem. \\
+Source error profiles & METAR, mesonet, RAWS, RWIS, SNOTEL/SCAN, marine/coastal, generic & Lets good networks correct more strongly while noisy/siting-sensitive sources are damped. \\
+Terrain/flow covariance & Wind-aligned anisotropy and pressure-terrain damping & Reduces cross-flow and cross-terrain over-spreading. \\
+Holdout validation & Station-hash, spatial-block, source-provider, repeated holdouts & Separates fit-to-used-stations from real independent skill. \\
+Confidence contract & Ranked low/high buckets and reliability status & Prevents the packet from selling support as calibrated uncertainty. \\
+Buddy rescue & Gross-error candidate can survive if nearby stations agree & Keeps real mesoscale extremes from being filtered as isolated bad obs. \\
+Time weighting & Observation age decays quality and inflates error & Makes freshness a continuous trust input, not just a pass/fail gate. \\
+Deduplication & Cross-source duplicate station keys with best-observation retention & Avoids double-counting the same station when sources overlap; products test passed. \\
+\bottomrule
+\end{longtable}
+
+\section{Real Artifact Evidence}
+
+The following numbers come from local artifacts under \texttt{target/} and docs under
+\texttt{docs/}. They are smoke/calibration evidence, not a multi-season climatology.
+
+\subsection{Observation Funnel}
+
+The time-weight packet used model \texttt{hrrr},
+cycle \texttt{2026051302z}, valid/reference time
+\texttt{2026-05-13T03:00:00+00:00}, max observation age
+90 minutes, time half-life
+60.0 minutes, and max
+time-error inflation factor 2.0.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{target/reports/mesoanalysis_after_barnes_assets/source_counts.png}
+\caption{Source counts from the time-weight smoke packet. This specific run accepted only the fresh METAR subset; the mesonet files were present but outside the time gate for that model valid time.}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{Observation source summary from packet}
+\footnotesize
+\begin{tabular}{lrrrrrr}
+\toprule
+Source & Raw & Profile filt. & Time filt. & Accepted & Mean time wt. & Max age min \\
+\midrule
+METAR & 2640 & 265 & 2335 & 36 & 0.926 & 20.0 \\
+OK Mesonet & 120 & 0 & 118 & 0 & -- & -- \\
+KS Mesonet & 90 & 0 & 90 & 0 & -- & -- \\
+NE Mesonet & 93 & 0 & 93 & 0 & -- & -- \\
+NDAWN & 255 & 0 & 255 & 0 & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Holdout Skill}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.87\linewidth]{target/reports/mesoanalysis_after_barnes_assets/holdout_mae.png}
+\caption{Repeated holdout gate matrix. In this two-case smoke gate, RustWX OI beat both raw background and Barnes on the domain MAE checks for all three fields.}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{Repeated holdout MAE from \texttt{repeated\_gate\_matrix.json}}
+\begin{tabular}{lrrrrr}
+\toprule
+Field & Raw & OI & Barnes & OI-Raw & OI-Barnes \\
+\midrule
+2 m T & 0.916 & 0.895 & 0.965 & -0.021 & -0.070 \\
+2 m Td & 1.369 & 1.326 & 1.513 & -0.044 & -0.188 \\
+10 m wind & 1.288 & 1.265 & 1.413 & -0.023 & -0.148 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Confidence Reliability}
+
+The confidence contract is intentionally stricter than the grid confidence/support
+field. A grid cell can have good local OI support and still fail held-out reliability.
+For the current packet, the reliability summary is:
+\textbf{failed}, semantic label
+\texttt{uncalibrated\_support}, passed fields
+0/3.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.87\linewidth]{target/reports/mesoanalysis_after_barnes_assets/confidence_reliability.png}
+\caption{Ranked confidence reliability gate. The high-confidence bucket had higher MAE than the low-confidence bucket for the current station-hash holdout, so confidence is support metadata, not calibrated uncertainty.}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{Confidence reliability contract from packet and ranked station-hash matrix}
+\footnotesize
+\begin{tabular}{lrrrrlll}
+\toprule
+Field & Low n & High n & Low MAE & High MAE & High-Low & Status & Label \\
+\midrule
+2 m T & 3 & 3 & 0.293 & 2.557 & 2.265 & failed & uncalibrated\_support \\
+2 m Td & 3 & 3 & 0.401 & 1.456 & 1.057 & failed & uncalibrated\_support \\
+10 m wind & 3 & 3 & 0.657 & 1.943 & 1.288 & failed & uncalibrated\_support \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Confidence semantic labels}
+\begin{tabular}{p{0.22\linewidth} p{0.42\linewidth} p{0.26\linewidth}}
+\toprule
+Label & Gate meaning & Agent interpretation \\
+\midrule
+support\_index & Untestable or insufficient ranked bucket coverage & Local OI support metadata only. \\
+uncalibrated\_support & Coverage exists but ranked high-confidence MAE is worse than low-confidence MAE & Do not interpret confidence as uncertainty; use it as support/context. \\
+calibrated\_reliability & High-confidence ranked bucket has lower or equal MAE and coverage is sufficient & May be described as reliability-calibrated for that field/case. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Runtime And Diagnostics}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\linewidth]{target/reports/mesoanalysis_after_barnes_assets/runtime_smokes.png}
+\caption{Selected smoke runtimes. These artifacts mix release and debug runs, so this is a sanity chart rather than a formal performance benchmark.}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{Selected smoke compute times}
+\begin{tabular}{lrrl}
+\toprule
+Case & OI ms & Baseline ms & Baseline \\
+\midrule
+default OI + Barnes & 1393 & 1773 & Barnes \\
+confidence gate & 315 & 286 & iso OI \\
+buddy rescue & 403 & 369 & iso OI \\
+time weighting & 3457 & 3774 & iso OI \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Buddy-rescue diagnostics aggregate from live smoke}
+\footnotesize
+\begin{tabular}{lrrrrr}
+\toprule
+Variable & Candidate obs & Accepted obs & Rescued & Solver failures & Truncated cells \\
+\midrule
+dewpoint\_2m\_c & 35.0 & 35.0 & 0 & 0 & 0 \\
+temperature\_2m\_c & 35.0 & 35.0 & 0 & 0 & 0 \\
+u10\_ms & 36.0 & 36.0 & 0 & 0 & 0 \\
+v10\_ms & 36.0 & 36.0 & 0 & 0 & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The live buddy-rescue smoke did not need to rescue gross-error observations
+(\texttt{0} rescues in the artifact), but the unit test covers the rescue path.
+The point is to keep a supported mesoscale extreme from being rejected just because
+it is large relative to the background.
+
+\section{What Is Real, Smoke-Tested, And Still Open}
+
+\textbf{Implemented and tested locally:} Barnes/OI method selection, local covariance
+matrix solve, source-specific errors, time weighting, duplicate filtering, holdout
+validation modes, confidence reliability contract, compact packet output, and the
+buddy-rescue code path. The targeted products mesoanalysis suite passed in this
+session.
+
+\textbf{Smoke-tested with real artifacts:} HRRR/NOMADS background loading, real runner
+observation files, station-hash/spatial/source holdouts, repeated holdout gates,
+covariance ablation comparisons, time-weighted observation loading, and compact agent
+packet output.
+
+\textbf{Still research/engineering gaps:} multi-case climatological calibration,
+per-source rolling innovation stats, external RTMA/URMA comparisons at scale,
+source siting metadata, land/water/coastline barriers, advected boundary logic,
+posterior uncertainty calibration, and full human map sets for domains like Oklahoma
+or the Plains. This is why the packet should not call confidence calibrated uncertainty
+unless the ranked holdout reliability gate actually passes.
+
+\section{Files And Artifacts Used}
+
+\begin{longtable}{L{0.27\linewidth} L{0.67\linewidth}}
+\toprule
+Artifact & Path \\
+\midrule
+\endfirsthead
+\toprule
+Artifact & Path \\
+\midrule
+\endhead
+\footnotesize
+Time-weight run report & \path{target/surface_mesoanalysis_time_weight_smoke_03z/run_report.json} \\
+Time-weight agent packet & \path{target/surface_mesoanalysis_time_weight_smoke_03z/mesoanalysis_agent_packet.json} \\
+Repeated holdout gate matrix & \path{target/surface_mesoanalysis_calibration/repeated_gate_matrix.json} \\
+Confidence ranked station-hash matrix & \path{target/surface_mesoanalysis_calibration/confidence_ranked_station_hash_gate_matrix.json} \\
+Buddy rescue diagnostics matrix & \path{target/surface_mesoanalysis_calibration/buddy_rescue_diagnostics_matrix.json} \\
+Completion audit & \path{docs/mesoanalysis_oi_completion_audit.md} \\
+Calibration note & \path{docs/mesoanalysis_oi_calibration_20260513.md} \\
+\bottomrule
+\end{longtable}
+
+\section{Bottom Line For Drew}
+
+After Barnes, the project became less about drawing a smoother map and more about
+earning trust. The system now has the bones of a professional surface diagnostic
+analysis layer: explicit errors, source quality, covariance choices, validation gates,
+and machine-readable reliability semantics. That is exactly the road toward a
+DESI/RTMA-caliber sidekick packet. The next hill is calibration across many cases and
+source regimes, not just adding another interpolation formula.
+
+\end{document}

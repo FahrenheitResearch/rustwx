@@ -12,6 +12,11 @@ pub enum CalcError {
     EmptyWindowInputs { operation: &'static str },
     #[error("storm_u and storm_v must either both be provided or both be omitted")]
     InvalidStormMotionPair,
+    #[error("invalid {field}: {reason}")]
+    InvalidConfig {
+        field: &'static str,
+        reason: &'static str,
+    },
     #[error("metrust error: {0}")]
     Metrust(String),
 }

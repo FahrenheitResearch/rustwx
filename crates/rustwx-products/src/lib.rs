@@ -1,4 +1,3 @@
-pub mod agent_evidence;
 pub mod artifact_bundle;
 pub mod cache;
 pub mod catalog;
@@ -16,6 +15,8 @@ pub mod heavy;
 pub mod hrrr;
 pub mod intelligence;
 pub mod lightning;
+pub mod mesoanalysis;
+pub mod mesoanalysis_calibration;
 pub mod named_geometry;
 pub mod native_dataset;
 pub mod native_dataset_hrrr;
