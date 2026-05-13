@@ -1,9 +1,9 @@
 use std::io::Cursor;
 
-use image::{imageops::FilterType, ImageBuffer, ImageFormat, Rgba};
+use image::{ImageBuffer, ImageFormat, Rgba, imageops::FilterType};
 use serde::{Deserialize, Serialize};
 
-use crate::dealias::{dealias_velocity_sweep, DealiasMethod};
+use crate::dealias::{DealiasMethod, dealias_velocity_sweep};
 use crate::nexrad::derived::DerivedProducts;
 use crate::nexrad::srv::SRVComputer;
 use crate::nexrad::{Level2File, Level2Sweep, RadarProduct, RadarSite};

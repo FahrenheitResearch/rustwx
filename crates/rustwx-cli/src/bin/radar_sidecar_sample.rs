@@ -1,11 +1,11 @@
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use rustwx_radar::{
-    radar_polar_to_lat_lon, RadarPolarSample, RadarPolarSampleMethod, RadarPolarSidecar,
-    RadarPolarSidecarManifest,
+    RadarPolarSample, RadarPolarSampleMethod, RadarPolarSidecar, RadarPolarSidecarManifest,
+    radar_polar_to_lat_lon,
 };
 
 #[derive(Debug, Parser)]

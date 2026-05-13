@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use clap::{Parser, ValueEnum};
-use rustwx_products::satellite::{run_goes_native_sequence, GoesNativeSequenceRequest};
+use rustwx_products::satellite::{GoesNativeSequenceRequest, run_goes_native_sequence};
 use rustwx_render::PngCompressionMode;
 
 #[derive(Debug, Parser)]

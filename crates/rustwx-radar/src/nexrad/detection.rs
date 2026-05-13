@@ -185,7 +185,12 @@ const HAIL_MIN_HEIGHT_KM: f32 = 3.0;
 
 /// Convert azimuth/range relative to a radar site into lat/lon.
 fn azimuth_range_to_latlon(site: &RadarSite, azimuth_deg: f32, range_km: f32) -> (f64, f64) {
-    radar_polar_to_lat_lon(site.lat, site.lon, azimuth_deg, f64::from(range_km) * 1000.0)
+    radar_polar_to_lat_lon(
+        site.lat,
+        site.lon,
+        azimuth_deg,
+        f64::from(range_km) * 1000.0,
+    )
 }
 
 /// Dealias a velocity difference using the Nyquist interval.

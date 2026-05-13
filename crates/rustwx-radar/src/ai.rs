@@ -372,7 +372,12 @@ fn cluster_tds(candidates: Vec<TdsCandidateExport>) -> Vec<TdsCandidateExport> {
 }
 
 fn azimuth_range_to_latlon(site: &RadarSite, azimuth_deg: f32, range_km: f32) -> (f64, f64) {
-    radar_polar_to_lat_lon(site.lat, site.lon, azimuth_deg, f64::from(range_km) * 1000.0)
+    radar_polar_to_lat_lon(
+        site.lat,
+        site.lon,
+        azimuth_deg,
+        f64::from(range_km) * 1000.0,
+    )
 }
 
 fn azimuth_diff(a: f32, b: f32) -> f32 {

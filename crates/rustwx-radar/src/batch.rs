@@ -5,7 +5,7 @@ use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::aws::{self, NexradObject};
-use crate::dealias::{dealias_velocity_file, DealiasMethod};
+use crate::dealias::{DealiasMethod, dealias_velocity_file};
 use crate::nexrad::derived::DerivedProducts;
 use crate::nexrad::{Level2File, Level2Sweep, RadarProduct, RadarSite};
 use crate::png::{lowest_sweep_with_hca_inputs, lowest_sweep_with_product};
@@ -658,11 +658,7 @@ fn normalize_azimuth(value: f32) -> f32 {
 
 fn azimuth_delta(a: f32, b: f32) -> f32 {
     let delta = (a - b).abs();
-    if delta > 180.0 {
-        360.0 - delta
-    } else {
-        delta
-    }
+    if delta > 180.0 { 360.0 - delta } else { delta }
 }
 
 #[derive(Default)]

@@ -2,10 +2,10 @@ use clap::{Parser, ValueEnum};
 use image::{Rgba, RgbaImage};
 use rayon::prelude::*;
 use rustwx_products::satellite::{
-    compose_goes_abi_rgb_pixel, lat_lon_to_scan_angles_fast, read_goes_abi_field, GoesAbiField,
-    GoesAbiRgbCompositeStyle,
+    GoesAbiField, GoesAbiRgbCompositeStyle, compose_goes_abi_rgb_pixel,
+    lat_lon_to_scan_angles_fast, read_goes_abi_field,
 };
-use rustwx_render::{save_rgba_png_profile_with_options, PngCompressionMode, PngWriteOptions};
+use rustwx_render::{PngCompressionMode, PngWriteOptions, save_rgba_png_profile_with_options};
 use serde::Serialize;
 use std::error::Error;
 use std::f64::consts::PI;
@@ -174,9 +174,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         c13: args
             .channel13
             .as_ref()
-            .map(|path| {
-                read_goes_abi_field(path, "CMI").map(|field| ChannelSampler { field })
-            })
+            .map(|path| read_goes_abi_field(path, "CMI").map(|field| ChannelSampler { field }))
             .transpose()?,
     };
     let compression = args.png_compression.into();
@@ -333,7 +331,10 @@ fn render_tile(
                 continue;
             }
             let c02 = samplers.c02.sample(lat, lon);
-            let c13 = samplers.c13.as_ref().map(|sampler| sampler.sample(lat, lon));
+            let c13 = samplers
+                .c13
+                .as_ref()
+                .map(|sampler| sampler.sample(lat, lon));
             let color = compose_goes_abi_rgb_pixel(GoesAbiRgbCompositeStyle::GeoColor, |channel| {
                 Ok(match channel {
                     1 => samplers.c01.sample(lat, lon),
@@ -453,7 +454,16 @@ impl ChannelSampler {
         let Some((y0, y1, fy)) = bracket_axis(&scene.fixed_grid.y_scan_rad, scan_y) else {
             return f32::NAN;
         };
-        bilinear_f32(&self.field.values, scene.fixed_grid.nx, x0, x1, y0, y1, fx, fy)
+        bilinear_f32(
+            &self.field.values,
+            scene.fixed_grid.nx,
+            x0,
+            x1,
+            y0,
+            y1,
+            fx,
+            fy,
+        )
     }
 }
 

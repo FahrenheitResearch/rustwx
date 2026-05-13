@@ -1,5 +1,5 @@
-use crate::nexrad::level2::{MomentData, RadialData};
 use crate::nexrad::RadarProduct;
+use crate::nexrad::level2::{MomentData, RadialData};
 use crate::nexrad::{Level2File, Level2Sweep};
 
 /// Effective earth radius for beam height calculations (4/3 model), in km.

@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use chrono::{DateTime, SecondsFormat, Utc};
 use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder};
@@ -13,20 +13,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::dealias::VelocityQualityMaskReport;
 use crate::dealias::{
-    dealias_velocity_sweep, dealias_velocity_sweep_with_policy, effective_nyquist,
-    mask_velocity_sweep_quality, DealiasAcceptancePolicy, DealiasMethod, DealiasReport,
+    DealiasAcceptancePolicy, DealiasMethod, DealiasReport, dealias_velocity_sweep,
+    dealias_velocity_sweep_with_policy, effective_nyquist, mask_velocity_sweep_quality,
 };
 use crate::nexrad::derived::DerivedProducts;
 use crate::nexrad::level2::{MomentData, RadialData};
 use crate::nexrad::srv::SRVComputer;
 use crate::nexrad::{Level2File, Level2Sweep, RadarProduct, RadarSite};
 use crate::png::{
-    select_sweep_with_hca_inputs, select_sweep_with_product, sweep_contains_product,
-    RadarSweepSelection,
+    RadarSweepSelection, select_sweep_with_hca_inputs, select_sweep_with_product,
+    sweep_contains_product,
 };
 use crate::render::{ColorTable, ColorTablePreset};
 use crate::sidecar::{
-    radar_lat_lon_to_polar, write_polar_sidecar, RadarPolarSidecarOptions, RadarPolarSidecarRecord,
+    RadarPolarSidecarOptions, RadarPolarSidecarRecord, radar_lat_lon_to_polar, write_polar_sidecar,
 };
 
 const WEB_MERCATOR_LIMIT: f64 = 85.051_128_78;
@@ -1064,9 +1064,11 @@ fn radar_product_provenance(
         return RadarProductProvenance {
             source: "derived".to_string(),
             derived: true,
-            inputs: vec![RadarProduct::DifferentialPhase
-                .short_name()
-                .to_ascii_lowercase()],
+            inputs: vec![
+                RadarProduct::DifferentialPhase
+                    .short_name()
+                    .to_ascii_lowercase(),
+            ],
             method: Some("centered_phi_range_derivative".to_string()),
         };
     }

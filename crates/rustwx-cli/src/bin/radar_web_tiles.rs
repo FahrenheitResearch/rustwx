@@ -1,11 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, ValueEnum};
-use rustwx_radar::nexrad::{sites, Level2File, RadarProduct, RadarSite};
+use rustwx_radar::nexrad::{Level2File, RadarProduct, RadarSite, sites};
 use rustwx_radar::{
-    render_product_web_tiles, sweeps_with_hca_inputs, sweeps_with_product, ColorTablePreset,
-    DealiasMethod, RadarSweepSelection, RadarTileManifest, RadarTileOptions,
-    RadarTilePngCompression,
+    ColorTablePreset, DealiasMethod, RadarSweepSelection, RadarTileManifest, RadarTileOptions,
+    RadarTilePngCompression, render_product_web_tiles, sweeps_with_hca_inputs, sweeps_with_product,
 };
 use serde::Serialize;
 

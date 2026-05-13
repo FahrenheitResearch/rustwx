@@ -1,7 +1,7 @@
 use clap::{Parser, ValueEnum};
 use image::{Rgba, RgbaImage};
 use rayon::prelude::*;
-use rustwx_render::{save_rgba_png_profile_with_options, PngCompressionMode, PngWriteOptions};
+use rustwx_render::{PngCompressionMode, PngWriteOptions, save_rgba_png_profile_with_options};
 use serde::Serialize;
 use std::error::Error;
 use std::f64::consts::PI;

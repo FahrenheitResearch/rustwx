@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use serde::Serialize;
 use serde_json::Value;
@@ -1235,18 +1235,24 @@ mod tests {
             evaluate_manifest_value(Path::new("manifest.json"), &value, &thresholds).unwrap();
 
         assert!(!summary.ok);
-        assert!(summary
-            .failures
-            .iter()
-            .any(|failure| { failure.contains("reflectivity removed fraction") }));
-        assert!(summary
-            .failures
-            .iter()
-            .any(|failure| { failure.contains("accepted dealias increased fold-like jumps") }));
-        assert!(summary
-            .failures
-            .iter()
-            .any(|failure| { failure.contains("accepted dealias increased severe jumps") }));
+        assert!(
+            summary
+                .failures
+                .iter()
+                .any(|failure| { failure.contains("reflectivity removed fraction") })
+        );
+        assert!(
+            summary
+                .failures
+                .iter()
+                .any(|failure| { failure.contains("accepted dealias increased fold-like jumps") })
+        );
+        assert!(
+            summary
+                .failures
+                .iter()
+                .any(|failure| { failure.contains("accepted dealias increased severe jumps") })
+        );
     }
 
     #[test]
@@ -1301,18 +1307,24 @@ mod tests {
             evaluate_manifest_value(Path::new("manifest.json"), &too_low, &thresholds).unwrap();
 
         assert!(!summary.ok);
-        assert!(summary
-            .failures
-            .iter()
-            .any(|failure| { failure.contains("product finite gates 20 below 1000") }));
-        assert!(summary
-            .failures
-            .iter()
-            .any(|failure| { failure.contains("product min value -0.2000 below 0.0000") }));
-        assert!(summary
-            .failures
-            .iter()
-            .any(|failure| { failure.contains("product max value 1.4000 exceeds 1.0500") }));
+        assert!(
+            summary
+                .failures
+                .iter()
+                .any(|failure| { failure.contains("product finite gates 20 below 1000") })
+        );
+        assert!(
+            summary
+                .failures
+                .iter()
+                .any(|failure| { failure.contains("product min value -0.2000 below 0.0000") })
+        );
+        assert!(
+            summary
+                .failures
+                .iter()
+                .any(|failure| { failure.contains("product max value 1.4000 exceeds 1.0500") })
+        );
     }
 
     #[test]
@@ -1455,10 +1467,12 @@ mod tests {
         )
         .unwrap();
         assert!(!missing.ok);
-        assert!(missing
-            .failures
-            .iter()
-            .any(|failure| { failure.contains("value_meanings do not include large_hail") }));
+        assert!(
+            missing
+                .failures
+                .iter()
+                .any(|failure| { failure.contains("value_meanings do not include large_hail") })
+        );
 
         fs::remove_dir_all(root).ok();
     }
@@ -1512,10 +1526,12 @@ mod tests {
             evaluate_manifest_value(Path::new("manifest.json"), &clipped, &thresholds).unwrap();
 
         assert!(!summary.ok);
-        assert!(summary
-            .failures
-            .iter()
-            .any(|failure| { failure.contains("clip_to_bounds=Some(true)") }));
+        assert!(
+            summary
+                .failures
+                .iter()
+                .any(|failure| { failure.contains("clip_to_bounds=Some(true)") })
+        );
 
         let too_small = json!({
             "ok": true,
@@ -1529,10 +1545,12 @@ mod tests {
             evaluate_manifest_value(Path::new("manifest.json"), &too_small, &thresholds).unwrap();
 
         assert!(!summary.ok);
-        assert!(summary
-            .failures
-            .iter()
-            .any(|failure| { failure.contains("do not cover tile bounds") }));
+        assert!(
+            summary
+                .failures
+                .iter()
+                .any(|failure| { failure.contains("do not cover tile bounds") })
+        );
     }
 
     #[test]
@@ -1586,9 +1604,11 @@ mod tests {
             evaluate_manifest_value(Path::new("manifest.json"), &missing, &thresholds).unwrap();
 
         assert!(!summary.ok);
-        assert!(summary
-            .failures
-            .iter()
-            .any(|failure| { failure.contains("missing product provenance") }));
+        assert!(
+            summary
+                .failures
+                .iter()
+                .any(|failure| { failure.contains("missing product provenance") })
+        );
     }
 }

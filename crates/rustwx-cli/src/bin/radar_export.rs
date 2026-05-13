@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
-use rustwx_radar::nexrad::{sites, Level2File, RadarProduct, RadarSite};
+use rustwx_radar::nexrad::{Level2File, RadarProduct, RadarSite, sites};
 use rustwx_radar::render::RenderMode;
 use rustwx_radar::{
-    build_ai_frame, render_product_frame, sweeps_with_hca_inputs, sweeps_with_product,
-    AiExportOptions, RadarSweepSelection,
+    AiExportOptions, RadarSweepSelection, build_ai_frame, render_product_frame,
+    sweeps_with_hca_inputs, sweeps_with_product,
 };
 
 #[derive(Parser)]

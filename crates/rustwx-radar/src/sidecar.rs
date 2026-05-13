@@ -1,12 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::nexrad::level2::MomentData;
-use crate::nexrad::{radar_site_elevation_m, Level2Sweep, RadarProduct, RadarSite};
+use crate::nexrad::{Level2Sweep, RadarProduct, RadarSite, radar_site_elevation_m};
 
 pub const RADAR_POLAR_SIDECAR_SCHEMA: &str = "rustwx.radar.polar_sidecar.v2";
 const VALUES_FILE_NAME: &str = "polar_values_f32le.bin";
@@ -1086,13 +1086,14 @@ mod tests {
         assert_eq!(sidecar.manifest.radials[0].scale, Some(2.0));
         assert_eq!(sidecar.manifest.radials[0].offset, Some(66.0));
         assert!(sidecar.manifest.value_meanings.is_empty());
-        assert!(sidecar
-            .manifest
-            .gate_flag_meanings
-            .iter()
-            .any(
-                |meaning| meaning.name == "range_folded" && meaning.mask == GATE_FLAG_RANGE_FOLDED
-            ));
+        assert!(
+            sidecar
+                .manifest
+                .gate_flag_meanings
+                .iter()
+                .any(|meaning| meaning.name == "range_folded"
+                    && meaning.mask == GATE_FLAG_RANGE_FOLDED)
+        );
         assert_eq!(sidecar.gate_flags[1] & GATE_FLAG_MISSING, GATE_FLAG_MISSING);
         assert_eq!(
             sidecar.gate_flags[2] & GATE_FLAG_RANGE_FOLDED,
@@ -1189,11 +1190,13 @@ mod tests {
         .unwrap();
 
         let sidecar = RadarPolarSidecar::open(&record.manifest_path).unwrap();
-        assert!(sidecar
-            .manifest
-            .value_meanings
-            .iter()
-            .any(|meaning| meaning.value == 7.0 && meaning.label == "Heavy Rain"));
+        assert!(
+            sidecar
+                .manifest
+                .value_meanings
+                .iter()
+                .any(|meaning| meaning.value == 7.0 && meaning.label == "Heavy Rain")
+        );
 
         let (lat, lon) = radar_polar_to_lat_lon(site.lat, site.lon, 0.0, 0.0);
         let sample = sidecar
@@ -1298,9 +1301,10 @@ mod tests {
         )
         .unwrap();
         let err = RadarPolarSidecar::open(&manifest_path).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("unsupported radar sidecar version"));
+        assert!(
+            err.to_string()
+                .contains("unsupported radar sidecar version")
+        );
 
         manifest["sidecar_version"] = serde_json::json!(2);
         manifest["ok"] = serde_json::json!(false);
