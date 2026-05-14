@@ -113,6 +113,9 @@ pub struct ContourOverlay {
     pub labels: bool,
     /// When true, find and draw H/L extrema labels on the contour field.
     pub show_extrema: bool,
+    pub pattern: crate::request::ContourLinePattern,
+    pub major_every: Option<usize>,
+    pub major_width: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -126,4 +129,19 @@ pub struct BarbOverlay {
     pub color: Rgba,
     pub width: u32,
     pub length_px: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct StreamlineOverlay {
+    pub u: Vec<f64>,
+    pub v: Vec<f64>,
+    pub ny: usize,
+    pub nx: usize,
+    pub stride_x: usize,
+    pub stride_y: usize,
+    pub color: Rgba,
+    pub width: u32,
+    pub max_steps: usize,
+    pub step_cells: f64,
+    pub min_speed: f64,
 }

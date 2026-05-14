@@ -170,8 +170,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         out_dir: args.out_dir.clone(),
         cache_root,
         use_cache: !args.no_cache,
-        output_width: 1200,
-        output_height: 900,
+        output_width: static_output_dimension("RUSTWX_STATIC_OUTPUT_WIDTH", 1600),
+        output_height: static_output_dimension("RUSTWX_STATIC_OUTPUT_HEIGHT", 900),
         png_compression: args.png_compression.into(),
         place_label_overlay: default_place_label_overlay_for_domain(
             &domain,
@@ -211,4 +211,12 @@ fn resolve_member_products(args: &Args) -> Result<Vec<String>, Box<dyn std::erro
         )
         .into()
     })
+}
+
+fn static_output_dimension(name: &str, fallback: u32) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| *value >= 320)
+        .unwrap_or(fallback)
 }

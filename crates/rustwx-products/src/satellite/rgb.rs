@@ -168,7 +168,7 @@ pub fn build_goes_abi_rgb_composite_render_request(
     render_request.colorbar = false;
     render_request.visual_mode = ProductVisualMode::OverlayAnalysis;
     render_request.supersample_factor = 2;
-    render_request.domain_frame = Some(DomainFrame::model_data_default());
+    render_request.domain_frame = Some(DomainFrame::map_viewport_default());
     render_request.render_density = RenderDensity {
         fill: LevelDensity::default(),
         palette_multiplier: 1,

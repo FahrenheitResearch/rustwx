@@ -1782,6 +1782,8 @@ fn run_direct_lane(
         custom_poi_overlay: None,
         place_label_overlay: None,
         output_suffix: None,
+        subtitle_left_override: None,
+        subtitle_right_override: None,
         earth2_ensemble: None,
     };
     let slug = Lane::Direct.slug();
@@ -1875,6 +1877,7 @@ fn run_derived_lane(
         png_compression: config.png_compression,
         custom_poi_overlay: None,
         place_label_overlay: None,
+        earth2_ensemble: None,
     };
     let slug = Lane::Derived.slug();
     match rustwx_products::derived::run_derived_batch(&request) {

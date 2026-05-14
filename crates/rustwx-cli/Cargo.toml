@@ -9,7 +9,7 @@ default-run = "rustwx-cli"
 
 [features]
 default = []
-wrf = ["rustwx-io/wrf", "rustwx-products/wrf"]
+wrf = ["dep:rustwx-wrf", "rustwx-io/wrf", "rustwx-products/wrf"]
 # Enables CUDA acceleration for both calc (severe.rs) and render (rasterize.rs)
 # hot paths. Pulls in rustwx-cuda via the corresponding feature flag on each.
 cuda = ["rustwx-render/cuda", "rustwx-calc/cuda"]
@@ -34,3 +34,4 @@ rustwx-products = { path = "../rustwx-products" }
 rustwx-radar = { path = "../rustwx-radar" }
 rustwx-render = { path = "../rustwx-render" }
 rustwx-sounding = { path = "../rustwx-sounding" }
+rustwx-wrf = { path = "../rustwx-wrf", optional = true }

@@ -553,6 +553,15 @@ fn build_fetch_request(
         sharing_bundles
             .iter()
             .map(|bundle| {
+                if bundle.aliases.iter().any(|alias| {
+                    alias.variable_patterns.is_empty()
+                        && alias
+                            .logical_family
+                            .as_deref()
+                            .is_some_and(|family| family.starts_with("thermo-native:"))
+                }) {
+                    return Vec::new();
+                }
                 let mut patterns = crate::gridded::bundle_fetch_variable_patterns(
                     bundle.id.model,
                     bundle.id.bundle,
@@ -928,6 +937,39 @@ mod tests {
                 "UGRD:500 mb".to_string(),
                 "VGRD:500 mb".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn gfs_shared_direct_and_unsubsetted_derived_alias_uses_whole_file() {
+        use rustwx_core::BundleRequirement;
+
+        let latest = LatestRun {
+            model: rustwx_core::ModelId::Gfs,
+            cycle: CycleSpec::new("20260415", 18).unwrap(),
+            source: SourceId::Aws,
+        };
+        let mut builder = crate::planner::ExecutionPlanBuilder::new(&latest, 0);
+        let requirement = BundleRequirement::new(CanonicalBundleDescriptor::NativeAnalysis, 0)
+            .with_native_override("pgrb2.0p25");
+        builder.require_with_logical_family_and_patterns(
+            &requirement,
+            Some("direct"),
+            ["TMP:2 m above ground"],
+        );
+        builder.require_with_logical_family(&requirement, Some("thermo-native:pgrb2.0p25"));
+        let plan = builder.build();
+        let key = plan
+            .fetch_keys()
+            .into_iter()
+            .find(|key| key.native_product == "pgrb2.0p25")
+            .expect("shared GFS plan includes pgrb2.0p25");
+
+        let request = build_fetch_request(&plan, &key, None).expect("request builds");
+
+        assert!(
+            request.variable_patterns.is_empty(),
+            "shared GFS direct+derived fetch should use whole-file bytes when a derived alias has no indexed subset contract"
         );
     }
 }

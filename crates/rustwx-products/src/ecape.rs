@@ -461,6 +461,7 @@ fn render_ecape_ratio_display_plot(
             width: 1,
             labels: false,
             show_extrema: false,
+            ..Default::default()
         },
     )?;
     let timing = save_png_profile(&request, &output_path)?;

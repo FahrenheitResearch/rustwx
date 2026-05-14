@@ -270,7 +270,7 @@ pub fn build_weather_map_request(
     request.height = height;
     request.supersample_factor = static_supersample_factor();
     request.supersample_sharpen = static_supersample_sharpen();
-    request.domain_frame = Some(DomainFrame::model_data_default());
+    request.domain_frame = Some(DomainFrame::map_viewport_default());
     request.visual_mode = ProductVisualMode::SevereDiagnostic;
     request.title = Some(field_spec.display_title().to_string());
     request.subtitle_left = subtitle_left;

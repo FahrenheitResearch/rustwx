@@ -1281,6 +1281,8 @@ fn execute_direct(
         custom_poi_overlay: None,
         place_label_overlay: None,
         output_suffix: None,
+        subtitle_left_override: None,
+        subtitle_right_override: None,
         earth2_ensemble: None,
     };
     match run_direct_batch(&request) {
@@ -1344,6 +1346,7 @@ fn execute_derived(
         png_compression: config.png_compression,
         custom_poi_overlay: None,
         place_label_overlay: None,
+        earth2_ensemble: None,
     };
     match run_derived_batch(&request) {
         Ok(report) => JobExecutionResult {

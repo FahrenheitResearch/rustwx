@@ -9,50 +9,45 @@ use rustwx_io::{
     load_cached_selected_field, store_cached_selected_field,
 };
 use rustwx_models::{
-    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan, LatestRun,
-    ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
+    LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
+    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan,
 };
 use rustwx_render::{
+    BasemapDetail, Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode,
+    GeographicClipBounds, InverseRasterProjection, LevelDensity, MapRenderRequest, PanelGridLayout,
+    PanelPadding, PngCompressionMode, PngWriteOptions, ProductVisualMode,
+    ProjectedContourLineStyle, ProjectedDomain, ProjectedMap, ProjectedMapBuildOptions,
+    RasterSampleMode, RenderImageTiming, RenderStateTiming, WindBarbLayer, WindStreamlineLayer,
     build_projected_contour_geometry_profile, densify_discrete_scale, draw_centered_text_line,
     render_panel_grid, save_png_profile_with_options, save_rgba_png_profile_with_options,
-    weather::{
-        dewpoint_palette_params, temperature_palette_cropped_f, weather_palette,
-        winds_palette_segments, WeatherPalette,
-    },
-    BasemapDetail, Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode,
-    GeographicClipBounds, InverseRasterProjection, LegendControls, LegendMode, LevelDensity,
-    MapRenderRequest, PanelGridLayout, PanelPadding, PngCompressionMode, PngWriteOptions,
-    ProductVisualMode, ProjectedContourLineStyle, ProjectedDomain, ProjectedMap,
-    ProjectedMapBuildOptions, RasterSampleMode, RenderDensity, RenderImageTiming,
-    RenderStateTiming, WindBarbLayer,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
 use std::thread;
 use std::time::Instant;
 
-use crate::custom_poi::{apply_custom_poi_overlay, CustomPoiOverlay};
-use crate::gridded::{crop_latlon_grid, crop_values_f32, GridCrop};
+use crate::custom_poi::{CustomPoiOverlay, apply_custom_poi_overlay};
+use crate::gridded::{GridCrop, crop_latlon_grid, crop_values_f32};
 use crate::places::PlaceLabelOverlay;
 use crate::planner::{ExecutionPlan, ExecutionPlanBuilder};
 use crate::publication::{
-    artifact_identity_from_path, fetch_identity_from_cached_result_with_aliases,
-    ArtifactContentIdentity, PublishedFetchIdentity,
+    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
+    fetch_identity_from_cached_result_with_aliases,
 };
 use crate::runtime::{
-    load_execution_plan, BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet,
+    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
 };
 use crate::shared_context::{
-    model_time_subtitle, source_subtitle, static_chrome_scale, static_supersample_factor,
-    static_supersample_sharpen, static_title_with_suffix, DomainSpec, ProjectedMapProvider,
+    DomainSpec, ProjectedMapProvider, model_time_subtitle, source_subtitle, static_chrome_scale,
+    static_supersample_factor, static_supersample_sharpen, static_title_with_suffix,
 };
-use crate::source::{direct_route_for_recipe_slug, ProductSourceRoute};
+use crate::source::{ProductSourceRoute, direct_route_for_recipe_slug};
 use crate::spec::direct_product_specs;
 
 const OUTPUT_WIDTH: u32 = 1600;
@@ -111,6 +106,10 @@ pub struct DirectBatchRequest {
     pub place_label_overlay: Option<PlaceLabelOverlay>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_suffix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle_left_override: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle_right_override: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub earth2_ensemble: Option<rustwx_io::earth2_archive::Earth2EnsembleSelector>,
 }
@@ -363,6 +362,7 @@ struct BarbStrideCacheKey {
 type SharedContourLayerCache = Arc<Mutex<HashMap<FieldSelector, Option<ContourLayer>>>>;
 type SharedBarbStrideCache = Arc<Mutex<HashMap<BarbStrideCacheKey, (usize, usize)>>>;
 type SharedBarbLayerCache = Arc<Mutex<HashMap<BarbStrideCacheKey, Vec<WindBarbLayer>>>>;
+type SharedStreamlineLayerCache = Arc<Mutex<HashMap<BarbStrideCacheKey, Vec<WindStreamlineLayer>>>>;
 type SharedProjectedMapCache = Arc<Mutex<HashMap<(u32, u32, u8), ProjectedMap>>>;
 type PreparedProjectedMaps = Arc<HashMap<(u32, u32, u8), ProjectedMap>>;
 
@@ -388,6 +388,8 @@ impl DirectBatchRequest {
             custom_poi_overlay: request.custom_poi_overlay.clone(),
             place_label_overlay: request.place_label_overlay.clone(),
             output_suffix: None,
+            subtitle_left_override: None,
+            subtitle_right_override: None,
             earth2_ensemble: None,
         }
     }
@@ -436,6 +438,8 @@ fn sampling_direct_request(
         custom_poi_overlay: None,
         place_label_overlay: None,
         output_suffix: None,
+        subtitle_left_override: None,
+        subtitle_right_override: None,
         earth2_ensemble: None,
     }
 }
@@ -494,8 +498,31 @@ pub fn render_direct_recipe_from_selected_fields(
     resolved_url: impl Into<String>,
     fetch_key: impl Into<String>,
 ) -> Result<DirectRenderedRecipe, Box<dyn std::error::Error>> {
+    let mut rendered = render_direct_recipes_from_selected_fields(
+        request,
+        latest,
+        &[recipe_slug.to_string()],
+        extracted,
+        fetched_product,
+        resolved_url,
+        fetch_key,
+    )?;
+    rendered
+        .pop()
+        .ok_or_else(|| "direct recipe rendered no outputs".into())
+}
+
+pub fn render_direct_recipes_from_selected_fields(
+    request: &DirectBatchRequest,
+    latest: &LatestRun,
+    recipe_slugs: &[String],
+    extracted: &HashMap<FieldSelector, SelectedField2D>,
+    fetched_product: impl Into<String>,
+    resolved_url: impl Into<String>,
+    fetch_key: impl Into<String>,
+) -> Result<Vec<DirectRenderedRecipe>, Box<dyn std::error::Error>> {
     fs::create_dir_all(&request.out_dir)?;
-    let planned = plan_direct_recipes(request.model, &[recipe_slug.to_string()])?;
+    let planned = plan_direct_recipes(request.model, recipe_slugs)?;
     let groups = group_direct_fetches(request, &planned);
     let fetched_product = fetched_product.into();
     let resolved_url = resolved_url.into();
@@ -526,17 +553,14 @@ pub fn render_direct_recipe_from_selected_fields(
         return Err(format!("missing selected fields for direct render: {:?}", missing).into());
     }
 
-    let mut rendered = render_direct_recipes(
+    render_direct_recipes(
         request,
         latest,
         &planned,
         extracted,
         &fetch_truth_by_actual_product,
         None,
-    )?;
-    rendered
-        .pop()
-        .ok_or_else(|| "direct recipe rendered no outputs".into())
+    )
 }
 
 pub fn run_hrrr_direct_batch(
@@ -1677,6 +1701,7 @@ fn render_direct_recipes(
     let extracted = &domain_extracted;
     let contour_layer_cache = Arc::new(Mutex::new(HashMap::new()));
     let barb_layer_cache = Arc::new(Mutex::new(HashMap::new()));
+    let streamline_layer_cache = Arc::new(Mutex::new(HashMap::new()));
     let barb_stride_cache = Arc::new(Mutex::new(HashMap::new()));
     let projected_map_cache = Arc::new(Mutex::new(HashMap::new()));
     let prepared_projected_maps = build_prepared_projected_maps(request, planned, extracted)?;
@@ -1697,6 +1722,7 @@ fn render_direct_recipes(
                     shared_context,
                     &contour_layer_cache,
                     &barb_layer_cache,
+                    &streamline_layer_cache,
                     &barb_stride_cache,
                     &projected_map_cache,
                     &prepared_projected_maps,
@@ -1714,6 +1740,7 @@ fn render_direct_recipes(
             let barb_stride_cache = Arc::clone(&barb_stride_cache);
             let contour_layer_cache = Arc::clone(&contour_layer_cache);
             let barb_layer_cache = Arc::clone(&barb_layer_cache);
+            let streamline_layer_cache = Arc::clone(&streamline_layer_cache);
             let projected_map_cache = Arc::clone(&projected_map_cache);
             let prepared_projected_maps = Arc::clone(&prepared_projected_maps);
             let next_index = &next_index;
@@ -1734,6 +1761,7 @@ fn render_direct_recipes(
                             shared_context,
                             &contour_layer_cache,
                             &barb_layer_cache,
+                            &streamline_layer_cache,
                             &barb_stride_cache,
                             &projected_map_cache,
                             &prepared_projected_maps,
@@ -2115,8 +2143,7 @@ fn normalize_longitude_for_bounds(lon: f64) -> f64 {
 }
 
 pub(crate) fn is_global_scale_domain(bounds: (f64, f64, f64, f64)) -> bool {
-    let lat_span = (bounds.3 - bounds.2).abs();
-    lat_span >= 100.0 && longitude_bounds_span_deg(bounds) >= 300.0
+    crate::plot_design::is_global_scale_domain(bounds)
 }
 
 fn longitude_bounds_span_deg(bounds: (f64, f64, f64, f64)) -> f64 {
@@ -2255,6 +2282,7 @@ fn render_direct_recipe(
     shared_context: Option<&dyn ProjectedMapProvider>,
     contour_layer_cache: &SharedContourLayerCache,
     barb_layer_cache: &SharedBarbLayerCache,
+    streamline_layer_cache: &SharedStreamlineLayerCache,
     barb_stride_cache: &SharedBarbStrideCache,
     projected_map_cache: &SharedProjectedMapCache,
     prepared_projected_maps: &PreparedProjectedMaps,
@@ -2312,6 +2340,7 @@ fn render_direct_recipe(
             shared_context,
             contour_layer_cache,
             barb_layer_cache,
+            streamline_layer_cache,
             barb_stride_cache,
             projected_map_cache,
             prepared_projected_maps,
@@ -2389,6 +2418,7 @@ fn render_direct_recipe(
             request.output_height,
             contour_layer_cache,
             barb_layer_cache,
+            streamline_layer_cache,
             barb_stride_cache,
             request.contour_mode,
             request.native_fill_level_multiplier,
@@ -2401,13 +2431,21 @@ fn render_direct_recipe(
             item.plan.product.as_ref(),
             item.recipe.title,
         ));
-        render_request.subtitle_left = Some(model_time_subtitle(
-            request.model,
-            &request.date_yyyymmdd,
-            latest.cycle.hour_utc,
-            request.forecast_hour,
-        ));
-        render_request.subtitle_right = Some(source_subtitle(latest.source));
+        render_request.subtitle_left =
+            Some(request.subtitle_left_override.clone().unwrap_or_else(|| {
+                model_time_subtitle(
+                    request.model,
+                    &request.date_yyyymmdd,
+                    latest.cycle.hour_utc,
+                    request.forecast_hour,
+                )
+            }));
+        render_request.subtitle_right = Some(
+            request
+                .subtitle_right_override
+                .clone()
+                .unwrap_or_else(|| source_subtitle(latest.source)),
+        );
         if let Some(overlay) = request.custom_poi_overlay.as_ref() {
             apply_custom_poi_overlay(
                 &mut render_request,
@@ -2501,6 +2539,7 @@ fn render_direct_composite_panel(
     shared_context: Option<&dyn ProjectedMapProvider>,
     contour_layer_cache: &SharedContourLayerCache,
     barb_layer_cache: &SharedBarbLayerCache,
+    streamline_layer_cache: &SharedStreamlineLayerCache,
     barb_stride_cache: &SharedBarbStrideCache,
     projected_map_cache: &SharedProjectedMapCache,
     prepared_projected_maps: &PreparedProjectedMaps,
@@ -2601,6 +2640,7 @@ fn render_direct_composite_panel(
             spec.panel_height,
             contour_layer_cache,
             barb_layer_cache,
+            streamline_layer_cache,
             barb_stride_cache,
             request.contour_mode,
             request.native_fill_level_multiplier,
@@ -2654,13 +2694,18 @@ fn render_direct_composite_panel(
         &mut canvas,
         &format!(
             "{} | {}",
-            model_time_subtitle(
-                request.model,
-                &request.date_yyyymmdd,
-                latest.cycle.hour_utc,
-                request.forecast_hour
-            ),
-            source_subtitle(latest.source)
+            request.subtitle_left_override.clone().unwrap_or_else(|| {
+                model_time_subtitle(
+                    request.model,
+                    &request.date_yyyymmdd,
+                    latest.cycle.hour_utc,
+                    request.forecast_hour,
+                )
+            }),
+            request
+                .subtitle_right_override
+                .clone()
+                .unwrap_or_else(|| source_subtitle(latest.source))
         ),
         35,
         Color::BLACK,
@@ -2698,6 +2743,7 @@ fn build_render_request(
     output_height: u32,
     contour_layer_cache: &SharedContourLayerCache,
     barb_layer_cache: &SharedBarbLayerCache,
+    streamline_layer_cache: &SharedStreamlineLayerCache,
     barb_stride_cache: &SharedBarbStrideCache,
     contour_mode: NativeContourRenderMode,
     native_fill_level_multiplier: usize,
@@ -2733,33 +2779,15 @@ fn build_render_request(
             ),
         )
     };
-    request.visual_mode = visual_mode;
+    crate::plot_design::StaticPlotDesign::new(bounds, visual_mode)
+        .overlay_only(overlay_only)
+        .apply_to_request(&mut request);
     request.title = Some(static_title_with_suffix(recipe.title));
     request.width = output_width;
     request.height = output_height;
     request.chrome_scale = static_chrome_scale();
-    request.render_density = RenderDensity {
-        fill: LevelDensity::default(),
-        palette_multiplier: 1,
-    };
-    request.legend = LegendControls {
-        density: LevelDensity::default(),
-        mode: LegendMode::Stepped,
-    };
-    if is_global_scale_domain(bounds) && !overlay_only {
-        request.render_density = RenderDensity::default();
-        request.legend = LegendControls {
-            density: LevelDensity::default(),
-            mode: LegendMode::SmoothRamp,
-        };
-    }
     request.supersample_factor = static_supersample_factor();
     request.supersample_sharpen = static_supersample_sharpen();
-    request.domain_frame = if is_global_scale_domain(bounds) {
-        None
-    } else {
-        model_data_domain_frame_for_projection(filled.projection.as_ref())
-    };
     request.projected_domain = Some(ProjectedDomain {
         x: projected.projected_x,
         y: projected.projected_y,
@@ -2781,6 +2809,13 @@ fn build_render_request(
     timing.contour_prepare_ms += contour_prepare_start.elapsed().as_millis();
     let barb_prepare_start = Instant::now();
     if !suppress_companion_overlays {
+        request.wind_streamlines = build_streamline_layers(
+            recipe,
+            extracted,
+            bounds,
+            streamline_layer_cache,
+            barb_stride_cache,
+        );
         request.wind_barbs = build_barb_layers(
             recipe,
             extracted,
@@ -3149,6 +3184,14 @@ fn convert_filled_field_with_ensemble(
     ) {
         if earth2_is_std_selector(earth2_ensemble) || selector_is_spread_product(field.selector) {
             core.units = "K".to_string();
+        } else if matches!(
+            field.selector.vertical,
+            VerticalSelector::HeightAboveGroundMeters(2)
+        ) {
+            for value in &mut core.values {
+                *value = (*value - 273.15) * 9.0 / 5.0 + 32.0;
+            }
+            core.units = "degF".to_string();
         } else {
             for value in &mut core.values {
                 *value -= 273.15;
@@ -3289,216 +3332,8 @@ fn earth2_spread_colors() -> Vec<Color> {
 }
 
 fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> ColorScale {
-    if filled_selector.field == CanonicalField::SmokeMassDensity {
-        return ColorScale::Discrete(DiscreteColorScale {
-            levels: vec![0.0, 5.0, 10.0, 20.0, 35.0, 55.0, 100.0, 150.0, 250.0, 500.0],
-            colors: smoke_scale_colors(),
-            extend: ExtendMode::Max,
-            mask_below: Some(1.0),
-        });
-    }
-    if filled_selector.field == CanonicalField::ColumnIntegratedSmoke {
-        return ColorScale::Discrete(DiscreteColorScale {
-            levels: vec![0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 40.0, 80.0, 160.0, 320.0],
-            colors: smoke_scale_colors(),
-            extend: ExtendMode::Max,
-            mask_below: Some(0.5),
-        });
-    }
-    let discrete = match recipe.style {
-        RenderStyle::WeatherTemperature => {
-            let (lo, hi, step, crop_f) = match filled_selector.vertical {
-                rustwx_core::VerticalSelector::IsobaricHpa(200) => {
-                    (-70.0, -29.0, 1.0, Some((-40.0, 70.0)))
-                }
-                rustwx_core::VerticalSelector::IsobaricHpa(250) => {
-                    (-70.0, -29.0, 1.0, Some((-40.0, 70.0)))
-                }
-                rustwx_core::VerticalSelector::IsobaricHpa(300) => {
-                    (-70.0, -29.0, 1.0, Some((-40.0, 70.0)))
-                }
-                rustwx_core::VerticalSelector::IsobaricHpa(500) => {
-                    (-50.0, 6.0, 1.0, Some((-40.0, 70.0)))
-                }
-                rustwx_core::VerticalSelector::IsobaricHpa(700) => {
-                    (-40.0, 26.0, 1.0, Some((-40.0, 90.0)))
-                }
-                rustwx_core::VerticalSelector::IsobaricHpa(850) => {
-                    (-40.0, 41.0, 1.0, Some((-40.0, 110.0)))
-                }
-                _ => (-50.0, 50.5, 0.5, Some((-40.0, 120.0))),
-            };
-            DiscreteColorScale {
-                levels: range_step(lo, hi, step),
-                colors: temperature_palette_cropped_f(
-                    crop_f,
-                    (((hi - lo) / step).round() as usize).max(2),
-                ),
-                extend: ExtendMode::Both,
-                mask_below: None,
-            }
-        }
-        RenderStyle::WeatherReflectivity | RenderStyle::WeatherRadarReflectivity => {
-            DiscreteColorScale {
-                levels: range_step(5.0, 70.1, 2.5),
-                colors: weather_palette(WeatherPalette::Reflectivity),
-                extend: ExtendMode::Both,
-                mask_below: None,
-            }
-        }
-        RenderStyle::WeatherRh | RenderStyle::WeatherProbability => DiscreteColorScale {
-            levels: range_step(0.0, 101.0, 1.0),
-            colors: weather_palette(WeatherPalette::Rh),
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
-        RenderStyle::WeatherVorticity => DiscreteColorScale {
-            levels: range_step(-40.0, 60.1, 1.0),
-            colors: weather_palette(WeatherPalette::RelVort),
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
-        RenderStyle::WeatherDewpoint => DiscreteColorScale {
-            levels: range_step(-40.0, 31.0, 1.0),
-            colors: match filled_selector.vertical {
-                rustwx_core::VerticalSelector::IsobaricHpa(_) => dewpoint_palette_params(45, 25),
-                _ => dewpoint_palette_params(90, 50),
-            },
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
-        RenderStyle::WeatherPressure => DiscreteColorScale {
-            levels: range_step(960.0, 1045.0, 2.0),
-            colors: weather_palette(WeatherPalette::Winds),
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
-        RenderStyle::WeatherHeight => DiscreteColorScale {
-            levels: match filled_selector.vertical {
-                rustwx_core::VerticalSelector::IsobaricHpa(200)
-                | rustwx_core::VerticalSelector::IsobaricHpa(250) => range_step(25.0, 176.0, 1.0),
-                rustwx_core::VerticalSelector::IsobaricHpa(300) => range_step(20.0, 161.0, 1.0),
-                rustwx_core::VerticalSelector::IsobaricHpa(500) => range_step(20.0, 141.0, 1.0),
-                rustwx_core::VerticalSelector::IsobaricHpa(700) => range_step(15.0, 101.0, 1.0),
-                rustwx_core::VerticalSelector::IsobaricHpa(850) => range_step(15.0, 81.0, 1.0),
-                _ => range_step(10.0, 71.0, 1.0),
-            },
-            colors: match filled_selector.vertical {
-                rustwx_core::VerticalSelector::IsobaricHpa(200)
-                | rustwx_core::VerticalSelector::IsobaricHpa(250) => winds_palette_segments(150),
-                rustwx_core::VerticalSelector::IsobaricHpa(300) => winds_palette_segments(140),
-                rustwx_core::VerticalSelector::IsobaricHpa(500) => winds_palette_segments(120),
-                rustwx_core::VerticalSelector::IsobaricHpa(700) => winds_palette_segments(85),
-                rustwx_core::VerticalSelector::IsobaricHpa(850) => winds_palette_segments(65),
-                _ => winds_palette_segments(60),
-            },
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
-        RenderStyle::WeatherWindGust | RenderStyle::WeatherWinds => DiscreteColorScale {
-            levels: range_step(10.0, 71.0, 1.0),
-            colors: winds_palette_segments(60),
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
-        RenderStyle::WeatherUh => DiscreteColorScale {
-            levels: {
-                let mut levels = range_step(0.0, 200.0, 5.0);
-                levels.extend(range_step(200.0, 401.0, 10.0).into_iter().skip(1));
-                levels
-            },
-            colors: weather_palette(WeatherPalette::Uh),
-            extend: ExtendMode::Both,
-            // WRF/GDEX can surface negative UH noise over broad terrain
-            // areas; hide it so the standalone product and overlays focus
-            // on the operational positive signal.
-            mask_below: Some(0.0),
-        },
-        RenderStyle::WeatherCloudCover => DiscreteColorScale {
-            levels: range_step(0.0, 110.0, 10.0),
-            colors: weather_palette(WeatherPalette::Rh),
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
-        RenderStyle::WeatherPrecipitableWater => DiscreteColorScale {
-            levels: range_step(0.0, 2.6, 0.1),
-            colors: weather_palette(WeatherPalette::Precip),
-            extend: ExtendMode::Max,
-            mask_below: None,
-        },
-        RenderStyle::WeatherQpf => DiscreteColorScale {
-            levels: vec![
-                0.0, 0.01, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
-                0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5,
-                1.6, 1.7, 1.8, 1.9, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0, 4.5, 5.0, 5.5,
-                6.0, 7.0, 8.0, 9.0, 10.0, 12.0, 15.0,
-            ],
-            colors: weather_palette(WeatherPalette::Precip),
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
-        RenderStyle::WeatherCategorical => DiscreteColorScale {
-            levels: vec![0.0, 0.5, 1.0],
-            colors: vec![
-                Color::rgba(242, 242, 242, 255),
-                Color::rgba(216, 34, 34, 255),
-            ],
-            extend: ExtendMode::Neither,
-            mask_below: None,
-        },
-        RenderStyle::WeatherVisibility => DiscreteColorScale {
-            levels: range_step(0.0, 10.5, 0.5),
-            colors: weather_palette(WeatherPalette::MlMetric),
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
-        RenderStyle::WeatherSatellite => DiscreteColorScale {
-            levels: range_step(170.0, 321.0, 2.0),
-            colors: weather_palette(WeatherPalette::SimIr),
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
-        RenderStyle::WeatherLightning => DiscreteColorScale {
-            levels: range_step(0.0, 20.5, 0.5),
-            colors: weather_palette(WeatherPalette::Uh),
-            extend: ExtendMode::Max,
-            // Pragmatic near-zero cutoff (units: flashes km^-2 day^-1) so
-            // cells with no meaningful flash activity reveal basemap. Not
-            // an NWS operational threshold — unlike reflectivity's 5 dBZ
-            // minimum detectable or QPF's 0.01 in trace, there's no
-            // standard display cutoff for lightning flash density. Also
-            // note: lightning_flash_density is currently blocked as a
-            // native recipe (HRRR exposes LTNGSD/LTNG, not the flash-
-            // density parameters), so this scale isn't hit in practice
-            // today; the value matches the scale's level step for
-            // consistency with how the first bin is drawn.
-            mask_below: Some(0.5),
-        },
-        _ => DiscreteColorScale {
-            levels: range_step(-50.0, 5.0, 1.0),
-            colors: weather_palette(WeatherPalette::Temperature),
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
-    };
-    ColorScale::Discrete(discrete)
+    crate::plot_design::operational_fill_scale_for_recipe(recipe, filled_selector)
 }
-
-fn smoke_scale_colors() -> Vec<Color> {
-    vec![
-        Color::rgba(230, 243, 255, 255),
-        Color::rgba(135, 206, 235, 255),
-        Color::rgba(144, 238, 144, 255),
-        Color::rgba(255, 255, 0, 255),
-        Color::rgba(255, 165, 0, 255),
-        Color::rgba(255, 69, 0, 255),
-        Color::rgba(255, 0, 0, 255),
-        Color::rgba(128, 0, 128, 255),
-        Color::rgba(92, 0, 168, 255),
-        Color::rgba(64, 0, 128, 255),
-    ]
-}
-
 fn build_contour_layers(
     recipe: &PlotRecipe,
     extracted: &HashMap<FieldSelector, SelectedField2D>,
@@ -3533,7 +3368,7 @@ fn cached_contour_layer(
         }
     }
 
-    let layer = contour_layer_for_values(selector, values);
+    let layer = crate::plot_design::operational_contour_layer_for_values(selector, values);
     let mut cache = contour_layer_cache
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -3543,76 +3378,62 @@ fn cached_contour_layer(
         .clone()
 }
 
-fn contour_layer_for_values(selector: FieldSelector, values: &[f32]) -> Option<ContourLayer> {
-    let data = if selector.field == CanonicalField::GeopotentialHeight {
-        values.iter().map(|value| value * 0.1).collect()
-    } else if selector.field == CanonicalField::PressureReducedToMeanSeaLevel {
-        values.iter().map(|value| value * 0.01).collect()
-    } else {
-        values.to_vec()
+fn build_streamline_layers(
+    recipe: &PlotRecipe,
+    extracted: &HashMap<FieldSelector, SelectedField2D>,
+    bounds: (f64, f64, f64, f64),
+    streamline_layer_cache: &SharedStreamlineLayerCache,
+    barb_stride_cache: &SharedBarbStrideCache,
+) -> Vec<WindStreamlineLayer> {
+    if !static_streamlines_enabled() {
+        return Vec::new();
+    }
+    let (Some(u_spec), Some(v_spec)) = (&recipe.barbs_u, &recipe.barbs_v) else {
+        return Vec::new();
     };
-    let (levels, color, width, labels) = match selector {
-        FieldSelector {
-            field: CanonicalField::GeopotentialHeight,
-            vertical: rustwx_core::VerticalSelector::IsobaricHpa(200),
-            ..
-        } => (range_step(1020.0, 1321.0, 4.0), Color::BLACK, 1, true),
-        FieldSelector {
-            field: CanonicalField::GeopotentialHeight,
-            vertical: rustwx_core::VerticalSelector::IsobaricHpa(300),
-            ..
-        } => (range_step(700.0, 1101.0, 4.0), Color::BLACK, 1, true),
-        FieldSelector {
-            field: CanonicalField::GeopotentialHeight,
-            vertical: rustwx_core::VerticalSelector::IsobaricHpa(250),
-            ..
-        } => (range_step(900.0, 1201.0, 4.0), Color::BLACK, 1, true),
-        FieldSelector {
-            field: CanonicalField::GeopotentialHeight,
-            vertical: rustwx_core::VerticalSelector::IsobaricHpa(500),
-            ..
-        } => (range_step(450.0, 651.0, 3.0), Color::BLACK, 1, true),
-        FieldSelector {
-            field: CanonicalField::GeopotentialHeight,
-            vertical: rustwx_core::VerticalSelector::IsobaricHpa(700),
-            ..
-        } => (range_step(100.0, 401.0, 3.0), Color::BLACK, 1, true),
-        FieldSelector {
-            field: CanonicalField::GeopotentialHeight,
-            vertical: rustwx_core::VerticalSelector::IsobaricHpa(850),
-            ..
-        } => (range_step(0.0, 201.0, 3.0), Color::BLACK, 1, true),
-        FieldSelector {
-            field: CanonicalField::PressureReducedToMeanSeaLevel,
-            ..
-        } => (range_step(960.0, 1045.0, 2.0), Color::BLACK, 1, true),
-        FieldSelector {
-            field: CanonicalField::UpdraftHelicity,
-            vertical:
-                rustwx_core::VerticalSelector::HeightAboveGroundLayerMeters {
-                    bottom_m: 2000,
-                    top_m: 5000,
-                },
-            ..
-        } => (
-            // Match the classic compref/UH combo threshold now that the
-            // WRF/GDEX path prefers the native UP_HELI_MAX diagnostic.
-            vec![75.0],
-            Color::BLACK,
-            1,
-            false,
-        ),
-        _ => (range_step(0.0, 200.0, 10.0), Color::BLACK, 1, true),
+    let (Some(u_selector), Some(v_selector)) = (u_spec.selector, v_spec.selector) else {
+        return Vec::new();
     };
+    let (Some(u), Some(v)) = (extracted.get(&u_selector), extracted.get(&v_selector)) else {
+        return Vec::new();
+    };
+    let key = BarbStrideCacheKey {
+        u_selector,
+        v_selector,
+        bounds_bits: [
+            bounds.0.to_bits(),
+            bounds.1.to_bits(),
+            bounds.2.to_bits(),
+            bounds.3.to_bits(),
+        ],
+    };
+    {
+        let cache = streamline_layer_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(layers) = cache.get(&key) {
+            return layers.clone();
+        }
+    }
 
-    Some(ContourLayer {
-        data,
-        levels,
-        color,
-        width,
-        labels,
-        show_extrema: false,
-    })
+    let (stride_x, stride_y) =
+        cached_streamline_strides(u_selector, v_selector, &u.grid, bounds, barb_stride_cache);
+    let style = crate::plot_design::operational_wind_streamline_style(stride_x, stride_y);
+    let layers = vec![WindStreamlineLayer {
+        u: u.values.iter().map(|value| value * 1.943_844_5).collect(),
+        v: v.values.iter().map(|value| value * 1.943_844_5).collect(),
+        stride_x: style.stride_x,
+        stride_y: style.stride_y,
+        color: style.color,
+        width: style.width,
+        max_steps: style.max_steps,
+        step_cells: style.step_cells,
+        min_speed: style.min_speed,
+    }];
+    let mut cache = streamline_layer_cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.entry(key).or_insert_with(|| layers.clone()).clone()
 }
 
 fn build_barb_layers(
@@ -3696,9 +3517,10 @@ fn cached_barb_strides(
 
     let (visible_nx, visible_ny) = visible_grid_span(grid, bounds);
     let density = static_barb_density_scale();
+    let (target_columns, target_rows) = barb_target_columns_rows(bounds);
     let strides = (
-        ((visible_nx as f64 / (30.0 * density)).round() as usize).clamp(2, 128),
-        ((visible_ny as f64 / (18.0 * density)).round() as usize).clamp(2, 96),
+        ((visible_nx as f64 / (target_columns * density)).round() as usize).clamp(2, 128),
+        ((visible_ny as f64 / (target_rows * density)).round() as usize).clamp(2, 96),
     );
 
     let mut cache = barb_stride_cache
@@ -3707,12 +3529,41 @@ fn cached_barb_strides(
     *cache.entry(key).or_insert(strides)
 }
 
+fn barb_target_columns_rows(bounds: (f64, f64, f64, f64)) -> (f64, f64) {
+    let lat_span = (bounds.3 - bounds.2).abs();
+    let lon_span = longitude_bounds_span_deg(bounds);
+    if is_global_scale_domain(bounds) {
+        (34.0, 16.0)
+    } else if is_broad_continent_scale_domain(bounds) {
+        (26.0, 13.0)
+    } else if lat_span <= 12.0 && lon_span <= 20.0 {
+        (28.0, 18.0)
+    } else {
+        (23.0, 14.0)
+    }
+}
+
+fn cached_streamline_strides(
+    u_selector: FieldSelector,
+    v_selector: FieldSelector,
+    grid: &rustwx_core::LatLonGrid,
+    bounds: (f64, f64, f64, f64),
+    barb_stride_cache: &SharedBarbStrideCache,
+) -> (usize, usize) {
+    let barb_strides = cached_barb_strides(u_selector, v_selector, grid, bounds, barb_stride_cache);
+    let density = static_streamline_density_scale();
+    (
+        ((barb_strides.0 as f64 / density).round() as usize).clamp(2, 96),
+        ((barb_strides.1 as f64 / density).round() as usize).clamp(2, 64),
+    )
+}
+
 fn static_barb_width() -> u32 {
     std::env::var("RUSTWX_BARB_WIDTH")
         .ok()
         .and_then(|value| value.trim().parse::<u32>().ok())
         .filter(|&value| value > 0)
-        .unwrap_or(2)
+        .unwrap_or(1)
         .clamp(1, 8)
 }
 
@@ -3721,12 +3572,33 @@ fn static_barb_length_px() -> f64 {
         .ok()
         .and_then(|value| value.trim().parse::<f64>().ok())
         .filter(|value| value.is_finite() && *value > 0.0)
-        .unwrap_or(20.0)
+        .unwrap_or(17.0)
         .clamp(6.0, 48.0)
 }
 
 fn static_barb_density_scale() -> f64 {
     std::env::var("RUSTWX_BARB_DENSITY")
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(1.0)
+        .clamp(0.25, 4.0)
+}
+
+fn static_streamlines_enabled() -> bool {
+    std::env::var("RUSTWX_WIND_STREAMLINES")
+        .ok()
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "off" | "no"
+            )
+        })
+        .unwrap_or(true)
+}
+
+fn static_streamline_density_scale() -> f64 {
+    std::env::var("RUSTWX_STREAMLINE_DENSITY")
         .ok()
         .and_then(|value| value.trim().parse::<f64>().ok())
         .filter(|value| value.is_finite() && *value > 0.0)
@@ -3750,7 +3622,7 @@ pub fn build_projected_map_with_projection(
     bounds: (f64, f64, f64, f64),
     target_ratio: f64,
 ) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
-    if full_domain_projected_frame_enabled() {
+    if full_domain_projected_frame_enabled(projection) {
         return build_full_domain_projected_map_with_projection(
             lat_deg,
             lon_deg,
@@ -3807,15 +3679,22 @@ fn build_full_domain_projected_map_with_projection(
     Ok(projected)
 }
 
-fn full_domain_projected_frame_enabled() -> bool {
+fn full_domain_projected_frame_enabled(projection: Option<&GridProjection>) -> bool {
+    let auto = full_domain_projected_frame_default(projection);
     std::env::var("RUSTWX_PROJECTED_FRAME_SOURCE")
         .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "full-domain" | "full_domain" | "native" | "native-domain" | "native_domain"
-            )
+        .map(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "full-domain" | "full_domain" | "native" | "native-domain" | "native_domain" => true,
+            "requested" | "request" | "bounds" | "domain" | "map-bounds" | "map_bounds" => false,
+            "auto" | "" => auto,
+            other => matches!(other, "1" | "true" | "yes" | "on"),
         })
+        .unwrap_or(auto)
+}
+
+fn full_domain_projected_frame_default(projection: Option<&GridProjection>) -> bool {
+    projection
+        .map(GridProjection::is_projected)
         .unwrap_or(false)
 }
 
@@ -3879,22 +3758,31 @@ fn inverse_raster_projection_for_latlon_mesh(
         | rustwx_render::ProjectionSpec::Geographic
         | rustwx_render::ProjectionSpec::LambertConformal { .. }
         | rustwx_render::ProjectionSpec::Mercator { .. }
-        | rustwx_render::ProjectionSpec::Robinson { .. } => Some(InverseRasterProjection {
-            projection,
-            reference_latitude_deg: reference_latitude_for_projection_variant(
-                variant,
-                Some(&GridProjection::Geographic),
-                bounds,
-            ),
-            reference_longitude_deg,
-            clip_bounds: inverse_raster_clip_bounds(bounds),
-        }),
+        | rustwx_render::ProjectionSpec::Robinson { .. } => {
+            let clip_bounds = inverse_raster_clip_bounds(bounds, &projection);
+            Some(InverseRasterProjection {
+                projection,
+                reference_latitude_deg: reference_latitude_for_projection_variant(
+                    variant,
+                    Some(&GridProjection::Geographic),
+                    bounds,
+                ),
+                reference_longitude_deg,
+                clip_bounds,
+            })
+        }
         _ => None,
     }
 }
 
-fn inverse_raster_clip_bounds(bounds: (f64, f64, f64, f64)) -> Option<GeographicClipBounds> {
+fn inverse_raster_clip_bounds(
+    bounds: (f64, f64, f64, f64),
+    projection: &rustwx_render::ProjectionSpec,
+) -> Option<GeographicClipBounds> {
     if !env_flag_enabled("RUSTWX_INVERSE_RASTER_GEO_CLIP", true) {
+        return None;
+    }
+    if !matches!(projection, rustwx_render::ProjectionSpec::Geographic) {
         return None;
     }
     Some(GeographicClipBounds::new(
@@ -3966,7 +3854,7 @@ fn longitude_delta_abs_deg(a: f32, b: f32) -> f32 {
 pub fn model_data_domain_frame_for_projection(
     _projection: Option<&GridProjection>,
 ) -> Option<DomainFrame> {
-    Some(DomainFrame::model_data_default())
+    Some(DomainFrame::map_viewport_default())
 }
 
 fn direct_map_frame_aspect_ratio(
@@ -4096,17 +3984,8 @@ fn regional_latlon_presentation_projection(
             north_america_lambert_presentation_projection()
         }
         ProjectionPresentationVariant::Robinson => robinson_presentation_projection(bounds),
-        ProjectionPresentationVariant::Adaptive
-            if should_default_to_rectangular_geographic(bounds) =>
-        {
-            rustwx_render::ProjectionSpec::Geographic
-        }
         _ => regional_presentation_projection(bounds),
     }
-}
-
-fn should_default_to_rectangular_geographic(bounds: (f64, f64, f64, f64)) -> bool {
-    !is_global_scale_domain(bounds) && bounds.3 > -55.0 && bounds.2 < 84.0
 }
 
 fn presentation_frame_bounds_for_projection(
@@ -4289,7 +4168,7 @@ fn regional_presentation_projection(bounds: (f64, f64, f64, f64)) -> rustwx_rend
         };
     }
     if is_broad_continent_scale_domain(bounds) {
-        return robinson_presentation_projection(bounds);
+        return rustwx_render::ProjectionSpec::Geographic;
     }
     if bounds.2 < -25.0 && bounds.3 > 25.0 {
         return rustwx_render::ProjectionSpec::Mercator {
@@ -4361,6 +4240,22 @@ mod tests {
         values: Vec<f32>,
     ) -> SelectedField2D {
         SelectedField2D::new(selector, units, sample_grid(), values).unwrap()
+    }
+
+    #[test]
+    fn barb_density_targets_thin_operational_synoptic_domains() {
+        assert_eq!(
+            barb_target_columns_rows((-127.0, -66.0, 23.0, 51.5)),
+            (23.0, 14.0)
+        );
+        assert_eq!(
+            barb_target_columns_rows((-170.0, -50.0, 5.0, 84.0)),
+            (26.0, 13.0)
+        );
+        assert_eq!(
+            barb_target_columns_rows((-180.0, 179.999, -90.0, 90.0)),
+            (34.0, 16.0)
+        );
     }
 
     #[test]
@@ -4446,6 +4341,8 @@ mod tests {
             custom_poi_overlay: None,
             place_label_overlay: None,
             output_suffix: None,
+            subtitle_left_override: None,
+            subtitle_right_override: None,
             earth2_ensemble: None,
         }
     }
@@ -4517,6 +4414,35 @@ mod tests {
             inverse.reference_longitude_deg,
             Some(center_longitude_for_bounds(bounds))
         );
+    }
+
+    #[test]
+    fn inverse_raster_does_not_geo_clip_projected_conus_frames() {
+        let clip = inverse_raster_clip_bounds(
+            (-127.0, -66.0, 23.0, 51.5),
+            &rustwx_render::ProjectionSpec::LambertConformal {
+                standard_parallel_1_deg: PIVOTAL_CONUS_STANDARD_PARALLEL_1_DEG,
+                standard_parallel_2_deg: PIVOTAL_CONUS_STANDARD_PARALLEL_2_DEG,
+                central_meridian_deg: PIVOTAL_CONUS_CENTRAL_MERIDIAN_DEG,
+            },
+        );
+
+        assert!(clip.is_none());
+    }
+
+    #[test]
+    fn native_projected_grids_use_full_domain_frame_by_default() {
+        let lambert = GridProjection::LambertConformal {
+            standard_parallel_1_deg: 33.0,
+            standard_parallel_2_deg: 45.0,
+            central_meridian_deg: -96.0,
+        };
+
+        assert!(full_domain_projected_frame_default(Some(&lambert)));
+        assert!(!full_domain_projected_frame_default(Some(
+            &GridProjection::Geographic
+        )));
+        assert!(!full_domain_projected_frame_default(None));
     }
 
     #[test]
@@ -4664,7 +4590,7 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_geographic_regions_are_rectangular_except_global_and_polar() {
+    fn adaptive_geographic_regions_use_presentation_projections() {
         assert!(matches!(
             presentation_projection_for_bounds(
                 Some(&GridProjection::Geographic),
@@ -4675,26 +4601,38 @@ mod tests {
             rustwx_render::ProjectionSpec::Robinson { .. }
         ));
 
-        for bounds in [
+        let conus_projection = presentation_projection_for_bounds(
+            Some(&GridProjection::Geographic),
             (-127.0, -66.0, 23.0, 51.5),
-            (-170.0, -50.0, 5.0, 84.0),
+            ProjectionPresentationVariant::Adaptive,
+        )
+        .unwrap();
+        assert!(matches!(
+            conus_projection,
+            rustwx_render::ProjectionSpec::LambertConformal { .. }
+        ));
+
+        let europe_projection = presentation_projection_for_bounds(
+            Some(&GridProjection::Geographic),
             (-25.0, 45.0, 34.0, 72.0),
-            (-20.0, 55.0, -35.0, 38.0),
-            (-82.0, -34.0, -56.0, 13.0),
-            (25.0, 179.999, -10.0, 82.0),
-            (110.0, 180.0, -50.0, 0.0),
-        ] {
-            assert_eq!(
-                presentation_projection_for_bounds(
-                    Some(&GridProjection::Geographic),
-                    bounds,
-                    ProjectionPresentationVariant::Adaptive,
-                )
-                .unwrap(),
-                rustwx_render::ProjectionSpec::Geographic,
-                "bounds {bounds:?} should default to rectangular geographic"
-            );
-        }
+            ProjectionPresentationVariant::Adaptive,
+        )
+        .unwrap();
+        assert!(matches!(
+            europe_projection,
+            rustwx_render::ProjectionSpec::LambertConformal { .. }
+        ));
+
+        let north_america_projection = presentation_projection_for_bounds(
+            Some(&GridProjection::Geographic),
+            (-170.0, -50.0, 5.0, 84.0),
+            ProjectionPresentationVariant::Adaptive,
+        )
+        .unwrap();
+        assert_eq!(
+            north_america_projection,
+            rustwx_render::ProjectionSpec::Geographic
+        );
 
         assert!(matches!(
             presentation_projection_for_bounds(
@@ -4809,20 +4747,28 @@ mod tests {
             groups[0].fetch_mode,
             PlotRecipeFetchMode::WholeFileStructuredExtract
         );
-        assert!(groups[0]
-            .selectors
-            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500)));
-        assert!(groups[0]
-            .selectors
-            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700)));
-        assert!(groups[0]
-            .variable_patterns
-            .iter()
-            .any(|pattern| pattern.contains("500 mb")));
-        assert!(groups[0]
-            .variable_patterns
-            .iter()
-            .any(|pattern| pattern.contains("700 mb")));
+        assert!(
+            groups[0]
+                .selectors
+                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500))
+        );
+        assert!(
+            groups[0]
+                .selectors
+                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700))
+        );
+        assert!(
+            groups[0]
+                .variable_patterns
+                .iter()
+                .any(|pattern| pattern.contains("500 mb"))
+        );
+        assert!(
+            groups[0]
+                .variable_patterns
+                .iter()
+                .any(|pattern| pattern.contains("700 mb"))
+        );
     }
 
     #[test]
@@ -5095,14 +5041,18 @@ mod tests {
         let groups = group_direct_fetches(&request, &planned);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].product, "sfc");
-        assert!(groups[0]
-            .selectors
-            .contains(&FieldSelector::entire_atmosphere(
-                CanonicalField::LowCloudCover
-            )));
-        assert!(groups[0]
-            .selectors
-            .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow)));
+        assert!(
+            groups[0]
+                .selectors
+                .contains(&FieldSelector::entire_atmosphere(
+                    CanonicalField::LowCloudCover
+                ))
+        );
+        assert!(
+            groups[0]
+                .selectors
+                .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow))
+        );
     }
 
     #[test]
@@ -5124,21 +5074,29 @@ mod tests {
         let supported = supported_direct_recipe_slugs(ModelId::Nbm);
         assert!(!supported.iter().any(|slug| slug.starts_with("nbm_qmd_")));
         let sref_supported = supported_direct_recipe_slugs(ModelId::Sref);
-        assert!(!sref_supported
-            .iter()
-            .any(|slug| slug.starts_with("sref_prob_")));
+        assert!(
+            !sref_supported
+                .iter()
+                .any(|slug| slug.starts_with("sref_prob_"))
+        );
         let gefs_supported = supported_direct_recipe_slugs(ModelId::Gefs);
-        assert!(!gefs_supported
-            .iter()
-            .any(|slug| slug.starts_with("gefs_avg_") || slug.starts_with("gefs_spr_")));
+        assert!(
+            !gefs_supported
+                .iter()
+                .any(|slug| slug.starts_with("gefs_avg_") || slug.starts_with("gefs_spr_"))
+        );
         let aigefs_supported = supported_direct_recipe_slugs(ModelId::Aigefs);
-        assert!(!aigefs_supported
-            .iter()
-            .any(|slug| slug.starts_with("aigefs_spr_")));
+        assert!(
+            !aigefs_supported
+                .iter()
+                .any(|slug| slug.starts_with("aigefs_spr_"))
+        );
         let hgefs_supported = supported_direct_recipe_slugs(ModelId::Hgefs);
-        assert!(!hgefs_supported
-            .iter()
-            .any(|slug| slug.starts_with("hgefs_spr_")));
+        assert!(
+            !hgefs_supported
+                .iter()
+                .any(|slug| slug.starts_with("hgefs_spr_"))
+        );
         let href_supported = supported_direct_recipe_slugs(ModelId::Href);
         assert!(!href_supported.iter().any(|slug| {
             slug.starts_with("href_sprd_")
@@ -5146,9 +5104,11 @@ mod tests {
                 || slug.starts_with("href_mean_")
         }));
         let refs_supported = supported_direct_recipe_slugs(ModelId::Refs);
-        assert!(!refs_supported
-            .iter()
-            .any(|slug| { slug.starts_with("refs_sprd_") || slug.starts_with("refs_prob_") }));
+        assert!(
+            !refs_supported
+                .iter()
+                .any(|slug| { slug.starts_with("refs_sprd_") || slug.starts_with("refs_prob_") })
+        );
 
         let planned =
             plan_direct_recipes(ModelId::Nbm, &["nbm_qmd_2m_temperature_p50".to_string()]).unwrap();
@@ -5307,6 +5267,27 @@ mod tests {
         assert_eq!(converted_vort.units, "10^-5 s^-1");
         assert!((converted_vort.values[0] - 20.0).abs() < 1.0e-6);
 
+        let temp_recipe = plot_recipe("2m_temperature").unwrap();
+        let temp_field = sample_selected_field(
+            FieldSelector::height_agl(CanonicalField::Temperature, 2),
+            "K",
+            vec![273.15; 4],
+        );
+        let converted_temp = convert_filled_field_with_ensemble(temp_recipe, &temp_field, None);
+        assert_eq!(converted_temp.units, "degF");
+        assert!((converted_temp.values[0] - 32.0).abs() < 1.0e-5);
+
+        let upper_temp_recipe = plot_recipe("500mb_temperature_height_winds").unwrap();
+        let upper_temp_field = sample_selected_field(
+            FieldSelector::isobaric(CanonicalField::Temperature, 500),
+            "K",
+            vec![253.15; 4],
+        );
+        let converted_upper_temp =
+            convert_filled_field_with_ensemble(upper_temp_recipe, &upper_temp_field, None);
+        assert_eq!(converted_upper_temp.units, "degC");
+        assert!((converted_upper_temp.values[0] + 20.0).abs() < 1.0e-5);
+
         let wind_speed_recipe = plot_recipe("nbm_qmd_10m_wind_speed_p50").unwrap();
         let wind_speed_field = sample_selected_field(
             FieldSelector::height_agl(CanonicalField::WindSpeed, 10).with_percentile(50),
@@ -5337,6 +5318,34 @@ mod tests {
             FieldSelector::surface(CanonicalField::Visibility),
             false
         ));
+    }
+
+    #[test]
+    fn direct_synoptic_contours_use_operational_emphasis() {
+        let pressure = crate::plot_design::operational_contour_layer_for_values(
+            FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel),
+            &[100000.0, 100200.0, 100400.0, 100600.0],
+        )
+        .expect("pressure contour layer");
+        assert_eq!(pressure.levels.first().copied(), Some(960.0));
+        assert_eq!(pressure.width, 1);
+        assert_eq!(pressure.major_every, Some(2));
+        assert_eq!(pressure.major_width, Some(2));
+        assert!(pressure.labels);
+        assert!(pressure.show_extrema);
+        assert_eq!(pressure.pattern, rustwx_render::ContourLinePattern::Solid);
+        assert_eq!(pressure.data[0], 1000.0);
+
+        let height = crate::plot_design::operational_contour_layer_for_values(
+            FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500),
+            &[5400.0, 5460.0, 5520.0, 5580.0],
+        )
+        .expect("height contour layer");
+        assert_eq!(height.major_every, Some(2));
+        assert_eq!(height.major_width, Some(2));
+        assert!(height.labels);
+        assert!(!height.show_extrema);
+        assert_eq!(height.data[0], 540.0);
     }
 
     #[test]
@@ -5438,6 +5447,37 @@ mod tests {
         assert_eq!(discrete.levels.first().copied(), Some(0.0));
         assert_eq!(discrete.levels.last().copied(), Some(400.0));
         assert_eq!(discrete.mask_below, Some(0.0));
+    }
+
+    #[test]
+    fn reflectivity_scale_masks_no_return_values() {
+        let recipe = plot_recipe("composite_reflectivity").unwrap();
+        let scale = scale_for_recipe(
+            recipe,
+            FieldSelector::surface(CanonicalField::CompositeReflectivity),
+        );
+        let ColorScale::Discrete(discrete) = scale else {
+            panic!("expected discrete reflectivity scale");
+        };
+        assert_eq!(discrete.levels.first().copied(), Some(10.0));
+        assert_eq!(discrete.levels.last().copied(), Some(70.0));
+        assert_eq!(discrete.extend, ExtendMode::Max);
+        assert_eq!(discrete.mask_below, Some(10.0));
+    }
+
+    #[test]
+    fn categorical_precip_scale_masks_false_flags() {
+        let recipe = plot_recipe("categorical_snow").unwrap();
+        let scale = scale_for_recipe(
+            recipe,
+            FieldSelector::surface(CanonicalField::CategoricalSnow),
+        );
+        let ColorScale::Discrete(discrete) = scale else {
+            panic!("expected discrete categorical scale");
+        };
+        assert_eq!(discrete.levels, vec![0.0, 0.5, 1.0]);
+        assert_eq!(discrete.extend, ExtendMode::Neither);
+        assert_eq!(discrete.mask_below, Some(0.5));
     }
 
     #[test]

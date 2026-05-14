@@ -10807,8 +10807,8 @@ mod tests {
         let generic = plot_recipe_fetch_plan("2m_temperature_10m_winds", ModelId::Refs).unwrap();
         assert_eq!(generic.product, "mean-conus");
 
-        let pressure = plot_recipe_fetch_plan("700mb_temperature_height_winds", ModelId::Refs)
-            .unwrap();
+        let pressure =
+            plot_recipe_fetch_plan("700mb_temperature_height_winds", ModelId::Refs).unwrap();
         assert_eq!(pressure.product, "mean-conus");
 
         let radar = plot_recipe_fetch_plan("composite_reflectivity", ModelId::Refs).unwrap();

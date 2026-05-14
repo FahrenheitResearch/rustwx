@@ -204,22 +204,157 @@ pub fn archive_path_for_request(request: &ModelRunRequest) -> Result<PathBuf, Io
 
 pub fn archive_path_for_fetch(fetch: &FetchRequest) -> Result<PathBuf, IoError> {
     let source = local_archive_source(fetch)?;
-    archive_path_with_root(archive_root_for_source(source)?, &fetch.request)
+    archive_path_with_root_and_selector(
+        archive_root_for_source(source)?,
+        &fetch.request,
+        fetch.earth2_ensemble,
+    )
 }
 
 pub fn archive_path_with_root(
     root: impl AsRef<Path>,
     request: &ModelRunRequest,
 ) -> Result<PathBuf, IoError> {
+    Ok(canonical_archive_path(root.as_ref(), request))
+}
+
+fn archive_path_with_root_and_selector(
+    root: impl AsRef<Path>,
+    request: &ModelRunRequest,
+    selector: Option<Earth2EnsembleSelector>,
+) -> Result<PathBuf, IoError> {
+    let root = root.as_ref();
+    let candidates = archive_path_candidates(root, request, selector);
+    for candidate in &candidates {
+        if candidate.is_file() {
+            return Ok(candidate.clone());
+        }
+    }
+    if let Some(member) = requested_member(request, selector) {
+        if let Some(path) = find_flat_member_file(root, request, member) {
+            return Ok(path);
+        }
+    }
+    candidates.into_iter().next().ok_or_else(|| {
+        IoError::Earth2Archive(format!(
+            "no archive path candidates could be built for {} f{:03}",
+            request.model, request.forecast_hour
+        ))
+    })
+}
+
+fn canonical_archive_path(root: &Path, request: &ModelRunRequest) -> PathBuf {
     let init = format!(
         "{}T{:02}Z",
         request.cycle.date_yyyymmdd, request.cycle.hour_utc
     );
-    Ok(root
-        .as_ref()
-        .join(request.model.as_str())
+    root.join(request.model.as_str())
         .join(init)
-        .join(format!("lead{:03}.nc", request.forecast_hour)))
+        .join(format!("lead{:03}.nc", request.forecast_hour))
+}
+
+fn archive_path_candidates(
+    root: &Path,
+    request: &ModelRunRequest,
+    selector: Option<Earth2EnsembleSelector>,
+) -> Vec<PathBuf> {
+    let init = format!(
+        "{}T{:02}Z",
+        request.cycle.date_yyyymmdd, request.cycle.hour_utc
+    );
+    let canonical = canonical_archive_path(root, request);
+    let Some(member) = requested_member(request, selector) else {
+        return vec![canonical];
+    };
+    let flat_name = flat_member_file_name(request, member);
+    vec![
+        root.join(request.model.as_str())
+            .join(&init)
+            .join(format!("m{member:02}"))
+            .join(format!("lead{:03}.nc", request.forecast_hour)),
+        root.join(request.model.as_str())
+            .join(&init)
+            .join(format!("m{member:02}_lead{:03}.nc", request.forecast_hour)),
+        root.join(&flat_name),
+        root.join(request.model.as_str())
+            .join(&init)
+            .join(&flat_name),
+        canonical,
+    ]
+}
+
+fn flat_member_file_name(request: &ModelRunRequest, member: u16) -> String {
+    format!(
+        "aifs_long_{}T{:02}0000Z_m{member:02}_lead{:05}.nc",
+        request.cycle.date_yyyymmdd, request.cycle.hour_utc, request.forecast_hour
+    )
+}
+
+fn requested_member(
+    request: &ModelRunRequest,
+    selector: Option<Earth2EnsembleSelector>,
+) -> Option<u16> {
+    match selector {
+        Some(Earth2EnsembleSelector::Member(member)) => Some(member),
+        _ => parse_member_product(&request.product),
+    }
+}
+
+fn parse_member_product(product: &str) -> Option<u16> {
+    let normalized = product
+        .trim()
+        .trim_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(product)
+        .trim()
+        .to_ascii_lowercase();
+    let digits = normalized
+        .strip_prefix('m')
+        .or_else(|| normalized.strip_prefix("mem"))
+        .or_else(|| normalized.strip_prefix("member"))?;
+    if digits.is_empty() || digits.len() > 3 || !digits.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u16>().ok()
+}
+
+fn find_flat_member_file(root: &Path, request: &ModelRunRequest, member: u16) -> Option<PathBuf> {
+    let cycle_token = format!(
+        "{}T{:02}0000Z",
+        request.cycle.date_yyyymmdd, request.cycle.hour_utc
+    );
+    let member_token = format!("_m{member:02}_");
+    let lead_token = format!("_lead{:05}.nc", request.forecast_hour);
+    let mut matches = std::fs::read_dir(root)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|file_type| file_type.is_file())
+                .unwrap_or(false)
+        })
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.contains(&cycle_token)
+                && name.contains(&member_token)
+                && name.ends_with(&lead_token)
+            {
+                Some(entry.path())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.into_iter().next()
+}
+
+fn cycle_dir(root: &Path, model: ModelId, cycle: &CycleSpec) -> PathBuf {
+    root.join(model.as_str())
+        .join(format!("{}T{:02}Z", cycle.date_yyyymmdd, cycle.hour_utc))
 }
 
 fn local_archive_source(fetch: &FetchRequest) -> Result<SourceId, IoError> {
@@ -263,25 +398,43 @@ fn default_forecast_hour_for_archive_with_root(
     date_yyyymmdd: &str,
     cycle_override_utc: Option<u8>,
 ) -> Option<u16> {
-    let model_dir = root.as_ref().join(model.as_str());
+    let root = root.as_ref();
+    let model_dir = root.join(model.as_str());
     let candidate_dates = cycle_date_rollback_candidates(date_yyyymmdd);
     let mut candidates = Vec::<(String, u8, u16)>::new();
-    for entry in std::fs::read_dir(model_dir).ok()? {
-        let Ok(entry) = entry else {
-            continue;
-        };
-        if !entry
-            .file_type()
-            .map(|file_type| file_type.is_dir())
-            .unwrap_or(false)
-        {
-            continue;
+    if let Ok(entries) = std::fs::read_dir(&model_dir) {
+        for entry in entries {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            if !entry
+                .file_type()
+                .map(|file_type| file_type.is_dir())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some(cycle) = parse_archive_cycle_dir(&name) else {
+                continue;
+            };
+            if !candidate_dates
+                .iter()
+                .any(|candidate| candidate == &cycle.date_yyyymmdd)
+            {
+                continue;
+            }
+            if cycle_override_utc.is_some_and(|hour| hour != cycle.hour_utc) {
+                continue;
+            }
+            let Some(first_lead) = available_leads_in_dir(&entry.path()).into_iter().min() else {
+                continue;
+            };
+            candidates.push((cycle.date_yyyymmdd, cycle.hour_utc, first_lead));
         }
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let Some(cycle) = parse_archive_cycle_dir(&name) else {
-            continue;
-        };
+    }
+    for (cycle, lead) in flat_member_cycles_and_leads(root, model) {
         if !candidate_dates
             .iter()
             .any(|candidate| candidate == &cycle.date_yyyymmdd)
@@ -291,13 +444,17 @@ fn default_forecast_hour_for_archive_with_root(
         if cycle_override_utc.is_some_and(|hour| hour != cycle.hour_utc) {
             continue;
         }
-        let Some(first_lead) = available_leads_in_dir(&entry.path()).into_iter().min() else {
-            continue;
-        };
-        candidates.push((cycle.date_yyyymmdd, cycle.hour_utc, first_lead));
+        candidates.push((cycle.date_yyyymmdd, cycle.hour_utc, lead));
     }
-    candidates.sort();
-    candidates.pop().map(|(_, _, lead)| lead)
+    let (latest_date, latest_hour) = candidates
+        .iter()
+        .map(|(date, hour, _)| (date.as_str(), *hour))
+        .max()?;
+    candidates
+        .iter()
+        .filter(|(date, hour, _)| date == latest_date && *hour == latest_hour)
+        .map(|(_, _, lead)| *lead)
+        .min()
 }
 
 fn available_leads_for_cycle_with_root(
@@ -305,11 +462,12 @@ fn available_leads_for_cycle_with_root(
     model: ModelId,
     cycle: &CycleSpec,
 ) -> Vec<u16> {
-    let cycle_dir = root
-        .as_ref()
-        .join(model.as_str())
-        .join(format!("{}T{:02}Z", cycle.date_yyyymmdd, cycle.hour_utc));
-    available_leads_in_dir(&cycle_dir)
+    let root = root.as_ref();
+    let mut leads = available_leads_in_dir(&cycle_dir(root, model, cycle));
+    leads.extend(available_flat_member_leads(root, model, cycle));
+    leads.sort_unstable();
+    leads.dedup();
+    leads
 }
 
 fn available_leads_in_dir(cycle_dir: &Path) -> Vec<u16> {
@@ -335,11 +493,80 @@ fn available_leads_in_dir(cycle_dir: &Path) -> Vec<u16> {
 }
 
 fn parse_lead_file_name(name: &str) -> Option<u16> {
-    let lead = name.strip_prefix("lead")?.strip_suffix(".nc")?;
+    let lead = if let Some(lead) = name
+        .strip_prefix("lead")
+        .and_then(|value| value.strip_suffix(".nc"))
+    {
+        lead
+    } else {
+        name.rsplit_once("_lead")?.1.strip_suffix(".nc")?
+    };
     if lead.len() < 3 || !lead.chars().all(|ch| ch.is_ascii_digit()) {
         return None;
     }
     lead.parse::<u16>().ok()
+}
+
+fn parse_flat_member_file_name(name: &str) -> Option<(CycleSpec, u16, u16)> {
+    let name = name.strip_suffix(".nc")?;
+    let (before_lead, lead) = name.rsplit_once("_lead")?;
+    let lead = lead.parse::<u16>().ok()?;
+    let (before_member, member) = before_lead.rsplit_once("_m")?;
+    let member = member.parse::<u16>().ok()?;
+    let timestamp = before_member.rsplit('_').next()?;
+    if timestamp.len() != 16
+        || &timestamp[8..9] != "T"
+        || !timestamp.ends_with('Z')
+        || &timestamp[11..15] != "0000"
+    {
+        return None;
+    }
+    let date = &timestamp[..8];
+    let hour = timestamp[9..11].parse::<u8>().ok()?;
+    let cycle = CycleSpec::new(date.to_string(), hour).ok()?;
+    Some((cycle, member, lead))
+}
+
+fn available_flat_member_leads(root: &Path, model: ModelId, cycle: &CycleSpec) -> Vec<u16> {
+    flat_member_cycles_and_leads(root, model)
+        .into_iter()
+        .filter_map(|(found_cycle, lead)| {
+            (found_cycle.date_yyyymmdd == cycle.date_yyyymmdd
+                && found_cycle.hour_utc == cycle.hour_utc)
+                .then_some(lead)
+        })
+        .collect()
+}
+
+fn flat_member_cycles_and_leads(root: &Path, model: ModelId) -> Vec<(CycleSpec, u16)> {
+    if model != ModelId::Aifs {
+        return Vec::new();
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut values = entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|file_type| file_type.is_file())
+                .unwrap_or(false)
+        })
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            parse_flat_member_file_name(&name.to_string_lossy())
+                .map(|(cycle, _, lead)| (cycle, lead))
+        })
+        .collect::<Vec<_>>();
+    values.sort_unstable_by(|a, b| {
+        a.0.date_yyyymmdd
+            .cmp(&b.0.date_yyyymmdd)
+            .then(a.0.hour_utc.cmp(&b.0.hour_utc))
+            .then(a.1.cmp(&b.1))
+    });
+    values.dedup();
+    values
 }
 
 fn parse_archive_cycle_dir(name: &str) -> Option<CycleSpec> {
@@ -525,8 +752,11 @@ pub fn validate_ensemble_selector_for_path(
         return Ok(());
     };
     let Some(member_count) = ensemble_member_count_for_path(path)? else {
+        if path_matches_member(path, member) {
+            return Ok(());
+        }
         return Err(IoError::Earth2Archive(format!(
-            "member {member} requested for {}, but no member dimension or ensemble_size attribute was found",
+            "member {member} requested for {}, but no member dimension, ensemble_size attribute, or member-specific file name was found",
             path.display()
         )));
     };
@@ -537,6 +767,29 @@ pub fn validate_ensemble_selector_for_path(
         )));
     }
     Ok(())
+}
+
+fn path_matches_member(path: &Path, member: u16) -> bool {
+    path_member(path).is_some_and(|path_member| path_member == member)
+}
+
+fn path_member(path: &Path) -> Option<u16> {
+    if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+        if let Some((_, member, _)) = parse_flat_member_file_name(name) {
+            return Some(member);
+        }
+        if let Some((before_lead, _)) = name.strip_suffix(".nc")?.rsplit_once("_lead") {
+            if let Some(member_text) = before_lead.rsplit_once("_m").map(|(_, value)| value) {
+                if member_text.chars().all(|ch| ch.is_ascii_digit()) {
+                    return member_text.parse::<u16>().ok();
+                }
+            }
+        }
+    }
+    path.parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .and_then(parse_member_product)
 }
 
 pub fn extract_fields_partial_from_bytes(
@@ -1135,10 +1388,9 @@ fn read_2d_selected(
             let expected = grid.nx * grid.ny;
             match shape.as_slice() {
                 [ny, nx] if *ny == grid.ny && *nx == grid.nx => match selector {
-                    Earth2EnsembleSelector::Deterministic => Ok(reorder_lon(values, grid)),
-                    Earth2EnsembleSelector::Member(_) => Err(IoError::Earth2Archive(format!(
-                        "member selector requested for deterministic variable {name}"
-                    ))),
+                    Earth2EnsembleSelector::Deterministic | Earth2EnsembleSelector::Member(_) => {
+                        Ok(reorder_lon(values, grid))
+                    }
                     Earth2EnsembleSelector::Statistic(stat) => {
                         Err(IoError::Earth2Archive(format!(
                             "{} selector requested for deterministic variable {name}; no aggregate variable {}_{} was present",
@@ -1149,10 +1401,9 @@ fn read_2d_selected(
                     }
                 },
                 [len] if *len == expected => match selector {
-                    Earth2EnsembleSelector::Deterministic => Ok(reorder_lon(values, grid)),
-                    Earth2EnsembleSelector::Member(_) => Err(IoError::Earth2Archive(format!(
-                        "member selector requested for deterministic variable {name}"
-                    ))),
+                    Earth2EnsembleSelector::Deterministic | Earth2EnsembleSelector::Member(_) => {
+                        Ok(reorder_lon(values, grid))
+                    }
                     Earth2EnsembleSelector::Statistic(stat) => {
                         Err(IoError::Earth2Archive(format!(
                             "{} selector requested for deterministic variable {name}; no aggregate variable {}_{} was present",
@@ -1274,10 +1525,9 @@ fn read_2d_selected_hdf5(
     let expected = grid.nx * grid.ny;
     match shape.as_slice() {
         [ny, nx] if *ny == grid.ny && *nx == grid.nx => match selector {
-            Earth2EnsembleSelector::Deterministic => Ok(reorder_lon(values, grid)),
-            Earth2EnsembleSelector::Member(_) => Err(IoError::Earth2Archive(format!(
-                "member selector requested for deterministic variable {name}"
-            ))),
+            Earth2EnsembleSelector::Deterministic | Earth2EnsembleSelector::Member(_) => {
+                Ok(reorder_lon(values, grid))
+            }
             Earth2EnsembleSelector::Statistic(stat) => Err(IoError::Earth2Archive(format!(
                 "{} selector requested for deterministic variable {name}; no aggregate variable {}_{} was present",
                 stat.label(),
@@ -1286,10 +1536,9 @@ fn read_2d_selected_hdf5(
             ))),
         },
         [len] if *len == expected => match selector {
-            Earth2EnsembleSelector::Deterministic => Ok(reorder_lon(values, grid)),
-            Earth2EnsembleSelector::Member(_) => Err(IoError::Earth2Archive(format!(
-                "member selector requested for deterministic variable {name}"
-            ))),
+            Earth2EnsembleSelector::Deterministic | Earth2EnsembleSelector::Member(_) => {
+                Ok(reorder_lon(values, grid))
+            }
             Earth2EnsembleSelector::Statistic(stat) => Err(IoError::Earth2Archive(format!(
                 "{} selector requested for deterministic variable {name}; no aggregate variable {}_{} was present",
                 stat.label(),
@@ -1810,6 +2059,41 @@ mod tests {
     }
 
     #[test]
+    fn archive_path_selects_flat_aifs_member_file() {
+        let root = temp_archive_root("flat-member-path");
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("aifs_long_20260513T060000Z_m02_lead00006.nc");
+        fs::write(&file, []).unwrap();
+        let request = ModelRunRequest::new(
+            ModelId::Aifs,
+            CycleSpec::new("20260513", 6).unwrap(),
+            6,
+            "oper",
+        )
+        .unwrap();
+
+        let selected = archive_path_with_root_and_selector(
+            &root,
+            &request,
+            Some(Earth2EnsembleSelector::Member(2)),
+        )
+        .unwrap();
+        assert_eq!(selected, file);
+
+        let product_request = ModelRunRequest::new(
+            ModelId::Aifs,
+            CycleSpec::new("20260513", 6).unwrap(),
+            6,
+            "m02",
+        )
+        .unwrap();
+        let selected = archive_path_with_root_and_selector(&root, &product_request, None).unwrap();
+        assert_eq!(selected, file);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn archive_path_and_lead_scan_allow_multi_year_leads() {
         let request = ModelRunRequest::new(
             ModelId::Aifs,
@@ -1835,6 +2119,30 @@ mod tests {
                 &CycleSpec::new("20160822", 0).unwrap()
             ),
             vec![8640]
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn flat_aifs_member_files_participate_in_lead_discovery() {
+        let root = temp_archive_root("flat-member-leads");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("aifs_long_20260513T060000Z_m00_lead00006.nc"), []).unwrap();
+        fs::write(root.join("aifs_long_20260513T060000Z_m01_lead00012.nc"), []).unwrap();
+        fs::write(root.join("aifs_long_20260513T120000Z_m00_lead00018.nc"), []).unwrap();
+
+        assert_eq!(
+            available_leads_for_cycle_with_root(
+                &root,
+                ModelId::Aifs,
+                &CycleSpec::new("20260513", 6).unwrap()
+            ),
+            vec![6, 12]
+        );
+        assert_eq!(
+            default_forecast_hour_for_archive_with_root(&root, ModelId::Aifs, "20260513", Some(6)),
+            Some(6)
         );
 
         let _ = fs::remove_dir_all(root);

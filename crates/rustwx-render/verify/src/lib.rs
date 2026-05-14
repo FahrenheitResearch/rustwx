@@ -279,6 +279,7 @@ pub fn sample_contour_fill_alignment_request() -> Result<MapRenderRequest, Rustw
             width: 1,
             labels: false,
             show_extrema: false,
+            ..Default::default()
         },
     )?;
     request.width = 360;
@@ -303,6 +304,7 @@ pub fn sample_projected_contour_request() -> Result<MapRenderRequest, RustwxRend
             width: 1,
             labels: false,
             show_extrema: false,
+            ..Default::default()
         },
     )?;
     request.width = 360;

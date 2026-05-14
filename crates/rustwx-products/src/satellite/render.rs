@@ -168,7 +168,7 @@ fn build_goes_abi_scalar_render_request(
     render_request.height = spec.height;
     render_request.visual_mode = ProductVisualMode::OverlayAnalysis;
     render_request.supersample_factor = 2;
-    render_request.domain_frame = Some(DomainFrame::model_data_default());
+    render_request.domain_frame = Some(DomainFrame::map_viewport_default());
     render_request.render_density = RenderDensity {
         fill: LevelDensity {
             multiplier: 4,

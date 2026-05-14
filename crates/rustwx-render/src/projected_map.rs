@@ -12,6 +12,8 @@ use crate::request::{
     ProjectedPolygonFill,
 };
 
+const DEFAULT_BASEMAP_GRATICULE: bool = false;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectedMap {
     pub projected_x: Vec<f64>,
@@ -618,13 +620,15 @@ fn subtle_graticule_enabled(detail: BasemapDetail) -> bool {
     }
     std::env::var("RUSTWX_BASEMAP_GRATICULE")
         .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(true)
+        .map(|value| parse_basemap_graticule_flag(&value))
+        .unwrap_or(DEFAULT_BASEMAP_GRATICULE)
+}
+
+fn parse_basemap_graticule_flag(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn append_graticule_lines(
@@ -1134,6 +1138,16 @@ mod tests {
 
         assert!(projected.lines.is_empty());
         assert!(projected.polygons.is_empty());
+    }
+
+    #[test]
+    fn broad_and_global_graticules_are_opt_in() {
+        assert!(!DEFAULT_BASEMAP_GRATICULE);
+        assert!(!parse_basemap_graticule_flag(""));
+        assert!(!parse_basemap_graticule_flag("false"));
+        assert!(parse_basemap_graticule_flag("true"));
+        assert!(parse_basemap_graticule_flag("on"));
+        assert!(!subtle_graticule_enabled(BasemapDetail::Regional));
     }
 
     #[test]

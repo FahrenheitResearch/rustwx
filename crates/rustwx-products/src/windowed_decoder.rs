@@ -1205,14 +1205,7 @@ pub(crate) fn select_window(records: &[WindowedFieldRecord], hours: u16) -> Opti
 }
 
 pub(crate) fn qpf_scale() -> rustwx_render::DiscreteColorScale {
-    palette_scale(
-        WeatherPalette::Precip,
-        vec![
-            0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0,
-        ],
-        ExtendMode::Max,
-        Some(0.01),
-    )
+    crate::qpf::qpf_inches_scale()
 }
 
 pub(crate) fn wind10m_scale() -> rustwx_render::DiscreteColorScale {

@@ -161,7 +161,7 @@ pub struct DomainFrame {
 }
 
 impl DomainFrame {
-    pub fn model_data_default() -> Self {
+    pub fn map_viewport_default() -> Self {
         Self {
             inset_px: 5,
             outline_color: Color::BLACK,
@@ -170,6 +170,10 @@ impl DomainFrame {
             legend_follows_frame: true,
             chrome_follows_frame: true,
         }
+    }
+
+    pub fn model_data_default() -> Self {
+        Self::map_viewport_default()
     }
 }
 
@@ -599,6 +603,24 @@ pub struct ContourLayer {
     pub width: u32,
     pub labels: bool,
     pub show_extrema: bool,
+    #[serde(default)]
+    pub pattern: ContourLinePattern,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub major_every: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub major_width: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContourLinePattern {
+    Solid,
+    Dashed,
+}
+
+impl Default for ContourLinePattern {
+    fn default() -> Self {
+        Self::Solid
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -607,6 +629,12 @@ pub struct ContourStyle {
     pub width: u32,
     pub labels: bool,
     pub show_extrema: bool,
+    #[serde(default)]
+    pub pattern: ContourLinePattern,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub major_every: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub major_width: Option<u32>,
 }
 
 impl Default for ContourStyle {
@@ -616,6 +644,9 @@ impl Default for ContourStyle {
             width: 1,
             labels: false,
             show_extrema: false,
+            pattern: ContourLinePattern::Solid,
+            major_every: None,
+            major_width: None,
         }
     }
 }
@@ -629,6 +660,9 @@ impl ContourLayer {
             width: style.width,
             labels: style.labels,
             show_extrema: style.show_extrema,
+            pattern: style.pattern,
+            major_every: style.major_every,
+            major_width: style.major_width,
         }
     }
 }
@@ -675,6 +709,60 @@ impl WindBarbLayer {
             color: style.color,
             width: style.width,
             length_px: style.length_px,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WindStreamlineLayer {
+    pub u: Vec<f32>,
+    pub v: Vec<f32>,
+    pub stride_x: usize,
+    pub stride_y: usize,
+    pub color: Color,
+    pub width: u32,
+    pub max_steps: usize,
+    pub step_cells: f64,
+    pub min_speed: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WindStreamlineStyle {
+    pub stride_x: usize,
+    pub stride_y: usize,
+    pub color: Color,
+    pub width: u32,
+    pub max_steps: usize,
+    pub step_cells: f64,
+    pub min_speed: f64,
+}
+
+impl Default for WindStreamlineStyle {
+    fn default() -> Self {
+        Self {
+            stride_x: 12,
+            stride_y: 12,
+            color: Color::rgba(20, 26, 34, 120),
+            width: 1,
+            max_steps: 18,
+            step_cells: 0.75,
+            min_speed: 2.5,
+        }
+    }
+}
+
+impl WindStreamlineLayer {
+    pub fn from_fields(u: &Field2D, v: &Field2D, style: WindStreamlineStyle) -> Self {
+        Self {
+            u: u.values.clone(),
+            v: v.values.clone(),
+            stride_x: style.stride_x.max(1),
+            stride_y: style.stride_y.max(1),
+            color: style.color,
+            width: style.width.max(1),
+            max_steps: style.max_steps.max(1),
+            step_cells: style.step_cells.max(0.05),
+            min_speed: style.min_speed.max(0.0),
         }
     }
 }
@@ -728,6 +816,8 @@ pub struct MapRenderRequest {
     pub projected_lines: Vec<ProjectedLineOverlay>,
     pub contours: Vec<ContourLayer>,
     pub wind_barbs: Vec<WindBarbLayer>,
+    #[serde(default)]
+    pub wind_streamlines: Vec<WindStreamlineLayer>,
     pub semantics: Option<ProductSemantics>,
 }
 
@@ -772,6 +862,7 @@ impl MapRenderRequest {
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),
+            wind_streamlines: Vec::new(),
             semantics: None,
         }
     }
@@ -996,6 +1087,30 @@ impl MapRenderRequest {
         style: WindBarbStyle,
     ) -> Result<Self, RustwxRenderError> {
         self.add_wind_barbs(u, v, style)?;
+        Ok(self)
+    }
+
+    pub fn add_wind_streamlines(
+        &mut self,
+        u: &Field2D,
+        v: &Field2D,
+        style: WindStreamlineStyle,
+    ) -> Result<&mut Self, RustwxRenderError> {
+        ensure_same_grid(&self.field, u, "wind_streamline_u")?;
+        ensure_same_grid(&self.field, v, "wind_streamline_v")?;
+        ensure_same_grid(u, v, "wind_streamline_uv")?;
+        self.wind_streamlines
+            .push(WindStreamlineLayer::from_fields(u, v, style));
+        Ok(self)
+    }
+
+    pub fn with_wind_streamlines(
+        mut self,
+        u: &Field2D,
+        v: &Field2D,
+        style: WindStreamlineStyle,
+    ) -> Result<Self, RustwxRenderError> {
+        self.add_wind_streamlines(u, v, style)?;
         Ok(self)
     }
 }

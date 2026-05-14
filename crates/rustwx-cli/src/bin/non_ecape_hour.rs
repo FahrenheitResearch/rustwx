@@ -8,6 +8,7 @@ mod region;
 use clap::{Parser, ValueEnum};
 use region::RegionPreset;
 use rustwx_core::{ModelId, SourceId};
+use rustwx_io::earth2_archive::Earth2EnsembleSelector;
 use rustwx_models::model_summary;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::catalog::{ProductTargetStatus, build_supported_products_catalog};
@@ -270,6 +271,11 @@ struct Args {
     place_label_density: u8,
     #[arg(long = "png-compression", value_enum, default_value_t = PngCompressionArg::Fast)]
     png_compression: PngCompressionArg,
+    #[arg(
+        long,
+        help = "AIFS Earth2Archive/aifs-inference member index to render"
+    )]
+    member: Option<u16>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -317,6 +323,10 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let source = args
         .source
         .unwrap_or(model_summary(args.model).sources[0].id);
+    let earth2_ensemble = args.member.map(Earth2EnsembleSelector::Member);
+    if earth2_ensemble.is_some() && args.model != ModelId::Aifs {
+        return Err("--member currently applies only to --model aifs".into());
+    }
     let png_compression: PngCompressionMode = args.png_compression.into();
     let (default_direct, default_derived, default_windowed) = if args.all_supported {
         all_supported_non_ecape_product_sets(args.model)
@@ -386,7 +396,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 &domain,
                 PlaceLabelDensityTier::from_numeric(args.place_label_density),
             ),
-            earth2_ensemble: None,
+            earth2_ensemble,
             domain_jobs: Some(args.domain_jobs),
         };
         let report = run_model_non_ecape_hour_build(&request, wxstore_request.as_ref())?;
@@ -435,7 +445,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 &domain,
                 PlaceLabelDensityTier::from_numeric(args.place_label_density),
             ),
-            earth2_ensemble: None,
+            earth2_ensemble,
         };
         let report = run_model_non_ecape_hour(&request)?;
         let model_slug = report.model.as_str().replace('-', "_");
@@ -476,7 +486,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 &domain,
                 PlaceLabelDensityTier::from_numeric(args.place_label_density),
             ),
-            earth2_ensemble: None,
+            earth2_ensemble,
             domain_jobs: Some(args.domain_jobs),
         };
         let report = run_model_non_ecape_hour_multi_domain(&request)?;

@@ -14,6 +14,7 @@ use contour_mode::ContourModeArg;
 use domain::{domain_from_region_or_country, requested_domain_slug};
 use region::RegionPreset;
 use rustwx_core::{CycleSpec, ModelId, ModelRunRequest, SourceId};
+use rustwx_io::FetchRequest;
 use rustwx_io::earth2_archive::{Earth2EnsembleSelector, Earth2EnsembleStat};
 use rustwx_models::model_summary;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
@@ -193,12 +194,18 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         return Err("--member/--stat currently apply only to --model aifs".into());
     }
     if let (Some(selector), Some(cycle_utc)) = (earth2_ensemble, args.cycle) {
-        let path = rustwx_io::earth2_archive::archive_path_for_request(&ModelRunRequest::new(
-            args.model,
-            CycleSpec::new(args.date.clone(), cycle_utc)?,
-            forecast_hour,
-            "oper",
-        )?)?;
+        let fetch = FetchRequest {
+            request: ModelRunRequest::new(
+                args.model,
+                CycleSpec::new(args.date.clone(), cycle_utc)?,
+                forecast_hour,
+                "oper",
+            )?,
+            source_override: Some(source),
+            variable_patterns: Vec::new(),
+            earth2_ensemble,
+        };
+        let path = rustwx_io::earth2_archive::archive_path_for_fetch(&fetch)?;
         rustwx_io::earth2_archive::validate_ensemble_selector_for_path(&path, selector)?;
     }
     let recipes = if args.all_supported {
@@ -240,6 +247,8 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             PlaceLabelDensityTier::from_numeric(args.place_label_density),
         ),
         output_suffix: None,
+        subtitle_left_override: None,
+        subtitle_right_override: None,
         earth2_ensemble,
     };
     let report = run_direct_batch(&request)?;
@@ -390,7 +399,9 @@ fn resolve_forecast_hour(args: &Args, source: SourceId) -> Result<u16, Box<dyn s
     if let Some(forecast_hour) = args.forecast_hour {
         return Ok(forecast_hour);
     }
-    if args.model == ModelId::Aifs && source == SourceId::Earth2Archive {
+    if args.model == ModelId::Aifs
+        && matches!(source, SourceId::AifsInference | SourceId::Earth2Archive)
+    {
         if let Some(forecast_hour) = rustwx_io::earth2_archive::default_forecast_hour_for_archive(
             args.model, &args.date, args.cycle,
         )? {

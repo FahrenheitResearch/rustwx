@@ -4,22 +4,25 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use rayon::prelude::*;
-use rustwx_core::{CycleSpec, FieldSelector, ModelId, ModelRunRequest, SelectedField2D, SourceId};
+use rustwx_core::{
+    CanonicalField, CycleSpec, FieldSelector, ModelId, ModelRunRequest, SelectedField2D, SourceId,
+};
+use rustwx_io::earth2_archive::{Earth2EnsembleSelector, Earth2EnsembleStat};
 use rustwx_io::{FetchRequest, extract_fields_partial_from_model_bytes, fetch_bytes_with_cache};
 use rustwx_models::{LatestRun, plot_recipe, plot_recipe_fetch_plan};
 use rustwx_render::{
-    Color, ColorScale, DiscreteColorScale, ExtendMode, LegendControls, LegendMode, LevelDensity,
-    MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode, RenderDensity,
-    map_frame_aspect_ratio_for_mode, save_png_profile_with_options,
+    Color, ColorScale, DiscreteColorScale, ExtendMode, MapRenderRequest, PngCompressionMode,
+    PngWriteOptions, ProductVisualMode, map_frame_aspect_ratio_for_mode,
+    save_png_profile_with_options,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::direct::{
-    DirectBatchRequest, model_data_domain_frame_for_projection,
-    render_direct_recipe_from_selected_fields,
-};
+use crate::direct::{DirectBatchRequest, render_direct_recipe_from_selected_fields};
 use crate::places::PlaceLabelOverlay;
-use crate::shared_context::{DomainSpec, static_chrome_scale, static_title_with_suffix};
+use crate::shared_context::{
+    DomainSpec, static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
+    static_title_with_suffix,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -85,6 +88,15 @@ impl CompareOp {
             Self::Le => "le",
         }
     }
+
+    fn symbol(self) -> &'static str {
+        match self {
+            Self::Gt => ">",
+            Self::Ge => ">=",
+            Self::Lt => "<",
+            Self::Le => "<=",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,7 +158,7 @@ pub struct GribEnsembleRenderReport {
 }
 
 fn default_output_width() -> u32 {
-    1200
+    1600
 }
 
 fn default_output_height() -> u32 {
@@ -341,8 +353,10 @@ pub fn run_grib_ensemble_render(
             png_compression: request.png_compression,
             custom_poi_overlay: None,
             place_label_overlay: request.place_label_overlay.clone(),
-            output_suffix: Some(suffix.clone()),
-            earth2_ensemble: None,
+            output_suffix: None,
+            subtitle_left_override: None,
+            subtitle_right_override: None,
+            earth2_ensemble: grib_stat_as_earth2_selector(request.stat),
         };
         render_direct_recipe_from_selected_fields(
             &direct_request,
@@ -492,6 +506,7 @@ fn reduce_fields(
             }
         }
         GribEnsembleStat::ProbExceed => {
+            let threshold = comparison_threshold_value(selector, first.units.as_str(), threshold);
             for idx in 0..len {
                 let mut count = 0usize;
                 let mut hits = 0usize;
@@ -522,6 +537,67 @@ fn reduce_fields(
         reduced = reduced.with_projection(projection);
     }
     Ok(reduced)
+}
+
+fn grib_stat_as_earth2_selector(stat: GribEnsembleStat) -> Option<Earth2EnsembleSelector> {
+    Some(Earth2EnsembleSelector::Statistic(match stat {
+        GribEnsembleStat::Mean => Earth2EnsembleStat::Mean,
+        GribEnsembleStat::Std => Earth2EnsembleStat::Std,
+        GribEnsembleStat::Min => Earth2EnsembleStat::Min,
+        GribEnsembleStat::Max => Earth2EnsembleStat::Max,
+        GribEnsembleStat::P10 => Earth2EnsembleStat::P10,
+        GribEnsembleStat::P50 => Earth2EnsembleStat::P50,
+        GribEnsembleStat::P90 => Earth2EnsembleStat::P90,
+        GribEnsembleStat::ProbExceed => return None,
+    }))
+}
+
+fn comparison_threshold_value(selector: FieldSelector, units: &str, threshold: f32) -> f32 {
+    if matches!(
+        selector.field,
+        CanonicalField::Temperature | CanonicalField::Dewpoint
+    ) && units.eq_ignore_ascii_case("K")
+        && (-100.0..=80.0).contains(&threshold)
+    {
+        threshold + 273.15
+    } else {
+        threshold
+    }
+}
+
+fn comparison_threshold_label(selector: FieldSelector, units: &str, threshold: f32) -> String {
+    if matches!(
+        selector.field,
+        CanonicalField::Temperature | CanonicalField::Dewpoint
+    ) && (-100.0..=80.0).contains(&threshold)
+    {
+        format_compact_threshold(threshold, "C")
+    } else if matches!(
+        selector.field,
+        CanonicalField::Temperature | CanonicalField::Dewpoint
+    ) && (150.0..=400.0).contains(&threshold)
+    {
+        format_compact_threshold(threshold, "K")
+    } else {
+        format_compact_threshold(threshold, units)
+    }
+}
+
+fn format_compact_threshold(value: f32, units: &str) -> String {
+    let value = if (value - value.round()).abs() < 0.01 {
+        format!("{:.0}", value)
+    } else {
+        format!("{value:.2}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    };
+    let units = units.trim();
+    if units.is_empty() {
+        value
+    } else {
+        format!("{value} {units}")
+    }
 }
 
 fn percentile(values: &mut [f32], q: f32) -> f32 {
@@ -580,34 +656,37 @@ fn render_spread_or_probability_map(
         _ => spread_scale(&core.values),
     };
     let mut render_request = MapRenderRequest::new(core.into(), scale);
-    render_request.title = Some(static_title_with_suffix(format!(
-        "{} ensemble {}",
-        recipe_title,
-        request.stat.slug()
-    )));
-    render_request.subtitle_left = Some(format!(
-        "{} {}Z F{:03}  {}  n={}",
-        request.date_yyyymmdd,
+    let title = if request.stat == GribEnsembleStat::ProbExceed {
+        let threshold = request.threshold.unwrap_or(f32::NAN);
+        let op = request.threshold_op.unwrap_or(CompareOp::Gt);
+        format!(
+            "{} Ensemble Probability {} {}",
+            recipe_title,
+            op.symbol(),
+            comparison_threshold_label(selector, field.units.as_str(), threshold)
+        )
+    } else {
+        format!("{} Ensemble {}", recipe_title, request.stat.slug())
+    };
+    render_request.title = Some(static_title_with_suffix(title));
+    render_request.subtitle_left = Some(crate::shared_context::model_time_subtitle(
+        request.model,
+        &request.date_yyyymmdd,
         latest.cycle.hour_utc,
         request.forecast_hour,
-        request.model,
+    ));
+    render_request.subtitle_right = Some(format!(
+        "{} | n={}",
+        crate::shared_context::source_subtitle(latest.source),
         request.member_products.len()
     ));
-    render_request.subtitle_right = Some(format!("source: {}", latest.source));
     render_request.width = request.output_width;
     render_request.height = request.output_height;
     render_request.chrome_scale = static_chrome_scale();
-    render_request.render_density = RenderDensity {
-        fill: LevelDensity::default(),
-        palette_multiplier: 1,
-    };
-    render_request.legend = LegendControls {
-        density: LevelDensity::default(),
-        mode: LegendMode::Stepped,
-    };
-    render_request.supersample_factor = 2;
-    render_request.visual_mode = visual_mode;
-    render_request.domain_frame = model_data_domain_frame_for_projection(field.projection.as_ref());
+    render_request.supersample_factor = static_supersample_factor();
+    render_request.supersample_sharpen = static_supersample_sharpen();
+    crate::plot_design::StaticPlotDesign::new(request.domain.bounds, visual_mode)
+        .apply_to_request(&mut render_request);
     render_request.apply_projected_map(&projected);
 
     let output_path = request.out_dir.join(format!(

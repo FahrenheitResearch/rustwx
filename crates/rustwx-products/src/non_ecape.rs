@@ -939,6 +939,8 @@ fn prepare_non_ecape_hour(
             custom_poi_overlay: request.custom_poi_overlay.clone(),
             place_label_overlay: request.place_label_overlay.clone(),
             output_suffix: None,
+            subtitle_left_override: None,
+            subtitle_right_override: None,
             earth2_ensemble: request.earth2_ensemble,
         };
         crate::direct::plan_direct_fetch_groups(&direct_request)?
@@ -981,6 +983,7 @@ fn prepare_non_ecape_hour(
         png_compression: request.png_compression,
         custom_poi_overlay: request.custom_poi_overlay.clone(),
         place_label_overlay: request.place_label_overlay.clone(),
+        earth2_ensemble: request.earth2_ensemble,
     });
 
     let mut shared_load_decode_ms = 0u128;
@@ -1148,6 +1151,8 @@ fn prepare_non_ecape_hour(
                 custom_poi_overlay: request.custom_poi_overlay.clone(),
                 place_label_overlay: request.place_label_overlay.clone(),
                 output_suffix: None,
+                subtitle_left_override: None,
+                subtitle_right_override: None,
                 earth2_ensemble: request.earth2_ensemble,
             };
             Some(Arc::new(prepare_direct_batch_from_loaded(
@@ -1423,6 +1428,8 @@ fn run_prepared_non_ecape_domain(
             custom_poi_overlay: request.custom_poi_overlay.clone(),
             place_label_overlay: request.place_label_overlay.clone(),
             output_suffix: None,
+            subtitle_left_override: None,
+            subtitle_right_override: None,
             earth2_ensemble: request.earth2_ensemble,
         });
 
@@ -1450,6 +1457,7 @@ fn run_prepared_non_ecape_domain(
                 png_compression: request.png_compression,
                 custom_poi_overlay: request.custom_poi_overlay.clone(),
                 place_label_overlay: request.place_label_overlay.clone(),
+                earth2_ensemble: request.earth2_ensemble,
             },
             prepared.derived_recipes.clone(),
         )
@@ -2504,6 +2512,8 @@ mod tests {
             custom_poi_overlay: None,
             place_label_overlay: None,
             output_suffix: None,
+            subtitle_left_override: None,
+            subtitle_right_override: None,
             earth2_ensemble: None,
         };
         let direct_groups = plan_direct_fetch_groups(&direct_request).unwrap();
@@ -2557,6 +2567,8 @@ mod tests {
             custom_poi_overlay: None,
             place_label_overlay: None,
             output_suffix: None,
+            subtitle_left_override: None,
+            subtitle_right_override: None,
             earth2_ensemble: None,
         };
         let direct_groups = plan_direct_fetch_groups(&direct_request).unwrap();
@@ -2608,6 +2620,8 @@ mod tests {
             custom_poi_overlay: None,
             place_label_overlay: None,
             output_suffix: None,
+            subtitle_left_override: None,
+            subtitle_right_override: None,
             earth2_ensemble: None,
         };
         let direct_groups = plan_direct_fetch_groups(&direct_request).unwrap();

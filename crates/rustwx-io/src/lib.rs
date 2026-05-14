@@ -1349,9 +1349,7 @@ fn default_product_template_match_score(
     if selector.field == CanonicalField::TotalPrecipitation {
         return match message.product.template {
             8 | 11 | 12 if message.product.derived_forecast_type.is_none() => Some(0),
-            8 | 11 | 12
-                if matches!(message.product.derived_forecast_type, Some(0) | Some(1)) =>
-            {
+            8 | 11 | 12 if matches!(message.product.derived_forecast_type, Some(0) | Some(1)) => {
                 Some(20)
             }
             0 | 1 => Some(10),

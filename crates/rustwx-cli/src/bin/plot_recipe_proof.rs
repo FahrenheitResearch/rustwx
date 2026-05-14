@@ -17,10 +17,9 @@ use rustwx_io::{
 use rustwx_models::{ModelError, PlotRecipe, plot_recipe, plot_recipe_fetch_plan};
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_render::{
-    Color, ColorScale, ContourLayer, DiscreteColorScale, ExtendMode, MapRenderRequest,
-    ProductVisualMode, ProjectedDomain, ProjectedMap, WindBarbLayer,
-    build_projected_map as build_projected_map_from_latlon, map_frame_aspect_ratio_for_mode,
-    save_png, weather::WeatherPalette, weather::weather_palette,
+    Color, ContourLayer, MapRenderRequest, ProductVisualMode, ProjectedDomain, ProjectedMap,
+    WindBarbLayer, build_projected_map as build_projected_map_from_latlon,
+    map_frame_aspect_ratio_for_mode, save_png,
 };
 use serde_json::json;
 
@@ -276,7 +275,10 @@ fn build_render_request(
     } else {
         MapRenderRequest::new(
             filled_field.into(),
-            scale_for_recipe(recipe, filled.selector),
+            rustwx_products::plot_design::operational_fill_scale_for_recipe(
+                recipe,
+                filled.selector,
+            ),
         )
     };
     request.visual_mode = visual_mode_for_recipe(recipe, filled.selector, overlay_only);
@@ -409,69 +411,6 @@ fn should_render_overlay_only(selector: FieldSelector, has_contours: bool) -> bo
     ) && !has_contours
 }
 
-fn scale_for_recipe(recipe: &PlotRecipe, filled_selector: FieldSelector) -> ColorScale {
-    let discrete = match recipe.style {
-        rustwx_models::RenderStyle::WeatherTemperature => {
-            let (lo, hi) = match filled_selector.vertical {
-                rustwx_core::VerticalSelector::IsobaricHpa(500) => (-50.0, 5.0),
-                rustwx_core::VerticalSelector::IsobaricHpa(850) => (-40.0, 40.0),
-                _ => (-60.0, 40.0),
-            };
-            DiscreteColorScale {
-                levels: range_step(lo, hi, 1.0),
-                colors: weather_palette(WeatherPalette::Temperature),
-                extend: ExtendMode::Both,
-                mask_below: None,
-            }
-        }
-        rustwx_models::RenderStyle::WeatherReflectivity => DiscreteColorScale {
-            levels: range_step(5.0, 80.0, 5.0),
-            colors: weather_palette(WeatherPalette::Reflectivity),
-            extend: ExtendMode::Both,
-            mask_below: Some(5.0),
-        },
-        rustwx_models::RenderStyle::WeatherRh => DiscreteColorScale {
-            levels: range_step(0.0, 105.0, 5.0),
-            colors: weather_palette(WeatherPalette::Rh),
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
-        rustwx_models::RenderStyle::WeatherVorticity => DiscreteColorScale {
-            levels: range_step(0.0, 48.0, 2.0),
-            colors: weather_palette(WeatherPalette::RelVort),
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
-        rustwx_models::RenderStyle::WeatherDewpoint => DiscreteColorScale {
-            levels: range_step(-40.0, 30.0, 2.0),
-            colors: weather_palette(WeatherPalette::Dewpoint),
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
-        rustwx_models::RenderStyle::WeatherHeight => DiscreteColorScale {
-            levels: match filled_selector.vertical {
-                rustwx_core::VerticalSelector::IsobaricHpa(200)
-                | rustwx_core::VerticalSelector::IsobaricHpa(250)
-                | rustwx_core::VerticalSelector::IsobaricHpa(300) => range_step(50.0, 170.0, 5.0),
-                rustwx_core::VerticalSelector::IsobaricHpa(500) => range_step(20.0, 150.0, 5.0),
-                rustwx_core::VerticalSelector::IsobaricHpa(700) => range_step(10.0, 90.0, 5.0),
-                rustwx_core::VerticalSelector::IsobaricHpa(850) => range_step(10.0, 70.0, 5.0),
-                _ => range_step(10.0, 120.0, 5.0),
-            },
-            colors: weather_palette(WeatherPalette::Winds),
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
-        _ => DiscreteColorScale {
-            levels: range_step(-50.0, 5.0, 1.0),
-            colors: weather_palette(WeatherPalette::Temperature),
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
-    };
-    ColorScale::Discrete(discrete)
-}
-
 fn build_contour_layers(
     recipe: &PlotRecipe,
     extracted: &HashMap<FieldSelector, rustwx_core::SelectedField2D>,
@@ -486,62 +425,9 @@ fn build_contour_layers(
         return Vec::new();
     };
 
-    let data = if selector.field == CanonicalField::GeopotentialHeight {
-        field.values.iter().map(|value| value * 0.1).collect()
-    } else {
-        field.values.clone()
-    };
-    let (levels, color, width, labels) = match selector {
-        FieldSelector {
-            field: CanonicalField::GeopotentialHeight,
-            vertical: rustwx_core::VerticalSelector::IsobaricHpa(200),
-            ..
-        } => (range_step(1020.0, 1290.0, 6.0), Color::BLACK, 1, true),
-        FieldSelector {
-            field: CanonicalField::GeopotentialHeight,
-            vertical: rustwx_core::VerticalSelector::IsobaricHpa(300),
-            ..
-        } => (range_step(780.0, 1020.0, 6.0), Color::BLACK, 1, true),
-        FieldSelector {
-            field: CanonicalField::GeopotentialHeight,
-            vertical: rustwx_core::VerticalSelector::IsobaricHpa(500),
-            ..
-        } => (range_step(450.0, 650.0, 3.0), Color::BLACK, 1, true),
-        FieldSelector {
-            field: CanonicalField::GeopotentialHeight,
-            vertical: rustwx_core::VerticalSelector::IsobaricHpa(700),
-            ..
-        } => (range_step(180.0, 360.0, 3.0), Color::BLACK, 1, true),
-        FieldSelector {
-            field: CanonicalField::GeopotentialHeight,
-            vertical: rustwx_core::VerticalSelector::IsobaricHpa(850),
-            ..
-        } => (range_step(0.0, 200.0, 3.0), Color::BLACK, 1, true),
-        FieldSelector {
-            field: CanonicalField::UpdraftHelicity,
-            vertical:
-                rustwx_core::VerticalSelector::HeightAboveGroundLayerMeters {
-                    bottom_m: 2000,
-                    top_m: 5000,
-                },
-            ..
-        } => (
-            vec![25.0, 50.0, 75.0, 100.0, 150.0, 200.0],
-            Color::rgba(166, 0, 255, 255),
-            2,
-            false,
-        ),
-        _ => (range_step(0.0, 200.0, 10.0), Color::BLACK, 1, true),
-    };
-
-    vec![ContourLayer {
-        data,
-        levels,
-        color,
-        width,
-        labels,
-        show_extrema: false,
-    }]
+    rustwx_products::plot_design::operational_contour_layer_for_values(selector, &field.values)
+        .into_iter()
+        .collect()
 }
 
 fn build_barb_layers(
@@ -579,16 +465,6 @@ fn build_projected_map(
     target_ratio: f64,
 ) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
     build_projected_map_from_latlon(lat_deg, lon_deg, region.bounds(), target_ratio)
-}
-
-fn range_step(start: f64, stop: f64, step: f64) -> Vec<f64> {
-    let mut values = Vec::new();
-    let mut current = start;
-    while current < stop - step * 1.0e-9 {
-        values.push(current);
-        current += step;
-    }
-    values
 }
 
 fn visible_grid_span(

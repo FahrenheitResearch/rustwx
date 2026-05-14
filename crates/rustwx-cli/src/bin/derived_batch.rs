@@ -13,6 +13,7 @@ use contour_mode::ContourModeArg;
 use domain::{domain_from_region_or_country, requested_domain_slug};
 use region::RegionPreset;
 use rustwx_core::{ModelId, SourceId};
+use rustwx_io::earth2_archive::Earth2EnsembleSelector;
 use rustwx_models::model_summary;
 use rustwx_products::cache::{default_proof_cache_dir, ensure_dir};
 use rustwx_products::derived::{
@@ -96,6 +97,11 @@ struct Args {
     png_compression: PngCompressionArg,
     #[arg(long = "place-label-density", default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=3))]
     place_label_density: u8,
+    #[arg(
+        long,
+        help = "AIFS Earth2Archive/aifs-inference member index to render"
+    )]
+    member: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -150,6 +156,10 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let source = args
         .source
         .unwrap_or(model_summary(args.model).sources[0].id);
+    let earth2_ensemble = args.member.map(Earth2EnsembleSelector::Member);
+    if earth2_ensemble.is_some() && args.model != ModelId::Aifs {
+        return Err("--member currently applies only to --model aifs".into());
+    }
     let recipes = if args.all_supported {
         let supported = supported_derived_recipe_slugs(args.model);
         if supported.is_empty() {
@@ -192,17 +202,23 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             &domain,
             PlaceLabelDensityTier::from_numeric(args.place_label_density),
         ),
+        earth2_ensemble,
     };
     let report = run_derived_batch(&request)?;
 
     let model_slug = report.model.as_str().replace('-', "_");
+    let selector_suffix = request
+        .earth2_ensemble
+        .map(|selector| format!("_{}", selector.filename_slug()))
+        .unwrap_or_default();
     let stem = format!(
-        "rustwx_{}_{}_{}z_f{:03}_{}_derived",
+        "rustwx_{}_{}_{}z_f{:03}_{}_derived{}",
         model_slug,
         report.date_yyyymmdd,
         report.cycle_utc,
         report.forecast_hour,
-        report.domain.slug
+        report.domain.slug,
+        selector_suffix
     );
     let manifest_path = args.out_dir.join(format!("{stem}_manifest.json"));
     let timing_path = args.out_dir.join(format!("{stem}_timing.json"));
@@ -233,6 +249,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                                 report.forecast_hour,
                                 &report.domain.slug,
                                 slug,
+                                &selector_suffix,
                             ),
                         )
                     })
@@ -303,14 +320,16 @@ fn expected_output_relative_path(
     forecast_hour: u16,
     domain_slug: &str,
     product_slug: &str,
+    selector_suffix: &str,
 ) -> PathBuf {
     PathBuf::from(format!(
-        "rustwx_{}_{}_{}z_f{:03}_{}_{}.png",
+        "rustwx_{}_{}_{}z_f{:03}_{}_{}{}.png",
         model_slug.replace('-', "_"),
         date_yyyymmdd,
         cycle_utc,
         forecast_hour,
         domain_slug,
-        product_slug
+        product_slug,
+        selector_suffix
     ))
 }

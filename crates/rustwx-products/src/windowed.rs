@@ -25,8 +25,7 @@ use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId
 use rustwx_models::{LatestRun, resolve_canonical_bundle_product};
 use rustwx_render::map_frame_aspect_ratio;
 use rustwx_render::{
-    DomainFrame, LegendControls, LegendMode, LevelDensity, MapRenderRequest, PngCompressionMode,
-    PngWriteOptions, ProductVisualMode, RenderDensity, WeatherProduct,
+    MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode, WeatherProduct,
     save_png_profile_with_options,
 };
 use serde::{Deserialize, Serialize};
@@ -1810,23 +1809,15 @@ fn build_windowed_render_request(
     ));
     render_request.subtitle_right = Some(source_subtitle(source));
     render_request.chrome_scale = static_chrome_scale();
-    render_request.render_density = RenderDensity {
-        fill: LevelDensity::default(),
-        palette_multiplier: 1,
-    };
-    render_request.legend = LegendControls {
-        density: LevelDensity::default(),
-        mode: LegendMode::Stepped,
-    };
     render_request.supersample_factor = static_supersample_factor();
     render_request.supersample_sharpen = static_supersample_sharpen();
-    render_request.domain_frame = Some(DomainFrame::model_data_default());
-    render_request.visual_mode =
-        if product.is_qpf() || product.is_wind10m() || product.is_surface_snapshot() {
-            ProductVisualMode::FilledMeteorology
-        } else {
-            ProductVisualMode::SevereDiagnostic
-        };
+    let visual_mode = if product.is_qpf() || product.is_wind10m() || product.is_surface_snapshot() {
+        ProductVisualMode::FilledMeteorology
+    } else {
+        ProductVisualMode::SevereDiagnostic
+    };
+    crate::plot_design::StaticPlotDesign::new(request.domain.bounds, visual_mode)
+        .apply_to_request(&mut render_request);
     render_request.projected_domain = Some(rustwx_render::ProjectedDomain {
         x: projected.projected_x.clone(),
         y: projected.projected_y.clone(),
@@ -2621,7 +2612,10 @@ mod tests {
             render_request.visual_mode,
             ProductVisualMode::FilledMeteorology
         );
-        assert_eq!(render_request.legend.mode, LegendMode::Stepped);
+        assert_eq!(
+            render_request.legend.mode,
+            rustwx_render::LegendMode::Stepped
+        );
         assert!(render_request.domain_frame.is_some());
         assert!(render_request.projected_domain.is_some());
     }

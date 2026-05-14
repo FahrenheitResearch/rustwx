@@ -60,13 +60,14 @@ pub use render::{
     render_to_png_profile as profile_render_to_png,
 };
 pub use request::{
-    ChromeScale, Color, ColorScale, ContourLayer, ContourStyle, DiscreteColorScale, DomainFrame,
-    ExtendMode, Field2D, GeographicClipBounds, GridShape, InverseRasterProjection, LatLonGrid,
-    MapRenderRequest, ProductKey, ProductMaturity, ProductSemanticFlag, ProductSemantics,
-    ProjectedDomain, ProjectedExtent, ProjectedLabelPlacement, ProjectedLineOverlay,
-    ProjectedMarkerShape, ProjectedPlaceLabel, ProjectedPlaceLabelPriority,
-    ProjectedPlaceLabelStyle, ProjectedPointOverlay, ProjectedPolygonFill, RasterSampleMode,
-    RgbaGridField, WindBarbLayer, WindBarbStyle,
+    ChromeScale, Color, ColorScale, ContourLayer, ContourLinePattern, ContourStyle,
+    DiscreteColorScale, DomainFrame, ExtendMode, Field2D, GeographicClipBounds, GridShape,
+    InverseRasterProjection, LatLonGrid, MapRenderRequest, ProductKey, ProductMaturity,
+    ProductSemanticFlag, ProductSemantics, ProjectedDomain, ProjectedExtent,
+    ProjectedLabelPlacement, ProjectedLineOverlay, ProjectedMarkerShape, ProjectedPlaceLabel,
+    ProjectedPlaceLabelPriority, ProjectedPlaceLabelStyle, ProjectedPointOverlay,
+    ProjectedPolygonFill, RasterSampleMode, RgbaGridField, WindBarbLayer, WindBarbStyle,
+    WindStreamlineLayer, WindStreamlineStyle,
 };
 pub use rustwx_core::{
     Field2D as CoreField2D, GridProjection as CoreGridProjection, GridShape as CoreGridShape,
@@ -228,6 +229,11 @@ impl RenderScratch {
         for barb in opts.barbs.drain(..) {
             self.reclaim_f64_buffer(barb.u);
             self.reclaim_f64_buffer(barb.v);
+        }
+
+        for streamline in opts.streamlines.drain(..) {
+            self.reclaim_f64_buffer(streamline.u);
+            self.reclaim_f64_buffer(streamline.v);
         }
     }
 }
@@ -610,6 +616,9 @@ fn with_render_state_profile_with_style<T>(
                 width: layer.width,
                 labels: layer.labels,
                 show_extrema: layer.show_extrema,
+                pattern: layer.pattern,
+                major_every: layer.major_every,
+                major_width: layer.major_width,
             });
         }
         let contour_prep_ms = contour_start.elapsed().as_millis();
@@ -627,6 +636,22 @@ fn with_render_state_profile_with_style<T>(
                 color: presentation.barb_color(layer.color.into()),
                 width: layer.width,
                 length_px: layer.length_px,
+            });
+        }
+        let mut streamlines = Vec::with_capacity(request.wind_streamlines.len());
+        for layer in &request.wind_streamlines {
+            streamlines.push(crate::overlay::StreamlineOverlay {
+                u: scratch.fill_f64_from_f32(&layer.u),
+                v: scratch.fill_f64_from_f32(&layer.v),
+                ny: shape.ny,
+                nx: shape.nx,
+                stride_x: layer.stride_x,
+                stride_y: layer.stride_y,
+                color: presentation.barb_color(layer.color.into()),
+                width: layer.width,
+                max_steps: layer.max_steps,
+                step_cells: layer.step_cells,
+                min_speed: layer.min_speed,
             });
         }
         let barb_prep_ms = barb_start.elapsed().as_millis();
@@ -664,6 +689,7 @@ fn with_render_state_profile_with_style<T>(
             projected_lines,
             contours,
             barbs,
+            streamlines,
             presentation,
         };
 
@@ -765,6 +791,23 @@ fn validate_request(request: &MapRenderRequest) -> Result<(), RustwxRenderError>
         if layer.v.len() != expected {
             return Err(RustwxRenderError::LayerShapeMismatch {
                 layer: "wind_barb_v",
+                expected,
+                actual: layer.v.len(),
+            });
+        }
+    }
+
+    for layer in &request.wind_streamlines {
+        if layer.u.len() != expected {
+            return Err(RustwxRenderError::LayerShapeMismatch {
+                layer: "wind_streamline_u",
+                expected,
+                actual: layer.u.len(),
+            });
+        }
+        if layer.v.len() != expected {
+            return Err(RustwxRenderError::LayerShapeMismatch {
+                layer: "wind_streamline_v",
                 expected,
                 actual: layer.v.len(),
             });
@@ -954,6 +997,7 @@ mod tests {
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),
+            wind_streamlines: Vec::new(),
             semantics: None,
         };
 
@@ -1020,6 +1064,7 @@ mod tests {
             projected_lines: Vec::new(),
             contours: Vec::new(),
             wind_barbs: Vec::new(),
+            wind_streamlines: Vec::new(),
             semantics: None,
         };
 
