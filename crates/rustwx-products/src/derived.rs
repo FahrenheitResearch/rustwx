@@ -5538,7 +5538,7 @@ fn weather_lapse_request(
     let mut request = MapRenderRequest::for_palette_fill(
         field.clone().into(),
         WeatherPalette::LapseRate,
-        range_step(2.0, 10.1, 0.1),
+        range_step(3.0, 10.1, 0.1),
         ExtendMode::Both,
     )
     .with_visual_mode(recipe.visual_mode());
@@ -5703,16 +5703,16 @@ fn dcape_scale_colors() -> Vec<Color> {
 
 fn fire_weather_composite_scale_colors() -> Vec<Color> {
     vec![
-        Color::rgba(34, 139, 34, 255),
-        Color::rgba(50, 205, 50, 255),
-        Color::rgba(120, 230, 60, 255),
-        Color::rgba(173, 255, 47, 255),
-        Color::rgba(255, 215, 0, 255),
-        Color::rgba(255, 170, 0, 255),
-        Color::rgba(255, 140, 0, 255),
-        Color::rgba(255, 69, 0, 255),
-        Color::rgba(204, 0, 0, 255),
-        Color::rgba(139, 0, 0, 255),
+        Color::rgba(250, 250, 247, 255),
+        Color::rgba(224, 236, 214, 255),
+        Color::rgba(169, 220, 139, 255),
+        Color::rgba(91, 179, 93, 255),
+        Color::rgba(238, 232, 94, 255),
+        Color::rgba(252, 196, 67, 255),
+        Color::rgba(247, 145, 45, 255),
+        Color::rgba(231, 76, 41, 255),
+        Color::rgba(184, 28, 38, 255),
+        Color::rgba(119, 18, 35, 255),
     ]
 }
 

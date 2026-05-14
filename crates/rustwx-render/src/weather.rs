@@ -188,7 +188,7 @@ impl WeatherProduct {
             "stp_fixed" => Some(Self::StpFixed),
             "stp_effective" => Some(Self::StpEffective),
             "scp" => Some(Self::Scp),
-            "ehi" => Some(Self::Ehi),
+            "ehi" | "ehi_0_1km" | "ehi_01km" | "ehi_0_3km" | "ehi_03km" => Some(Self::Ehi),
             "tehi" | "tornadic_ehi" | "tornadic_0_1km_ehi" => Some(Self::Tehi),
             "tts" | "tornadic_tilting_stretching" => Some(Self::Tts),
             "vtp_mod" | "modified_vtp" | "vtp" => Some(Self::VtpMod),
@@ -522,7 +522,8 @@ impl WeatherPreset {
             "srh" | "srh1" | "srh3" | "effective_srh" => Some(Self::Srh),
             "stp" | "stp_fixed" | "stp_effective" | "ecape_stp" => Some(Self::Stp),
             "scp" | "ecape_scp" => Some(Self::Scp),
-            "ehi" | "ecape_ehi" | "ecape_ehi_0_1km" | "ecape_ehi_0_3km" => Some(Self::Ehi),
+            "ehi" | "ehi_0_1km" | "ehi_01km" | "ehi_0_3km" | "ehi_03km" | "ecape_ehi"
+            | "ecape_ehi_0_1km" | "ecape_ehi_0_3km" => Some(Self::Ehi),
             "uhel" | "uh" => Some(Self::Uh),
             "lapse_rate" | "lapse_rate_700_500" | "lapse_rate_0_3km" => Some(Self::LapseRate),
             _ => None,
@@ -604,11 +605,27 @@ impl WeatherPreset {
                 mask_below: None,
             },
             Self::LapseRate => DiscreteColorScale {
-                levels: range_step(2.0, 10.1, 0.1),
+                levels: range_step(3.0, 10.1, 0.1),
                 colors: weather_palette(WeatherPalette::LapseRate),
                 extend: ExtendMode::Both,
                 mask_below: None,
             },
+        }
+    }
+
+    pub fn default_tick_step(self) -> Option<f64> {
+        match self {
+            Self::Cape => Some(500.0),
+            Self::ThreeCape => Some(50.0),
+            Self::Cin => Some(50.0),
+            Self::Lcl => Some(500.0),
+            Self::Lfc => Some(500.0),
+            Self::El => Some(1000.0),
+            Self::Srh => Some(50.0),
+            Self::Stp | Self::Scp | Self::Ehi => Some(1.0),
+            Self::EcapeCapeRatio => Some(0.25),
+            Self::Uh => Some(20.0),
+            Self::LapseRate => Some(1.0),
         }
     }
 }
@@ -890,11 +907,23 @@ mod tests {
             Some(WeatherProduct::EcapeEhi03kmExperimental)
         );
         assert_eq!(
+            WeatherProduct::from_product_name("ehi_0_1km"),
+            Some(WeatherProduct::Ehi)
+        );
+        assert_eq!(
+            WeatherProduct::from_product_name("ehi_0_3km"),
+            Some(WeatherProduct::Ehi)
+        );
+        assert_eq!(
             WeatherProduct::from_product_name("vtp_mod"),
             Some(WeatherProduct::VtpMod)
         );
         assert_eq!(
             WeatherPreset::from_product_name("ecape_ehi_0_3km"),
+            Some(WeatherPreset::Ehi)
+        );
+        assert_eq!(
+            WeatherPreset::from_product_name("ehi_0_1km"),
             Some(WeatherPreset::Ehi)
         );
         assert_eq!(
@@ -983,8 +1012,9 @@ mod tests {
         );
         assert_eq!(
             WeatherPreset::LapseRate.scale().levels,
-            range_step(2.0, 10.1, 0.1)
+            range_step(3.0, 10.1, 0.1)
         );
+        assert_eq!(WeatherPreset::LapseRate.default_tick_step(), Some(1.0));
     }
 
     #[test]

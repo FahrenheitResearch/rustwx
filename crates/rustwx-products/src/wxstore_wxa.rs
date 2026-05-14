@@ -1,5 +1,5 @@
-use crate::direct::build_projected_map_with_projection;
-use crate::plot_design::StaticPlotDesign;
+use crate::direct::{build_projected_map_with_projection, direct_component_slug};
+use crate::plot_design::{StaticPlotDesign, is_global_scale_domain, longitude_bounds_span_deg};
 use crate::shared_context::{
     DomainSpec, static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
     static_title_with_suffix,
@@ -7,8 +7,9 @@ use crate::shared_context::{
 use rustwx_core::{Field2D, GridProjection, GridShape, LatLonGrid, ModelId, ProductKey};
 use rustwx_models::{PlotRecipe, RenderStyle, plot_recipe};
 use rustwx_render::{
-    Color, ColorScale, DiscreteColorScale, ExtendMode, MapRenderRequest, PngCompressionMode,
-    PngWriteOptions, ProductVisualMode, WeatherPalette, WeatherProduct, palette_scale,
+    Color, ColorScale, DiscreteColorScale, ExtendMode, LineworkRole, MapRenderRequest,
+    PngCompressionMode, PngWriteOptions, ProductVisualMode, WeatherPalette, WeatherPreset,
+    WeatherProduct, WindBarbLayer, WindStreamlineLayer, palette_scale,
     save_png_profile_with_options,
 };
 use rustwx_render::{DerivedProductStyle, ProjectedDomain};
@@ -201,12 +202,18 @@ pub fn available_wxa_products(
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) == Some("wxa") {
             if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
-                products.push(stem.to_string());
+                if !is_wxa_component_product(stem) {
+                    products.push(stem.to_string());
+                }
             }
         }
     }
     products.sort();
     Ok(products)
+}
+
+fn is_wxa_component_product(product: &str) -> bool {
+    product.contains("__contour") || product.contains("__wind_u") || product.contains("__wind_v")
 }
 
 pub fn wxa_product_path(
@@ -256,6 +263,7 @@ pub fn render_wxa_static_plot(
         request.width,
         request.height,
         &title,
+        &request.wxa_path,
     )?;
     map_request.subtitle_left = request
         .subtitle_left
@@ -313,6 +321,7 @@ fn build_wxa_map_request(
     width: u32,
     height: u32,
     title: &str,
+    wxa_path: &Path,
 ) -> Result<MapRenderRequest, Box<dyn std::error::Error>> {
     let field = Field2D::new(
         ProductKey::named(wxa.meta.variable.clone()),
@@ -355,9 +364,189 @@ fn build_wxa_map_request(
         extent: projected.extent,
     });
     request.projected_lines = projected.lines;
+    if should_hide_wxa_counties(bounds) {
+        request
+            .projected_lines
+            .retain(|line| !matches!(line.role, LineworkRole::County));
+    }
     request.projected_polygons = projected.polygons;
     request.inverse_raster_projection = projected.inverse_raster_projection;
+    add_wxa_companion_overlays(&mut request, wxa_path, wxa)?;
     Ok(request)
+}
+
+fn add_wxa_companion_overlays(
+    request: &mut MapRenderRequest,
+    wxa_path: &Path,
+    wxa: &WxaDense2dGrid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(recipe) = plot_recipe(&wxa.meta.variable) else {
+        return Ok(());
+    };
+
+    if let Some(spec) = &recipe.contours {
+        if let Some(selector) = spec.selector {
+            if let Some(component) =
+                read_wxa_component_grid(wxa_path, recipe.slug, "contour", wxa.forecast_hour)?
+            {
+                if component.values.len() == wxa.values.len() {
+                    if let Some(layer) = crate::plot_design::operational_contour_layer_for_values(
+                        selector,
+                        &component.values,
+                    ) {
+                        request.contours.push(layer);
+                    }
+                }
+            }
+        }
+    }
+
+    let u = read_wxa_component_grid(wxa_path, recipe.slug, "wind_u", wxa.forecast_hour)?;
+    let v = read_wxa_component_grid(wxa_path, recipe.slug, "wind_v", wxa.forecast_hour)?;
+    let (Some(u), Some(v)) = (u, v) else {
+        return Ok(());
+    };
+    if u.values.len() != wxa.values.len() || v.values.len() != wxa.values.len() {
+        return Ok(());
+    }
+
+    let bounds = wxa_bounds_tuple(&wxa.meta);
+    let (stride_x, stride_y) = wxa_wind_strides(wxa.meta.nx, wxa.meta.ny, bounds);
+    let u_kt = u.values.iter().map(|value| value * 1.943_844_5).collect();
+    let v_kt = v.values.iter().map(|value| value * 1.943_844_5).collect();
+    request.wind_barbs.push(WindBarbLayer {
+        u: u_kt,
+        v: v_kt,
+        stride_x,
+        stride_y,
+        color: Color::BLACK,
+        width: wxa_static_barb_width(),
+        length_px: wxa_static_barb_length_px(),
+    });
+
+    if wxa_static_streamlines_enabled() {
+        let style = crate::plot_design::operational_wind_streamline_style(
+            wxa_streamline_stride(stride_x),
+            wxa_streamline_stride(stride_y),
+        );
+        request.wind_streamlines.push(WindStreamlineLayer {
+            u: u.values.iter().map(|value| value * 1.943_844_5).collect(),
+            v: v.values.iter().map(|value| value * 1.943_844_5).collect(),
+            stride_x: style.stride_x,
+            stride_y: style.stride_y,
+            color: style.color,
+            width: style.width,
+            max_steps: style.max_steps,
+            step_cells: style.step_cells,
+            min_speed: style.min_speed,
+        });
+    }
+
+    Ok(())
+}
+
+fn read_wxa_component_grid(
+    wxa_path: &Path,
+    recipe_slug: &str,
+    role: &str,
+    forecast_hour: u32,
+) -> Result<Option<WxaDense2dGrid>, Box<dyn std::error::Error>> {
+    let Some(parent) = wxa_path.parent() else {
+        return Ok(None);
+    };
+    let path = parent.join(format!("{}.wxa", direct_component_slug(recipe_slug, role)));
+    if !path.is_file() {
+        return Ok(None);
+    }
+    read_wxa_dense2d_grid(&path, forecast_hour).map(Some)
+}
+
+fn should_hide_wxa_counties(bounds: (f64, f64, f64, f64)) -> bool {
+    let lat_span = (bounds.3 - bounds.2).abs();
+    let lon_span = longitude_bounds_span_deg(bounds);
+    lat_span >= 18.0 || lon_span >= 35.0
+}
+
+fn wxa_bounds_tuple(meta: &WxaDense2dMeta) -> (f64, f64, f64, f64) {
+    meta.grid
+        .get("bounds")
+        .and_then(value_f64_array)
+        .and_then(|bounds| {
+            (bounds.len() == 4).then(|| (bounds[0], bounds[2], bounds[1], bounds[3]))
+        })
+        .unwrap_or((-180.0, 180.0, -90.0, 90.0))
+}
+
+fn wxa_wind_strides(nx: usize, ny: usize, bounds: (f64, f64, f64, f64)) -> (usize, usize) {
+    let density = wxa_static_barb_density_scale();
+    let (target_columns, target_rows) = wxa_barb_target_columns_rows(bounds);
+    (
+        ((nx as f64 / (target_columns * density)).round() as usize).clamp(2, 128),
+        ((ny as f64 / (target_rows * density)).round() as usize).clamp(2, 96),
+    )
+}
+
+fn wxa_barb_target_columns_rows(bounds: (f64, f64, f64, f64)) -> (f64, f64) {
+    let lat_span = (bounds.3 - bounds.2).abs();
+    let lon_span = longitude_bounds_span_deg(bounds);
+    if is_global_scale_domain(bounds) {
+        (34.0, 16.0)
+    } else if lat_span >= 50.0 || lon_span >= 90.0 {
+        (26.0, 13.0)
+    } else if lat_span <= 12.0 && lon_span <= 20.0 {
+        (28.0, 18.0)
+    } else {
+        (23.0, 14.0)
+    }
+}
+
+fn wxa_streamline_stride(stride: usize) -> usize {
+    let density = std::env::var("RUSTWX_STREAMLINE_DENSITY")
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(1.0)
+        .clamp(0.25, 4.0);
+    ((stride as f64 / density).round() as usize).clamp(2, 96)
+}
+
+fn wxa_static_barb_width() -> u32 {
+    std::env::var("RUSTWX_BARB_WIDTH")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(1)
+        .clamp(1, 8)
+}
+
+fn wxa_static_barb_length_px() -> f64 {
+    std::env::var("RUSTWX_BARB_LENGTH_PX")
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(17.0)
+        .clamp(6.0, 48.0)
+}
+
+fn wxa_static_barb_density_scale() -> f64 {
+    std::env::var("RUSTWX_BARB_DENSITY")
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(1.0)
+        .clamp(0.25, 4.0)
+}
+
+fn wxa_static_streamlines_enabled() -> bool {
+    std::env::var("RUSTWX_WIND_STREAMLINES")
+        .ok()
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "off" | "no"
+            )
+        })
+        .unwrap_or(true)
 }
 
 fn plot_style_for_wxa_product(
@@ -368,8 +557,16 @@ fn plot_style_for_wxa_product(
         if let Some(selector) = recipe.filled.selector {
             let scale = crate::plot_design::operational_fill_scale_for_recipe(recipe, selector);
             let visual_mode = visual_mode_for_direct_recipe(recipe, selector);
-            return (scale, visual_mode, None);
+            return (
+                scale,
+                visual_mode,
+                direct_recipe_tick_step(recipe, selector),
+            );
         }
+    }
+
+    if let Some(style) = special_wxa_product_style(product_slug) {
+        return style;
     }
 
     if let Some(product) = WeatherProduct::from_product_name(product_slug) {
@@ -377,6 +574,14 @@ fn plot_style_for_wxa_product(
             ColorScale::Weather(product.scale_preset()),
             product.default_visual_mode(),
             product.default_tick_step(),
+        );
+    }
+
+    if let Some(preset) = WeatherPreset::from_product_name(product_slug) {
+        return (
+            ColorScale::Discrete(preset.scale()),
+            ProductVisualMode::SevereDiagnostic,
+            preset.default_tick_step(),
         );
     }
 
@@ -412,17 +617,17 @@ fn plot_style_for_wxa_product(
     }
     if lower.contains("temperature") || lower.contains("dewpoint") || units.contains("deg") {
         let levels = if units.eq_ignore_ascii_case("degF") {
-            range_step(-60.0, 121.0, 2.0)
+            range_step(-60.0, 121.0, 1.0)
         } else {
             range_step(-50.0, 51.0, 1.0)
         };
+        let palette = if lower.contains("dewpoint") {
+            WeatherPalette::Dewpoint
+        } else {
+            WeatherPalette::Temperature
+        };
         return (
-            ColorScale::Discrete(palette_scale(
-                WeatherPalette::Temperature,
-                levels,
-                ExtendMode::Both,
-                None,
-            )),
+            ColorScale::Discrete(palette_scale(palette, levels, ExtendMode::Both, None)),
             ProductVisualMode::FilledMeteorology,
             Some(10.0),
         );
@@ -432,6 +637,47 @@ fn plot_style_for_wxa_product(
         ProductVisualMode::FilledMeteorology,
         None,
     )
+}
+
+fn direct_recipe_tick_step(
+    recipe: &PlotRecipe,
+    selector: rustwx_core::FieldSelector,
+) -> Option<f64> {
+    match recipe.style {
+        RenderStyle::WeatherTemperature | RenderStyle::WeatherDewpoint => {
+            if matches!(
+                selector.vertical,
+                rustwx_core::VerticalSelector::HeightAboveGroundMeters(2)
+            ) {
+                Some(10.0)
+            } else {
+                Some(5.0)
+            }
+        }
+        RenderStyle::WeatherWinds | RenderStyle::WeatherWindGust => Some(5.0),
+        RenderStyle::WeatherReflectivity | RenderStyle::WeatherRadarReflectivity => Some(5.0),
+        RenderStyle::WeatherQpf => None,
+        _ => None,
+    }
+}
+
+fn special_wxa_product_style(
+    product_slug: &str,
+) -> Option<(ColorScale, ProductVisualMode, Option<f64>)> {
+    let lower = product_slug.to_ascii_lowercase();
+    if lower == "fire_weather_composite" {
+        return Some((
+            ColorScale::Discrete(DiscreteColorScale {
+                levels: range_step(0.0, 101.0, 10.0),
+                colors: fire_weather_composite_scale_colors(),
+                extend: ExtendMode::Neither,
+                mask_below: None,
+            }),
+            ProductVisualMode::SevereDiagnostic,
+            Some(20.0),
+        ));
+    }
+    None
 }
 
 fn visual_mode_for_direct_recipe(
@@ -876,6 +1122,21 @@ fn generic_wind_speed_scale() -> DiscreteColorScale {
     }
 }
 
+fn fire_weather_composite_scale_colors() -> Vec<Color> {
+    vec![
+        Color::rgba(250, 250, 247, 255),
+        Color::rgba(224, 236, 214, 255),
+        Color::rgba(169, 220, 139, 255),
+        Color::rgba(91, 179, 93, 255),
+        Color::rgba(238, 232, 94, 255),
+        Color::rgba(252, 196, 67, 255),
+        Color::rgba(247, 145, 45, 255),
+        Color::rgba(231, 76, 41, 255),
+        Color::rgba(184, 28, 38, 255),
+        Color::rgba(119, 18, 35, 255),
+    ]
+}
+
 fn range_step(start: f64, end: f64, step: f64) -> Vec<f64> {
     let mut values = Vec::new();
     let mut v = start;
@@ -1103,5 +1364,64 @@ mod tests {
         let subtitle = subtitle_for_wxa_time(Some(ModelId::Gfs), "20260506_gfs_18z", 3).unwrap();
         assert!(subtitle.contains("Init 05/06 18Z"));
         assert!(subtitle.contains("F003"));
+    }
+
+    #[test]
+    fn wxa_direct_styles_use_plot_semantics_and_dense_surface_scales() {
+        let (scale, mode, tick_step) = plot_style_for_wxa_product("mslp_10m_winds", "kt");
+        let ColorScale::Discrete(wind_scale) = scale else {
+            panic!("expected mslp/10m winds to use a discrete 10m wind scale");
+        };
+        assert_eq!(mode, ProductVisualMode::FilledMeteorology);
+        assert_eq!(tick_step, Some(5.0));
+        assert_eq!(wind_scale.levels.first().copied(), Some(10.0));
+        assert_eq!(wind_scale.levels.last().copied(), Some(60.0));
+
+        let (scale, _, tick_step) = plot_style_for_wxa_product("2m_temperature_10m_winds", "degF");
+        let ColorScale::Discrete(temp_scale) = scale else {
+            panic!("expected 2m temperature to use a discrete operational scale");
+        };
+        assert_eq!(tick_step, Some(10.0));
+        assert_eq!(temp_scale.levels.first().copied(), Some(-60.0));
+        assert_eq!(temp_scale.levels.get(1).copied(), Some(-59.0));
+        assert_eq!(temp_scale.levels.last().copied(), Some(120.0));
+    }
+
+    #[test]
+    fn wxa_derived_styles_do_not_fall_back_to_generic_scale() {
+        let (scale, mode, tick_step) = plot_style_for_wxa_product("ehi_0_1km", "dimensionless");
+        assert!(matches!(scale, ColorScale::Weather(WeatherPreset::Ehi)));
+        assert_eq!(mode, ProductVisualMode::SevereDiagnostic);
+        assert_eq!(tick_step, Some(1.0));
+
+        let (scale, mode, tick_step) = plot_style_for_wxa_product("lapse_rate_700_500", "degC/km");
+        let ColorScale::Discrete(lapse_scale) = scale else {
+            panic!("expected lapse rate preset scale");
+        };
+        assert_eq!(mode, ProductVisualMode::SevereDiagnostic);
+        assert_eq!(tick_step, Some(1.0));
+        assert_eq!(lapse_scale.levels.first().copied(), Some(3.0));
+
+        let (scale, mode, tick_step) =
+            plot_style_for_wxa_product("fire_weather_composite", "index");
+        let ColorScale::Discrete(fire_scale) = scale else {
+            panic!("expected fire weather composite custom scale");
+        };
+        assert_eq!(mode, ProductVisualMode::SevereDiagnostic);
+        assert_eq!(tick_step, Some(20.0));
+        assert_eq!(fire_scale.levels.first().copied(), Some(0.0));
+        assert_eq!(
+            fire_scale.colors.first().copied(),
+            Some(Color::rgba(250, 250, 247, 255))
+        );
+    }
+
+    #[test]
+    fn wxa_component_products_are_hidden_from_showcase_selection() {
+        assert!(is_wxa_component_product("mslp_10m_winds__contour"));
+        assert!(is_wxa_component_product(
+            "500mb_temperature_height_winds__wind_u"
+        ));
+        assert!(!is_wxa_component_product("mslp_10m_winds"));
     }
 }

@@ -290,6 +290,7 @@ pub fn export_wxstore_grid_bundle(
                         );
 
                         for sampled_field in sampled.fields {
+                            let components = sampled_field.components;
                             let (record, elapsed_ms) = write_export_field(
                                 &manifest_dir,
                                 &latest,
@@ -306,6 +307,24 @@ pub fn export_wxstore_grid_bundle(
                             )?;
                             write_ms += elapsed_ms;
                             fields.push(record);
+                            for component in components {
+                                let (record, elapsed_ms) = write_export_field(
+                                    &manifest_dir,
+                                    &latest,
+                                    request,
+                                    &run_id,
+                                    forecast_hour,
+                                    &mut geometry_cache,
+                                    ExportableSampledField {
+                                        product_slug: component.product_slug,
+                                        title: component.title,
+                                        field: component.field,
+                                        input_fetches: component.input_fetches,
+                                    },
+                                )?;
+                                write_ms += elapsed_ms;
+                                fields.push(record);
+                            }
                         }
                     }
                     Err(err) => {
@@ -549,6 +568,7 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
                             .map(|blocker| export_blocker_from_direct(blocker, forecast_hour)),
                     );
                     for sampled_field in sampled.fields {
+                        let components = sampled_field.components;
                         let (record, elapsed_ms) = write_export_field(
                             &manifest_dir,
                             latest,
@@ -565,6 +585,24 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
                         )?;
                         write_ms += elapsed_ms;
                         fields.push(record);
+                        for component in components {
+                            let (record, elapsed_ms) = write_export_field(
+                                &manifest_dir,
+                                latest,
+                                request,
+                                &run_id,
+                                forecast_hour,
+                                &mut geometry_cache,
+                                ExportableSampledField {
+                                    product_slug: component.product_slug,
+                                    title: component.title,
+                                    field: component.field,
+                                    input_fetches: component.input_fetches,
+                                },
+                            )?;
+                            write_ms += elapsed_ms;
+                            fields.push(record);
+                        }
                     }
                 }
                 Err(err) => {

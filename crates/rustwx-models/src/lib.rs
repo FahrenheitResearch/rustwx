@@ -5277,7 +5277,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_MSLP),
         barbs_u: Some(FIELD_10M_U),
         barbs_v: Some(FIELD_10M_V),
-        style: RenderStyle::WeatherPressure,
+        style: RenderStyle::WeatherWinds,
     },
     PlotRecipe {
         slug: "gefs_avg_mslp_10m_winds",
@@ -5286,7 +5286,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: Some(FIELD_GEFS_AVG_MSLP),
         barbs_u: Some(FIELD_GEFS_AVG_10M_U),
         barbs_v: Some(FIELD_GEFS_AVG_10M_V),
-        style: RenderStyle::WeatherPressure,
+        style: RenderStyle::WeatherWinds,
     },
     PlotRecipe {
         slug: "gefs_spr_mslp_stddev",

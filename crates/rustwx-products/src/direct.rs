@@ -275,6 +275,15 @@ pub(crate) struct DirectSampledProductField {
     pub field_selector: Option<FieldSelector>,
     pub field: rustwx_core::Field2D,
     pub input_fetches: Vec<PublishedFetchIdentity>,
+    pub components: Vec<DirectSampledComponentField>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DirectSampledComponentField {
+    pub product_slug: String,
+    pub title: String,
+    pub field: rustwx_core::Field2D,
+    pub input_fetches: Vec<PublishedFetchIdentity>,
 }
 
 #[derive(Debug, Clone)]
@@ -737,11 +746,12 @@ fn load_direct_sampled_fields_from_loaded_request(
             item.plan.product.as_ref(),
             &item.plan.selectors(),
         );
-        let input_fetches = fetches_by_product
+        let input_fetches: Vec<PublishedFetchIdentity> = fetches_by_product
             .get(&canonical_product)
             .cloned()
             .into_iter()
             .collect();
+        let components = direct_sampled_components(item.recipe, &extracted, &input_fetches)?;
         fields.push(DirectSampledProductField {
             recipe_slug: item.recipe.slug.to_string(),
             title: item.recipe.title.to_string(),
@@ -749,6 +759,7 @@ fn load_direct_sampled_fields_from_loaded_request(
             field_selector: Some(filled_selector),
             field,
             input_fetches,
+            components,
         });
     }
 
@@ -851,11 +862,12 @@ pub(crate) fn load_single_direct_sampled_field_from_latest(
         planned_item.plan.product.as_ref(),
         &planned_item.plan.selectors(),
     );
-    let input_fetches = fetches_by_product
+    let input_fetches: Vec<PublishedFetchIdentity> = fetches_by_product
         .get(&canonical_product)
         .cloned()
         .into_iter()
         .collect();
+    let components = direct_sampled_components(planned_item.recipe, &extracted, &input_fetches)?;
     Ok(DirectSampledProductField {
         recipe_slug: planned_item.recipe.slug.to_string(),
         title: planned_item.recipe.title.to_string(),
@@ -863,7 +875,56 @@ pub(crate) fn load_single_direct_sampled_field_from_latest(
         field_selector: Some(filled_selector),
         field,
         input_fetches,
+        components,
     })
+}
+
+fn direct_sampled_components(
+    recipe: &PlotRecipe,
+    extracted: &HashMap<FieldSelector, SelectedField2D>,
+    input_fetches: &[PublishedFetchIdentity],
+) -> Result<Vec<DirectSampledComponentField>, Box<dyn std::error::Error>> {
+    let mut components = Vec::new();
+
+    if let Some(spec) = &recipe.contours {
+        if let Some(selector) = spec.selector {
+            if let Some(field) = extracted.get(&selector) {
+                components.push(DirectSampledComponentField {
+                    product_slug: direct_component_slug(recipe.slug, "contour"),
+                    title: format!("{} Contour", recipe.title),
+                    field: field.clone().into_field2d(),
+                    input_fetches: input_fetches.to_vec(),
+                });
+            }
+        }
+    }
+
+    if let (Some(u_spec), Some(v_spec)) = (&recipe.barbs_u, &recipe.barbs_v) {
+        if let (Some(u_selector), Some(v_selector)) = (u_spec.selector, v_spec.selector) {
+            if let Some(u) = extracted.get(&u_selector) {
+                components.push(DirectSampledComponentField {
+                    product_slug: direct_component_slug(recipe.slug, "wind_u"),
+                    title: format!("{} Wind U", recipe.title),
+                    field: u.clone().into_field2d(),
+                    input_fetches: input_fetches.to_vec(),
+                });
+            }
+            if let Some(v) = extracted.get(&v_selector) {
+                components.push(DirectSampledComponentField {
+                    product_slug: direct_component_slug(recipe.slug, "wind_v"),
+                    title: format!("{} Wind V", recipe.title),
+                    field: v.clone().into_field2d(),
+                    input_fetches: input_fetches.to_vec(),
+                });
+            }
+        }
+    }
+
+    Ok(components)
+}
+
+pub(crate) fn direct_component_slug(recipe_slug: &str, role: &str) -> String {
+    format!("{recipe_slug}__{role}")
 }
 
 /// Planner-loaded entry point used by `hrrr_non_ecape_hour`. Direct
@@ -3112,7 +3173,7 @@ fn render_filled_field_with_ensemble(
             earth2_ensemble,
         ));
     }
-    if let Some(wind_speed) = derived_height_winds_fill(recipe, field, extracted)? {
+    if let Some(wind_speed) = derived_companion_wind_speed_fill(recipe, field, extracted)? {
         return Ok(wind_speed);
     }
     Ok(convert_filled_field_with_ensemble(
@@ -3122,14 +3183,16 @@ fn render_filled_field_with_ensemble(
     ))
 }
 
-fn derived_height_winds_fill(
+fn derived_companion_wind_speed_fill(
     recipe: &PlotRecipe,
     field: &SelectedField2D,
     extracted: &HashMap<FieldSelector, SelectedField2D>,
 ) -> Result<Option<rustwx_core::Field2D>, Box<dyn std::error::Error>> {
-    if recipe.style != RenderStyle::WeatherHeight
-        || field.selector.field != CanonicalField::GeopotentialHeight
-    {
+    let should_fill_with_companion_wind = (recipe.slug == "mslp_10m_winds"
+        || recipe.slug == "gefs_avg_mslp_10m_winds")
+        || (recipe.style == RenderStyle::WeatherHeight
+            && field.selector.field == CanonicalField::GeopotentialHeight);
+    if !should_fill_with_companion_wind {
         return Ok(None);
     }
 

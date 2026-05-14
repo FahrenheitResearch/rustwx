@@ -93,6 +93,10 @@ pub fn operational_fill_scale_for_recipe(
     recipe: &PlotRecipe,
     filled_selector: FieldSelector,
 ) -> ColorScale {
+    if recipe.slug == "mslp_10m_winds" || recipe.slug == "gefs_avg_mslp_10m_winds" {
+        return ColorScale::Discrete(ten_meter_wind_speed_scale());
+    }
+
     if filled_selector.field == CanonicalField::SmokeMassDensity {
         return ColorScale::Discrete(DiscreteColorScale {
             levels: vec![0.0, 5.0, 10.0, 20.0, 35.0, 55.0, 100.0, 150.0, 250.0, 500.0],
@@ -114,7 +118,7 @@ pub fn operational_fill_scale_for_recipe(
         RenderStyle::WeatherTemperature => {
             let (lo, hi, step, crop_f) = match filled_selector.vertical {
                 VerticalSelector::HeightAboveGroundMeters(2) => {
-                    (-60.0, 120.0, 10.0, Some((-60.0, 120.0)))
+                    (-60.0, 120.0, 1.0, Some((-60.0, 120.0)))
                 }
                 VerticalSelector::IsobaricHpa(200) => (-70.0, -29.0, 1.0, Some((-40.0, 70.0))),
                 VerticalSelector::IsobaricHpa(250) => (-70.0, -29.0, 1.0, Some((-40.0, 70.0))),
@@ -391,10 +395,19 @@ fn wind_speed_scale_for_selector(selector: FieldSelector) -> DiscreteColorScale 
     }
 }
 
+fn ten_meter_wind_speed_scale() -> DiscreteColorScale {
+    DiscreteColorScale {
+        levels: range_step(10.0, 60.0, 5.0),
+        colors: winds_palette_segments(60),
+        extend: ExtendMode::Max,
+        mask_below: None,
+    }
+}
+
 fn dewpoint_scale_for_selector(selector: FieldSelector) -> DiscreteColorScale {
     match selector.vertical {
         VerticalSelector::HeightAboveGroundMeters(2) => DiscreteColorScale {
-            levels: range_step(-40.0, 80.0, 10.0),
+            levels: range_step(-40.0, 80.0, 1.0),
             colors: dewpoint_palette_params(90, 50),
             extend: ExtendMode::Both,
             mask_below: None,
