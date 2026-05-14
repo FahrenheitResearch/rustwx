@@ -126,7 +126,12 @@ pub struct WrfFile {
 
 impl WrfFile {
     pub fn open(path: &Path) -> Result<Self, WrfError> {
-        let nc = netcrust::open(path).map_err(|err| WrfError::Netcdf(err.to_string()))?;
+        let options = netcrust::NcOpenOptions {
+            metadata_mode: netcrust::NcMetadataMode::Lossy,
+            ..Default::default()
+        };
+        let nc = netcrust::File::open_with_options(path, options)
+            .map_err(|err| WrfError::Netcdf(err.to_string()))?;
         let nx = dim_len(&nc, "west_east")?;
         let ny = dim_len(&nc, "south_north")?;
         let nz = nc.dimension("bottom_top").map(|d| d.len()).unwrap_or(0);
