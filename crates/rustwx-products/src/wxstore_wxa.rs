@@ -8,9 +8,9 @@ use rustwx_core::{Field2D, GridProjection, GridShape, LatLonGrid, ModelId, Produ
 use rustwx_models::{PlotRecipe, RenderStyle, plot_recipe};
 use rustwx_render::{
     Color, ColorScale, DiscreteColorScale, ExtendMode, LineworkRole, MapRenderRequest,
-    PngCompressionMode, PngWriteOptions, ProductVisualMode, WeatherPalette, WeatherPreset,
-    WeatherProduct, WindBarbLayer, WindStreamlineLayer, palette_scale,
-    save_png_profile_with_options,
+    PngCompressionMode, PngWriteOptions, ProductVisualMode, StaticPlotStyle, WeatherPalette,
+    WeatherPreset, WeatherProduct, WindBarbLayer, WindStreamlineLayer, palette_scale,
+    save_png_profile_with_options_and_style,
 };
 use rustwx_render::{DerivedProductStyle, ProjectedDomain};
 use serde::{Deserialize, Serialize};
@@ -73,6 +73,7 @@ pub struct WxaStaticPlotRequest {
     pub width: u32,
     pub height: u32,
     pub png_compression: PngCompressionMode,
+    pub plot_style: StaticPlotStyle,
     pub bounds_override: Option<(f64, f64, f64, f64)>,
     pub title_override: Option<String>,
     pub subtitle_left: Option<String>,
@@ -290,12 +291,13 @@ pub fn render_wxa_static_plot(
     );
     fs::create_dir_all(&request.out_dir)?;
     let output_path = request.out_dir.join(filename);
-    save_png_profile_with_options(
+    save_png_profile_with_options_and_style(
         &map_request,
         &output_path,
         &PngWriteOptions {
             compression: request.png_compression,
         },
+        request.plot_style,
     )?;
     Ok(WxaRenderedPlot {
         product_slug: wxa.meta.variable,

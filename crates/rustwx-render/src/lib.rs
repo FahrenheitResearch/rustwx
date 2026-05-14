@@ -288,9 +288,24 @@ impl RustRenderer {
         output_path: P,
         png_options: &PngWriteOptions,
     ) -> Result<RenderSaveTiming, RustwxRenderError> {
+        self.save_png_profile_with_options_and_style(
+            request,
+            output_path,
+            png_options,
+            StaticPlotStyle::from_env(),
+        )
+    }
+
+    pub fn save_png_profile_with_options_and_style<P: AsRef<Path>>(
+        self,
+        request: &MapRenderRequest,
+        output_path: P,
+        png_options: &PngWriteOptions,
+        plot_style: StaticPlotStyle,
+    ) -> Result<RenderSaveTiming, RustwxRenderError> {
         let total_start = Instant::now();
         let (bytes, state_timing, png_timing) =
-            with_render_state_profile(request, |data, ny, nx, opts| {
+            with_render_state_profile_with_style(request, plot_style, |data, ny, nx, opts| {
                 let (image, mut image_timing) = render_to_image_profile(data, ny, nx, opts);
                 let trim_start = Instant::now();
                 let image = if opts.domain_frame.is_some() {
@@ -375,6 +390,20 @@ pub fn save_png_profile_with_options<P: AsRef<Path>>(
     RustRenderer.save_png_profile_with_options(request, output_path, png_options)
 }
 
+pub fn save_png_profile_with_options_and_style<P: AsRef<Path>>(
+    request: &MapRenderRequest,
+    output_path: P,
+    png_options: &PngWriteOptions,
+    plot_style: StaticPlotStyle,
+) -> Result<RenderSaveTiming, RustwxRenderError> {
+    RustRenderer.save_png_profile_with_options_and_style(
+        request,
+        output_path,
+        png_options,
+        plot_style,
+    )
+}
+
 pub fn save_rgba_png_profile_with_options<P: AsRef<Path>>(
     image: &RgbaImage,
     output_path: P,
@@ -419,18 +448,6 @@ fn with_render_state_with_style<T>(
         Ok((render(data, ny, nx, opts)?, RenderPngTiming::default()))
     })
     .map(|(result, _, _)| result)
-}
-
-fn with_render_state_profile<T>(
-    request: &MapRenderRequest,
-    render: impl FnOnce(
-        &[f64],
-        usize,
-        usize,
-        &RenderOpts,
-    ) -> Result<(T, RenderPngTiming), RustwxRenderError>,
-) -> Result<(T, RenderStateTiming, RenderPngTiming), RustwxRenderError> {
-    with_render_state_profile_with_style(request, StaticPlotStyle::from_env(), render)
 }
 
 fn with_render_state_profile_with_style<T>(

@@ -5,7 +5,7 @@ use rustwx_products::wxstore_wxa::{
     WxaRenderedPlot, WxaStaticPlotRequest, available_wxa_products, read_wxa_dense2d_metadata,
     render_wxa_static_plot, wxa_product_path,
 };
-use rustwx_render::PngCompressionMode;
+use rustwx_render::{PngCompressionMode, StaticPlotStyle};
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::fs;
@@ -62,6 +62,8 @@ struct Args {
     max_products: Option<usize>,
     #[arg(long, value_enum, default_value_t = PngCompressionArg::Default)]
     png_compression: PngCompressionArg,
+    #[arg(long, default_value = "operational-fast", value_parser = parse_plot_style)]
+    plot_style: StaticPlotStyle,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -73,6 +75,7 @@ struct ShowcaseReport {
     member: String,
     products_requested: Vec<String>,
     hours_requested: Vec<u32>,
+    plot_style: StaticPlotStyle,
     output_dir: PathBuf,
     html_path: PathBuf,
     rendered_count: usize,
@@ -120,6 +123,7 @@ fn main() -> Result<()> {
 
     let tasks = build_tasks(&args, &products, &hours)?;
     let png_compression: PngCompressionMode = args.png_compression.into();
+    let plot_style = args.plot_style;
     let render_task = |task: &(String, u32, PathBuf)| {
         let (product_slug, hour, wxa_path) = task;
         let request = WxaStaticPlotRequest {
@@ -129,6 +133,7 @@ fn main() -> Result<()> {
             width: args.width,
             height: args.height,
             png_compression,
+            plot_style,
             bounds_override,
             title_override: None,
             subtitle_left: None,
@@ -184,6 +189,7 @@ fn main() -> Result<()> {
         member: args.member.clone(),
         products_requested: products,
         hours_requested: hours,
+        plot_style: args.plot_style,
         output_dir: args.out_dir.clone(),
         html_path: html_path.clone(),
         rendered_count: rendered.len(),
@@ -205,6 +211,10 @@ fn main() -> Result<()> {
         println!("{} blockers", report.blocker_count);
     }
     Ok(())
+}
+
+fn parse_plot_style(value: &str) -> Result<StaticPlotStyle, String> {
+    StaticPlotStyle::parse(value).ok_or_else(|| format!("unknown plot style '{value}'"))
 }
 
 fn select_products(args: &Args) -> Result<Vec<String>> {
