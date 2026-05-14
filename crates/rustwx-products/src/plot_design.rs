@@ -185,7 +185,15 @@ pub fn operational_fill_scale_for_recipe(
                 _ => winds_palette_segments(60),
             },
             extend: ExtendMode::Both,
-            mask_below: None,
+            mask_below: Some(match filled_selector.vertical {
+                VerticalSelector::IsobaricHpa(200) | VerticalSelector::IsobaricHpa(250) => 50.0,
+                VerticalSelector::IsobaricHpa(300)
+                | VerticalSelector::IsobaricHpa(500)
+                | VerticalSelector::IsobaricHpa(700)
+                | VerticalSelector::IsobaricHpa(850)
+                | VerticalSelector::IsobaricHpa(925) => 20.0,
+                _ => 10.0,
+            }),
         },
         RenderStyle::WeatherWindGust | RenderStyle::WeatherWinds => {
             wind_speed_scale_for_selector(filled_selector)
@@ -391,7 +399,15 @@ fn wind_speed_scale_for_selector(selector: FieldSelector) -> DiscreteColorScale 
         levels,
         colors: winds_palette_segments(90),
         extend: ExtendMode::Max,
-        mask_below: None,
+        mask_below: Some(match selector.vertical {
+            VerticalSelector::IsobaricHpa(200) | VerticalSelector::IsobaricHpa(250) => 50.0,
+            VerticalSelector::IsobaricHpa(500)
+            | VerticalSelector::IsobaricHpa(700)
+            | VerticalSelector::IsobaricHpa(850)
+            | VerticalSelector::IsobaricHpa(925) => 20.0,
+            VerticalSelector::HeightAboveGroundMeters(10) => 10.0,
+            _ => 10.0,
+        }),
     }
 }
 
@@ -400,7 +416,7 @@ fn ten_meter_wind_speed_scale() -> DiscreteColorScale {
         levels: range_step(10.0, 60.0, 5.0),
         colors: winds_palette_segments(60),
         extend: ExtendMode::Max,
-        mask_below: None,
+        mask_below: Some(10.0),
     }
 }
 
@@ -648,6 +664,16 @@ mod tests {
         assert_eq!(reflectivity_scale.levels.last().copied(), Some(70.0));
         assert_eq!(reflectivity_scale.extend, ExtendMode::Max);
         assert_eq!(reflectivity_scale.mask_below, Some(10.0));
+
+        let mslp_winds = rustwx_models::plot_recipe("mslp_10m_winds").unwrap();
+        let ColorScale::Discrete(mslp_wind_scale) = operational_fill_scale_for_recipe(
+            mslp_winds,
+            FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel),
+        ) else {
+            panic!("expected MSLP/10m wind discrete scale");
+        };
+        assert_eq!(mslp_wind_scale.levels.first().copied(), Some(10.0));
+        assert_eq!(mslp_wind_scale.mask_below, Some(10.0));
 
         let qpf = rustwx_models::plot_recipe("1h_qpf").unwrap();
         let ColorScale::Discrete(qpf_scale) = operational_fill_scale_for_recipe(

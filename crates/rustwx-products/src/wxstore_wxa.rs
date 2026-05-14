@@ -1073,7 +1073,7 @@ fn fallback_scale() -> DiscreteColorScale {
         )
         .colors,
         extend: ExtendMode::Both,
-        mask_below: None,
+        mask_below: Some(5.0),
     }
 }
 
@@ -1376,6 +1376,7 @@ mod tests {
         assert_eq!(tick_step, Some(5.0));
         assert_eq!(wind_scale.levels.first().copied(), Some(10.0));
         assert_eq!(wind_scale.levels.last().copied(), Some(60.0));
+        assert_eq!(wind_scale.mask_below, Some(10.0));
 
         let (scale, _, tick_step) = plot_style_for_wxa_product("2m_temperature_10m_winds", "degF");
         let ColorScale::Discrete(temp_scale) = scale else {
