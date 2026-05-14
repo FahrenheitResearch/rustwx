@@ -34,3 +34,4 @@ netcrust = { path = "../../vendor/netcrust" }
 rustls.workspace = true
 rustls-rustcrypto.workspace = true
 ureq.workspace = true
+zstd = "0.13"

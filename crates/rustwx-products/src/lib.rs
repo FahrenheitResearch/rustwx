@@ -44,6 +44,7 @@ pub mod volume_store;
 pub mod windowed;
 pub mod windowed_decoder;
 pub mod wxstore_export;
+pub mod wxstore_wxa;
 
 pub use named_geometry::{
     NamedGeoBounds, NamedGeoPoint, NamedGeometry, NamedGeometryAsset, NamedGeometryCatalog,
