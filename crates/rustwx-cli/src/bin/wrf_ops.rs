@@ -102,7 +102,7 @@ struct WrfPlanCommonArgs {
     num_cores: u32,
     #[arg(long, value_enum, default_value_t = PhysicsArg::SevereConvection)]
     physics: PhysicsArg,
-    #[arg(long, value_enum, default_value_t = PlotPresetArg::SevereNoEcape)]
+    #[arg(long, value_enum, default_value_t = PlotPresetArg::FullDerived)]
     plot_preset: PlotPresetArg,
     #[arg(long)]
     num_metgrid_levels: Option<u16>,
@@ -524,7 +524,9 @@ fn resolve_domain_bounds(args: &WrfPlanCommonArgs) -> anyhow::Result<WrfDomainBo
     }
 
     let Some(center_lat) = args.center_lat else {
-        anyhow::bail!("domain requires either --west/--east/--south/--north or --center-lat/--center-lon with --radius-km or --width-km/--height-km");
+        anyhow::bail!(
+            "domain requires either --west/--east/--south/--north or --center-lat/--center-lon with --radius-km or --width-km/--height-km"
+        );
     };
     let Some(center_lon) = args.center_lon else {
         anyhow::bail!("domain center requires both --center-lat and --center-lon");
@@ -738,8 +740,12 @@ fn project_status(project_dir: &Path, tmux_session: Option<&str>) -> anyhow::Res
         .as_deref()
         .and_then(wrfout_valid_from_path)
         .map(|dt| format!("{}Z", dt.format("%Y-%m-%dT%H:%M:%S")));
-    let (progress_percent, remaining_sim_seconds) =
-        progress_from_latest_valid(&plan, latest_wrfout_path.as_deref().and_then(wrfout_valid_from_path));
+    let (progress_percent, remaining_sim_seconds) = progress_from_latest_valid(
+        &plan,
+        latest_wrfout_path
+            .as_deref()
+            .and_then(wrfout_valid_from_path),
+    );
     let eta = eta_from_progress(project_dir, progress_percent, remaining_sim_seconds);
     let pipeline_status = {
         let path = project_dir.join("logs").join("pipeline.status");
@@ -1052,7 +1058,10 @@ fn eta_from_progress(
     let wall_seconds_per_sim_second = wrfout_wall_rate(project_dir)?;
     let remaining_wall = (remaining_sim_seconds as f64 * wall_seconds_per_sim_second).max(0.0);
     Some(ProjectEta {
-        label: format!("~{} remaining", human_duration(remaining_wall.round() as i64)),
+        label: format!(
+            "~{} remaining",
+            human_duration(remaining_wall.round() as i64)
+        ),
         wall_seconds_per_sim_hour: Some(wall_seconds_per_sim_second * 3_600.0),
     })
 }
@@ -1218,13 +1227,15 @@ fn run_latest(args: LatestArgs) -> anyhow::Result<()> {
     };
     let mut resolved = Vec::with_capacity(forecast_hours.len());
     for forecast_hour in &forecast_hours {
-        resolved.push(rustwx_models::latest_available_run_for_products_at_forecast_hour(
-            model,
-            args.source,
-            &args.date_yyyymmdd,
-            &product_refs,
-            *forecast_hour,
-        )?);
+        resolved.push(
+            rustwx_models::latest_available_run_for_products_at_forecast_hour(
+                model,
+                args.source,
+                &args.date_yyyymmdd,
+                &product_refs,
+                *forecast_hour,
+            )?,
+        );
     }
     let common = resolved
         .iter()
@@ -2124,7 +2135,7 @@ mod tests {
             output_3d_interval_minutes: Some(5),
             num_cores: 4,
             physics: PhysicsArg::SevereConvection,
-            plot_preset: PlotPresetArg::SevereNoEcape,
+            plot_preset: PlotPresetArg::FullDerived,
             num_metgrid_levels: None,
             num_metgrid_soil_levels: None,
             wps_products: None,
@@ -2166,7 +2177,7 @@ mod tests {
         assert!(dashboard.contains("wrf_ops\" dashboard"));
         let plot = fs::read_to_string(dir.join("plot_wrfout.sh")).unwrap();
         assert!(plot.contains("PLOT_PRESET"));
-        assert!(plot.contains("severe-no-ecape"));
+        assert!(plot.contains("full-derived"));
         assert!(plot.contains(DEFAULT_NON_ECAPE_SEVERE_DERIVED_RECIPES));
 
         for script in ["run_wps.sh", "run_real.sh", "run_wrf.sh"] {
@@ -2332,7 +2343,7 @@ mod tests {
         assert!(command.contains("--init 'hrrr'"));
         assert!(command.contains("--resolution default3km"));
         assert!(command.contains("--output-3d-interval-minutes 5"));
-        assert!(command.contains("--plot-preset severe-no-ecape"));
+        assert!(command.contains("--plot-preset full-derived"));
         assert!(command.contains("--project-dir '/home/drew/weather/wrf/projects/ops-test'"));
     }
 
