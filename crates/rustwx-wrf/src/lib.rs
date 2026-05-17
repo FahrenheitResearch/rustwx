@@ -31,6 +31,13 @@ const RHO_G: f64 = 400.0;
 const RN0_R: f64 = 8.0e6;
 const RN0_S: f64 = 2.0e7;
 const RN0_G: f64 = 4.0e6;
+const WRF_10M_GUST_NAMES: &[&str] = &["WSPD10MAX", "wspd10max", "SPDUV10MAX", "spduv10max"];
+const WRF_3D_REFLECTIVITY_NAMES: &[&str] =
+    &["REFL_10CM", "refl_10cm", "MSKF_REFL_10CM", "mskf_refl_10cm"];
+const WRF_COMPOSITE_REFLECTIVITY_NAMES: &[&str] = &[
+    "REFL_COM", "refl_com", "REFD_COM", "refd_com", "REFD_MAX", "refd_max",
+];
+const WRF_UPDRAFT_HELICITY_NAMES: &[&str] = &["UP_HELI_MAX", "up_heli_max"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum WrfError {
@@ -213,6 +220,18 @@ impl WrfFile {
                 netcrust::Error::VariableNotFound(_) => WrfError::MissingVariable(name.to_string()),
                 _ => WrfError::Netcdf(err.to_string()),
             })
+    }
+
+    fn read_var_any(&self, names: &[&str]) -> Result<Vec<f64>, WrfError> {
+        let mut missing = Vec::new();
+        for name in names {
+            match self.read_var(name) {
+                Ok(values) => return Ok(values),
+                Err(WrfError::MissingVariable(variable)) => missing.push(variable),
+                Err(err) => return Err(err),
+            }
+        }
+        Err(WrfError::MissingVariable(missing.join("|")))
     }
 
     fn read_var_optional(&self, name: &str, len: usize) -> Vec<f64> {
@@ -412,7 +431,7 @@ impl WrfFile {
     }
 
     pub fn wind_gust_10m(&self) -> Result<SharedField, WrfError> {
-        self.cached_or_compute("wind_gust_10m", || self.read_var("WSPD10MAX"))
+        self.cached_or_compute("wind_gust_10m", || self.read_var_any(WRF_10M_GUST_NAMES))
     }
 
     pub fn u_destag_raw(&self) -> Result<SharedField, WrfError> {
@@ -738,7 +757,7 @@ impl WrfFile {
 
     pub fn dbz_3d(&self) -> Result<SharedField, WrfError> {
         self.cached_or_compute("dbz_3d", || {
-            if let Ok(refl) = self.read_var("REFL_10CM") {
+            if let Ok(refl) = self.read_var_any(WRF_3D_REFLECTIVITY_NAMES) {
                 return Ok(refl);
             }
             let temperature = self.temperature_k()?;
@@ -785,8 +804,8 @@ impl WrfFile {
 
     pub fn composite_reflectivity(&self) -> Result<SharedField, WrfError> {
         self.cached_or_compute("composite_reflectivity", || {
-            if self.has_var("REFL_COM") {
-                return self.read_var("REFL_COM");
+            if let Ok(refl) = self.read_var_any(WRF_COMPOSITE_REFLECTIVITY_NAMES) {
+                return Ok(refl);
             }
             let dbz = self.dbz_3d()?;
             let mut out = vec![-999.0_f64; self.nxy()];
@@ -819,8 +838,8 @@ impl WrfFile {
 
     pub fn updraft_helicity_2to5km(&self) -> Result<SharedField, WrfError> {
         self.cached_or_compute("uh_2to5km", || {
-            if self.has_var("UP_HELI_MAX") {
-                return self.read_var("UP_HELI_MAX");
+            if let Ok(uh) = self.read_var_any(WRF_UPDRAFT_HELICITY_NAMES) {
+                return Ok(uh);
             }
             self.require_3d()?;
             let w = self.w_destag()?;
@@ -1538,6 +1557,14 @@ mod tests {
         let dewpoint_c = dewpoint_from_mixing_ratio(1000.0, 0.008);
         assert!(dewpoint_c.is_finite());
         assert!(dewpoint_c > -10.0 && dewpoint_c < 30.0);
+    }
+
+    #[test]
+    fn native_wrf_diagnostic_aliases_cover_registry_names() {
+        assert!(WRF_3D_REFLECTIVITY_NAMES.contains(&"refl_10cm"));
+        assert!(WRF_COMPOSITE_REFLECTIVITY_NAMES.contains(&"REFD_MAX"));
+        assert!(WRF_10M_GUST_NAMES.contains(&"WSPD10MAX"));
+        assert!(WRF_UPDRAFT_HELICITY_NAMES.contains(&"UP_HELI_MAX"));
     }
 
     #[test]
