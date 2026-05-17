@@ -32,7 +32,8 @@ pub use pressure::{
 };
 pub use reader::VolumeStore;
 pub use sampling::{
-    PointProfile, PointSample, RouteDef, RouteSample, RouteSectionPrimitives, RouteValue,
+    BoxProfile, PointProfile, PointSample, RouteDef, RouteSample, RouteSectionPrimitives,
+    RouteValue,
 };
 pub use terrain::{
     SURFACE_TERRAIN_FORMAT, SURFACE_TERRAIN_MANIFEST_FILE, SURFACE_TERRAIN_PAYLOAD_FILE,
@@ -51,7 +52,7 @@ pub enum VolumeStoreError {
     InvalidIndex(String),
     InvalidChunk(String),
     MissingVariable(String),
-    MissingHour(u8),
+    MissingHour(u16),
     MissingLevel(u16),
     OutOfBounds(String),
     Provider(String),
@@ -136,7 +137,7 @@ mod tests {
         }
     }
 
-    fn synthetic_value(var: &str, hour: u8, level: u16, y: usize, x: usize) -> f32 {
+    fn synthetic_value(var: &str, hour: u16, level: u16, y: usize, x: usize) -> f32 {
         let var_base = if var == "TMP" { 250.0 } else { -20.0 };
         let level_base = if level == 1000 { 0.0 } else { 100.0 };
         var_base + level_base + f32::from(hour) * 10.0 + y as f32 + x as f32 * 0.25
@@ -148,7 +149,7 @@ mod tests {
         let manifest = synthetic_manifest();
         let grid_len = manifest.grid.grid_len();
         let nx = manifest.grid.nx();
-        let provider = |var: &str, hour: u8, level: u16| -> VolumeResult<Vec<f32>> {
+        let provider = |var: &str, hour: u16, level: u16| -> VolumeResult<Vec<f32>> {
             let mut values = Vec::with_capacity(grid_len);
             for y in 0..manifest.grid.ny() {
                 for x in 0..nx {
@@ -184,7 +185,7 @@ mod tests {
         let root = temp_store_dir("route");
         let manifest = synthetic_manifest();
         let nx = manifest.grid.nx();
-        let provider = |var: &str, hour: u8, level: u16| -> VolumeResult<Vec<f32>> {
+        let provider = |var: &str, hour: u16, level: u16| -> VolumeResult<Vec<f32>> {
             let mut values = Vec::with_capacity(manifest.grid.grid_len());
             for y in 0..manifest.grid.ny() {
                 for x in 0..nx {

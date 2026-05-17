@@ -50,7 +50,7 @@ pub struct VolumeManifest {
     pub domain: String,
     pub product: String,
     pub cycle: String,
-    pub forecast_hours: Vec<u8>,
+    pub forecast_hours: Vec<u16>,
     pub variables: Vec<VolumeVariable>,
     pub levels_hpa: Vec<u16>,
     pub chunk_shape: ChunkShape,
@@ -122,7 +122,7 @@ impl VolumeManifest {
             .ok_or_else(|| VolumeStoreError::MissingVariable(name.to_string()))
     }
 
-    pub fn hour_index(&self, hour: u8) -> VolumeResult<usize> {
+    pub fn hour_index(&self, hour: u16) -> VolumeResult<usize> {
         self.forecast_hours
             .iter()
             .position(|candidate| *candidate == hour)

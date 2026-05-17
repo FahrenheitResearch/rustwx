@@ -1506,6 +1506,9 @@ fn hrrr_pressure_analysis_fetch_patterns(include_optional: bool) -> Vec<&'static
 fn merge_variable_patterns(pattern_groups: impl IntoIterator<Item = Vec<String>>) -> Vec<String> {
     let mut merged = Vec::new();
     for group in pattern_groups {
+        if group.is_empty() {
+            return Vec::new();
+        }
         for pattern in group {
             if !merged.contains(&pattern) {
                 merged.push(pattern);
@@ -3045,6 +3048,17 @@ mod tests {
                 CanonicalBundleDescriptor::PressureAnalysis,
                 "awp130pgrb",
             )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn rap_same_file_surface_pressure_merge_uses_full_fetch() {
+        assert!(
+            merge_variable_patterns([
+                surface_analysis_fetch_patterns(ModelId::Rap),
+                pressure_analysis_fetch_patterns(ModelId::Rap),
+            ])
             .is_empty()
         );
     }

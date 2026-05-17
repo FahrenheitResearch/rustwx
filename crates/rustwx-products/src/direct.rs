@@ -1576,7 +1576,7 @@ fn direct_title_for_request(
     if let Some(stat_label) = native_stat_label_for_request(request, planned_product) {
         title = apply_native_stat_title_prefix(request.model, &stat_label, &title);
     }
-    if request.model != ModelId::WrfGdex {
+    if request.model != ModelId::WrfGdex || is_local_wrf_netcdf_request(request) {
         return static_title_with_suffix(title);
     }
 
@@ -1596,6 +1596,13 @@ fn direct_title_for_request(
         })
         .unwrap_or("d612005");
     static_title_with_suffix(format!("{title} ({dataset})"))
+}
+
+fn is_local_wrf_netcdf_request(request: &DirectBatchRequest) -> bool {
+    request
+        .subtitle_right_override
+        .as_deref()
+        .is_some_and(|subtitle| subtitle.to_ascii_lowercase().contains("local wrf netcdf"))
 }
 
 fn direct_title_for_planned_product(
@@ -4443,6 +4450,21 @@ mod tests {
             apply_native_stat_title_prefix(ModelId::Sref, "Mean", "SREF Mean 2m Dewpoint"),
             "SREF Mean 2m Dewpoint"
         );
+    }
+
+    #[test]
+    fn local_wrf_netcdf_titles_omit_gdex_dataset_token() {
+        let mut request = sample_direct_request(ModelId::WrfGdex);
+        request.subtitle_right_override = Some("source: local WRF NetCDF".to_string());
+
+        let title = direct_title_for_planned_product(
+            &request,
+            "d612005-hist2d",
+            "Composite Reflectivity / UH",
+        );
+
+        assert!(title.starts_with("Composite Reflectivity / UH"), "{title}");
+        assert!(!title.contains("d612005"), "{title}");
     }
 
     #[test]

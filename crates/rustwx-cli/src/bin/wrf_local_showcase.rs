@@ -13,21 +13,28 @@ mod app {
     use chrono::{Duration, NaiveDate, NaiveDateTime};
     use clap::{Parser, ValueEnum};
     use rayon::prelude::*;
-    use rustwx_core::{CycleSpec, FieldSelector, ModelId, SourceId};
+    use rustwx_core::{
+        CanonicalField, CycleSpec, FieldSelector, ModelId, SelectedField2D, SourceId,
+    };
     use rustwx_models::{LatestRun, plot_recipe_fetch_plan};
     use rustwx_products::DomainSpec;
-    use rustwx_products::derived::NativeContourRenderMode;
+    use rustwx_products::derived::{
+        DerivedBatchRequest, NativeContourRenderMode, render_local_wrf_derived_recipes_from_path,
+        supported_derived_recipe_slugs,
+    };
     use rustwx_products::direct::{
         DirectBatchRequest, render_direct_recipes_from_selected_fields,
         supported_direct_recipe_slugs,
     };
     use rustwx_products::places::{PlaceLabelDensityTier, default_place_label_overlay_for_domain};
-    use rustwx_render::PngCompressionMode;
+    use rustwx_products::source::ProductSourceMode;
+    use rustwx_render::{PngCompressionMode, StaticPlotStyle};
     use serde::Serialize;
     use std::collections::{BTreeMap, BTreeSet, HashMap};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Instant;
 
@@ -73,6 +80,10 @@ mod app {
         recipes: Vec<String>,
         #[arg(long, default_value_t = false)]
         all_supported: bool,
+        #[arg(long = "derived-recipes", value_delimiter = ',')]
+        derived_recipes: Vec<String>,
+        #[arg(long, default_value_t = false)]
+        all_derived_supported: bool,
         #[arg(long, allow_hyphen_values = true)]
         bounds: Option<String>,
         #[arg(long, default_value = "enderlin_ef5")]
@@ -95,6 +106,13 @@ mod app {
         place_label_density: u8,
         #[arg(long = "png-compression", value_enum, default_value_t = PngCompressionArg::Fast)]
         png_compression: PngCompressionArg,
+        /// Static map chrome/colorbar style. WRF showcase defaults to the operational style,
+        /// which uses the right-side vertical legend.
+        #[arg(long = "plot-style", default_value = "operational-fast")]
+        plot_style: String,
+        /// Rolling max window for local-WRF 2-5 km UH recipes. Use 0 for instantaneous UH.
+        #[arg(long = "wrf-uh-window-minutes", default_value_t = 60)]
+        wrf_uh_window_minutes: i64,
         /// Number of WRF files to extract/render concurrently. Use 0 for auto.
         #[arg(long, default_value_t = 0)]
         jobs: usize,
@@ -137,6 +155,109 @@ mod app {
         missing_selectors: Vec<String>,
     }
 
+    #[derive(Debug)]
+    struct UhAccumulationContext {
+        window_minutes: i64,
+        selector: FieldSelector,
+        files: Vec<InputFile>,
+        instant_cache: Mutex<HashMap<PathBuf, Result<SelectedField2D, String>>>,
+    }
+
+    impl UhAccumulationContext {
+        fn new(window_minutes: i64, files: &[InputFile]) -> Self {
+            Self {
+                window_minutes,
+                selector: uh_selector(),
+                files: files.to_vec(),
+                instant_cache: Mutex::new(HashMap::new()),
+            }
+        }
+
+        fn remember_instant(&self, path: &Path, field: SelectedField2D) {
+            if let Ok(mut cache) = self.instant_cache.lock() {
+                cache.entry(path.to_path_buf()).or_insert(Ok(field));
+            }
+        }
+
+        fn accumulated_field_for(&self, input: &InputFile) -> Result<SelectedField2D, String> {
+            let start = input.valid - Duration::minutes(self.window_minutes.max(0));
+            let mut window_files = self
+                .files
+                .iter()
+                .filter(|file| {
+                    file.kind == input.kind
+                        && file.domain == input.domain
+                        && file.valid >= start
+                        && file.valid <= input.valid
+                })
+                .collect::<Vec<_>>();
+            window_files.sort_by_key(|file| file.valid);
+
+            let mut accumulated: Option<SelectedField2D> = None;
+            for file in window_files {
+                let field = self.instant_field(&file.path)?;
+                if let Some(accumulated) = accumulated.as_mut() {
+                    if accumulated.grid.shape != field.grid.shape
+                        || accumulated.values.len() != field.values.len()
+                    {
+                        return Err(format!(
+                            "UH accumulation grid changed inside {} minute window",
+                            self.window_minutes
+                        ));
+                    }
+                    for (current, candidate) in accumulated
+                        .values
+                        .iter_mut()
+                        .zip(field.values.iter().copied())
+                    {
+                        if candidate.is_finite() && (!current.is_finite() || candidate > *current) {
+                            *current = candidate;
+                        }
+                    }
+                } else {
+                    accumulated = Some(field);
+                }
+            }
+
+            accumulated.ok_or_else(|| {
+                format!(
+                    "no WRF files available for UH accumulation window ending {}",
+                    input.valid.format("%Y-%m-%d %H:%M:%S")
+                )
+            })
+        }
+
+        fn instant_field(&self, path: &Path) -> Result<SelectedField2D, String> {
+            if let Some(cached) = self
+                .instant_cache
+                .lock()
+                .map_err(|_| "UH instant cache lock poisoned".to_string())?
+                .get(path)
+                .cloned()
+            {
+                return cached;
+            }
+
+            let result = rustwx_wrf::extract_selectors_partial_from_path(path, &[self.selector])
+                .map_err(|err| err.to_string())
+                .and_then(|partial| {
+                    partial
+                        .extracted
+                        .into_iter()
+                        .find(|field| field.selector == self.selector)
+                        .ok_or_else(|| {
+                            format!("{} did not contain computable 2-5 km UH", path.display())
+                        })
+                });
+
+            self.instant_cache
+                .lock()
+                .map_err(|_| "UH instant cache lock poisoned".to_string())?
+                .insert(path.to_path_buf(), result.clone());
+            result
+        }
+    }
+
     #[derive(Debug, Serialize)]
     struct ShowcaseReport {
         input_dir: PathBuf,
@@ -148,6 +269,7 @@ mod app {
         domains: Vec<String>,
         kinds: Vec<String>,
         recipes_requested: Vec<String>,
+        derived_recipes_requested: Vec<String>,
         files_considered: usize,
         jobs: usize,
         rendered_count: usize,
@@ -161,12 +283,14 @@ mod app {
 
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let args = Args::parse();
+        apply_plot_style_for_showcase(&args.plot_style)?;
         let start = Instant::now();
         fs::create_dir_all(&args.out_dir)?;
         let html_dir = args.out_dir.join("html");
         fs::create_dir_all(&html_dir)?;
 
         let recipes = resolve_recipes(&args)?;
+        let derived_recipes = resolve_derived_recipes(&args)?;
         let selectors_by_recipe = selectors_by_recipe(&recipes)?;
         let mut all_selectors = Vec::<FieldSelector>::new();
         for selector in selectors_by_recipe.values().flatten().copied() {
@@ -181,14 +305,33 @@ mod app {
         let mut file_blockers = Vec::<FileBlocker>::new();
         let files = preflight_openable_groups(discovered_files, &mut file_blockers);
         let jobs = effective_jobs(&args, &files);
+        let uh_context_files = if uh_accumulation_requested(&args, &selectors_by_recipe) {
+            let mut context_blockers = Vec::<FileBlocker>::new();
+            preflight_openable_groups(
+                discover_files_for_accumulation(&args, cycle_dt)?,
+                &mut context_blockers,
+            )
+        } else {
+            Vec::new()
+        };
+        let uh_context =
+            build_uh_accumulation_context(&args, &selectors_by_recipe, &uh_context_files);
         println!(
-            "wrf_local_showcase: {} files, {} recipes, {} unique selectors, {} preflight blockers, {} job(s)",
+            "wrf_local_showcase: {} files, {} direct recipes, {} derived recipes, {} unique selectors, {} preflight blockers, {} job(s)",
             files.len(),
             recipes.len(),
+            derived_recipes.len(),
             all_selectors.len(),
             file_blockers.len(),
             jobs
         );
+        if let Some(context) = uh_context.as_ref() {
+            println!(
+                "wrf_local_showcase: local WRF UH recipes use a {} minute rolling max from {} available files",
+                context.window_minutes,
+                context.files.len()
+            );
+        }
 
         let latest = LatestRun {
             model: ModelId::WrfGdex,
@@ -203,6 +346,7 @@ mod app {
             &args,
             &html_path,
             &recipes,
+            &derived_recipes,
             discovered_file_count,
             &records,
             &file_blockers,
@@ -222,11 +366,13 @@ mod app {
                 let output = process_input_file(
                     &args,
                     &recipes,
+                    &derived_recipes,
                     &selectors_by_recipe,
                     &all_selectors,
                     &latest,
                     explicit_bounds,
                     input,
+                    uh_context.as_deref(),
                 );
                 records.extend(output.records);
                 file_blockers.extend(output.file_blockers);
@@ -235,6 +381,7 @@ mod app {
                     &args,
                     &html_path,
                     &recipes,
+                    &derived_recipes,
                     discovered_file_count,
                     &records,
                     &file_blockers,
@@ -253,11 +400,13 @@ mod app {
                         let output = process_input_file(
                             &args,
                             &recipes,
+                            &derived_recipes,
                             &selectors_by_recipe,
                             &all_selectors,
                             &latest,
                             explicit_bounds,
                             input,
+                            uh_context.as_deref(),
                         );
                         let done = completed.fetch_add(1, Ordering::SeqCst) + 1;
                         println!("[{done}/{}] done {}", files.len(), input.path.display());
@@ -276,6 +425,7 @@ mod app {
             &args,
             &html_path,
             &recipes,
+            &derived_recipes,
             discovered_file_count,
             &records,
             &file_blockers,
@@ -292,6 +442,24 @@ mod app {
         Ok(())
     }
 
+    fn apply_plot_style_for_showcase(value: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let style = StaticPlotStyle::parse(value)
+            .ok_or_else(|| format!("unknown --plot-style '{value}'"))?;
+        if !style.uses_operational_presentation() {
+            eprintln!(
+                "wrf_local_showcase: --plot-style '{}' does not use the right-side operational colorbar",
+                value
+            );
+        }
+
+        // The product renderers read the plot style from this env var. Set it
+        // once at startup, before rayon workers or renderer threads exist.
+        unsafe {
+            std::env::set_var("RUSTWX_PLOT_STYLE", value);
+        }
+        Ok(())
+    }
+
     #[derive(Debug, Default)]
     struct ProcessOutput {
         records: Vec<RenderRecord>,
@@ -302,11 +470,13 @@ mod app {
     fn process_input_file(
         args: &Args,
         recipes: &[String],
+        derived_recipes: &[String],
         selectors_by_recipe: &HashMap<String, Vec<FieldSelector>>,
         all_selectors: &[FieldSelector],
         latest: &LatestRun,
         explicit_bounds: Option<(f64, f64, f64, f64)>,
         input: &InputFile,
+        uh_context: Option<&UhAccumulationContext>,
     ) -> ProcessOutput {
         let mut output = ProcessOutput::default();
         if input.path.metadata().map(|m| m.len()).unwrap_or(0) == 0 {
@@ -328,7 +498,7 @@ mod app {
                     return output;
                 }
             };
-        let extracted = partial
+        let mut extracted = partial
             .extracted
             .into_iter()
             .map(|field| (field.selector, field))
@@ -400,8 +570,8 @@ mod app {
                 &domain,
                 PlaceLabelDensityTier::from_numeric(args.place_label_density),
             ),
-            output_suffix: Some(suffix),
-            subtitle_left_override: Some(subtitle_left),
+            output_suffix: Some(suffix.clone()),
+            subtitle_left_override: Some(subtitle_left.clone()),
             subtitle_right_override: Some("source: local WRF NetCDF".to_string()),
             earth2_ensemble: None,
         };
@@ -430,48 +600,146 @@ mod app {
             renderable_recipes.push(recipe.clone());
         }
 
-        if renderable_recipes.is_empty() {
-            return output;
-        }
-
-        let render_start = Instant::now();
-        let mut render_request = request.clone();
-        render_request.recipe_slugs = renderable_recipes.clone();
-        match render_direct_recipes_from_selected_fields(
-            &render_request,
-            latest,
-            &renderable_recipes,
-            &extracted,
-            input.kind.clone(),
-            input.path.display().to_string(),
-            input.path.display().to_string(),
-        ) {
-            Ok(rendered) => {
-                let batch_ms = render_start.elapsed().as_millis();
-                for (recipe, rendered) in renderable_recipes.iter().zip(rendered) {
-                    output.records.push(RenderRecord {
-                        kind: input.kind.clone(),
-                        domain: input.domain.clone(),
-                        valid_utc: input.valid.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-                        lead_label: lead_label.clone(),
-                        recipe_slug: recipe.clone(),
-                        title: rendered.title,
-                        output_path: rendered.output_path,
-                        render_ms: batch_ms,
-                    });
+        if let Some(context) = uh_context {
+            if let Some(field) = extracted.get(&context.selector).cloned() {
+                context.remember_instant(&input.path, field);
+            }
+            let uh_recipes = renderable_recipes
+                .iter()
+                .filter(|recipe| {
+                    recipe_uses_selector(recipe, selectors_by_recipe, context.selector)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if !uh_recipes.is_empty() {
+                match context.accumulated_field_for(input) {
+                    Ok(field) => {
+                        extracted.insert(context.selector, field);
+                    }
+                    Err(err) => {
+                        for recipe in &uh_recipes {
+                            output.recipe_blockers.push(RecipeBlocker {
+                                path: input.path.clone(),
+                                kind: input.kind.clone(),
+                                domain: input.domain.clone(),
+                                valid_utc: input.valid.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                                recipe_slug: recipe.clone(),
+                                missing_selectors: vec![err.clone()],
+                            });
+                        }
+                        renderable_recipes.retain(|recipe| !uh_recipes.contains(recipe));
+                    }
                 }
             }
-            Err(err) => {
-                let message = err.to_string();
-                for recipe in &renderable_recipes {
-                    output.recipe_blockers.push(RecipeBlocker {
-                        path: input.path.clone(),
-                        kind: input.kind.clone(),
-                        domain: input.domain.clone(),
-                        valid_utc: input.valid.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-                        recipe_slug: recipe.clone(),
-                        missing_selectors: vec![message.clone()],
-                    });
+        }
+
+        if !renderable_recipes.is_empty() {
+            let render_start = Instant::now();
+            let mut render_request = request.clone();
+            render_request.recipe_slugs = renderable_recipes.clone();
+            match render_direct_recipes_from_selected_fields(
+                &render_request,
+                latest,
+                &renderable_recipes,
+                &extracted,
+                input.kind.clone(),
+                input.path.display().to_string(),
+                input.path.display().to_string(),
+            ) {
+                Ok(rendered) => {
+                    let batch_ms = render_start.elapsed().as_millis();
+                    for (recipe, rendered) in renderable_recipes.iter().zip(rendered) {
+                        output.records.push(RenderRecord {
+                            kind: input.kind.clone(),
+                            domain: input.domain.clone(),
+                            valid_utc: input.valid.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                            lead_label: lead_label.clone(),
+                            recipe_slug: recipe.clone(),
+                            title: rendered.title,
+                            output_path: rendered.output_path,
+                            render_ms: batch_ms,
+                        });
+                    }
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    for recipe in &renderable_recipes {
+                        output.recipe_blockers.push(RecipeBlocker {
+                            path: input.path.clone(),
+                            kind: input.kind.clone(),
+                            domain: input.domain.clone(),
+                            valid_utc: input.valid.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                            recipe_slug: recipe.clone(),
+                            missing_selectors: vec![message.clone()],
+                        });
+                    }
+                }
+            }
+        }
+
+        if !derived_recipes.is_empty() {
+            let render_start = Instant::now();
+            let derived_request = DerivedBatchRequest {
+                model: ModelId::WrfGdex,
+                date_yyyymmdd: args.cycle_date.clone(),
+                cycle_override_utc: Some(args.cycle),
+                forecast_hour,
+                source: SourceId::Gdex,
+                domain: domain.clone(),
+                out_dir: args.out_dir.join(&input.kind).join(&input.domain),
+                cache_root: args.out_dir.join("cache"),
+                use_cache: false,
+                recipe_slugs: derived_recipes.to_vec(),
+                surface_product_override: Some("local_wrf_netcdf".to_string()),
+                pressure_product_override: Some("local_wrf_netcdf".to_string()),
+                source_mode: ProductSourceMode::Canonical,
+                allow_large_heavy_domain: true,
+                contour_mode: NativeContourRenderMode::Automatic,
+                native_fill_level_multiplier: 1,
+                output_width: args.width,
+                output_height: args.height,
+                png_compression: args.png_compression.into(),
+                custom_poi_overlay: None,
+                place_label_overlay: default_place_label_overlay_for_domain(
+                    &domain,
+                    PlaceLabelDensityTier::from_numeric(args.place_label_density),
+                ),
+                earth2_ensemble: None,
+            };
+            match render_local_wrf_derived_recipes_from_path(
+                &derived_request,
+                &input.path,
+                Some(&suffix),
+                Some(&subtitle_left),
+                Some("source: local WRF NetCDF"),
+            ) {
+                Ok(rendered) => {
+                    let batch_ms = render_start.elapsed().as_millis();
+                    for rendered in rendered {
+                        output.records.push(RenderRecord {
+                            kind: input.kind.clone(),
+                            domain: input.domain.clone(),
+                            valid_utc: input.valid.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                            lead_label: lead_label.clone(),
+                            recipe_slug: rendered.recipe_slug,
+                            title: rendered.title,
+                            output_path: rendered.output_path,
+                            render_ms: batch_ms,
+                        });
+                    }
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    for recipe in derived_recipes {
+                        output.recipe_blockers.push(RecipeBlocker {
+                            path: input.path.clone(),
+                            kind: input.kind.clone(),
+                            domain: input.domain.clone(),
+                            valid_utc: input.valid.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                            recipe_slug: recipe.clone(),
+                            missing_selectors: vec![message.clone()],
+                        });
+                    }
                 }
             }
         }
@@ -482,6 +750,7 @@ mod app {
         args: &Args,
         html_path: &Path,
         recipes: &[String],
+        derived_recipes: &[String],
         files_considered: usize,
         records: &[RenderRecord],
         file_blockers: &[FileBlocker],
@@ -506,6 +775,7 @@ mod app {
             domains: args.domains.clone(),
             kinds: args.kinds.clone(),
             recipes_requested: recipes.to_vec(),
+            derived_recipes_requested: derived_recipes.to_vec(),
             files_considered,
             jobs,
             rendered_count: records.len(),
@@ -535,6 +805,18 @@ mod app {
         Ok(recipes)
     }
 
+    fn resolve_derived_recipes(args: &Args) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let recipes = if args.all_derived_supported {
+            supported_derived_recipe_slugs(ModelId::WrfGdex)
+                .into_iter()
+                .filter(|slug| !slug.ends_with("_native_cape_ratio"))
+                .collect()
+        } else {
+            args.derived_recipes.clone()
+        };
+        Ok(recipes)
+    }
+
     fn selectors_by_recipe(
         recipes: &[String],
     ) -> Result<HashMap<String, Vec<FieldSelector>>, Box<dyn std::error::Error>> {
@@ -544,6 +826,43 @@ mod app {
             out.insert(recipe.clone(), plan.selectors());
         }
         Ok(out)
+    }
+
+    fn uh_selector() -> FieldSelector {
+        FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000)
+    }
+
+    fn recipe_uses_selector(
+        recipe: &str,
+        selectors_by_recipe: &HashMap<String, Vec<FieldSelector>>,
+        selector: FieldSelector,
+    ) -> bool {
+        selectors_by_recipe
+            .get(recipe)
+            .is_some_and(|selectors| selectors.contains(&selector))
+    }
+
+    fn build_uh_accumulation_context(
+        args: &Args,
+        selectors_by_recipe: &HashMap<String, Vec<FieldSelector>>,
+        files: &[InputFile],
+    ) -> Option<Arc<UhAccumulationContext>> {
+        uh_accumulation_requested(args, selectors_by_recipe).then(|| {
+            Arc::new(UhAccumulationContext::new(
+                args.wrf_uh_window_minutes,
+                files,
+            ))
+        })
+    }
+
+    fn uh_accumulation_requested(
+        args: &Args,
+        selectors_by_recipe: &HashMap<String, Vec<FieldSelector>>,
+    ) -> bool {
+        args.wrf_uh_window_minutes > 0
+            && selectors_by_recipe
+                .values()
+                .any(|items| items.contains(&uh_selector()))
     }
 
     fn effective_jobs(args: &Args, files: &[InputFile]) -> usize {
@@ -563,6 +882,21 @@ mod app {
         args: &Args,
         cycle_dt: NaiveDateTime,
     ) -> Result<Vec<InputFile>, Box<dyn std::error::Error>> {
+        discover_files_with_options(args, cycle_dt, true)
+    }
+
+    fn discover_files_for_accumulation(
+        args: &Args,
+        cycle_dt: NaiveDateTime,
+    ) -> Result<Vec<InputFile>, Box<dyn std::error::Error>> {
+        discover_files_with_options(args, cycle_dt, false)
+    }
+
+    fn discover_files_with_options(
+        args: &Args,
+        cycle_dt: NaiveDateTime,
+        apply_output_filters: bool,
+    ) -> Result<Vec<InputFile>, Box<dyn std::error::Error>> {
         let wanted_domains = args
             .domains
             .iter()
@@ -573,16 +907,22 @@ mod app {
             .iter()
             .map(|value| value.trim().to_ascii_lowercase())
             .collect::<BTreeSet<_>>();
-        let valid_start = args
-            .valid_start
-            .as_deref()
-            .map(parse_valid_filter)
-            .transpose()?;
-        let valid_end = args
-            .valid_end
-            .as_deref()
-            .map(parse_valid_filter)
-            .transpose()?;
+        let valid_start = if apply_output_filters {
+            args.valid_start
+                .as_deref()
+                .map(parse_valid_filter)
+                .transpose()?
+        } else {
+            None
+        };
+        let valid_end = if apply_output_filters {
+            args.valid_end
+                .as_deref()
+                .map(parse_valid_filter)
+                .transpose()?
+        } else {
+            None
+        };
         let mut grouped = BTreeMap::<(String, String), Vec<InputFile>>::new();
         for entry in fs::read_dir(&args.input_dir)? {
             let entry = entry?;
@@ -617,12 +957,16 @@ mod app {
                 });
         }
 
-        let stride = args.stride.max(1);
+        let stride = if apply_output_filters {
+            args.stride.max(1)
+        } else {
+            1
+        };
         let mut files = Vec::new();
         for (_, mut group) in grouped {
             group.sort_by_key(|file| file.valid);
             let selected = group.into_iter().step_by(stride);
-            if let Some(max) = args.max_files_per_domain {
+            if apply_output_filters && let Some(max) = args.max_files_per_domain {
                 files.extend(selected.take(max));
             } else {
                 files.extend(selected);

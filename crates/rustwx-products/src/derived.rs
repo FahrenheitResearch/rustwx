@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -1352,6 +1352,9 @@ fn derived_title_for_request(request: &DerivedBatchRequest, base_title: &str) ->
             return static_title_with_suffix(format!("{base_title} ({})", selector.label()));
         }
     }
+    if is_local_wrf_netcdf_request(request) {
+        return static_title_with_suffix(base_title);
+    }
     if request.model != ModelId::WrfGdex {
         return static_title_with_suffix(base_title);
     }
@@ -1370,10 +1373,57 @@ fn derived_title_for_request(request: &DerivedBatchRequest, base_title: &str) ->
     static_title_with_suffix(format!("{base_title} ({dataset})"))
 }
 
+fn is_local_wrf_netcdf_request(request: &DerivedBatchRequest) -> bool {
+    request.model == ModelId::WrfGdex
+        && [
+            request.surface_product_override.as_deref(),
+            request.pressure_product_override.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|product| product.eq_ignore_ascii_case("local_wrf_netcdf"))
+}
+
 fn earth2_filename_suffix(selector: Option<Earth2EnsembleSelector>) -> String {
     selector
         .map(|selector| format!("_{}", selector.filename_slug()))
         .unwrap_or_default()
+}
+
+#[derive(Clone, Copy, Default)]
+struct DerivedRenderOverrides<'a> {
+    output_suffix: Option<&'a str>,
+    subtitle_left: Option<&'a str>,
+    subtitle_right: Option<&'a str>,
+}
+
+fn sanitize_output_suffix(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if matches!(ch, '_' | '-' | '.') {
+            out.push(ch);
+        } else if ch.is_whitespace() {
+            out.push('_');
+        }
+    }
+    out.trim_matches(['_', '-', '.']).to_string()
+}
+
+fn derived_output_suffix(
+    earth2_ensemble: Option<Earth2EnsembleSelector>,
+    output_suffix: Option<&str>,
+) -> String {
+    let mut suffix = earth2_filename_suffix(earth2_ensemble);
+    if let Some(output_suffix) = output_suffix {
+        let sanitized = sanitize_output_suffix(output_suffix);
+        if !sanitized.is_empty() {
+            suffix.push('_');
+            suffix.push_str(&sanitized);
+        }
+    }
+    suffix
 }
 
 fn is_gdex_dataset_token(token: &str) -> bool {
@@ -1971,6 +2021,7 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                 source,
                 model,
                 input_fetch_keys.clone(),
+                DerivedRenderOverrides::default(),
             )?;
             heavy_timing = Some(timing);
             for recipe in heavy_rendered {
@@ -2163,6 +2214,7 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                     model,
                     computed,
                     input_fetch_keys.clone(),
+                    DerivedRenderOverrides::default(),
                 )?);
             }
             rendered
@@ -2197,6 +2249,7 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                                 model,
                                 computed,
                                 lane_fetch_keys,
+                                DerivedRenderOverrides::default(),
                             )?);
                         }
                         Ok(rendered)
@@ -2249,6 +2302,209 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
         native_thermo_artifacts,
         total_ms: total_start.elapsed().as_millis(),
     })
+}
+
+#[cfg(feature = "wrf")]
+pub fn render_local_wrf_derived_recipes_from_path(
+    request: &DerivedBatchRequest,
+    wrf_path: &Path,
+    output_suffix: Option<&str>,
+    subtitle_left_override: Option<&str>,
+    subtitle_right_override: Option<&str>,
+) -> Result<Vec<DerivedRenderedRecipe>, Box<dyn std::error::Error>> {
+    fs::create_dir_all(&request.out_dir)?;
+
+    let recipes = plan_derived_recipes(&request.recipe_slugs)?;
+    let mut local_request = request.clone();
+    local_request.surface_product_override = Some("local_wrf_netcdf".to_string());
+    local_request.pressure_product_override = Some("local_wrf_netcdf".to_string());
+    local_request.allow_large_heavy_domain = true;
+    local_request.use_cache = false;
+    let planned_routes = plan_native_thermo_routes_with_surface_product(
+        local_request.model,
+        &recipes,
+        ProductSourceMode::Canonical,
+        local_request.surface_product_override.as_deref(),
+    )?;
+    if planned_routes.output_recipes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let wrf_surface = rustwx_wrf::decode_surface_from_path(wrf_path)?;
+    let wrf_pressure = rustwx_wrf::decode_pressure_from_path(wrf_path)?;
+    if wrf_surface.nx != wrf_pressure.nx || wrf_surface.ny != wrf_pressure.ny {
+        return Err(format!(
+            "WRF surface grid {}x{} did not match pressure grid {}x{}",
+            wrf_surface.nx, wrf_surface.ny, wrf_pressure.nx, wrf_pressure.ny
+        )
+        .into());
+    }
+    let full_surface = GenericSurfaceFields {
+        lat: wrf_surface.lat,
+        lon: wrf_surface.lon,
+        nx: wrf_surface.nx,
+        ny: wrf_surface.ny,
+        projection: None,
+        psfc_pa: wrf_surface.psfc_pa,
+        orog_m: wrf_surface.orog_m,
+        orog_is_proxy: false,
+        t2_k: wrf_surface.t2_k,
+        q2_kgkg: wrf_surface.q2_kgkg,
+        u10_ms: wrf_surface.u10_ms,
+        v10_ms: wrf_surface.v10_ms,
+        native_sbcape_jkg: None,
+        native_mlcape_jkg: None,
+        native_mucape_jkg: None,
+        native_pblh_m: None,
+    };
+    let full_pressure = GenericPressureFields {
+        pressure_levels_hpa: wrf_pressure.pressure_levels_hpa,
+        pressure_3d_pa: Some(wrf_pressure.pressure_3d_pa),
+        temperature_c_3d: wrf_pressure.temperature_c_3d,
+        qvapor_kgkg_3d: wrf_pressure.qvapor_kgkg_3d,
+        u_ms_3d: wrf_pressure.u_ms_3d,
+        v_ms_3d: wrf_pressure.v_ms_3d,
+        gh_m_3d: wrf_pressure.gh_m_3d,
+        omega_pa_s_3d: None,
+        absolute_vorticity_s_3d: None,
+        cloud_liquid_kgkg_3d: None,
+        cloud_ice_kgkg_3d: None,
+        rain_kgkg_3d: None,
+        snow_kgkg_3d: None,
+        graupel_kgkg_3d: None,
+    };
+    let full_grid = full_surface.core_grid()?;
+    let full_projected = build_projected_map_with_projection(
+        &full_grid.lat_deg,
+        &full_grid.lon_deg,
+        full_surface.projection.as_ref(),
+        local_request.domain.bounds,
+        map_frame_aspect_ratio(
+            local_request.output_width,
+            local_request.output_height,
+            true,
+            true,
+        ),
+    )?;
+
+    let render_overrides = DerivedRenderOverrides {
+        output_suffix,
+        subtitle_left: subtitle_left_override,
+        subtitle_right: subtitle_right_override,
+    };
+    let date_yyyymmdd = local_request.date_yyyymmdd.as_str();
+    let cycle_utc = local_request.cycle_override_utc.unwrap_or(0);
+    let forecast_hour = local_request.forecast_hour;
+    let source = local_request.source;
+    let model = local_request.model;
+    let input_fetch_keys = vec![wrf_path.display().to_string()];
+    let mut rendered_by_recipe = HashMap::<DerivedRecipe, DerivedRenderedRecipe>::new();
+    let mut computed = DerivedComputedFields::default();
+    let mut grid: Option<rustwx_core::LatLonGrid> = None;
+    let mut grid_projection: Option<rustwx_core::GridProjection> = None;
+    let mut projected: Option<ProjectedMap> = None;
+
+    if !planned_routes.compute_recipes.is_empty() {
+        let cropped = crate::gridded::crop_heavy_domain_for_projected_extent(
+            &full_surface,
+            &full_pressure,
+            &full_projected.projected_x,
+            &full_projected.projected_y,
+            &full_projected.extent,
+            2,
+        )?;
+        let (surface, pressure, derived_grid) = match cropped.as_ref() {
+            Some(cropped) => (&cropped.surface, &cropped.pressure, cropped.grid.clone()),
+            None => (&full_surface, &full_pressure, full_grid.clone()),
+        };
+        let derived_projected = if cropped.is_some() {
+            build_projected_map_with_projection(
+                &derived_grid.lat_deg,
+                &derived_grid.lon_deg,
+                surface.projection.as_ref(),
+                local_request.domain.bounds,
+                map_frame_aspect_ratio(
+                    local_request.output_width,
+                    local_request.output_height,
+                    true,
+                    true,
+                ),
+            )?
+        } else {
+            full_projected.clone()
+        };
+        computed =
+            compute_derived_fields_generic(surface, pressure, &planned_routes.compute_recipes)?;
+        grid = Some(derived_grid);
+        grid_projection = surface.projection.clone();
+        projected = Some(derived_projected);
+    }
+
+    if !planned_routes.heavy_recipes.is_empty() {
+        let (heavy_rendered, _timing) = render_derived_heavy_recipes(
+            &local_request,
+            &planned_routes.heavy_recipes,
+            &full_surface,
+            &full_pressure,
+            &full_grid,
+            &full_projected,
+            date_yyyymmdd,
+            cycle_utc,
+            forecast_hour,
+            source,
+            model,
+            input_fetch_keys.clone(),
+            render_overrides,
+        )?;
+        for recipe in heavy_rendered {
+            let parsed = DerivedRecipe::parse(&recipe.recipe_slug).map_err(io::Error::other)?;
+            rendered_by_recipe.insert(parsed, recipe);
+        }
+    }
+
+    let derived_output_recipes = planned_routes
+        .output_recipes
+        .iter()
+        .copied()
+        .filter(|recipe| !rendered_by_recipe.contains_key(recipe))
+        .collect::<Vec<_>>();
+    if !derived_output_recipes.is_empty() {
+        let grid_ref = grid
+            .as_ref()
+            .ok_or("local WRF derived render requested but no grid was prepared")?;
+        let projected_ref = projected
+            .as_ref()
+            .ok_or("local WRF derived render requested but no projection was prepared")?;
+        for recipe in derived_output_recipes {
+            let rendered = render_derived_output_recipe(
+                &local_request,
+                recipe,
+                grid_ref,
+                grid_projection.as_ref(),
+                projected_ref,
+                date_yyyymmdd,
+                cycle_utc,
+                forecast_hour,
+                source,
+                model,
+                &computed,
+                input_fetch_keys.clone(),
+                render_overrides,
+            )?;
+            rendered_by_recipe.insert(recipe, rendered);
+        }
+    }
+
+    planned_routes
+        .output_recipes
+        .iter()
+        .map(|recipe| {
+            rendered_by_recipe
+                .remove(recipe)
+                .ok_or_else(|| format!("local WRF derived renderer missed '{}'", recipe.slug()))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Into::into)
 }
 
 /// Run the HRRR derived lane consuming a planner-loaded bundle set.
@@ -2556,7 +2812,7 @@ fn extract_native_derived_field(
         NativeDerivedRecipe::WrfGdexScalar { .. } => {
             if model == ModelId::WrfGdex {
                 return Err(
-                    "WRF/GDEX NetCDF support is not compiled; rebuild with --features wrf".into(),
+                    "WRF NetCDF support is not compiled; rebuild with --features wrf".into(),
                 );
             }
             Ok(None)
@@ -2587,7 +2843,7 @@ fn extract_native_derived_field(
         NativeDerivedRecipe::WrfGdexVectorMagnitude { .. } => {
             if model == ModelId::WrfGdex {
                 return Err(
-                    "WRF/GDEX NetCDF support is not compiled; rebuild with --features wrf".into(),
+                    "WRF NetCDF support is not compiled; rebuild with --features wrf".into(),
                 );
             }
             Ok(None)
@@ -2604,7 +2860,7 @@ fn open_wrf_gdex_native_file(
         return Ok(WrfFile::open(cached_path)?);
     }
     if !looks_like_wrf(&fetched.file.bytes) {
-        return Err("WRF/GDEX native fetch was not a NetCDF/HDF5 payload".into());
+        return Err("WRF native fetch was not a NetCDF/HDF5 payload".into());
     }
     let materialized = materialize_wrf_native_bytes(&fetched.file.bytes)?;
     Ok(WrfFile::open(&materialized)?)
@@ -2642,7 +2898,7 @@ fn validate_native_wrf_values(
 ) -> Result<(), Box<dyn std::error::Error>> {
     if values.len() != expected_len {
         return Err(format!(
-            "WRF/GDEX native variable '{variable}' length mismatch: expected {expected_len}, got {}",
+            "WRF native variable '{variable}' length mismatch: expected {expected_len}, got {}",
             values.len()
         )
         .into());
@@ -3040,47 +3296,47 @@ fn wrf_gdex_native_candidate(
         DerivedRecipe::Sbcape => (
             NativeDerivedRecipe::WrfGdexScalar { variable: "SBCAPE" },
             "surface CAPE",
-            "WRF/GDEX native SBCAPE from model diagnostics",
+            "WRF native SBCAPE from model diagnostics",
         ),
         DerivedRecipe::Sbcin => (
             NativeDerivedRecipe::WrfGdexScalar { variable: "SBCINH" },
             "surface CIN",
-            "WRF/GDEX native SBCINH from model diagnostics",
+            "WRF native SBCINH from model diagnostics",
         ),
         DerivedRecipe::Sblcl => (
             NativeDerivedRecipe::WrfGdexScalar { variable: "SBLCL" },
             "surface LCL height",
-            "WRF/GDEX native SBLCL from model diagnostics",
+            "WRF native SBLCL from model diagnostics",
         ),
         DerivedRecipe::Mlcape => (
             NativeDerivedRecipe::WrfGdexScalar { variable: "MLCAPE" },
             "mixed-layer CAPE",
-            "WRF/GDEX native MLCAPE from model diagnostics",
+            "WRF native MLCAPE from model diagnostics",
         ),
         DerivedRecipe::Mlcin => (
             NativeDerivedRecipe::WrfGdexScalar { variable: "MLCINH" },
             "mixed-layer CIN",
-            "WRF/GDEX native MLCINH from model diagnostics",
+            "WRF native MLCINH from model diagnostics",
         ),
         DerivedRecipe::Mucape => (
             NativeDerivedRecipe::WrfGdexScalar { variable: "MUCAPE" },
             "most-unstable CAPE",
-            "WRF/GDEX native MUCAPE from model diagnostics",
+            "WRF native MUCAPE from model diagnostics",
         ),
         DerivedRecipe::Mucin => (
             NativeDerivedRecipe::WrfGdexScalar { variable: "MUCINH" },
             "most-unstable CIN",
-            "WRF/GDEX native MUCINH from model diagnostics",
+            "WRF native MUCINH from model diagnostics",
         ),
         DerivedRecipe::Srh01km => (
             NativeDerivedRecipe::WrfGdexScalar { variable: "SRH01" },
             "0-1 km SRH",
-            "WRF/GDEX native SRH01 from model diagnostics",
+            "WRF native SRH01 from model diagnostics",
         ),
         DerivedRecipe::Srh03km => (
             NativeDerivedRecipe::WrfGdexScalar { variable: "SRH03" },
             "0-3 km SRH",
-            "WRF/GDEX native SRH03 from model diagnostics",
+            "WRF native SRH03 from model diagnostics",
         ),
         DerivedRecipe::BulkShear01km => (
             NativeDerivedRecipe::WrfGdexVectorMagnitude {
@@ -3089,7 +3345,7 @@ fn wrf_gdex_native_candidate(
                 scale: KNOTS_PER_MS,
             },
             "0-1 km bulk shear",
-            "WRF/GDEX native 0-1 km shear magnitude from model diagnostics",
+            "WRF native 0-1 km shear magnitude from model diagnostics",
         ),
         DerivedRecipe::BulkShear06km => (
             NativeDerivedRecipe::WrfGdexVectorMagnitude {
@@ -3098,7 +3354,7 @@ fn wrf_gdex_native_candidate(
                 scale: KNOTS_PER_MS,
             },
             "0-6 km bulk shear",
-            "WRF/GDEX native 0-6 km shear magnitude from model diagnostics",
+            "WRF native 0-6 km shear magnitude from model diagnostics",
         ),
         _ => return None,
     };
@@ -5124,7 +5380,10 @@ fn render_derived_heavy_recipe(
     source: SourceId,
     model: ModelId,
     input_fetch_keys: Vec<String>,
+    render_overrides: DerivedRenderOverrides<'_>,
 ) -> Result<DerivedRenderedRecipe, Box<dyn std::error::Error>> {
+    let filename_suffix =
+        derived_output_suffix(request.earth2_ensemble, render_overrides.output_suffix);
     let output_path = request.out_dir.join(format!(
         "rustwx_{}_{}_{}z_f{:03}_{}_{}{}.png",
         model.as_str().replace('-', "_"),
@@ -5133,7 +5392,7 @@ fn render_derived_heavy_recipe(
         forecast_hour,
         request.domain.slug,
         recipe.slug(),
-        earth2_filename_suffix(request.earth2_ensemble)
+        filename_suffix
     ));
     let subtitle_left = model_time_subtitle(model, date_yyyymmdd, cycle_utc, forecast_hour);
     let render_start = Instant::now();
@@ -5148,6 +5407,12 @@ fn render_derived_heavy_recipe(
     )?;
     render_request.chrome_scale = static_chrome_scale();
     render_request.title = Some(derived_title_for_request(request, recipe.title()));
+    if let Some(subtitle_left) = render_overrides.subtitle_left {
+        render_request.subtitle_left = Some(subtitle_left.to_string());
+    }
+    if let Some(subtitle_right) = render_overrides.subtitle_right {
+        render_request.subtitle_right = Some(subtitle_right.to_string());
+    }
     maybe_apply_native_contour_fill_for_mode(
         recipe,
         &mut render_request,
@@ -5213,6 +5478,7 @@ fn render_derived_heavy_recipes(
     source: SourceId,
     model: ModelId,
     input_fetch_keys: Vec<String>,
+    render_overrides: DerivedRenderOverrides<'_>,
 ) -> Result<(Vec<DerivedRenderedRecipe>, HeavyComputeTiming), Box<dyn std::error::Error>> {
     let total_start = Instant::now();
     let heavy_domain = crop_and_guard_heavy_domain(
@@ -5267,6 +5533,7 @@ fn render_derived_heavy_recipes(
             source,
             model,
             input_fetch_keys.clone(),
+            render_overrides,
         )?;
         render_ms += artifact.timing.render_ms;
         rendered.push(artifact);
@@ -5926,8 +6193,11 @@ fn render_derived_output_recipe(
     model: ModelId,
     computed: &DerivedComputedFields,
     lane_fetch_keys: Vec<String>,
+    render_overrides: DerivedRenderOverrides<'_>,
 ) -> Result<DerivedRenderedRecipe, io::Error> {
     let model_slug = request.model.as_str().replace('-', "_");
+    let filename_suffix =
+        derived_output_suffix(request.earth2_ensemble, render_overrides.output_suffix);
     let output_path = request.out_dir.join(format!(
         "rustwx_{}_{}_{}z_f{:03}_{}_{}{}.png",
         model_slug,
@@ -5936,7 +6206,7 @@ fn render_derived_output_recipe(
         request.forecast_hour,
         request.domain.slug,
         recipe.slug(),
-        earth2_filename_suffix(request.earth2_ensemble)
+        filename_suffix
     ));
     let render_start = Instant::now();
     let render_artifact = build_render_artifact(
@@ -5967,6 +6237,12 @@ fn render_derived_output_recipe(
         inverse_raster_projection_for_grid(projection, request.domain.bounds, grid_ref);
     let title = derived_title_for_request(request, recipe.title());
     render_request.title = Some(title.clone());
+    if let Some(subtitle_left) = render_overrides.subtitle_left {
+        render_request.subtitle_left = Some(subtitle_left.to_string());
+    }
+    if let Some(subtitle_right) = render_overrides.subtitle_right {
+        render_request.subtitle_right = Some(subtitle_right.to_string());
+    }
     if let Some(overlay) = request.custom_poi_overlay.as_ref() {
         apply_custom_poi_overlay(
             &mut render_request,

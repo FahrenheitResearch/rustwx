@@ -72,12 +72,12 @@ pub fn apply_static_map_design(
 ) {
     request.visual_mode = visual_mode;
     request.render_density = RenderDensity {
-        fill: LevelDensity::default(),
-        palette_multiplier: 1,
+        fill: high_detail_fill_density(),
+        palette_multiplier: 4,
     };
     request.legend = LegendControls {
         density: LevelDensity::default(),
-        mode: LegendMode::Stepped,
+        mode: LegendMode::SmoothRamp,
     };
     if is_global_scale_domain(bounds) && !overlay_only {
         request.render_density = RenderDensity::default();
@@ -87,6 +87,13 @@ pub fn apply_static_map_design(
         };
     }
     request.domain_frame = static_domain_frame_for_bounds(bounds);
+}
+
+fn high_detail_fill_density() -> LevelDensity {
+    LevelDensity {
+        multiplier: 4,
+        min_source_level_count: 2,
+    }
 }
 
 pub fn operational_fill_scale_for_recipe(
@@ -567,8 +574,9 @@ mod tests {
 
         assert_eq!(request.visual_mode, ProductVisualMode::FilledMeteorology);
         assert!(request.domain_frame.is_some());
-        assert_eq!(request.legend.mode, LegendMode::Stepped);
-        assert_eq!(request.render_density.palette_multiplier, 1);
+        assert_eq!(request.legend.mode, LegendMode::SmoothRamp);
+        assert_eq!(request.render_density.fill, high_detail_fill_density());
+        assert_eq!(request.render_density.palette_multiplier, 4);
     }
 
     #[test]
@@ -599,8 +607,9 @@ mod tests {
         );
 
         assert!(request.domain_frame.is_none());
-        assert_eq!(request.legend.mode, LegendMode::Stepped);
-        assert_eq!(request.render_density.palette_multiplier, 1);
+        assert_eq!(request.legend.mode, LegendMode::SmoothRamp);
+        assert_eq!(request.render_density.fill, high_detail_fill_density());
+        assert_eq!(request.render_density.palette_multiplier, 4);
     }
 
     #[test]

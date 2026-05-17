@@ -30,6 +30,7 @@ rustwx-core = { path = "../rustwx-core" }
 rustwx-cross-section = { path = "../rustwx-cross-section" }
 rustwx-io = { path = "../rustwx-io" }
 rustwx-models = { path = "../rustwx-models" }
+rustwx-prep = { path = "../rustwx-prep" }
 rustwx-products = { path = "../rustwx-products" }
 rustwx-radar = { path = "../rustwx-radar" }
 rustwx-render = { path = "../rustwx-render" }

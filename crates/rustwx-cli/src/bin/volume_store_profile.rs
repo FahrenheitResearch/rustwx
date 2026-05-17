@@ -22,7 +22,7 @@ struct Args {
     #[arg(long, default_value_t = 160)]
     ny: usize,
     #[arg(long, default_value_t = 13)]
-    hours: u8,
+    hours: u16,
     #[arg(long, default_value_t = 10)]
     levels: usize,
     #[arg(long, default_value_t = 1)]
@@ -51,7 +51,7 @@ impl VolumeFieldProvider for SyntheticProvider<'_> {
     fn field_plane(
         &mut self,
         variable: &str,
-        forecast_hour: u8,
+        forecast_hour: u16,
         level_hpa: u16,
     ) -> rustwx_products::volume_store::VolumeResult<Vec<f32>> {
         synthetic_plane(
@@ -84,7 +84,7 @@ struct ProfileConfig {
     ny: usize,
     grid_cells: usize,
     variables: Vec<String>,
-    forecast_hours: Vec<u8>,
+    forecast_hours: Vec<u16>,
     levels_hpa: Vec<u16>,
     chunk_shape: ChunkShape,
     codec: String,
@@ -347,7 +347,7 @@ fn pressure_levels(count: usize) -> Vec<u16> {
 
 fn synthetic_plane(
     var: &str,
-    hour: u8,
+    hour: u16,
     level: u16,
     levels: &[u16],
     nx: usize,

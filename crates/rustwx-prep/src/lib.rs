@@ -2,6 +2,9 @@ use rustwx_core::GridShape;
 use std::collections::VecDeque;
 use thiserror::Error;
 
+pub mod wrf_ops;
+pub use wrf_ops::*;
+
 pub const WRF_WATER_LU_CATEGORIES: [i32; 3] = [16, 17, 21];
 
 #[derive(Debug, Error)]

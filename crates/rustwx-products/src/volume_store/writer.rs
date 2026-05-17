@@ -12,19 +12,19 @@ pub trait VolumeFieldProvider {
     fn field_plane(
         &mut self,
         variable: &str,
-        forecast_hour: u8,
+        forecast_hour: u16,
         level_hpa: u16,
     ) -> VolumeResult<Vec<f32>>;
 }
 
 impl<F> VolumeFieldProvider for F
 where
-    F: for<'a> FnMut(&'a str, u8, u16) -> VolumeResult<Vec<f32>>,
+    F: for<'a> FnMut(&'a str, u16, u16) -> VolumeResult<Vec<f32>>,
 {
     fn field_plane(
         &mut self,
         variable: &str,
-        forecast_hour: u8,
+        forecast_hour: u16,
         level_hpa: u16,
     ) -> VolumeResult<Vec<f32>> {
         self(variable, forecast_hour, level_hpa)

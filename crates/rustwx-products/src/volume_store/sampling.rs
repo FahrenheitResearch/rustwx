@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PointSample {
     pub variable: String,
-    pub forecast_hour: u8,
+    pub forecast_hour: u16,
     pub level_hpa: u16,
     pub value: f32,
 }
@@ -12,6 +12,22 @@ pub struct PointSample {
 pub struct PointProfile {
     pub lat_deg: f64,
     pub lon_deg: f64,
+    pub samples: Vec<PointSample>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BoxProfile {
+    pub center_lat_deg: f64,
+    pub center_lon_deg: f64,
+    pub min_lat_deg: f64,
+    pub max_lat_deg: f64,
+    pub min_lon_deg: f64,
+    pub max_lon_deg: f64,
+    pub x0: usize,
+    pub x1: usize,
+    pub y0: usize,
+    pub y1: usize,
+    pub cell_count: usize,
     pub samples: Vec<PointSample>,
 }
 
@@ -42,7 +58,7 @@ pub struct RouteSample {
 pub struct RouteValue {
     pub sample_index: usize,
     pub variable: String,
-    pub forecast_hour: u8,
+    pub forecast_hour: u16,
     pub level_hpa: u16,
     pub value: f32,
 }
@@ -51,7 +67,7 @@ pub struct RouteValue {
 pub struct RouteSectionPrimitives {
     pub route_id: String,
     pub route_name: String,
-    pub forecast_hour: u8,
+    pub forecast_hour: u16,
     pub route_samples: Vec<RouteSample>,
     pub values: Vec<RouteValue>,
 }

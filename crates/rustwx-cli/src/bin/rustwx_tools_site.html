@@ -1,0 +1,3111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RustWX Workstation</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0d0e10;
+  --panel: #151619;
+  --panel-2: #1b1c20;
+  --panel-3: #202228;
+  --line: rgba(255,255,255,.105);
+  --line-strong: rgba(255,255,255,.22);
+  --text: #f2f0eb;
+  --muted: #a9a59d;
+  --quiet: #716f69;
+  --accent: #f1b84a;
+  --accent-2: #44d7bd;
+  --danger: #ff655d;
+  --ok: #6fe08c;
+  --shadow: 0 20px 70px rgba(0,0,0,.42);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: var(--bg); color: var(--text); }
+button, input, select { font: inherit; }
+button { border: 0; color: inherit; cursor: pointer; }
+button:disabled { opacity: .45; cursor: wait; }
+.app {
+  width: 100vw;
+  height: 100vh;
+  display: grid;
+  grid-template-columns: 338px minmax(520px, 1fr) 370px;
+  grid-template-rows: 48px minmax(0, 1fr) 42px;
+  background:
+    radial-gradient(circle at 60% 0%, rgba(68,215,189,.08), transparent 34%),
+    linear-gradient(180deg, #101113 0%, #0b0c0e 100%);
+}
+.topbar {
+  grid-column: 1 / 4;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(13,14,16,.94);
+}
+.brand {
+  width: 310px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.brand strong { font-size: 15px; }
+.brand span { color: var(--quiet); font-size: 10px; font-weight: 700; }
+.statusStrip {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.pill {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,.035);
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.dot { width: 7px; height: 7px; border-radius: 999px; background: var(--quiet); box-shadow: 0 0 14px rgba(255,255,255,.2); }
+.dot.ok { background: var(--ok); box-shadow: 0 0 16px rgba(111,224,140,.45); }
+.dot.warn { background: var(--accent); box-shadow: 0 0 16px rgba(241,184,74,.45); }
+.dot.bad { background: var(--danger); box-shadow: 0 0 16px rgba(255,101,93,.45); }
+.apiInput {
+  flex: 0 1 260px;
+  width: min(260px, 22vw);
+  color: var(--text);
+  background: #0f1012;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 5px 8px;
+  outline: none;
+}
+.side {
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  background: rgba(16,17,19,.82);
+}
+.left { border-right: 1px solid var(--line); }
+.right { border-left: 1px solid var(--line); }
+.panel {
+  border: 1px solid var(--line);
+  background: rgba(21,22,25,.94);
+  box-shadow: 0 1px 0 rgba(255,255,255,.035) inset;
+  border-radius: 6px;
+  margin-bottom: 10px;
+}
+.superOnly { display: none; }
+.super-mode .superOnly { display: block; }
+.super-mode .tileOnly,
+.super-mode .wxaOnly { display: none; }
+.super-mode .app {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 48px minmax(0, 1fr) 42px;
+}
+.super-mode .topbar,
+.super-mode .footer { grid-column: 1; }
+.super-mode .left {
+  position: absolute;
+  z-index: 24;
+  left: 14px;
+  top: 62px;
+  width: min(340px, calc(100vw - 28px));
+  min-height: 0;
+  overflow: visible;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.super-mode .right { display: none; }
+.super-mode .domainPanel,
+.super-mode #apiBase,
+.super-mode .legendPanel,
+.super-mode #superOpenImage { display: none; }
+.super-mode .mapShell { background: #070809; }
+.super-mode .timelinePanel {
+  width: clamp(340px, 46vw, 680px);
+  margin-left: auto;
+}
+.super-mode .hudBlock {
+  background: rgba(8,9,11,.80);
+  border-color: rgba(255,255,255,.10);
+}
+.super-mode .exactLead { display: none; }
+.super-mode .superOnly .panelBody { padding: 8px; }
+.super-mode .viewer.float .viewerBox {
+  right: 16px;
+  bottom: 56px;
+  width: min(620px, calc(100vw - 32px));
+  height: min(560px, calc(100vh - 112px));
+}
+.mobileDock,
+.super-mode .mobileDock {
+  position: fixed;
+  z-index: 52;
+  right: 14px;
+  bottom: 92px;
+  display: flex;
+  gap: 6px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(10,11,13,.82);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
+}
+.super-mode .mobileDock button {
+  min-width: 66px;
+  min-height: 34px;
+  border-radius: 6px;
+  background: rgba(255,255,255,.075);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.super-mode .mobileDock button.active {
+  color: #07100f;
+  background: var(--ok);
+  border-color: var(--ok);
+}
+.mobileDock button {
+  flex: 1;
+  min-width: 0;
+  min-height: 38px;
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 5px;
+  background: rgba(255,255,255,.055);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: .065em;
+  text-transform: uppercase;
+}
+.mobileDock button.active {
+  color: var(--text);
+  border-color: rgba(241,184,74,.66);
+  background: rgba(241,184,74,.16);
+}
+.panelHead {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.panelHead h2, .panelHead h3 {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: .085em;
+  text-transform: uppercase;
+}
+.panelBody { padding: 10px; }
+.domainGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.domainBtn, .iconBtn, .segBtn, .primary, .secondary {
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.025));
+  border-radius: 4px;
+  min-height: 30px;
+  transition: border-color .12s ease, background .12s ease, color .12s ease;
+}
+.domainBtn {
+  text-align: left;
+  padding: 7px 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.domainBtn.active, .segBtn.active {
+  color: var(--text);
+  border-color: rgba(241,184,74,.66);
+  background: rgba(241,184,74,.14);
+}
+.domainBtn:hover, .iconBtn:hover, .segBtn:hover, .primary:hover, .secondary:hover {
+  border-color: rgba(68,215,189,.55);
+}
+.layer {
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,.026);
+  border-radius: 5px;
+  margin-bottom: 9px;
+  overflow: hidden;
+}
+.layerTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.layerTitle strong {
+  font-size: 11px;
+  letter-spacing: .075em;
+  text-transform: uppercase;
+}
+.layerTitle label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.layerMeta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.layerRun {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--quiet);
+  font-size: 10px;
+}
+.formGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 9px;
+}
+.formGrid label, .field {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--quiet);
+  font-size: 10px;
+  letter-spacing: .045em;
+  text-transform: uppercase;
+}
+.wide { grid-column: 1 / -1; }
+select, input[type="number"], input[type="text"] {
+  min-width: 0;
+  height: 29px;
+  color: var(--text);
+  background: #101114;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 7px;
+  outline: none;
+}
+select:focus, input:focus { border-color: rgba(68,215,189,.6); }
+input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.mapShell {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  background: #090a0c;
+  overflow: hidden;
+}
+#mapCanvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #0b0c0f;
+  cursor: grab;
+  touch-action: none;
+}
+#mapCanvas:active { cursor: grabbing; }
+.mapHud {
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  right: 14px;
+  pointer-events: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.hudBlock {
+  max-width: min(760px, 62vw);
+  padding: 9px 10px;
+  border: 1px solid rgba(255,255,255,.14);
+  background: rgba(10,11,13,.76);
+  backdrop-filter: blur(10px);
+  border-radius: 5px;
+  box-shadow: var(--shadow);
+}
+.hudTitle {
+  font-size: 18px;
+  font-weight: 750;
+  line-height: 1.05;
+}
+.hudMeta {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.zoomBox {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.14);
+  background: rgba(10,11,13,.78);
+  border-radius: 5px;
+}
+.iconBtn {
+  width: 34px;
+  height: 32px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 18px;
+}
+.iconBtn + .iconBtn { border-top: 1px solid rgba(255,255,255,.12); }
+.legend {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 14px;
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  pointer-events: none;
+}
+.legendPanel, .timelinePanel {
+  border: 1px solid rgba(255,255,255,.14);
+  background: rgba(10,11,13,.78);
+  backdrop-filter: blur(10px);
+  border-radius: 5px;
+  box-shadow: var(--shadow);
+}
+.legendPanel { padding: 9px 10px; }
+.legendTop {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.bar {
+  position: relative;
+  height: 12px;
+  border: 1px solid rgba(255,255,255,.2);
+  background: linear-gradient(90deg, #3454b4, #2aaadc, #46b46e, #f5d246, #d23c32);
+}
+.ticks {
+  position: relative;
+  height: 23px;
+  color: #f5f2eb;
+  font-size: 10px;
+}
+.tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  text-shadow: 0 1px 2px #000, 0 0 4px #000;
+}
+.tick:before {
+  content: "";
+  display: block;
+  width: 1px;
+  height: 5px;
+  margin: 0 auto 2px;
+  background: rgba(255,255,255,.8);
+}
+.timelinePanel {
+  pointer-events: auto;
+  min-width: 310px;
+  padding: 9px 10px;
+}
+.timelineRow {
+  display: grid;
+  grid-template-columns: 56px minmax(160px, 1fr) minmax(138px, auto);
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 11px;
+}
+.timelineRow strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  text-align: right;
+}
+.timeControl {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+}
+.timeControlTop, .timeExtents {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.timeControlTop span {
+  color: var(--quiet);
+  font-size: 10px;
+  letter-spacing: .045em;
+  text-transform: uppercase;
+}
+.timeControlTop strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 11px;
+  text-align: right;
+}
+.timeExtents {
+  color: var(--quiet);
+  font-size: 10px;
+}
+.footer {
+  grid-column: 1 / 4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  border-top: 1px solid var(--line);
+  background: rgba(13,14,16,.94);
+  color: var(--quiet);
+  font-size: 11px;
+}
+.seg {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 5px;
+}
+.segBtn {
+  height: 30px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.primary {
+  width: 100%;
+  min-height: 34px;
+  color: #17130a;
+  background: linear-gradient(180deg, #ffd681, #d99b30);
+  border-color: rgba(241,184,74,.95);
+  font-weight: 750;
+}
+.secondary {
+  width: 100%;
+  min-height: 32px;
+  color: var(--text);
+  background: rgba(255,255,255,.045);
+}
+.result {
+  display: none;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  overflow: hidden;
+  background: #0e0f12;
+}
+.result.show { display: block; }
+.result img { width: 100%; display: block; background: #f6f6f6; }
+.resultTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+}
+.resultTop a { color: var(--accent-2); text-decoration: none; }
+.resultActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  white-space: nowrap;
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 6px;
+  padding: 2px 6px;
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(255,255,255,.045);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .055em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
+.badge.cached {
+  color: var(--accent-2);
+  border-color: rgba(68,215,189,.34);
+  background: rgba(68,215,189,.09);
+}
+.badge.fresh {
+  color: var(--accent);
+  border-color: rgba(241,184,74,.42);
+  background: rgba(241,184,74,.11);
+}
+.miniBtn {
+  color: var(--accent-2);
+  background: transparent;
+  border: 0;
+  padding: 2px 0;
+  font-size: 11px;
+}
+.viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background: rgba(3,4,6,.78);
+  backdrop-filter: blur(12px);
+}
+.viewer.show { display: flex; }
+.viewer.float {
+  display: none;
+  inset: 0;
+  padding: 0;
+  align-items: stretch;
+  justify-content: stretch;
+  background: transparent;
+  backdrop-filter: none;
+  pointer-events: none;
+}
+.viewer.float.show { display: block; }
+.viewerBox {
+  width: min(1500px, 96vw);
+  height: min(950px, 92vh);
+  display: grid;
+  grid-template-rows: 44px minmax(0, 1fr) 34px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: #111216;
+  box-shadow: 0 28px 100px rgba(0,0,0,.62);
+  overflow: hidden;
+}
+.viewer.float .viewerBox {
+  position: absolute;
+  right: 360px;
+  bottom: 36px;
+  width: min(780px, calc(100vw - 400px));
+  height: min(590px, calc(100vh - 88px));
+  pointer-events: auto;
+  transform: translate(var(--viewer-x, 0px), var(--viewer-y, 0px));
+}
+@media (max-width: 900px) {
+  .viewer.float .viewerBox {
+    left: 24px;
+    right: 24px;
+    bottom: 24px;
+    width: auto;
+    height: min(620px, calc(100vh - 72px));
+  }
+}
+.viewerTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  cursor: move;
+}
+.viewerTop strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.viewerClose {
+  min-width: 64px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: rgba(255,255,255,.04);
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.viewerBody {
+  min-height: 0;
+  overflow: auto;
+  background: #050607;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.viewerBody img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  background: #f4f4f4;
+}
+.viewer.float .viewerBody {
+  overflow: hidden;
+}
+.viewer.float .viewerBody img {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.viewerFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 12px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+}
+.viewerFoot a { color: var(--accent-2); text-decoration: none; }
+.small { color: var(--quiet); font-size: 10px; }
+.errorText { color: var(--danger); }
+@media (max-width: 1180px) {
+  .app {
+    grid-template-columns: 308px minmax(400px, 1fr);
+    grid-template-rows: 48px minmax(0, 1fr) 330px 42px;
+  }
+  .topbar, .footer { grid-column: 1 / 3; }
+  .right {
+    grid-column: 1 / 3;
+    grid-row: 3;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(220px, 1fr));
+    gap: 10px;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+  .right .panel { margin-bottom: 0; }
+}
+@media (max-width: 760px) {
+  .super-mode .app {
+    height: 100dvh;
+    grid-template-columns: 1fr;
+    grid-template-rows: 44px minmax(0, 1fr) 30px;
+  }
+  .super-mode .topbar,
+  .super-mode .footer {
+    grid-column: 1;
+  }
+  .super-mode .topbar {
+    gap: 8px;
+    padding: 0 8px;
+  }
+  .super-mode .brand {
+    width: auto;
+    flex: 0 0 auto;
+    gap: 6px;
+  }
+  .super-mode .brand strong { font-size: 13px; }
+  .super-mode .brand span { display: none; }
+  .super-mode .statusStrip {
+    justify-content: flex-end;
+    gap: 6px;
+    font-size: 10px;
+  }
+  .super-mode .statusStrip .pill:nth-child(3),
+  .super-mode .statusStrip .pill:nth-child(4) {
+    display: none;
+  }
+  .super-mode .pill {
+    min-height: 24px;
+    padding: 0 7px;
+  }
+  .super-mode .mapShell {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .super-mode .footer {
+    grid-row: 3;
+    padding: 0 8px;
+    font-size: 10px;
+  }
+  .super-mode .left,
+  .super-mode .right {
+    position: fixed;
+    left: 8px;
+    right: 8px;
+    bottom: 38px;
+    z-index: 45;
+    max-height: none;
+    overflow: auto;
+    padding: 6px;
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    background: rgba(16,17,19,.97);
+    box-shadow: 0 22px 80px rgba(0,0,0,.58);
+  }
+  .super-mode .left {
+    display: block;
+    top: 52px;
+    bottom: auto;
+    width: auto;
+    max-height: none;
+    overflow: visible;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .super-mode .left .superOnly {
+    margin: 0;
+    border-radius: 8px;
+    border-color: rgba(255,255,255,.16);
+    background: rgba(10,11,13,.82);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(10px);
+  }
+  .super-mode .left .superOnly .panelHead {
+    display: none;
+  }
+  .super-mode .left .superOnly .panelBody {
+    padding: 6px;
+  }
+  .super-mode .left .formGrid {
+    display: block;
+    padding: 0 !important;
+  }
+  .super-mode .left .timeControl,
+  .super-mode .left .exactLead {
+    display: none;
+  }
+  .super-mode .left label {
+    gap: 3px;
+    color: var(--muted);
+    font-size: 9px;
+  }
+  .super-mode #superProduct {
+    height: 38px;
+    font-size: 16px;
+  }
+  .super-mode .right {
+    display: none;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px;
+    border-left: 1px solid var(--line-strong);
+  }
+  .super-mode .right .wxaOnly,
+  .super-mode .right .panelHead,
+  .super-mode .right .formGrid {
+    display: none;
+  }
+  .super-mode .right .panel {
+    margin: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .super-mode .right .panelBody {
+    padding: 0;
+  }
+  .super-mode .right .seg {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin-bottom: 6px !important;
+  }
+  .super-mode #runCross,
+  .super-mode #runSounding,
+  .super-mode #runBoxSounding {
+    min-height: 40px;
+  }
+  .super-mode #result {
+    position: fixed;
+    left: 8px;
+    right: 8px;
+    bottom: 132px;
+    z-index: 48;
+    max-height: min(38dvh, 340px);
+    overflow: auto;
+  }
+  .super-mode .mobileDock {
+    left: 8px;
+    right: auto;
+    bottom: 92px;
+  }
+  .super-mode .mapHud {
+    left: 8px;
+    right: 8px;
+    top: 8px;
+  }
+  .super-mode .zoomBox {
+    display: flex;
+  }
+  .super-mode .iconBtn {
+    width: 40px;
+    height: 38px;
+    font-size: 22px;
+  }
+  .super-mode .hudBlock {
+    max-width: calc(100vw - 16px);
+    padding: 7px 8px;
+  }
+  .super-mode .hudTitle {
+    font-size: 13px;
+    line-height: 1.12;
+  }
+  .super-mode .hudMeta { font-size: 10px; }
+  .super-mode .legend {
+    left: 8px;
+    right: 8px;
+    bottom: 44px;
+    display: block;
+  }
+  .super-mode .legendPanel { display: none; }
+  .super-mode .timelinePanel {
+    width: auto;
+    min-width: 0;
+    padding: 8px;
+  }
+  .super-mode .timelineRow {
+    grid-template-columns: minmax(0, 1fr) 82px;
+    gap: 8px;
+  }
+  .super-mode .timelineRow span { display: none; }
+  .super-mode .timelineRow strong {
+    font-size: 10px;
+    text-align: right;
+  }
+  .super-mode select,
+  .super-mode input[type="number"],
+  .super-mode input[type="text"] {
+    height: 36px;
+    font-size: 16px;
+  }
+  .super-mode .primary,
+  .super-mode .secondary,
+  .super-mode .segBtn {
+    min-height: 38px;
+  }
+  .super-mode .viewer.float .viewerBox {
+    left: 8px;
+    right: 8px;
+    bottom: 44px;
+    width: auto;
+    height: min(42dvh, 360px);
+    border-radius: 8px;
+  }
+  .super-mode .viewerTop {
+    min-height: 42px;
+    cursor: default;
+  }
+  .super-mode .viewerFoot { display: none; }
+  .super-mode .viewerClose {
+    min-width: 72px;
+    height: 32px;
+  }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand"><strong>RustWX</strong><span>tile workstation</span></div>
+    <div class="statusStrip">
+      <span class="pill"><span id="wxDot" class="dot warn"></span><span id="wxStatus">wxstore</span></span>
+      <span class="pill" id="runStatus">resolving latest run</span>
+      <span class="pill" id="tileStatus">0 tiles</span>
+      <span class="pill" id="cursorStatus">lon -- / lat --</span>
+    </div>
+    <input id="apiBase" class="apiInput" value="">
+  </header>
+
+  <aside class="side left">
+    <section class="panel domainPanel">
+      <div class="panelHead"><h2>Domains</h2><span class="small" id="zoomReadout">z4.0</span></div>
+      <div class="panelBody"><div id="domainGrid" class="domainGrid"></div></div>
+    </section>
+
+    <section class="panel superOnly">
+      <div class="panelHead"><h2>WRF Plot</h2><span class="small" id="superPlotCount">loading</span></div>
+      <div class="panelBody">
+        <div class="formGrid" style="padding:0 0 9px 0">
+          <label class="wide">Product<select id="superProduct"></select></label>
+          <div class="wide timeControl">
+            <div class="timeControlTop"><span>Timeline</span><strong id="superLeadReadout">--</strong></div>
+            <input id="superLeadSlider" type="range" min="0" max="0" step="1" value="0">
+            <div class="timeExtents"><span id="superLeadStart">--</span><span id="superLeadEnd">--</span></div>
+          </div>
+          <label class="wide exactLead">Exact valid time<select id="superLead"></select></label>
+        </div>
+        <button id="superOpenImage" class="secondary">Open Source PNG</button>
+      </div>
+    </section>
+
+    <section class="panel tileOnly">
+      <div class="panelHead"><h2>Tile Layers</h2><span class="small" id="layerSummary">live</span></div>
+      <div id="layerStack" class="panelBody"></div>
+    </section>
+
+    <section class="panel tileOnly">
+      <div class="panelHead"><h2>Basemap</h2><span class="small">canvas</span></div>
+      <div class="panelBody">
+        <div class="formGrid" style="padding:0">
+          <label class="wide">Style
+            <select id="baseStyle">
+              <option value="dark">Dark + labels</option>
+              <option value="light">Light + labels</option>
+              <option value="none">No raster base</option>
+            </select>
+          </label>
+          <label>Base alpha<input id="baseAlpha" type="range" min="0" max="1" step="0.05" value="1"></label>
+          <label>Label alpha<input id="labelAlpha" type="range" min="0" max="1" step="0.05" value="0.75"></label>
+        </div>
+      </div>
+    </section>
+  </aside>
+
+  <main class="mapShell">
+    <canvas id="mapCanvas"></canvas>
+    <div class="mapHud">
+      <div class="hudBlock">
+        <div id="mapTitle" class="hudTitle">Loading live wxstore tiles</div>
+        <div id="mapMeta" class="hudMeta">custom canvas renderer</div>
+      </div>
+      <div class="zoomBox">
+        <button id="zoomIn" class="iconBtn" aria-label="Zoom in">+</button>
+        <button id="zoomOut" class="iconBtn" aria-label="Zoom out">-</button>
+      </div>
+    </div>
+    <div class="legend">
+      <div class="legendPanel">
+        <div class="legendTop"><span id="legendName">Layer</span><span id="legendUnits"></span></div>
+        <div id="legendBar" class="bar"></div>
+        <div id="legendTicks" class="ticks"></div>
+      </div>
+      <div class="timelinePanel">
+        <div class="timelineRow">
+          <span>Minute</span>
+          <input id="hourSlider" type="range" min="0" max="0" step="1" value="0">
+          <strong id="hourLabel">F000</strong>
+        </div>
+      </div>
+    </div>
+    <div class="mobileDock superOnly">
+      <button id="mobilePlot" type="button">Point</button>
+      <button id="mobileTools" type="button">Box</button>
+      <button id="mobileHide" type="button">Cross</button>
+    </div>
+  </main>
+
+  <aside class="side right">
+    <section class="panel wxaOnly">
+      <div class="panelHead"><h2>Export PNG</h2><span class="small" id="exportMs"></span></div>
+      <div class="panelBody">
+        <div class="formGrid" style="padding:0 0 9px 0">
+          <label class="wide">WXA store<select id="staticDataset"></select></label>
+          <label>Group<select id="staticCategory"></select></label>
+          <label>Hour<select id="staticHour"></select></label>
+          <label class="wide">Product<select id="staticProduct"></select></label>
+          <label>Domain<select id="staticDomain"><option>conus</option><option>global</option></select></label>
+        </div>
+        <button id="runStatic" class="primary">Export PNG</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panelHead"><h2>Cross Section</h2><span class="small" id="routeReadout">2 points</span></div>
+      <div class="panelBody">
+        <div class="seg" style="margin-bottom:9px">
+          <button id="modePan" class="segBtn active">Pan</button>
+          <button id="modePoint" class="segBtn">Point</button>
+          <button id="modeBox" class="segBtn">Box</button>
+          <button id="modeRoute" class="segBtn">Route</button>
+        </div>
+        <div class="formGrid" style="padding:0 0 9px 0">
+          <label class="wide">Volume store<select id="volumeDataset"></select></label>
+          <label class="wide">Product<select id="crossProduct"></select></label>
+          <label>Hour<select id="crossHour"></select></label>
+          <label>Spacing km<input id="crossSpacing" type="number" value="10" min="1" max="100" step="1"></label>
+          <label>Top hPa<input id="crossTop" type="number" value="100" min="50" max="500" step="25"></label>
+        </div>
+        <button id="runCross" class="secondary">Render Cross Section</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panelHead"><h2>Sounding</h2><span class="small" id="pointReadout">selected point</span></div>
+      <div class="panelBody">
+        <div class="formGrid" style="padding:0 0 9px 0">
+          <label class="wide">Volume store<select id="soundingDataset"></select></label>
+          <label>Hour<select id="soundingHour"></select></label>
+          <label>Station<input id="stationId" type="text" value="RUSTWX"></label>
+          <label>Lon<input id="sampleLon" type="number" step="0.0001" value="-97.5000"></label>
+          <label>Lat<input id="sampleLat" type="number" step="0.0001" value="35.5000"></label>
+        </div>
+        <button id="runSounding" class="secondary">Render Sounding</button>
+        <button id="runBoxSounding" class="secondary" style="margin-top:8px">Render Box Sounding</button>
+      </div>
+    </section>
+
+    <section id="result" class="result">
+      <div class="resultTop">
+        <strong id="resultTitle">Artifact</strong>
+        <span class="resultActions">
+          <button id="resultView" class="miniBtn" type="button">view</button>
+          <button id="resultClose" class="miniBtn" type="button">hide</button>
+        </span>
+      </div>
+      <img id="resultImg" alt="">
+    </section>
+  </aside>
+
+  <footer class="footer">
+    <span id="serverStatus">Rust server ready</span>
+    <span id="frameStats">cache 0 / in-flight 0</span>
+  </footer>
+</div>
+
+<div id="viewer" class="viewer" aria-hidden="true">
+  <div class="viewerBox">
+    <div class="viewerTop">
+      <strong id="viewerTitle">Artifact</strong>
+      <button id="viewerClose" class="viewerClose" type="button" aria-label="Close viewer">Close</button>
+    </div>
+    <div class="viewerBody"><img id="viewerImg" alt=""></div>
+    <div class="viewerFoot">
+      <span id="viewerMeta">ready</span>
+      <span id="viewerLinks"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+const DOMAINS = [
+  { id: "super_outbreak", label: "1974 D02", bounds: [-102.25763, 28.420467, -73.75076, 43.9414], zoom: 5.5, boost: .12 },
+  { id: "conus", label: "CONUS", bounds: [-126.5, 23.5, -66.0, 50.5], zoom: 4.55, boost: .28 },
+  { id: "global", label: "Global", bounds: [-180, -76, 180, 76], zoom: 1.7, boost: 0 },
+  { id: "north_america", label: "North America", bounds: [-168, 9, -50, 73], zoom: 3.35, boost: .12 },
+  { id: "south_america", label: "South America", bounds: [-84, -56, -33, 13], zoom: 3.45, boost: .14 },
+  { id: "europe", label: "Europe", bounds: [-13, 35, 43, 64], zoom: 4.55, boost: .18 },
+  { id: "east_asia", label: "East Asia", bounds: [96, 18, 149, 50], zoom: 4.55, boost: .18 },
+  { id: "australia", label: "Australia", bounds: [111, -44, 157, -10], zoom: 4.35, boost: .16 },
+  { id: "midwest", label: "Midwest", bounds: [-104, 33, -82, 49], zoom: 5.55, boost: .2 },
+  { id: "southern_plains", label: "S. Plains", bounds: [-106, 28, -90, 41], zoom: 5.65, boost: .2 },
+  { id: "east_coast", label: "East Coast", bounds: [-84, 27, -66, 47], zoom: 5.45, boost: .18 },
+  { id: "gulf_coast", label: "Gulf Coast", bounds: [-100, 25, -78, 36], zoom: 5.55, boost: .2 },
+  { id: "great_lakes", label: "Great Lakes", bounds: [-92, 41, -75, 50], zoom: 5.65, boost: .2 },
+  { id: "california", label: "California", bounds: [-125.5, 32, -114, 43], zoom: 5.85, boost: .2 },
+  { id: "pacific_nw", label: "Pacific NW", bounds: [-126, 41, -110, 50], zoom: 5.65, boost: .2 },
+  { id: "alaska", label: "Alaska", bounds: [-170, 52, -130, 72], zoom: 4.55, boost: .14 },
+];
+
+const MODELS = [
+  { id: "hrrr", label: "HRRR", domain: "conus" },
+  { id: "rap", label: "RAP", domain: "conus" },
+  { id: "rrfs-a", label: "RRFS-A", domain: "conus" },
+  { id: "rrfs-public", label: "RRFS-public", domain: "conus" },
+  { id: "hiresw", label: "HIRESW", domain: "conus" },
+  { id: "gfs", label: "GFS", domain: "global" },
+  { id: "nbm", label: "NBM", domain: "global" },
+  { id: "aifs", label: "AIFS", domain: "global" },
+];
+
+const PALETTES = {
+  temperature: { label: "Temperature", colors: ["#3454b4", "#2aaadc", "#46b46e", "#f5d246", "#d23c32"] },
+  humidity: { label: "Moisture", colors: ["#784820", "#d6b45c", "#78be6e", "#14785a", "#0f466e"] },
+  vpd: { label: "Convective", colors: ["#185a91", "#2781ac", "#43a4b8", "#6ebea8", "#9ad38e", "#c4e27e", "#e5e87e", "#f7db76", "#f8c366", "#f0a355", "#e28248", "#cf6441", "#b84a3d", "#9d353c", "#80253f"] },
+  wind: { label: "Wind", colors: ["#eef5ff", "#7fb8d6", "#3e9287", "#e6be50", "#be463c"] },
+  precip: { label: "Precip", colors: ["#0b1020", "#244b9b", "#1e9cc5", "#3bbb6f", "#e3d34a", "#ef8b36", "#c93636"] },
+  reflectivity: { label: "Reflectivity", colors: ["#0b1020", "#1d5ab5", "#27a7c7", "#36b66a", "#f1d84d", "#ef8a31", "#d33131", "#e9e9f0"] },
+  magma: { label: "Magma", colors: ["#120a26", "#4e125a", "#962655", "#dc5732", "#fcbe4b"] },
+  fire_weather: { label: "Fire", colors: ["#228b22", "#32cd32", "#78e63c", "#adff2f", "#ffd700", "#ffaa00", "#ff8c00", "#ff4500", "#cc0000", "#8b0000"] },
+  gray: { label: "Gray", colors: ["#1e1e1e", "#5a5a5a", "#969696", "#d2d2d2", "#fafafa"] },
+};
+
+const VARIABLES = [
+  v("2m_temperature", "2 m Temperature", "surface", "degC", [-50, 50], "temperature", [-50,-40,-30,-20,-10,0,10,20,30,40,50]),
+  v("2m_dewpoint", "2 m Dewpoint", "surface", "degC", [-40, 30], "humidity", [-40,-30,-20,-10,0,10,20,30]),
+  v("2m_relative_humidity", "2 m RH", "surface", "%", [0, 100], "humidity", [10,20,30,40,50,60,70,80,90,100]),
+  v("mslp_10m_winds", "MSLP / 10 m Wind", "surface", "hPa", [980, 1040], "wind", [980,990,1000,1010,1020,1030,1040]),
+  v("precipitable_water", "Precipitable Water", "surface", "in", [0, 3], "humidity", [0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75,3]),
+  v("cloud_cover", "Cloud Cover", "surface", "%", [0, 100], "gray", [10,20,30,40,50,60,70,80,90,100]),
+  v("850mb_temperature_height_winds", "850 mb Temp / Wind", "upper", "degC", [-40, 40], "temperature", [-40,-30,-20,-10,0,10,20,30,40]),
+  v("700mb_temperature_height_winds", "700 mb Temp / Wind", "upper", "degC", [-40, 20], "temperature", [-40,-30,-20,-10,0,10,20]),
+  v("500mb_height_winds", "500 mb Wind", "upper", "kt", [20, 140], "wind", [20,30,40,50,60,70,80,90,100,110,120,130,140]),
+  v("sbcape", "SBCAPE", "severe", "J/kg", [0, 6000], "vpd", [500,1000,1500,2000,2500,3000,3500,4000,4500,5000,5500,6000]),
+  v("mlcape", "MLCAPE", "severe", "J/kg", [0, 5000], "vpd", [500,1000,1500,2000,2500,3000,3500,4000,4500,5000]),
+  v("mucape", "MUCAPE", "severe", "J/kg", [0, 8500], "vpd", [500,1000,1500,2000,2500,3000,3500,4000,4500,5000,5500,6000,8500]),
+  v("lifted_index", "Lifted Index", "severe", "degC", [-18, 6], "magma", [-18,-14,-10,-8,-6,-4,-2,0,2,4,6]),
+  v("srh_0_1km", "SRH 0-1 km", "severe", "m2/s2", [0, 600], "vpd", [50,100,150,200,250,300,350,400,450,500,550,600]),
+  v("srh_0_3km", "SRH 0-3 km", "severe", "m2/s2", [0, 850], "vpd", [50,100,150,200,250,300,350,400,450,500,550,600,850]),
+  v("bulk_shear_0_6km", "Bulk Shear 0-6 km", "severe", "kt", [0, 80], "wind", [10,20,30,40,50,60,70,80]),
+  v("ehi_0_1km", "EHI 0-1 km", "severe", "", [0, 6], "vpd", [0.5,1,1.5,2,3,4,5,6]),
+  v("ehi_0_3km", "EHI 0-3 km", "severe", "", [0, 8], "vpd", [0.5,1,1.5,2,3,4,5,6,7,8]),
+  v("fire_weather_composite", "Fire Weather Composite", "fire", "", [0, 100], "fire_weather", [0,10,20,30,40,50,60,70,80,90,100]),
+  v("lapse_rate_0_3km", "Lapse Rate 0-3 km", "severe", "degC/km", [3, 10], "vpd", [3,6,6.5,7,7.5,8,8.5,9,9.5]),
+  v("lapse_rate_700_500", "Lapse Rate 700-500 mb", "severe", "degC/km", [3, 10], "vpd", [3,6,6.5,7,7.5,8,8.5,9,9.5]),
+];
+
+function v(id, label, category, units, range, palette, stops) {
+  return { id, label, category, units, range, palette, stops };
+}
+
+const VAR_BY_ID = new Map(VARIABLES.map(x => [x.id, x]));
+const APP_BASE_PATH = (() => {
+  const path = location.pathname.replace(/\/+$/, "");
+  if (path === "/free" || path.startsWith("/free/")) return "/free";
+  if (path === "/1974super" || path.startsWith("/1974super/")) return "/1974super";
+  return "";
+})();
+const IS_1974_SUPER = APP_BASE_PATH === "/1974super";
+const DEFAULT_API_BASE = APP_BASE_PATH || `${location.protocol}//${location.hostname || "127.0.0.1"}:8910`;
+const PRODUCT_CATEGORIES = [
+  ["all", "All"],
+  ["surface", "Surface"],
+  ["upper", "Upper air"],
+  ["severe", "Severe"],
+  ["precip", "Precip"],
+  ["fire", "Fire"],
+  ["winter", "Winter"],
+  ["satellite", "Satellite"],
+  ["derived", "Derived"],
+];
+
+const state = {
+  catalog: null,
+  wxOk: false,
+  apiBase: DEFAULT_API_BASE,
+  wxModels: [],
+  domainId: "conus",
+  mode: "pan",
+  view: { centerLon: -96.5, centerLat: 38.2, zoom: 4.05 },
+  layers: [
+    { id: "main", name: "Primary", enabled: true, model: "hrrr", domain: "conus", run: "latest", trackLatest: true, category: "surface", variable: "2m_temperature", hour: 0, hours: [], variables: [], range: [-50, 50], palette: "temperature", opacity: .72 },
+    { id: "overlay", name: "Overlay", enabled: false, model: "gfs", domain: "global", run: "latest", trackLatest: true, category: "upper", variable: "500mb_height_winds", hour: 0, hours: [], variables: [], range: [20, 140], palette: "wind", opacity: .46 },
+  ],
+  route: [{ lon: -103.2, lat: 32.6 }, { lon: -87.3, lat: 41.8 }],
+  point: { lon: -97.5, lat: 35.5 },
+  box: { centerLon: -97.5, centerLat: 35.5, radiusLon: .35, radiusLat: .25, draft: null },
+  tileCache: new Map(),
+  loading: new Set(),
+  tileBytes: 0,
+  tileCount: 0,
+  tileStats: { lastMs: 0, errors: 0 },
+  styleCache: new Map(),
+  super: { catalog: null, product: "", leadMinutes: null },
+  frame: null,
+  lastPointer: null,
+  live: { tool: null, inFlight: false, pending: false, timer: null, seq: 0, latestShown: 0, lastStarted: 0, lastError: "" },
+  drag: { active: false, kind: null, lastMap: null, lastScreen: null, moved: 0, boxStart: null },
+  viewerDrag: { active: false, startX: 0, startY: 0, ox: 0, oy: 0, x: 0, y: 0, dismissed: false },
+  dirty: true,
+};
+
+const els = {};
+for (const id of [
+  "mapCanvas","apiBase","wxDot","wxStatus","runStatus","tileStatus","cursorStatus","domainGrid",
+  "zoomReadout","layerSummary","layerStack","baseStyle","baseAlpha","labelAlpha","mapTitle","mapMeta",
+  "zoomIn","zoomOut","legendName","legendUnits","legendBar","legendTicks","hourSlider","hourLabel",
+  "staticDataset","staticCategory","staticProduct","staticHour","staticDomain","runStatic","exportMs","volumeDataset",
+  "crossProduct","crossHour","crossSpacing","crossTop","runCross","soundingDataset","soundingHour","stationId",
+  "sampleLon","sampleLat","runSounding","result","resultTitle","resultView","resultClose","resultImg","serverStatus",
+  "runBoxSounding","frameStats","modePan","modePoint","modeBox","modeRoute","routeReadout","pointReadout","viewer","viewerTitle",
+  "viewerClose","viewerImg","viewerMeta","viewerLinks","superProduct","superLead","superLeadSlider",
+  "superLeadReadout","superLeadStart","superLeadEnd","superOpenImage","superPlotCount",
+  "mobilePlot","mobileTools","mobileHide"
+]) {
+  els[id] = document.getElementById(id);
+}
+
+const ctx = els.mapCanvas.getContext("2d");
+
+function api(path) {
+  return state.apiBase.replace(/\/+$/, "") + path;
+}
+
+function appPath(path) {
+  if (!path) return APP_BASE_PATH || "/";
+  if (/^[a-z][a-z0-9+.-]*:/i.test(path)) return path;
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  return `${APP_BASE_PATH}${normalized}`;
+}
+
+function wxModelInfo(model) {
+  return (state.wxModels || []).find(item => (item.id || item.model) === model) || null;
+}
+
+function modelLabel(model) {
+  const known = MODELS.find(x => x.id === model);
+  return known ? known.label : prettify(model);
+}
+
+function modelDomain(model) {
+  const info = wxModelInfo(model);
+  const domains = info && info.latest_readiness && Array.isArray(info.latest_readiness.domains)
+    ? info.latest_readiness.domains
+    : [];
+  if (domains.includes("global")) return "global";
+  if (domains.length) return domains[0];
+  const m = MODELS.find(x => x.id === model);
+  return m ? m.domain : "global";
+}
+
+function availableModelIds() {
+  const ids = [];
+  for (const item of state.wxModels || []) {
+    const id = item.id || item.model;
+    if (id && !ids.includes(id)) ids.push(id);
+  }
+  if (!ids.length) {
+    for (const item of MODELS) if (!ids.includes(item.id)) ids.push(item.id);
+  }
+  for (const layer of state.layers) if (layer.model && !ids.includes(layer.model)) ids.push(layer.model);
+  return ids;
+}
+
+function runsForModel(model) {
+  const info = wxModelInfo(model);
+  return info && Array.isArray(info.runs) ? info.runs : [];
+}
+
+function latestRunForModel(model) {
+  const info = wxModelInfo(model);
+  return (info && info.latest_run) || runsForModel(model).slice(-1)[0] || "";
+}
+
+function modelOptions(selected) {
+  return availableModelIds()
+    .map(id => optionHtml(id, modelLabel(id), id === selected))
+    .join("");
+}
+
+function runOptions(layer) {
+  const latest = latestRunForModel(layer.model);
+  const runs = runsForModel(layer.model);
+  const options = [];
+  options.push(optionHtml("__latest", latest ? `Latest (${latest})` : "Latest", !!layer.trackLatest));
+  const ordered = runs.slice().reverse();
+  for (const run of ordered) {
+    const label = run === latest ? `${run} latest` : run;
+    options.push(optionHtml(run, label, !layer.trackLatest && run === layer.run));
+  }
+  if (layer.run && !layer.trackLatest && !runs.includes(layer.run)) {
+    options.push(optionHtml(layer.run, `${layer.run} unavailable`, true));
+  }
+  return options.join("");
+}
+
+function variable(id) {
+  return VAR_BY_ID.get(id) || inferVariable(id);
+}
+
+function inferVariable(id) {
+  const text = String(id || "").toLowerCase();
+  const label = prettify(id);
+  if (/reflectivity|dbz/.test(text)) return v(id, label, "precip", "dBZ", [0, 75], "reflectivity", [5,10,20,30,40,50,60,70]);
+  if (/qpf|precip|rain/.test(text)) return v(id, label, "precip", "in", [0, 5], "precip", [0.1,0.25,0.5,1,1.5,2,3,4,5]);
+  if (/snow|freezing|ice_pellets|icing/.test(text)) return v(id, label, "winter", "", [0, 1], "gray", [0,0.25,0.5,0.75,1]);
+  if (/gust|wind_speed|wind_run|max_wind/.test(text)) return v(id, label, "surface", "kt", [0, 100], "wind", [10,20,30,40,50,60,70,80,90,100]);
+  if (/wind_u|wind_v/.test(text)) return v(id, label, "upper", "kt", [-80, 80], "wind", [-80,-60,-40,-20,0,20,40,60,80]);
+  if (/wind|shear/.test(text)) return v(id, label, productCategory(id), "kt", [0, 120], "wind", [10,20,30,40,50,60,70,80,100,120]);
+  if (/relative_humidity|rh/.test(text)) return v(id, label, productCategory(id), "%", [0, 100], "humidity", [10,20,30,40,50,60,70,80,90,100]);
+  if (/dewpoint|temperature|wetbulb|heat_index|wind_chill|apparent/.test(text)) return v(id, label, productCategory(id), "degC", [-40, 45], "temperature", [-40,-30,-20,-10,0,10,20,30,40]);
+  if (/cape/.test(text)) return v(id, label, "severe", "J/kg", [0, 6000], "vpd", [500,1000,1500,2000,3000,4000,5000,6000]);
+  if (/cin/.test(text)) return v(id, label, "severe", "J/kg", [-300, 0], "magma", [-300,-200,-150,-100,-50,0]);
+  if (/srh|helicity/.test(text)) return v(id, label, "severe", "m2/s2", [0, 600], "vpd", [50,100,150,200,300,400,500,600]);
+  if (/stp|scp|ehi|uh_/.test(text)) return v(id, label, "severe", "", [0, 10], "vpd", [1,2,3,4,5,6,8,10]);
+  if (/mslp|pressure/.test(text)) return v(id, label, "surface", "hPa", [980, 1040], "wind", [980,990,1000,1010,1020,1030,1040]);
+  if (/cloud/.test(text)) return v(id, label, "satellite", "%", [0, 100], "gray", [10,20,30,40,50,60,70,80,90,100]);
+  if (/satellite|ir/.test(text)) return v(id, label, "satellite", "K", [180, 310], "gray", [190,210,230,250,270,290,310]);
+  if (/smoke|pm25/.test(text)) return v(id, label, "fire", "ug/m3", [0, 200], "fire_weather", [10,25,50,75,100,150,200]);
+  if (/fire_weather_composite/.test(text)) return v(id, label, "fire", "", [0, 100], "fire_weather", [0,10,20,30,40,50,60,70,80,90,100]);
+  if (/vpd|fire/.test(text)) return v(id, label, "fire", "", [0, 10], "fire_weather", [1,2,3,4,5,6,7,8,9,10]);
+  return v(id, label, productCategory(id), "", [0, 1], "temperature", [0, 1]);
+}
+
+function productCategory(id) {
+  const known = VAR_BY_ID.get(id);
+  if (known && PRODUCT_CATEGORIES.some(([value]) => value === known.category)) return known.category;
+  const text = String(id || "").toLowerCase();
+  if (/snow|freezing|ice_pellets|icing|wetbulb/.test(text)) return "winter";
+  if (/qpf|precip|rain|reflectivity/.test(text)) return "precip";
+  if (/fire|vpd|smoke/.test(text)) return "fire";
+  if (/satellite|cloud|visibility/.test(text)) return "satellite";
+  if (/cape|cin|shear|srh|ehi|stp|scp|uh_|lapse|lifted|dcape|vorticity/.test(text)) return "severe";
+  if (/200mb|250mb|300mb|500mb|700mb|850mb|omega|theta|pv/.test(text)) return "upper";
+  if (/advection|composite|proxy|run_max|1h_max|3h_max/.test(text)) return "derived";
+  return "surface";
+}
+
+function categoryOptions(selected) {
+  return PRODUCT_CATEGORIES
+    .map(([value, label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`)
+    .join("");
+}
+
+function filterProducts(products, category) {
+  if (!category || category === "all") return products;
+  return products.filter(id => productCategory(id) === category);
+}
+
+function componentKind(id) {
+  const match = String(id || "").toLowerCase().match(/__(contour|wind_u|wind_v)$/);
+  return match ? match[1] : "";
+}
+
+function isTileProduct(id) {
+  return !componentKind(id);
+}
+
+function tileProductList(products) {
+  const filtered = (products || []).filter(isTileProduct);
+  return filtered.length ? filtered : (products || []);
+}
+
+function applyVariableDefaults(layer) {
+  const meta = variable(layer.variable);
+  layer.style = null;
+  layer.range = [...meta.range];
+  layer.palette = meta.palette;
+}
+
+function refreshLayerHours(layer) {
+  const hoursByVar = layer.hoursByVariable || {};
+  layer.hours = hoursByVar[layer.variable] || layer.hours || [layer.hour];
+  if (!layer.hours.includes(layer.hour)) layer.hour = layer.hours[0] || 0;
+}
+
+function prettify(id) {
+  const text = typeof id === "string" ? id : (id && (id.label || id.slug || id.id)) || "";
+  return text.replace(/_/g, " ").replace(/\b\w/g, m => m.toUpperCase());
+}
+
+function paletteCss(paletteId) {
+  const p = PALETTES[paletteId] || PALETTES.temperature;
+  const stops = p.colors.map((c, i) => `${c} ${(i / Math.max(1, p.colors.length - 1) * 100).toFixed(1)}%`);
+  return `linear-gradient(90deg, ${stops.join(", ")})`;
+}
+
+function rgbaToCss(color) {
+  if (Array.isArray(color)) return `rgba(${color[0]},${color[1]},${color[2]},${(color[3] ?? 255) / 255})`;
+  return "#000000";
+}
+
+function stylePaletteCss(style) {
+  const colors = (style && (style.interval_colors || style.colors)) || [];
+  if (!colors.length) return paletteCss("temperature");
+  if (colors.length === 1) return rgbaToCss(colors[0]);
+  const stops = [];
+  const denom = colors.length;
+  colors.forEach((color, i) => {
+    const start = (i / denom * 100).toFixed(3);
+    const end = ((i + 1) / denom * 100).toFixed(3);
+    const css = rgbaToCss(color);
+    stops.push(`${css} ${start}%`, `${css} ${end}%`);
+  });
+  return `linear-gradient(90deg, ${stops.join(", ")})`;
+}
+
+async function fetchProductStyle(variableId) {
+  if (!variableId) return null;
+  if (state.styleCache.has(variableId)) return state.styleCache.get(variableId);
+  try {
+    const res = await fetch(api(`/v1/styles/${encodeURIComponent(variableId)}`));
+    if (!res.ok) throw new Error(`style ${res.status}`);
+    const style = await res.json();
+    state.styleCache.set(variableId, style);
+    return style;
+  } catch (_) {
+    state.styleCache.set(variableId, null);
+    return null;
+  }
+}
+
+async function applyProductStyle(layer) {
+  const style = await fetchProductStyle(layer.variable);
+  layer.style = style;
+  if (style && Array.isArray(style.range) && style.range.length === 2) {
+    layer.range = [Number(style.range[0]), Number(style.range[1])];
+  }
+}
+
+function worldScale(z) { return 256 * Math.pow(2, z); }
+function lonToX(lon, z) { return (lon + 180) / 360 * worldScale(z); }
+function latToY(lat, z) {
+  const clamped = Math.max(-85.05113, Math.min(85.05113, lat));
+  const s = Math.sin(clamped * Math.PI / 180);
+  return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * worldScale(z);
+}
+function xToLon(x, z) { return x / worldScale(z) * 360 - 180; }
+function wrapLon(lon) { return ((lon + 180) % 360 + 360) % 360 - 180; }
+function clampLat(lat) { return Math.max(-84.5, Math.min(84.5, lat)); }
+function yToLat(y, z) {
+  const n = Math.PI - 2 * Math.PI * y / worldScale(z);
+  return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+}
+function project(lon, lat) {
+  const z = state.view.zoom;
+  const cx = lonToX(state.view.centerLon, z);
+  const cy = latToY(state.view.centerLat, z);
+  return { x: els.mapCanvas.width / 2 + lonToX(lon, z) - cx, y: els.mapCanvas.height / 2 + latToY(lat, z) - cy };
+}
+function unproject(x, y) {
+  const z = state.view.zoom;
+  const cx = lonToX(state.view.centerLon, z);
+  const cy = latToY(state.view.centerLat, z);
+  let lon = wrapLon(xToLon(cx + x - els.mapCanvas.width / 2, z));
+  return { lon, lat: yToLat(cy + y - els.mapCanvas.height / 2, z) };
+}
+
+function fitDomain(id) {
+  const d = DOMAINS.find(x => x.id === id) || DOMAINS[0];
+  const [w, s, e, n] = d.bounds;
+  const pad = .98;
+  const W = Math.max(1, els.mapCanvas.clientWidth);
+  const H = Math.max(1, els.mapCanvas.clientHeight);
+  const zX = Math.log2((W * pad * 360) / (256 * Math.abs(e - w)));
+  const yN = latToY(n, 0), yS = latToY(s, 0);
+  const zY = Math.log2((H * pad) / Math.abs(yS - yN));
+  state.domainId = id;
+  state.view.centerLon = (w + e) / 2;
+  state.view.centerLat = yToLat((yN + yS) / 2, 0);
+  const cap = id === "super_outbreak" ? 9.5 : 7.5;
+  const extra = id === "super_outbreak" ? 0.95 : 0;
+  state.view.zoom = Math.max(1.25, Math.min(cap, Math.min(zX, zY, d.zoom) + (d.boost || 0) + extra));
+  updateDomainButtons();
+  markDirty();
+}
+
+function resizeCanvas() {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const w = Math.max(1, Math.floor(els.mapCanvas.clientWidth * dpr));
+  const h = Math.max(1, Math.floor(els.mapCanvas.clientHeight * dpr));
+  if (els.mapCanvas.width !== w || els.mapCanvas.height !== h) {
+    els.mapCanvas.width = w;
+    els.mapCanvas.height = h;
+    markDirty();
+  }
+}
+
+function tileUrl(url) {
+  let item = state.tileCache.get(url);
+  if (item) {
+    item.last = performance.now();
+    return item;
+  }
+  item = { img: new Image(), ready: false, failed: false, started: performance.now(), last: performance.now() };
+  state.tileCache.set(url, item);
+  state.loading.add(url);
+  item.img.onload = () => {
+    item.ready = true;
+    state.loading.delete(url);
+    state.tileCount += 1;
+    state.tileBytes += 65536;
+    state.tileStats.lastMs = Math.max(1, Math.round(performance.now() - item.started));
+    markDirty();
+  };
+  item.img.onerror = () => {
+    item.failed = true;
+    state.loading.delete(url);
+    state.tileStats.errors += 1;
+    markDirty();
+  };
+  item.img.src = url;
+  pruneCache();
+  return item;
+}
+
+function pruneCache() {
+  if (state.tileCache.size < 650) return;
+  const entries = Array.from(state.tileCache.entries()).sort((a, b) => a[1].last - b[1].last);
+  for (let i = 0; i < Math.min(120, entries.length); i++) state.tileCache.delete(entries[i][0]);
+}
+
+function currentSuperProduct() {
+  const products = (state.super.catalog && state.super.catalog.products) || [];
+  return products.find(product => product.id === state.super.product) || products[0] || null;
+}
+
+function superLeadsForProduct(productId) {
+  const catalog = state.super.catalog || {};
+  const leads = catalog.leads || [];
+  const byProduct = catalog.product_leads || {};
+  const allowed = byProduct[productId];
+  if (!Array.isArray(allowed) || !allowed.length) return leads;
+  const allowedSet = new Set(allowed.map(value => Number(value)));
+  return leads.filter(lead => allowedSet.has(Number(lead.lead_minutes)));
+}
+
+function currentSuperLead() {
+  const product = currentSuperProduct();
+  const leads = superLeadsForProduct(product && product.id);
+  const selected = state.super.leadMinutes;
+  if (selected !== null && selected !== undefined && selected !== "") {
+    const wanted = Number(selected);
+    const found = leads.find(lead => Number(lead.lead_minutes) === wanted);
+    if (found) return found;
+  }
+  return leads[0] || null;
+}
+
+function superValidLabel(lead) {
+  if (!lead) return "";
+  const valid = String(lead.valid_utc || "").replace("T", " ").replace("Z", "Z");
+  return valid ? `${lead.label || ""} / ${valid}` : (lead.label || `+${lead.lead_minutes} min`);
+}
+
+function superValidShort(lead) {
+  if (!lead) return "--";
+  const valid = String(lead.valid_utc || "");
+  const m = valid.match(/T(\d{2}):(\d{2})/);
+  return m ? `${m[1]}:${m[2]}Z` : (lead.label || `+${lead.lead_minutes}`);
+}
+
+function superTimelineLabel(lead) {
+  if (!lead) return "--";
+  const label = lead.label || `+${lead.lead_minutes} min`;
+  return `${label}  ${superValidShort(lead)}`;
+}
+
+function updateSuperLeadReadouts(leads, idx) {
+  const selected = leads[idx] || currentSuperLead();
+  const first = leads[0] || null;
+  const last = leads[leads.length - 1] || null;
+  els.superLeadReadout.textContent = selected ? superTimelineLabel(selected) : "--";
+  els.superLeadStart.textContent = first ? superTimelineLabel(first) : "--";
+  els.superLeadEnd.textContent = last ? superTimelineLabel(last) : "--";
+}
+
+function superImagePath() {
+  const product = currentSuperProduct();
+  const lead = currentSuperLead();
+  if (!product || !lead) return "";
+  const base = (state.super.catalog && state.super.catalog.image_path) || "/api/1974super/plot-image";
+  return `${base}?product=${encodeURIComponent(product.id)}&lead=${encodeURIComponent(lead.lead_minutes)}`;
+}
+
+function superImageUrl() {
+  const path = superImagePath();
+  return path ? appPath(path) : "";
+}
+
+function renderSuperControls() {
+  if (!IS_1974_SUPER || !state.super.catalog) return;
+  const c = state.super.catalog;
+  const products = c.products || [];
+  state.super.product = products.some(product => product.id === state.super.product)
+    ? state.super.product
+    : (c.default_product || (products[0] && products[0].id) || "");
+  const leads = superLeadsForProduct(state.super.product);
+  const selectedLead = state.super.leadMinutes;
+  const hasSelectedLead = selectedLead !== null
+    && selectedLead !== undefined
+    && selectedLead !== ""
+    && leads.some(lead => Number(lead.lead_minutes) === Number(selectedLead));
+  state.super.leadMinutes = hasSelectedLead
+    ? Number(selectedLead)
+    : Number(c.default_lead_minutes ?? (leads[0] && leads[0].lead_minutes) ?? 0);
+  els.superProduct.innerHTML = products.length
+    ? products.map(product => optionHtml(product.id, `${product.label} (${product.count})`, product.id === state.super.product)).join("")
+    : `<option value="">No static plots found</option>`;
+  els.superLead.innerHTML = leads.length
+    ? leads.map(lead => optionHtml(lead.lead_minutes, superValidLabel(lead), Number(lead.lead_minutes) === Number(state.super.leadMinutes))).join("")
+    : `<option value="">No valid times</option>`;
+  els.superProduct.value = state.super.product;
+  els.superLead.value = String(state.super.leadMinutes);
+  const leadIndex = Math.max(0, leads.findIndex(lead => Number(lead.lead_minutes) === Number(state.super.leadMinutes)));
+  els.superLeadSlider.min = 0;
+  els.superLeadSlider.max = Math.max(0, leads.length - 1);
+  els.superLeadSlider.step = 1;
+  els.superLeadSlider.value = String(leadIndex);
+  els.superLeadSlider.disabled = !leads.length;
+  updateSuperLeadReadouts(leads, leadIndex);
+  els.superPlotCount.textContent = `${c.record_count || 0} PNGs`;
+  syncHourSlider();
+}
+
+async function refreshSuperCatalog() {
+  if (!IS_1974_SUPER) return;
+  state.super.catalog = await fetch(appPath("/api/1974super/plots/catalog"), { cache: "no-store" }).then(res => res.json());
+  renderSuperControls();
+  syncVolumeStoreToSuperLead();
+}
+
+function volumeLeadValue(ds) {
+  const hours = Array.isArray(ds && ds.forecast_hours) ? ds.forecast_hours : [];
+  const first = Number(hours[0]);
+  if (Number.isFinite(first)) return first;
+  const match = String(ds && (ds.id || ds.label) || "").match(/lead_(\d+)m/i);
+  return match ? Number(match[1]) : null;
+}
+
+function isMovingLatestVolume(ds) {
+  const value = `${(ds && ds.id) || ""} ${(ds && ds.label) || ""} ${(ds && ds.store_path) || ""}`.toLowerCase();
+  return value.includes("latest");
+}
+
+function syncVolumeStoreToSuperLead() {
+  if (!IS_1974_SUPER || !state.catalog) return;
+  const lead = currentSuperLead();
+  if (!lead) return;
+  const target = Number(lead.lead_minutes);
+  const stores = state.catalog.volume_stores || [];
+  const candidates = stores
+    .map(ds => ({ ds, lead: volumeLeadValue(ds) }))
+    .filter(item => item.lead !== null && Number.isFinite(item.lead));
+  if (!candidates.length) return;
+  candidates.sort((a, b) => {
+    const diff = Math.abs(a.lead - target) - Math.abs(b.lead - target);
+    if (diff) return diff;
+    return Number(isMovingLatestVolume(b.ds)) - Number(isMovingLatestVolume(a.ds));
+  });
+  const selected = candidates[0].ds;
+  if (selected && els.volumeDataset.value !== selected.id) {
+    els.volumeDataset.value = selected.id;
+    updateCrossHours();
+  }
+  if (selected && els.soundingDataset.value !== selected.id) {
+    els.soundingDataset.value = selected.id;
+    updateSoundingHours();
+  }
+}
+
+function showSuperSourceImage() {
+  const product = currentSuperProduct();
+  const lead = currentSuperLead();
+  const imagePath = superImagePath();
+  if (!product || !lead || !imagePath) return;
+  openViewer({
+    kind: "1974_super_plot",
+    title: `${product.label} ${superValidLabel(lead)}`,
+    image_url: imagePath,
+    elapsed_ms: 0,
+    cached: true,
+  }, { floating: false });
+}
+
+function drawSuperPlotLayer() {
+  const product = currentSuperProduct();
+  const lead = currentSuperLead();
+  const url = superImageUrl();
+  if (!product || !lead || !url) {
+    ctx.save();
+    ctx.fillStyle = "rgba(242,240,235,.72)";
+    ctx.font = "13px sans-serif";
+    ctx.fillText("No 1974 static plots found", 18, 28);
+    ctx.restore();
+    return;
+  }
+  const img = tileUrl(url);
+  if (!img.ready) return;
+  const bounds = (state.super.catalog && state.super.catalog.domain_bounds) || domainBounds("super_outbreak");
+  const nw = project(bounds[0], bounds[3]);
+  const se = project(bounds[2], bounds[1]);
+  const x = Math.min(nw.x, se.x);
+  const y = Math.min(nw.y, se.y);
+  const w = Math.abs(se.x - nw.x);
+  const h = Math.abs(se.y - nw.y);
+  ctx.save();
+  ctx.globalAlpha = 1;
+  ctx.drawImage(img.img, x, y, w, h);
+  ctx.restore();
+}
+
+function visibleTiles(zInt) {
+  const z = state.view.zoom;
+  const factor = Math.pow(2, z - zInt);
+  const tileSize = 256 * factor;
+  const centerX = lonToX(state.view.centerLon, z);
+  const centerY = latToY(state.view.centerLat, z);
+  const originX = centerX - els.mapCanvas.width / 2;
+  const originY = centerY - els.mapCanvas.height / 2;
+  const worldAtTileZ = worldScale(zInt);
+  const startX = Math.floor((originX / factor) / 256) - 1;
+  const endX = Math.floor(((originX + els.mapCanvas.width) / factor) / 256) + 1;
+  const startY = Math.floor((originY / factor) / 256) - 1;
+  const endY = Math.floor(((originY + els.mapCanvas.height) / factor) / 256) + 1;
+  const n = Math.pow(2, zInt);
+  const out = [];
+  for (let y = startY; y <= endY; y++) {
+    if (y < 0 || y >= n) continue;
+    for (let x = startX; x <= endX; x++) {
+      const wrappedX = ((x % n) + n) % n;
+      out.push({ z: zInt, x: wrappedX, y, sx: x * 256 * factor - originX, sy: y * 256 * factor - originY, size: tileSize });
+    }
+  }
+  return out;
+}
+
+function basemapUrl(kind, z, x, y) {
+  const style = els.baseStyle.value;
+  if (style === "none") return null;
+  const safeZ = Math.min(18, Math.max(0, z));
+  const prefix = style === "light" ? "light" : "dark";
+  const layer = kind === "labels" ? `${prefix}_only_labels` : `${prefix}_nolabels`;
+  return `https://basemaps.cartocdn.com/${layer}/${safeZ}/${x}/${y}.png`;
+}
+
+function weatherUrl(layer, z, x, y) {
+  if (layer.style) {
+    return api(`/v1/tiles/${layer.model}/${layer.run}/${layer.variable}/${layer.hour}/${z}/${x}/${y}.png`);
+  }
+  const min = encodeURIComponent(layer.range[0]);
+  const max = encodeURIComponent(layer.range[1]);
+  return api(`/v1/tiles/${layer.model}/${layer.run}/${layer.variable}/${layer.hour}/${z}/${x}/${y}.png?palette=${encodeURIComponent(layer.palette)}&min=${min}&max=${max}`);
+}
+
+function drawTiles() {
+  resizeCanvas();
+  const W = els.mapCanvas.width, H = els.mapCanvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#0b0c0f";
+  ctx.fillRect(0, 0, W, H);
+
+  if (IS_1974_SUPER) {
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    drawSuperPlotLayer();
+    drawRouteAndPoint();
+    updateReadouts();
+    return;
+  }
+
+  const zInt = Math.max(1, Math.min(7, Math.round(state.view.zoom)));
+  const tiles = visibleTiles(zInt);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
+  if (els.baseStyle.value !== "none") {
+    ctx.globalAlpha = Number(els.baseAlpha.value);
+    for (const t of tiles) {
+      const url = basemapUrl("base", t.z, t.x, t.y);
+      const img = url ? tileUrl(url) : null;
+      if (img && img.ready) ctx.drawImage(img.img, t.sx, t.sy, t.size, t.size);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  drawGraticule();
+
+  for (const layer of state.layers) {
+    if (!layer.enabled || layer.run === "latest") continue;
+    ctx.globalAlpha = layer.opacity;
+    for (const t of tiles) {
+      const img = tileUrl(weatherUrl(layer, t.z, t.x, t.y));
+      if (img.ready) ctx.drawImage(img.img, t.sx, t.sy, t.size, t.size);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  if (els.baseStyle.value !== "none") {
+    ctx.globalAlpha = Number(els.labelAlpha.value);
+    for (const t of tiles) {
+      const url = basemapUrl("labels", t.z, t.x, t.y);
+      const img = url ? tileUrl(url) : null;
+      if (img && img.ready) ctx.drawImage(img.img, t.sx, t.sy, t.size, t.size);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  drawRouteAndPoint();
+  updateReadouts();
+}
+
+function drawGraticule() {
+  const W = els.mapCanvas.width, H = els.mapCanvas.height;
+  const nw = unproject(0, 0), se = unproject(W, H);
+  const step = state.view.zoom > 5.3 ? 2 : state.view.zoom > 4.2 ? 5 : state.view.zoom > 2.8 ? 10 : 30;
+  ctx.save();
+  ctx.strokeStyle = "rgba(255,255,255,.08)";
+  ctx.lineWidth = 1;
+  for (let lon = Math.ceil(nw.lon / step) * step; lon <= se.lon; lon += step) {
+    const a = project(lon, nw.lat), b = project(lon, se.lat);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+  for (let lat = Math.ceil(se.lat / step) * step; lat <= nw.lat; lat += step) {
+    const a = project(nw.lon, lat), b = project(se.lon, lat);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function activeBox() {
+  return state.box.draft || state.box;
+}
+
+function boxBounds(box = activeBox()) {
+  return {
+    minLon: wrapLon(box.centerLon - box.radiusLon),
+    maxLon: wrapLon(box.centerLon + box.radiusLon),
+    minLat: clampLat(box.centerLat - box.radiusLat),
+    maxLat: clampLat(box.centerLat + box.radiusLat),
+  };
+}
+
+function setBoxFromCorners(a, b, draft = false) {
+  let dLon = b.lon - a.lon;
+  if (dLon > 180) dLon -= 360;
+  if (dLon < -180) dLon += 360;
+  const centerLon = wrapLon(a.lon + dLon * 0.5);
+  const centerLat = clampLat((a.lat + b.lat) * 0.5);
+  const radiusLon = Math.max(0.01, Math.abs(dLon) * 0.5);
+  const radiusLat = Math.max(0.01, Math.abs(b.lat - a.lat) * 0.5);
+  const box = { centerLon, centerLat, radiusLon, radiusLat };
+  if (draft) state.box.draft = box;
+  else state.box = { ...box, draft: null };
+}
+
+function commitDraftBox() {
+  if (!state.box.draft) return;
+  const draft = state.box.draft;
+  state.box = { ...draft, draft: null };
+}
+
+function moveBoxBy(dLon, dLat) {
+  const next = {
+    centerLon: wrapLon(state.box.centerLon + dLon),
+    centerLat: clampLat(state.box.centerLat + dLat),
+    radiusLon: state.box.radiusLon,
+    radiusLat: state.box.radiusLat,
+    draft: null,
+  };
+  state.box = next;
+}
+
+function drawRouteAndPoint() {
+  ctx.save();
+  const p = project(state.point.lon, state.point.lat);
+  const pointLive = state.live.tool === "sounding";
+  ctx.fillStyle = "rgba(68,215,189,.18)";
+  ctx.strokeStyle = pointLive ? "#7cff9d" : "#44d7bd";
+  ctx.lineWidth = pointLive ? 3 : 2;
+  ctx.beginPath(); ctx.arc(p.x, p.y, pointLive ? 12 : 9, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#07100f";
+  ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI * 2); ctx.fill();
+
+  const box = activeBox();
+  const bounds = boxBounds(box);
+  const nw = project(bounds.minLon, bounds.maxLat);
+  const se = project(bounds.maxLon, bounds.minLat);
+  const x = Math.min(nw.x, se.x);
+  const y = Math.min(nw.y, se.y);
+  const w = Math.abs(se.x - nw.x);
+  const h = Math.abs(se.y - nw.y);
+  const boxLive = state.live.tool === "box-sounding" || state.mode === "box";
+  ctx.fillStyle = boxLive ? "rgba(124,255,157,.12)" : "rgba(68,215,189,.10)";
+  ctx.strokeStyle = boxLive ? "#7cff9d" : "#44d7bd";
+  ctx.lineWidth = boxLive ? 3 : 2;
+  ctx.setLineDash(boxLive ? [10, 5] : [6, 5]);
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeRect(x, y, w, h);
+  ctx.setLineDash([]);
+
+  if (state.route.length) {
+    const routeLive = state.live.tool === "cross";
+    ctx.strokeStyle = routeLive ? "#7cff9d" : "#f1b84a";
+    ctx.lineWidth = routeLive ? 4 : 3;
+    ctx.setLineDash(routeLive ? [12, 6] : [8, 6]);
+    ctx.beginPath();
+    state.route.forEach((pt, i) => {
+      const q = project(pt.lon, pt.lat);
+      if (i === 0) ctx.moveTo(q.x, q.y); else ctx.lineTo(q.x, q.y);
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (const pt of state.route) {
+      const q = project(pt.lon, pt.lat);
+      ctx.fillStyle = routeLive ? "#7cff9d" : "#f1b84a";
+      ctx.strokeStyle = "#15110a";
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(q.x, q.y, routeLive ? 7 : 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function markDirty() {
+  state.dirty = true;
+  if (!state.frame) {
+    state.frame = requestAnimationFrame(() => {
+      state.frame = null;
+      if (state.dirty) {
+        state.dirty = false;
+        drawTiles();
+      }
+    });
+  }
+}
+
+function updateReadouts() {
+  if (IS_1974_SUPER) {
+    const product = currentSuperProduct();
+    const lead = currentSuperLead();
+    const productId = product ? product.id : "sbcape";
+    const meta = variable(productId);
+    const title = product ? product.label : "1974 Super Outbreak";
+    els.mapTitle.textContent = `1974 Super Outbreak ${title}`;
+    els.mapMeta.textContent = lead ? `${superValidLabel(lead)} | static WRF PNG layer` : "static WRF PNG layer";
+    els.runStatus.textContent = lead ? `WRF D02 ${lead.label || lead.lead_minutes}` : "WRF D02";
+    els.zoomReadout.textContent = `z${state.view.zoom.toFixed(2)}`;
+    els.layerSummary.textContent = "static PNG";
+    els.tileStatus.textContent = `${state.tileCount} images${state.tileStats.lastMs ? ` / ${state.tileStats.lastMs} ms` : ""}`;
+    els.frameStats.textContent = `static cache ${state.tileCache.size} / in-flight ${state.loading.size}${state.tileStats.errors ? ` / errors ${state.tileStats.errors}` : ""}`;
+    els.routeReadout.textContent = `${state.route.length} point${state.route.length === 1 ? "" : "s"}`;
+    els.pointReadout.textContent = state.mode === "box" || state.live.tool === "box-sounding"
+      ? `box ${(state.box.radiusLat * 2).toFixed(2)} x ${(state.box.radiusLon * 2).toFixed(2)} deg`
+      : `${state.point.lat.toFixed(3)}, ${state.point.lon.toFixed(3)}`;
+    updateLiveButtons();
+    updateLegend({ variable: productId, style: null, range: meta.range, palette: meta.palette });
+    return;
+  }
+  const top = state.layers.find(x => x.enabled) || state.layers[0];
+  const meta = variable(top.variable);
+  const sourceMode = top.trackLatest ? "auto-latest" : "pinned";
+  els.mapTitle.textContent = `${modelLabel(top.model)} ${meta.label}`;
+  els.mapMeta.textContent = `${top.run} | F${String(top.hour).padStart(3, "0")} | ${sourceMode} | ${meta.units || "unitless"}`;
+  els.runStatus.textContent = `${top.model}/${top.run}/F${String(top.hour).padStart(3, "0")}`;
+  els.zoomReadout.textContent = `z${state.view.zoom.toFixed(2)}`;
+  els.layerSummary.textContent = state.layers.filter(x => x.enabled).map(x => x.model.toUpperCase()).join(" + ") || "off";
+  els.tileStatus.textContent = `${state.tileCount} tiles${state.tileStats.lastMs ? ` / ${state.tileStats.lastMs} ms` : ""}`;
+  els.frameStats.textContent = `cache ${state.tileCache.size} / in-flight ${state.loading.size}${state.tileStats.errors ? ` / errors ${state.tileStats.errors}` : ""}`;
+  els.routeReadout.textContent = `${state.route.length} point${state.route.length === 1 ? "" : "s"}`;
+  els.pointReadout.textContent = state.mode === "box" || state.live.tool === "box-sounding"
+    ? `box ${(state.box.radiusLat * 2).toFixed(2)} x ${(state.box.radiusLon * 2).toFixed(2)} deg`
+    : `${state.point.lat.toFixed(3)}, ${state.point.lon.toFixed(3)}`;
+  updateLiveButtons();
+  updateLegend(top);
+}
+
+function updateLegend(layer) {
+  const meta = variable(layer.variable);
+  const style = layer.style;
+  els.legendName.textContent = style ? (style.title || meta.label) : meta.label;
+  els.legendUnits.textContent = meta.units || "";
+  els.legendBar.style.background = style ? stylePaletteCss(style) : paletteCss(layer.palette);
+  const rawStops = style && Array.isArray(style.levels) && style.levels.length
+    ? style.levels
+    : (meta.stops || [layer.range[0], layer.range[1]]);
+  const range = style && Array.isArray(style.range) && style.range.length === 2 ? style.range : layer.range;
+  const stops = rawStops.filter(x => x >= Math.min(...range) && x <= Math.max(...range));
+  const visible = thinTicks(stops, 10);
+  els.legendTicks.innerHTML = visible.map(x => {
+    const pct = (x - range[0]) / (range[1] - range[0]) * 100;
+    return `<span class="tick" style="left:${Math.max(0, Math.min(100, pct)).toFixed(2)}%">${formatNum(x)}</span>`;
+  }).join("");
+}
+
+function thinTicks(stops, max) {
+  if (stops.length <= max) return stops;
+  const out = [];
+  const last = stops.length - 1;
+  for (let i = 0; i < stops.length; i++) {
+    if (i === 0 || i === last || Math.round(i * (max - 1) / last) !== Math.round((i - 1) * (max - 1) / last)) out.push(stops[i]);
+  }
+  return out;
+}
+
+function formatNum(x) {
+  if (Math.abs(x) >= 100) return String(Math.round(x));
+  if (Number.isInteger(x)) return String(x);
+  return String(Number(x.toFixed(2)));
+}
+
+function updateDomainButtons() {
+  for (const btn of els.domainGrid.querySelectorAll("button")) {
+    btn.classList.toggle("active", btn.dataset.domain === state.domainId);
+  }
+}
+
+function renderDomainButtons() {
+  els.domainGrid.innerHTML = DOMAINS.map(d => `<button class="domainBtn" data-domain="${d.id}">${d.label}</button>`).join("");
+  for (const btn of els.domainGrid.querySelectorAll("button")) {
+    btn.addEventListener("click", () => fitDomain(btn.dataset.domain));
+  }
+  updateDomainButtons();
+}
+
+function renderLayerStack() {
+  els.layerStack.innerHTML = state.layers.map(layer => {
+    const available = tileProductList(layer.variables.length ? layer.variables : VARIABLES.map(v => v.id));
+    if (!layer.category) layer.category = productCategory(layer.variable);
+    const filtered = filterProducts(available, layer.category);
+    const productList = filtered.includes(layer.variable) ? filtered : [layer.variable].concat(filtered);
+    const products = productList.map(id => `<option value="${id}" ${id === layer.variable ? "selected" : ""}>${variable(id).label}</option>`).join("");
+    const models = modelOptions(layer.model);
+    const runs = runOptions(layer);
+    const categories = categoryOptions(layer.category);
+    const palettes = Object.keys(PALETTES).map(id => `<option value="${id}" ${id === layer.palette ? "selected" : ""}>${PALETTES[id].label}</option>`).join("");
+    const hours = (layer.hours.length ? layer.hours : [layer.hour]).map(h => `<option value="${h}" ${h === layer.hour ? "selected" : ""}>F${String(h).padStart(3, "0")}</option>`).join("");
+    const styleLocked = layer.style ? "disabled" : "";
+    const styleText = layer.style ? "plot scale" : "manual";
+    const runMode = layer.trackLatest ? "auto-latest" : "pinned";
+    return `<div class="layer" data-layer="${layer.id}">
+      <div class="layerTitle"><div class="layerMeta"><strong>${layer.name}</strong><span class="layerRun">${layer.run === "latest" ? "resolving" : layer.run} | ${runMode} | ${styleText}</span></div><label><input type="checkbox" data-k="enabled" ${layer.enabled ? "checked" : ""}> enabled</label></div>
+      <div class="formGrid">
+        <label>Model<select data-k="model">${models}</select></label>
+        <label>Run<select data-k="run">${runs}</select></label>
+        <label>Hour<select data-k="hour">${hours}</select></label>
+        <label>Group<select data-k="category">${categories}</select></label>
+        <label>Palette<select data-k="palette" ${styleLocked}>${palettes}</select></label>
+        <label class="wide">Product<select data-k="variable">${products}</select></label>
+        <label>Opacity<input data-k="opacity" type="range" min="0" max="1" step="0.02" value="${layer.opacity}"></label>
+        <label>Min<input data-k="min" type="number" step="any" value="${layer.range[0]}" ${styleLocked}></label>
+        <label>Max<input data-k="max" type="number" step="any" value="${layer.range[1]}" ${styleLocked}></label>
+      </div>
+    </div>`;
+  }).join("");
+
+  for (const node of els.layerStack.querySelectorAll(".layer")) {
+    const layer = state.layers.find(x => x.id === node.dataset.layer);
+    for (const input of node.querySelectorAll("[data-k]")) {
+      input.addEventListener("change", async () => {
+        const k = input.dataset.k;
+        if (k === "enabled") layer.enabled = input.checked;
+        if (k === "model") {
+          layer.model = input.value;
+          layer.domain = modelDomain(layer.model);
+          layer.trackLatest = true;
+          layer.run = latestRunForModel(layer.model) || "latest";
+          layer.variables = [];
+          layer.hoursByVariable = {};
+          await resolveLayer(layer, true);
+        }
+        if (k === "run") {
+          if (input.value === "__latest") {
+            layer.trackLatest = true;
+            layer.run = latestRunForModel(layer.model) || layer.run || "latest";
+          } else {
+            layer.trackLatest = false;
+            layer.run = input.value;
+          }
+          layer.variables = [];
+          layer.hoursByVariable = {};
+          await resolveLayer(layer, false);
+        }
+        if (k === "category") {
+          layer.category = input.value;
+          const candidates = filterProducts(tileProductList(layer.variables.length ? layer.variables : VARIABLES.map(v => v.id)), layer.category);
+          if (!candidates.includes(layer.variable) && candidates.length) {
+            layer.variable = candidates[0];
+            applyVariableDefaults(layer);
+            refreshLayerHours(layer);
+            await applyProductStyle(layer);
+          }
+        }
+        if (k === "variable") {
+          layer.variable = input.value;
+          applyVariableDefaults(layer);
+          refreshLayerHours(layer);
+          await applyProductStyle(layer);
+        }
+        if (k === "palette") layer.palette = input.value;
+        if (k === "hour") layer.hour = Number(input.value);
+        if (k === "opacity") layer.opacity = Number(input.value);
+        if (k === "min") layer.range[0] = Number(input.value);
+        if (k === "max") layer.range[1] = Number(input.value);
+        syncHourSlider();
+        renderLayerStack();
+        syncStaticFormToLayer();
+        markDirty();
+      });
+      input.addEventListener("input", () => {
+        if (input.dataset.k === "opacity") {
+          layer.opacity = Number(input.value);
+          markDirty();
+        }
+      });
+    }
+  }
+}
+
+async function resolveLayer(layer, snapDomain) {
+  layer.domain = modelDomain(layer.model);
+  try {
+    layer.runs = runsForModel(layer.model);
+    if (layer.trackLatest || !layer.run || layer.run === "latest") {
+      layer.trackLatest = true;
+      layer.run = latestRunForModel(layer.model) || layer.run || "latest";
+    } else if (layer.runs.length && !layer.runs.includes(layer.run)) {
+      layer.trackLatest = true;
+      layer.run = latestRunForModel(layer.model) || layer.runs[layer.runs.length - 1] || "latest";
+    }
+
+    let ready = {};
+    if (layer.run && layer.run !== "latest") {
+      const res = await fetch(api(`/v1/variables?model=${encodeURIComponent(layer.model)}&run=${encodeURIComponent(layer.run)}`), { cache: "no-store" });
+      if (!res.ok) throw new Error(`run ${res.status}`);
+      const data = await res.json();
+      ready = {
+        variables: data.variables || [],
+        available_hours: data.available_hours || {},
+        members: data.members || [],
+      };
+    } else {
+      const res = await fetch(api(`/v1/latest/${layer.model}/${layer.domain}`), { cache: "no-store" });
+      if (!res.ok) throw new Error(`latest ${res.status}`);
+      const data = await res.json();
+      layer.run = data.run_id;
+      ready = data.readiness || {};
+    }
+    layer.variables = ready.variables || Object.keys(ready.available_hours || {});
+    const selectableVariables = tileProductList(layer.variables);
+    if (!isTileProduct(layer.variable) || !selectableVariables.includes(layer.variable)) {
+      const preferred = ["2m_temperature", "mslp_10m_winds", "500mb_height_winds"].find(x => selectableVariables.includes(x));
+      layer.variable = preferred || selectableVariables[0] || layer.variables[0] || layer.variable;
+    }
+    layer.category = productCategory(layer.variable);
+    const hoursByVar = ready.available_hours || {};
+    layer.hoursByVariable = hoursByVar;
+    layer.hours = hoursByVar[layer.variable] || layer.hours || [0];
+    if (!layer.hours.includes(layer.hour)) layer.hour = layer.hours[0] || 0;
+    applyVariableDefaults(layer);
+    await applyProductStyle(layer);
+    state.wxOk = true;
+    setWxStatus("ok", "wxstore ready");
+    if (snapDomain) fitDomain(layer.domain);
+  } catch (err) {
+    state.wxOk = false;
+    setWxStatus("bad", `wxstore ${err.message}`);
+  }
+}
+
+function setWxStatus(kind, text) {
+  els.wxDot.className = `dot ${kind}`;
+  els.wxStatus.textContent = text;
+}
+
+async function selectInitialWxstoreModels() {
+  try {
+    const models = (await refreshWxModels()).map(item => item.id || item.model).filter(Boolean);
+    if (!models.length) return;
+    const preferred = ["hrrr", "rap", "rrfs-public", "rrfs-a", "gfs", "hiresw", "nbm", "aifs"];
+    const ordered = preferred.filter(id => models.includes(id)).concat(models.filter(id => !preferred.includes(id)));
+    if (!models.includes(state.layers[0].model)) {
+      state.layers[0].model = ordered[0];
+      state.layers[0].domain = modelDomain(ordered[0]);
+      state.layers[0].trackLatest = true;
+      state.layers[0].run = latestRunForModel(ordered[0]) || "latest";
+    }
+    if (!models.includes(state.layers[1].model) && ordered[1]) {
+      state.layers[1].model = ordered[1];
+      state.layers[1].domain = modelDomain(ordered[1]);
+      state.layers[1].trackLatest = true;
+      state.layers[1].run = latestRunForModel(ordered[1]) || "latest";
+    }
+    for (const layer of state.layers) {
+      const runs = runsForModel(layer.model);
+      if (layer.trackLatest || !layer.run || layer.run === "latest" || (runs.length && !runs.includes(layer.run))) {
+        layer.trackLatest = true;
+        layer.run = latestRunForModel(layer.model) || runs[runs.length - 1] || layer.run || "latest";
+      }
+    }
+  } catch (_) {}
+}
+
+async function refreshWxModels() {
+  const res = await fetch(api("/v1/models"), { cache: "no-store" });
+  if (!res.ok) return state.wxModels || [];
+  const data = await res.json();
+  state.wxModels = ((data.spatial_loaded && data.spatial_loaded.models) || [])
+    .filter(item => item && (item.id || item.model));
+  return state.wxModels;
+}
+
+async function refreshAutoLatestLayers() {
+  await refreshWxModels();
+  let changed = false;
+  for (const layer of state.layers) {
+    layer.runs = runsForModel(layer.model);
+    const latest = latestRunForModel(layer.model);
+    if (layer.trackLatest && latest && latest !== layer.run) {
+      layer.run = latest;
+      await resolveLayer(layer, false);
+      changed = true;
+    }
+  }
+  if (changed) {
+    renderLayerStack();
+    syncHourSlider();
+    syncStaticFormToLayer();
+    markDirty();
+  }
+}
+
+function syncHourSlider() {
+  if (IS_1974_SUPER) {
+    const product = currentSuperProduct();
+    const leads = superLeadsForProduct(product && product.id);
+    const idx = Math.max(0, leads.findIndex(lead => Number(lead.lead_minutes) === Number(state.super.leadMinutes)));
+    els.hourSlider.min = 0;
+    els.hourSlider.max = Math.max(0, leads.length - 1);
+    els.hourSlider.step = 1;
+    els.hourSlider.value = idx;
+    els.superLeadSlider.value = idx;
+    const lead = leads[idx] || currentSuperLead();
+    els.hourLabel.textContent = lead ? superTimelineLabel(lead) : "--";
+    updateSuperLeadReadouts(leads, idx);
+    return;
+  }
+  const top = state.layers.find(x => x.enabled) || state.layers[0];
+  const hours = top.hours.length ? top.hours : [top.hour];
+  const idx = Math.max(0, hours.indexOf(top.hour));
+  els.hourSlider.min = 0;
+  els.hourSlider.max = Math.max(0, hours.length - 1);
+  els.hourSlider.step = 1;
+  els.hourSlider.value = idx;
+  els.hourLabel.textContent = `F${String(top.hour).padStart(3, "0")}`;
+}
+
+function renderToolForms() {
+  const c = state.catalog || { wxa_datasets: [], volume_stores: [], cross_section_products: [] };
+  const previousStaticDataset = els.staticDataset.value;
+  const previousStaticCategory = els.staticCategory.value || "all";
+  const previousStaticProduct = els.staticProduct.value;
+  const previousStaticHour = Number(els.staticHour.value);
+  const previousVolumeDataset = els.volumeDataset.value;
+  const previousSoundingDataset = els.soundingDataset.value;
+  const previousCrossProduct = els.crossProduct.value;
+  els.staticDataset.innerHTML = c.wxa_datasets.map(ds => `<option value="${ds.id}">${ds.label}</option>`).join("");
+  if (previousStaticDataset && c.wxa_datasets.some(ds => ds.id === previousStaticDataset)) {
+    els.staticDataset.value = previousStaticDataset;
+  }
+  els.staticCategory.innerHTML = categoryOptions(previousStaticCategory);
+  els.volumeDataset.innerHTML = c.volume_stores.map(ds => `<option value="${ds.id}">${ds.label}</option>`).join("");
+  if (previousVolumeDataset && c.volume_stores.some(ds => ds.id === previousVolumeDataset)) {
+    els.volumeDataset.value = previousVolumeDataset;
+  }
+  els.soundingDataset.innerHTML = els.volumeDataset.innerHTML;
+  if (previousSoundingDataset && c.volume_stores.some(ds => ds.id === previousSoundingDataset)) {
+    els.soundingDataset.value = previousSoundingDataset;
+  }
+  els.crossProduct.innerHTML = c.cross_section_products.map(p => {
+    const slug = typeof p === "string" ? p : p.slug;
+    const label = typeof p === "string" ? prettify(p) : (p.label || prettify(p.slug));
+    return `<option value="${slug}">${label}</option>`;
+  }).join("");
+  if (previousCrossProduct && c.cross_section_products.some(p => (typeof p === "string" ? p : p.slug) === previousCrossProduct)) {
+    els.crossProduct.value = previousCrossProduct;
+  }
+  updateStaticProductOptions(previousStaticProduct, previousStaticHour);
+  updateCrossHours();
+  updateSoundingHours();
+}
+
+function datasetDomain(ds) {
+  const text = `${ds ? ds.id : ""} ${ds ? ds.label : ""} ${ds ? ds.spatial_root : ""}`.toLowerCase();
+  return text.includes("global") ? "global" : "conus";
+}
+
+function optionHtml(value, label, selected) {
+  return `<option value="${String(value).replace(/"/g, "&quot;")}" ${selected ? "selected" : ""}>${label}</option>`;
+}
+
+function updateStaticProductOptions(preferredProduct, preferredHour) {
+  const ds = currentWxa();
+  const products = ds ? ds.products : [];
+  const filteredProducts = filterProducts(products, els.staticCategory.value);
+  const product = filteredProducts.includes(preferredProduct) ? preferredProduct
+    : filteredProducts.includes(els.staticProduct.value) ? els.staticProduct.value
+    : filteredProducts[0] || products[0];
+  const hoursByProduct = (ds && ds.available_hours) || {};
+  const hours = (product && hoursByProduct[product]) || (ds ? ds.forecast_hours : []);
+  const hourNumber = Number(preferredHour ?? els.staticHour.value);
+  const hour = hours.includes(hourNumber) ? hourNumber : hours[0];
+  els.staticProduct.innerHTML = products.length
+    ? (filteredProducts.length ? filteredProducts : products).map(p => optionHtml(p, prettify(p), p === product)).join("")
+    : `<option value="">No WXA products found</option>`;
+  els.staticHour.innerHTML = hours.length
+    ? hours.map(h => optionHtml(h, `F${String(h).padStart(3, "0")}`, h === hour)).join("")
+    : `<option value="">No hours</option>`;
+  els.staticDomain.value = datasetDomain(ds);
+}
+
+function updateCrossHours() {
+  const volumes = state.catalog ? state.catalog.volume_stores : [];
+  const ds = volumes.find(x => x.id === els.volumeDataset.value) || volumes[0];
+  const hours = ds ? ds.forecast_hours : [];
+  const selected = hours.includes(Number(els.crossHour.value)) ? Number(els.crossHour.value) : hours[0];
+  els.crossHour.innerHTML = hours.length
+    ? hours.map(h => optionHtml(h, `F${String(h).padStart(3, "0")}`, h === selected)).join("")
+    : `<option value="">No hours</option>`;
+}
+
+function updateSoundingHours() {
+  const volumes = state.catalog ? state.catalog.volume_stores : [];
+  const ds = volumes.find(x => x.id === els.soundingDataset.value) || volumes[0];
+  const hours = ds ? ds.forecast_hours : [];
+  const selected = hours.includes(Number(els.soundingHour.value)) ? Number(els.soundingHour.value) : hours[0];
+  els.soundingHour.innerHTML = hours.length
+    ? hours.map(h => optionHtml(h, `F${String(h).padStart(3, "0")}`, h === selected)).join("")
+    : `<option value="">No hours</option>`;
+}
+
+function currentWxa() {
+  const list = state.catalog ? state.catalog.wxa_datasets : [];
+  return list.find(x => x.id === els.staticDataset.value) || list[0];
+}
+
+function syncStaticFormToLayer() {
+  const top = state.layers.find(x => x.enabled) || state.layers[0];
+  if (!state.catalog) return;
+  const preferredDomain = state.domainId === "global" ? "global" : modelDomain(top.model);
+  const matches = state.catalog.wxa_datasets.filter(ds => ds.model === top.model && ds.products.includes(top.variable));
+  const match = matches.find(ds => ds.run === top.run && datasetDomain(ds) === preferredDomain)
+    || matches.find(ds => ds.run === top.run)
+    || matches.find(ds => datasetDomain(ds) === preferredDomain)
+    || matches[0];
+  if (match) {
+    els.staticDataset.value = match.id;
+    els.staticCategory.value = productCategory(top.variable);
+    updateStaticProductOptions(top.variable, top.hour);
+  }
+}
+
+async function refreshCatalog() {
+  state.catalog = await fetch(appPath("/api/catalog"), { cache: "no-store" }).then(res => res.json());
+  renderToolForms();
+}
+
+async function postJson(path, body) {
+  const res = await fetch(appPath(path), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  let json = {};
+  try { json = text ? JSON.parse(text) : {}; } catch { throw new Error(text || `HTTP ${res.status}`); }
+  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  return json;
+}
+
+let lastArtifact = null;
+
+function artifactImageUrl(artifact) {
+  const url = artifact && (artifact.image_url || artifact.url || artifact.imageUrl || artifact.href || "");
+  return url ? appPath(url) : "";
+}
+
+function absoluteUrl(path) {
+  if (!path) return "";
+  try { return new URL(path, window.location.origin).href; } catch { return path; }
+}
+
+function domainBounds(id) {
+  const domain = DOMAINS.find(d => d.id === id);
+  return domain ? domain.bounds : null;
+}
+
+function superPointInBounds(ll) {
+  const b = (state.super.catalog && state.super.catalog.domain_bounds) || domainBounds("super_outbreak");
+  if (!b || b.length !== 4) return true;
+  const [w, s, e, n] = b.map(Number);
+  return ll.lon >= w && ll.lon <= e && ll.lat >= s && ll.lat <= n;
+}
+
+function htmlEsc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[ch]));
+}
+
+function cacheBadge(artifact) {
+  const cached = !!(artifact && (artifact.cached || artifact.metadata?.cached));
+  const label = cached ? "cached" : "fresh";
+  return `<span class="badge ${label}">${label}</span>`;
+}
+
+function openViewer(artifact, options = {}) {
+  const imageUrl = artifactImageUrl(artifact);
+  if (!imageUrl) {
+    setBusy(false, "renderer returned no image_url", true);
+    return;
+  }
+  const floating = options.floating ?? (artifact.kind === "cross_section" || artifact.kind === "sounding");
+  if (floating && state.viewerDrag.dismissed && !options.force) return;
+  const busted = `${imageUrl}${imageUrl.includes("?") ? "&" : "?"}t=${Date.now()}`;
+  els.viewer.classList.toggle("float", !!floating);
+  els.viewerTitle.textContent = artifact.title || artifact.kind || "Artifact";
+  const cacheText = artifact.cached || artifact.metadata?.cached ? "cached" : "fresh";
+  els.viewerMeta.textContent = `${artifact.kind || "artifact"} | ${cacheText} | ${artifact.elapsed_ms ?? "--"} ms | ${imageUrl}`;
+  els.viewerImg.src = busted;
+  const links = [];
+  links.push(`<a href="${absoluteUrl(imageUrl)}" download>download PNG</a>`);
+  if (artifact.report_url) links.push(`<a href="${absoluteUrl(artifact.report_url)}">report JSON</a>`);
+  if (artifact.manifest_url) links.push(`<a href="${absoluteUrl(artifact.manifest_url)}">manifest JSON</a>`);
+  els.viewerLinks.innerHTML = links.join(" / ");
+  els.viewer.classList.add("show");
+  els.viewer.setAttribute("aria-hidden", "false");
+}
+
+function closeViewer() {
+  els.viewer.classList.remove("show");
+  els.viewer.setAttribute("aria-hidden", "true");
+  if (els.viewer.classList.contains("float")) state.viewerDrag.dismissed = true;
+}
+
+function crossBody() {
+  if (!els.volumeDataset.value || !els.crossProduct.value || els.crossHour.value === "") {
+    throw new Error("cross section needs a volume store, product, and hour");
+  }
+  if (state.route.length < 2) throw new Error("pick route endpoints");
+  const [a, b] = state.route;
+  return {
+    dataset_id: els.volumeDataset.value,
+    product: els.crossProduct.value,
+    hour: Number(els.crossHour.value),
+    start_lat: a.lat,
+    start_lon: a.lon,
+    end_lat: b.lat,
+    end_lon: b.lon,
+    spacing_km: Number(els.crossSpacing.value),
+    top_pressure_hpa: Number(els.crossTop.value),
+  };
+}
+
+function soundingBody(sampleMethod = "nearest") {
+  let datasetId = els.soundingDataset.value;
+  let hour = Number(els.soundingHour.value);
+  if (IS_1974_SUPER) {
+    const lead = currentSuperLead();
+    datasetId = datasetId || "wrf_local_super_outbreak_1974_hourly_d02_1974_04_03t09_00_00z_wrf_1974_latest_live_pressure_volume";
+    hour = Number.isFinite(hour) && els.soundingHour.value !== "" ? hour : Number(lead && lead.lead_minutes);
+  }
+  if (!datasetId || !Number.isFinite(hour)) {
+    throw new Error("sounding needs a volume store and hour");
+  }
+  const body = {
+    dataset_id: datasetId,
+    hour,
+    lat: Number(els.sampleLat.value),
+    lon: Number(els.sampleLon.value),
+    station_id: els.stationId.value,
+  };
+  if (sampleMethod === "box-mean") {
+    body.sample_method = "box-mean";
+    body.lat = state.box.centerLat;
+    body.lon = state.box.centerLon;
+    body.box_radius_lat_deg = Math.max(0.01, state.box.radiusLat);
+    body.box_radius_lon_deg = Math.max(0.01, state.box.radiusLon);
+  }
+  return body;
+}
+
+function activateLiveTool(tool) {
+  state.live.tool = tool;
+  state.live.pending = false;
+  state.live.lastError = "";
+  state.viewerDrag.dismissed = false;
+  setMode(tool === "cross" ? "route" : (tool === "box-sounding" ? "box" : "point"));
+  updateLiveButtons();
+}
+
+function updateLiveButtons() {
+  if (!els.runCross || !els.runSounding || !els.runBoxSounding) return;
+  els.runCross.textContent = state.live.tool === "cross"
+    ? (state.live.inFlight ? "Live Cross: rendering" : "Live Cross: drag line")
+    : "Render Cross Section";
+  els.runSounding.textContent = state.live.tool === "sounding"
+    ? (state.live.inFlight ? "Live Sounding: rendering" : "Live Sounding: drag point")
+    : "Render Sounding";
+  els.runBoxSounding.textContent = state.live.tool === "box-sounding"
+    ? (state.live.inFlight ? "Box Sounding: rendering" : "Box Sounding: drag box")
+    : "Render Box Sounding";
+  if (IS_1974_SUPER) {
+    els.mobilePlot.classList.toggle("active", state.live.tool === "sounding");
+    els.mobileTools.classList.toggle("active", state.live.tool === "box-sounding");
+    els.mobileHide.classList.toggle("active", state.live.tool === "cross");
+  }
+}
+
+function liveStatus(text, isError = false) {
+  els.serverStatus.textContent = text;
+  els.serverStatus.className = isError ? "errorText" : "";
+  updateLiveButtons();
+}
+
+function queueLiveRender(tool, delay = 85) {
+  if (state.live.tool !== tool) return;
+  const now = performance.now();
+  const wait = Math.max(0, delay - (now - state.live.lastStarted));
+  window.clearTimeout(state.live.timer);
+  if (!state.live.inFlight && wait <= 0) {
+    renderLive(tool);
+  } else {
+    state.live.timer = window.setTimeout(() => renderLive(tool), wait);
+  }
+}
+
+async function renderLive(tool) {
+  if (state.live.tool !== tool) return;
+  if (state.live.inFlight) {
+    state.live.pending = true;
+    return;
+  }
+  let body;
+  let path;
+  try {
+    if (tool === "cross") {
+      body = crossBody();
+      path = "/api/cross-section/render";
+    } else {
+      body = soundingBody(tool === "box-sounding" ? "box-mean" : "nearest");
+      path = "/api/sounding/render";
+    }
+  } catch (err) {
+    liveStatus(err.message, true);
+    return;
+  }
+  state.live.inFlight = true;
+  state.live.lastStarted = performance.now();
+  const seq = ++state.live.seq;
+  const label = tool === "cross" ? "cross section" : (tool === "box-sounding" ? "box sounding" : "sounding");
+  liveStatus(`live ${label} rendering...`);
+  try {
+    const artifact = await postJson(path, body);
+    if (seq >= state.live.latestShown) {
+      state.live.latestShown = seq;
+      showArtifact(artifact);
+      liveStatus(`live ${label} ${artifact.elapsed_ms} ms`);
+    }
+  } catch (err) {
+    state.live.lastError = err.message;
+    liveStatus(err.message, true);
+  } finally {
+    state.live.inFlight = false;
+    updateLiveButtons();
+    if (state.live.pending && state.live.tool === tool) {
+      state.live.pending = false;
+      queueLiveRender(tool, 10);
+    }
+  }
+}
+
+function showArtifact(artifact) {
+  lastArtifact = artifact;
+  const imageUrl = artifactImageUrl(artifact);
+  if (!imageUrl) {
+    setBusy(false, "renderer returned no image_url", true);
+    return;
+  }
+  els.result.classList.add("show");
+  els.resultTitle.innerHTML = `${htmlEsc(artifact.title || artifact.kind)} (${artifact.elapsed_ms} ms) ${cacheBadge(artifact)}`;
+  els.resultImg.src = `${imageUrl}${imageUrl.includes("?") ? "&" : "?"}t=${Date.now()}`;
+  openViewer(artifact, { floating: artifact.kind === "cross_section" || artifact.kind === "sounding" });
+}
+
+async function runStatic() {
+  if (!els.staticDataset.value || !els.staticProduct.value || els.staticHour.value === "") {
+    setBusy(false, "export needs a WXA store, product, and hour", true);
+    return;
+  }
+  const start = performance.now();
+  setBusy(true, "exporting PNG");
+  try {
+    const artifact = await postJson("/api/static-plot/export", {
+      dataset_id: els.staticDataset.value,
+      product: els.staticProduct.value,
+      forecast_hour: Number(els.staticHour.value),
+      bounds: domainBounds(els.staticDomain.value),
+      width: 1600,
+      height: 900,
+    });
+    els.exportMs.textContent = `${Math.round(performance.now() - start)} ms`;
+    showArtifact(artifact);
+    setBusy(false, `PNG ${artifact.cached || artifact.metadata?.cached ? "from cache" : "rendered fresh"} in ${artifact.elapsed_ms} ms`);
+  } catch (err) {
+    setBusy(false, err.message, true);
+  }
+}
+
+async function runCross() {
+  activateLiveTool("cross");
+  await renderLive("cross");
+}
+
+async function runSounding() {
+  activateLiveTool("sounding");
+  await renderLive("sounding");
+}
+
+async function runBoxSounding() {
+  activateLiveTool("box-sounding");
+  await renderLive("box-sounding");
+}
+
+function setBusy(disabled, text, isError) {
+  for (const id of ["runStatic", "runCross", "runSounding", "runBoxSounding"]) els[id].disabled = !!disabled;
+  els.serverStatus.textContent = text || "Rust server ready";
+  els.serverStatus.className = isError ? "errorText" : "";
+}
+
+function setMode(mode) {
+  state.mode = mode;
+  els.modePan.classList.toggle("active", mode === "pan");
+  els.modePoint.classList.toggle("active", mode === "point");
+  els.modeBox.classList.toggle("active", mode === "box");
+  els.modeRoute.classList.toggle("active", mode === "route");
+}
+
+function eventCanvasPoint(ev) {
+  const r = els.mapCanvas.getBoundingClientRect();
+  const dpr = els.mapCanvas.width / r.width;
+  return { x: (ev.clientX - r.left) * dpr, y: (ev.clientY - r.top) * dpr, dpr };
+}
+
+function dist2(a, b) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return dx * dx + dy * dy;
+}
+
+function distToSegment(p, a, b) {
+  const vx = b.x - a.x;
+  const vy = b.y - a.y;
+  const wx = p.x - a.x;
+  const wy = p.y - a.y;
+  const len2 = vx * vx + vy * vy || 1;
+  const t = Math.max(0, Math.min(1, (wx * vx + wy * vy) / len2));
+  const q = { x: a.x + t * vx, y: a.y + t * vy };
+  return Math.sqrt(dist2(p, q));
+}
+
+function pickGeometryHandle(screen) {
+  const preferPoint = state.live.tool === "sounding" || state.mode === "point";
+  const preferBox = state.live.tool === "box-sounding" || state.mode === "box";
+  const preferRoute = state.live.tool === "cross" || state.mode === "route";
+  if (preferBox) {
+    const b = boxBounds();
+    const a = project(b.minLon, b.maxLat);
+    const c = project(b.maxLon, b.minLat);
+    const x0 = Math.min(a.x, c.x) - 14 * screen.dpr;
+    const x1 = Math.max(a.x, c.x) + 14 * screen.dpr;
+    const y0 = Math.min(a.y, c.y) - 14 * screen.dpr;
+    const y1 = Math.max(a.y, c.y) + 14 * screen.dpr;
+    if (screen.x >= x0 && screen.x <= x1 && screen.y >= y0 && screen.y <= y1) return "box";
+  }
+  if (preferPoint) {
+    const pointPx = project(state.point.lon, state.point.lat);
+    if (Math.sqrt(dist2(screen, pointPx)) <= 18 * screen.dpr) return "point";
+  }
+  if (preferRoute && state.route.length >= 2) {
+    const a = project(state.route[0].lon, state.route[0].lat);
+    const b = project(state.route[1].lon, state.route[1].lat);
+    if (Math.sqrt(dist2(screen, a)) <= 16 * screen.dpr) return "route0";
+    if (Math.sqrt(dist2(screen, b)) <= 16 * screen.dpr) return "route1";
+    if (distToSegment(screen, a, b) <= 14 * screen.dpr) return "routeLine";
+  }
+  if (!preferPoint) {
+    const pointPx = project(state.point.lon, state.point.lat);
+    if (Math.sqrt(dist2(screen, pointPx)) <= 18 * screen.dpr) return "point";
+  }
+  return null;
+}
+
+function updatePoint(ll) {
+  state.point = { lon: wrapLon(ll.lon), lat: clampLat(ll.lat) };
+  els.sampleLon.value = state.point.lon.toFixed(4);
+  els.sampleLat.value = state.point.lat.toFixed(4);
+}
+
+function moveRouteBy(dLon, dLat) {
+  state.route = state.route.map(pt => ({
+    lon: wrapLon(pt.lon + dLon),
+    lat: clampLat(pt.lat + dLat),
+  }));
+}
+
+function setRoutePoint(index, ll) {
+  while (state.route.length <= index) state.route.push({ lon: ll.lon, lat: ll.lat });
+  state.route[index] = { lon: wrapLon(ll.lon), lat: clampLat(ll.lat) };
+}
+
+function syncLiveAfterGeometry(kind) {
+  if (IS_1974_SUPER && kind === "point") state.live.tool = "sounding";
+  if (IS_1974_SUPER && kind === "box") state.live.tool = "box-sounding";
+  if ((kind === "point" && state.live.tool === "sounding")
+    || (kind === "box" && state.live.tool === "box-sounding")
+    || ((kind === "route0" || kind === "route1" || kind === "routeLine") && state.live.tool === "cross")) {
+    state.viewerDrag.dismissed = false;
+  }
+  markDirty();
+  if (kind === "point" && state.live.tool === "sounding") queueLiveRender("sounding", IS_1974_SUPER ? 0 : 85);
+  if (kind === "box" && state.live.tool === "box-sounding") queueLiveRender("box-sounding", IS_1974_SUPER ? 0 : 85);
+  if ((kind === "route0" || kind === "route1" || kind === "routeLine") && state.live.tool === "cross" && state.route.length >= 2) {
+    queueLiveRender("cross");
+  }
+}
+
+function bindEvents() {
+  els.apiBase.addEventListener("change", async () => {
+    state.apiBase = els.apiBase.value.trim().replace(/\/+$/, "");
+    state.tileCache.clear();
+    await refreshWxModels();
+    for (const layer of state.layers) await resolveLayer(layer, false);
+    renderLayerStack();
+    syncHourSlider();
+    markDirty();
+  });
+  els.baseStyle.addEventListener("change", markDirty);
+  els.baseAlpha.addEventListener("input", markDirty);
+  els.labelAlpha.addEventListener("input", markDirty);
+  els.superProduct.addEventListener("change", () => {
+    state.super.product = els.superProduct.value;
+    renderSuperControls();
+    syncVolumeStoreToSuperLead();
+    state.tileCache.clear();
+    markDirty();
+  });
+  els.superLead.addEventListener("change", () => {
+    state.super.leadMinutes = Number(els.superLead.value);
+    syncHourSlider();
+    syncVolumeStoreToSuperLead();
+    state.tileCache.clear();
+    markDirty();
+  });
+  els.superLeadSlider.addEventListener("input", () => {
+    const product = currentSuperProduct();
+    const leads = superLeadsForProduct(product && product.id);
+    const lead = leads[Number(els.superLeadSlider.value)] || leads[0];
+    if (!lead) return;
+    state.super.leadMinutes = Number(lead.lead_minutes);
+    els.superLead.value = String(state.super.leadMinutes);
+    updateSuperLeadReadouts(leads, Math.max(0, leads.indexOf(lead)));
+    syncHourSlider();
+    syncVolumeStoreToSuperLead();
+    state.tileCache.clear();
+    markDirty();
+  });
+  els.superOpenImage.addEventListener("click", showSuperSourceImage);
+  els.zoomIn.addEventListener("click", () => { state.view.zoom = Math.min(IS_1974_SUPER ? 9.5 : 7.5, state.view.zoom + .55); markDirty(); });
+  els.zoomOut.addEventListener("click", () => { state.view.zoom = Math.max(1.15, state.view.zoom - .55); markDirty(); });
+  els.hourSlider.addEventListener("input", () => {
+    if (IS_1974_SUPER) {
+      const product = currentSuperProduct();
+      const leads = superLeadsForProduct(product && product.id);
+      const lead = leads[Number(els.hourSlider.value)] || leads[0];
+      if (lead) {
+        state.super.leadMinutes = Number(lead.lead_minutes);
+        els.superLead.value = String(state.super.leadMinutes);
+        els.hourLabel.textContent = superTimelineLabel(lead);
+        updateSuperLeadReadouts(leads, Math.max(0, leads.indexOf(lead)));
+        syncVolumeStoreToSuperLead();
+        state.tileCache.clear();
+        markDirty();
+      }
+      return;
+    }
+    const top = state.layers.find(x => x.enabled) || state.layers[0];
+    const hours = top.hours.length ? top.hours : [top.hour];
+    top.hour = hours[Number(els.hourSlider.value)] || top.hour;
+    els.hourLabel.textContent = `F${String(top.hour).padStart(3, "0")}`;
+    renderLayerStack();
+    syncStaticFormToLayer();
+    markDirty();
+  });
+  els.staticDataset.addEventListener("change", () => updateStaticProductOptions());
+  els.staticCategory.addEventListener("change", () => updateStaticProductOptions());
+  els.volumeDataset.addEventListener("change", updateCrossHours);
+  els.soundingDataset.addEventListener("change", updateSoundingHours);
+  els.runStatic.addEventListener("click", runStatic);
+  els.runCross.addEventListener("click", runCross);
+  els.runSounding.addEventListener("click", runSounding);
+  els.runBoxSounding.addEventListener("click", runBoxSounding);
+  els.resultView.addEventListener("click", () => {
+    if (!lastArtifact) return;
+    state.viewerDrag.dismissed = false;
+    openViewer(lastArtifact, { force: true });
+  });
+  els.resultClose.addEventListener("click", () => {
+    els.result.classList.remove("show");
+    closeViewer();
+  });
+  els.viewerClose.addEventListener("click", closeViewer);
+  els.viewer.addEventListener("click", ev => { if (ev.target === els.viewer) closeViewer(); });
+  window.addEventListener("keydown", ev => { if (ev.key === "Escape") closeViewer(); });
+  els.viewer.querySelector(".viewerTop").addEventListener("pointerdown", ev => {
+    if (ev.target.closest("button,a")) return;
+    state.viewerDrag.active = true;
+    state.viewerDrag.startX = ev.clientX;
+    state.viewerDrag.startY = ev.clientY;
+    state.viewerDrag.ox = state.viewerDrag.x;
+    state.viewerDrag.oy = state.viewerDrag.y;
+    try { ev.currentTarget.setPointerCapture(ev.pointerId); } catch {}
+  });
+  els.viewer.querySelector(".viewerTop").addEventListener("pointermove", ev => {
+    if (!state.viewerDrag.active) return;
+    state.viewerDrag.x = state.viewerDrag.ox + ev.clientX - state.viewerDrag.startX;
+    state.viewerDrag.y = state.viewerDrag.oy + ev.clientY - state.viewerDrag.startY;
+    els.viewer.style.setProperty("--viewer-x", `${state.viewerDrag.x}px`);
+    els.viewer.style.setProperty("--viewer-y", `${state.viewerDrag.y}px`);
+  });
+  els.viewer.querySelector(".viewerTop").addEventListener("pointerup", ev => {
+    state.viewerDrag.active = false;
+    try { ev.currentTarget.releasePointerCapture(ev.pointerId); } catch {}
+  });
+  els.modePan.addEventListener("click", () => setMode("pan"));
+  els.modePoint.addEventListener("click", () => setMode("point"));
+  els.modeBox.addEventListener("click", () => setMode("box"));
+  els.modeRoute.addEventListener("click", () => setMode("route"));
+  if (IS_1974_SUPER) {
+    els.mobilePlot.addEventListener("click", () => {
+      activateLiveTool("sounding");
+      liveStatus("click the static plot for a sounding");
+    });
+    els.mobileTools.addEventListener("click", () => {
+      activateLiveTool("box-sounding");
+      liveStatus("drag a box on the static plot");
+    });
+    els.mobileHide.addEventListener("click", () => {
+      activateLiveTool("cross");
+      liveStatus("drag the cross-section line");
+    });
+  }
+  window.addEventListener("resize", () => { resizeCanvas(); markDirty(); });
+
+  els.mapCanvas.addEventListener("pointerdown", ev => {
+    const screen = eventCanvasPoint(ev);
+    const ll = unproject(screen.x, screen.y);
+    const picked = pickGeometryHandle(screen);
+    state.drag.active = true;
+    const wantsBox = state.mode === "box" || state.live.tool === "box-sounding";
+    state.drag.kind = picked || (wantsBox ? "boxCreate" : (IS_1974_SUPER && state.live.tool === "sounding" ? "superSoundingMap" : (state.mode === "pan" ? "pan" : "place")));
+    state.drag.lastMap = ll;
+    state.drag.lastScreen = { x: ev.clientX, y: ev.clientY };
+    state.drag.moved = 0;
+    state.drag.boxStart = wantsBox ? ll : null;
+    if (state.drag.kind === "boxCreate") setBoxFromCorners(ll, ll, true);
+    els.mapCanvas.setPointerCapture(ev.pointerId);
+  });
+  els.mapCanvas.addEventListener("pointermove", ev => {
+    const screen = eventCanvasPoint(ev);
+    const ll = unproject(screen.x, screen.y);
+    els.cursorStatus.textContent = `${ll.lon.toFixed(3)} / ${ll.lat.toFixed(3)}`;
+    if (!state.drag.active || !state.drag.lastScreen || !state.drag.lastMap) {
+      const hover = pickGeometryHandle(screen);
+      els.mapCanvas.style.cursor = hover ? "move" : (state.mode === "pan" ? "grab" : "crosshair");
+      return;
+    }
+    const dx = (ev.clientX - state.drag.lastScreen.x) * screen.dpr;
+    const dy = (ev.clientY - state.drag.lastScreen.y) * screen.dpr;
+    state.drag.lastScreen = { x: ev.clientX, y: ev.clientY };
+    state.drag.moved += Math.abs(dx) + Math.abs(dy);
+
+    if (state.drag.kind === "pan" || state.drag.kind === "superSoundingMap") {
+      const z = state.view.zoom;
+      const cx = lonToX(state.view.centerLon, z) - dx;
+      const cy = latToY(state.view.centerLat, z) - dy;
+      state.view.centerLon = wrapLon(xToLon(cx, z));
+      state.view.centerLat = yToLat(cy, z);
+      markDirty();
+    } else if (state.drag.kind === "point") {
+      updatePoint(ll);
+      syncLiveAfterGeometry("point");
+    } else if (state.drag.kind === "boxCreate" && state.drag.boxStart) {
+      setBoxFromCorners(state.drag.boxStart, ll, true);
+      markDirty();
+    } else if (state.drag.kind === "box") {
+      let dLon = ll.lon - state.drag.lastMap.lon;
+      if (dLon > 180) dLon -= 360;
+      if (dLon < -180) dLon += 360;
+      const dLat = ll.lat - state.drag.lastMap.lat;
+      moveBoxBy(dLon, dLat);
+      state.drag.lastMap = ll;
+      syncLiveAfterGeometry("box");
+    } else if (state.drag.kind === "route0") {
+      setRoutePoint(0, ll);
+      syncLiveAfterGeometry("route0");
+    } else if (state.drag.kind === "route1") {
+      setRoutePoint(1, ll);
+      syncLiveAfterGeometry("route1");
+    } else if (state.drag.kind === "routeLine") {
+      let dLon = ll.lon - state.drag.lastMap.lon;
+      if (dLon > 180) dLon -= 360;
+      if (dLon < -180) dLon += 360;
+      const dLat = ll.lat - state.drag.lastMap.lat;
+      moveRouteBy(dLon, dLat);
+      state.drag.lastMap = ll;
+      syncLiveAfterGeometry("routeLine");
+    }
+  });
+  els.mapCanvas.addEventListener("pointerup", ev => {
+    const wasDrag = { ...state.drag };
+    state.drag.active = false;
+    try { els.mapCanvas.releasePointerCapture(ev.pointerId); } catch {}
+    if (wasDrag.kind === "boxCreate") {
+      const screen = eventCanvasPoint(ev);
+      const ll = unproject(screen.x, screen.y);
+      if (wasDrag.moved < 8 && wasDrag.boxStart) {
+        const radiusLon = Math.max(state.box.radiusLon || .35, .05);
+        const radiusLat = Math.max(state.box.radiusLat || .25, .05);
+        state.box = { centerLon: wrapLon(ll.lon), centerLat: clampLat(ll.lat), radiusLon, radiusLat, draft: null };
+      } else {
+        commitDraftBox();
+      }
+      syncLiveAfterGeometry("box");
+      markDirty();
+    } else if (wasDrag.moved < 8 && IS_1974_SUPER && wasDrag.kind === "superSoundingMap") {
+      const screen = eventCanvasPoint(ev);
+      const ll = unproject(screen.x, screen.y);
+      if (!superPointInBounds(ll)) {
+        liveStatus("click inside the WRF domain", true);
+        return;
+      }
+      state.live.tool = "sounding";
+      state.viewerDrag.dismissed = false;
+      updatePoint(ll);
+      syncLiveAfterGeometry("point");
+      markDirty();
+    } else if (wasDrag.moved < 8 && state.mode !== "pan" && wasDrag.kind === "place") {
+      const screen = eventCanvasPoint(ev);
+      const ll = unproject(screen.x, screen.y);
+      if (state.mode === "point") {
+        updatePoint(ll);
+        syncLiveAfterGeometry("point");
+      } else if (state.mode === "route") {
+        if (state.route.length >= 2) state.route = [];
+        state.route.push({ lon: wrapLon(ll.lon), lat: clampLat(ll.lat) });
+        syncLiveAfterGeometry("routeLine");
+      }
+      markDirty();
+    }
+  });
+  els.mapCanvas.addEventListener("pointerleave", () => {
+    if (!state.drag.active) els.mapCanvas.style.cursor = state.mode === "pan" ? "grab" : "crosshair";
+  });
+  els.mapCanvas.addEventListener("wheel", ev => {
+    ev.preventDefault();
+    const r = els.mapCanvas.getBoundingClientRect();
+    const dpr = els.mapCanvas.width / r.width;
+    const sx = (ev.clientX - r.left) * dpr;
+    const sy = (ev.clientY - r.top) * dpr;
+    const before = unproject(sx, sy);
+    state.view.zoom = Math.max(1.15, Math.min(IS_1974_SUPER ? 9.5 : 7.5, state.view.zoom - ev.deltaY * .0022));
+    const after = project(before.lon, before.lat);
+    const z = state.view.zoom;
+    const cx = lonToX(state.view.centerLon, z) + (after.x - sx);
+    const cy = latToY(state.view.centerLat, z) + (after.y - sy);
+    state.view.centerLon = xToLon(cx, z);
+    state.view.centerLat = yToLat(cy, z);
+    markDirty();
+  }, { passive: false });
+}
+
+async function init() {
+  document.body.classList.toggle("super-mode", IS_1974_SUPER);
+  document.querySelector(".brand span").textContent = IS_1974_SUPER ? "1974 super outbreak" : "tile workstation";
+  if (!els.apiBase.value.trim()) els.apiBase.value = DEFAULT_API_BASE;
+  state.apiBase = els.apiBase.value.trim().replace(/\/+$/, "");
+  resizeCanvas();
+  bindEvents();
+  renderDomainButtons();
+  setMode("pan");
+  renderToolForms();
+  if (IS_1974_SUPER) {
+    try {
+      els.serverStatus.textContent = "loading static plot";
+      setWxStatus("ok", "static plots");
+      updatePoint({ lon: -86.9, lat: 34.8 });
+      state.box = { centerLon: -86.9, centerLat: 34.8, radiusLon: .35, radiusLat: .25, draft: null };
+      state.route = [{ lon: -91.8, lat: 33.2 }, { lon: -83.6, lat: 40.4 }];
+      setMode("point");
+      await refreshSuperCatalog();
+      fitDomain("super_outbreak");
+      state.live.tool = "sounding";
+      state.live.pending = false;
+      state.live.lastError = "";
+      state.viewerDrag.dismissed = false;
+      setMode("point");
+      updateLiveButtons();
+      markDirty();
+      els.serverStatus.textContent = "click the static plot for a sounding";
+      els.serverStatus.className = "";
+      refreshCatalog()
+        .then(() => {
+          syncVolumeStoreToSuperLead();
+          markDirty();
+          if (!state.live.inFlight && !state.live.lastError) {
+            els.serverStatus.textContent = "click the static plot for a sounding";
+            els.serverStatus.className = "";
+          }
+        })
+        .catch(err => {
+          els.serverStatus.textContent = err.message;
+          els.serverStatus.className = "errorText";
+        });
+    } catch (err) {
+      els.serverStatus.textContent = err.message;
+      els.serverStatus.className = "errorText";
+    }
+    setInterval(() => {
+      refreshCatalog()
+        .then(() => refreshSuperCatalog())
+        .then(() => markDirty())
+        .catch(err => {
+          els.serverStatus.textContent = err.message;
+          els.serverStatus.className = "errorText";
+        });
+    }, 120000);
+    return;
+  }
+  try {
+    els.serverStatus.textContent = "loading live map";
+    await selectInitialWxstoreModels();
+    for (const layer of state.layers) await resolveLayer(layer, false);
+    fitDomain("conus");
+    renderLayerStack();
+    syncHourSlider();
+    syncStaticFormToLayer();
+    markDirty();
+    els.serverStatus.textContent = "map ready; loading tools";
+  } catch (err) {
+    els.serverStatus.textContent = err.message;
+    els.serverStatus.className = "errorText";
+  }
+  refreshCatalog()
+    .then(() => {
+      syncStaticFormToLayer();
+      els.serverStatus.textContent = "tools ready";
+      els.serverStatus.className = "";
+    })
+    .catch(err => {
+      els.serverStatus.textContent = err.message;
+      els.serverStatus.className = "errorText";
+    });
+  setInterval(() => {
+    refreshCatalog()
+      .then(() => refreshAutoLatestLayers())
+      .catch(err => {
+        els.serverStatus.textContent = err.message;
+        els.serverStatus.className = "errorText";
+      });
+  }, 120000);
+}
+
+init();
+</script>
+</body>
+</html>

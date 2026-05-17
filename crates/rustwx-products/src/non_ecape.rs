@@ -736,6 +736,55 @@ pub fn run_model_non_ecape_hour_build(
     })
 }
 
+pub fn run_model_non_ecape_hour_wxstore_only(
+    request: &NonEcapeMultiDomainRequest,
+    wxstore_request: &WxStoreGridExportRequest,
+) -> Result<NonEcapeHourBuildReport, Box<dyn std::error::Error>> {
+    validate_requested_domains(&request.domains)?;
+    let total_start = Instant::now();
+    let prepared = prepare_non_ecape_hour(request)?;
+    let wxstore_report = Some(export_wxstore_grid_bundle_from_loaded_parts(
+        wxstore_request,
+        prepared.direct_loaded.as_deref(),
+        prepared.derived_loaded.as_deref(),
+    )?);
+    let static_report = skipped_static_report_for_wxstore_only(
+        request,
+        &prepared,
+        total_start.elapsed().as_millis(),
+    );
+    Ok(NonEcapeHourBuildReport {
+        static_report,
+        wxstore_report,
+        static_domain_timings: Vec::new(),
+        static_product_timings: Vec::new(),
+        total_ms: total_start.elapsed().as_millis(),
+    })
+}
+
+fn skipped_static_report_for_wxstore_only(
+    request: &NonEcapeMultiDomainRequest,
+    prepared: &PreparedNonEcapeHour,
+    total_ms: u128,
+) -> NonEcapeMultiDomainReport {
+    NonEcapeMultiDomainReport {
+        model: request.model,
+        date_yyyymmdd: prepared.latest.cycle.date_yyyymmdd.clone(),
+        cycle_utc: prepared.latest.cycle.hour_utc,
+        forecast_hour: request.forecast_hour,
+        source: prepared.latest.source,
+        out_dir: request.out_dir.clone(),
+        cache_root: request.cache_root.clone(),
+        use_cache: request.use_cache,
+        source_mode: request.source_mode,
+        requested: prepared.normalized.clone(),
+        shared_timing: prepared.timing.clone(),
+        fanout_timing: HrrrNonEcapeFanoutTiming::default(),
+        domains: Vec::new(),
+        total_ms,
+    }
+}
+
 fn run_prepared_model_non_ecape_hour_multi_domain(
     request: &NonEcapeMultiDomainRequest,
     prepared: &PreparedNonEcapeHour,

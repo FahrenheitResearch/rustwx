@@ -1,6 +1,9 @@
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rayon::prelude::*;
 use ureq::http::header::{CONTENT_RANGE, LOCATION};
@@ -62,10 +65,14 @@ const NOMADS_RATE_LIMIT_BACKOFF_DURATIONS: [Duration; 3] = [
     Duration::from_secs(20),
 ];
 
-/// Minimum spacing between NOMADS requests from this process.
-const NOMADS_MIN_REQUEST_GAP: Duration = Duration::from_millis(750);
+/// Default spacing between NOMADS requests across all RustWX processes on this node.
+const NOMADS_DEFAULT_MIN_REQUEST_GAP: Duration = Duration::from_millis(2500);
 
-static NOMADS_REQUEST_GATE: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+/// If NOMADS returns its Akamai over-rate-limit page, pause all RustWX NOMADS
+/// requests on this node long enough for the block to cool off.
+const NOMADS_DEFAULT_COOLDOWN: Duration = Duration::from_secs(15 * 60);
+
+const NOMADS_LOCK_STALE_AFTER: Duration = Duration::from_secs(120);
 
 /// Configuration for creating a DownloadClient.
 pub struct DownloadConfig {
@@ -160,20 +167,200 @@ fn resolve_redirect_url(current_url: &str, location: &str) -> crate::error::Resu
     Ok(format!("{}://{}{}", scheme, authority, joined))
 }
 
+fn env_duration_ms(name: &str, fallback: Duration) -> Duration {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(fallback)
+}
+
+fn nomads_state_path() -> PathBuf {
+    std::env::var("RUSTWX_NOMADS_RATE_STATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("rustwx_nomads_rate_limit.state"))
+}
+
+fn now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn read_nomads_state(path: &Path) -> (u128, u128) {
+    let Ok(text) = fs::read_to_string(path) else {
+        return (0, 0);
+    };
+    let mut last_request_ms = 0;
+    let mut cooldown_until_ms = 0;
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let Ok(parsed) = value.trim().parse::<u128>() else {
+            continue;
+        };
+        match key.trim() {
+            "last_request_ms" => last_request_ms = parsed,
+            "cooldown_until_ms" => cooldown_until_ms = parsed,
+            _ => {}
+        }
+    }
+    (last_request_ms, cooldown_until_ms)
+}
+
+fn write_nomads_state(path: &Path, last_request_ms: u128, cooldown_until_ms: u128) {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let tmp = path.with_extension("tmp");
+    let body = format!(
+        "last_request_ms={}\ncooldown_until_ms={}\n",
+        last_request_ms, cooldown_until_ms
+    );
+    if fs::write(&tmp, body).is_ok() {
+        let _ = fs::rename(tmp, path);
+    }
+}
+
+struct NomadsRateLock {
+    path: PathBuf,
+}
+
+impl Drop for NomadsRateLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn nomads_lock_is_stale(lock_path: &Path) -> bool {
+    if fs::metadata(lock_path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|elapsed| elapsed > NOMADS_LOCK_STALE_AFTER)
+    {
+        return true;
+    }
+
+    #[cfg(unix)]
+    {
+        if let Ok(text) = fs::read_to_string(lock_path) {
+            if let Some(pid) = text.split_whitespace().next() {
+                if pid.parse::<u32>().is_ok()
+                    && !Path::new("/proc").join(pid).exists()
+                {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+fn acquire_nomads_rate_lock(state_path: &Path) -> Option<NomadsRateLock> {
+    let lock_path = state_path.with_extension("lock");
+    if let Some(parent) = lock_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    loop {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(mut file) => {
+                let _ = writeln!(file, "{} {}", std::process::id(), now_millis());
+                return Some(NomadsRateLock { path: lock_path });
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                if nomads_lock_is_stale(&lock_path) {
+                    let _ = fs::remove_file(&lock_path);
+                    continue;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+fn log_nomads_event(url: &str, kind: &str, status: &str, elapsed_ms: Option<u128>) {
+    let Ok(path) = std::env::var("RUSTWX_NOMADS_REQUEST_LOG") else {
+        return;
+    };
+    let escaped_url = url.replace('\\', "\\\\").replace('"', "\\\"");
+    let elapsed = elapsed_ms
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string());
+    let line = format!(
+        "{{\"ts_ms\":{},\"pid\":{},\"kind\":\"{}\",\"status\":\"{}\",\"elapsed_ms\":{},\"url\":\"{}\"}}\n",
+        now_millis(),
+        std::process::id(),
+        kind,
+        status.replace('"', "'"),
+        elapsed,
+        escaped_url
+    );
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
+fn mark_nomads_rate_limited(url: &str, reason: &str) {
+    if !is_nomads_url(url) {
+        return;
+    }
+    let cooldown = env_duration_ms(
+        "RUSTWX_NOMADS_COOLDOWN_MS",
+        NOMADS_DEFAULT_COOLDOWN,
+    );
+    let state_path = nomads_state_path();
+    let _lock = acquire_nomads_rate_lock(&state_path);
+    let (last_request_ms, existing_cooldown_until_ms) = read_nomads_state(&state_path);
+    let now = now_millis();
+    if existing_cooldown_until_ms > now {
+        log_nomads_event(url, "cooldown_existing", reason, None);
+        return;
+    }
+    let cooldown_until_ms = now.saturating_add(cooldown.as_millis());
+    write_nomads_state(&state_path, last_request_ms, cooldown_until_ms);
+    log_nomads_event(url, "cooldown", reason, None);
+}
+
 fn pace_request(url: &str) {
     if !is_nomads_url(url) {
         return;
     }
 
-    let gate = NOMADS_REQUEST_GATE.get_or_init(|| Mutex::new(None));
-    let mut last = gate.lock().expect("nomads request gate poisoned");
-    if let Some(previous) = *last {
-        let elapsed = previous.elapsed();
-        if elapsed < NOMADS_MIN_REQUEST_GAP {
-            std::thread::sleep(NOMADS_MIN_REQUEST_GAP - elapsed);
+    let min_gap = env_duration_ms(
+        "RUSTWX_NOMADS_MIN_INTERVAL_MS",
+        NOMADS_DEFAULT_MIN_REQUEST_GAP,
+    );
+    let state_path = nomads_state_path();
+    loop {
+        let Some(_lock) = acquire_nomads_rate_lock(&state_path) else {
+            std::thread::sleep(min_gap);
+            continue;
+        };
+
+        let (last_request_ms, cooldown_until_ms) = read_nomads_state(&state_path);
+        let now = now_millis();
+        let sleep_until = cooldown_until_ms
+            .max(last_request_ms.saturating_add(min_gap.as_millis()));
+        if sleep_until > now {
+            drop(_lock);
+            std::thread::sleep(Duration::from_millis(
+                (sleep_until - now).min(u64::MAX as u128) as u64,
+            ));
+            continue;
         }
+        write_nomads_state(&state_path, now, cooldown_until_ms);
+        return;
     }
-    *last = Some(Instant::now());
 }
 
 /// Build a ureq agent with TLS configured via rustls-rustcrypto.
@@ -207,7 +394,26 @@ impl DownloadClient {
         if let Some(range_header) = range_header {
             request = request.header("Range", range_header);
         }
-        request.call()
+        let started = now_millis();
+        let result = request.call();
+        if is_nomads_url(url) {
+            let elapsed = now_millis().saturating_sub(started);
+            match &result {
+                Ok(response) => log_nomads_event(
+                    url,
+                    if range_header.is_some() { "get_range" } else { "get" },
+                    response.status().as_str(),
+                    Some(elapsed),
+                ),
+                Err(err) => log_nomads_event(
+                    url,
+                    if range_header.is_some() { "get_range" } else { "get" },
+                    &format!("error:{err}"),
+                    Some(elapsed),
+                ),
+            }
+        }
+        result
     }
 
     fn get_response_following_redirects(
@@ -241,23 +447,15 @@ impl DownloadClient {
                 let Some(location) = location else {
                     if is_nomads_url(&request_url) && malformed_redirect_retries < self.max_retries
                     {
-                        let backoff = NOMADS_RATE_LIMIT_BACKOFF_DURATIONS
-                            .get(malformed_redirect_retries as usize)
-                            .copied()
-                            .unwrap_or(
-                                NOMADS_RATE_LIMIT_BACKOFF_DURATIONS
-                                    [NOMADS_RATE_LIMIT_BACKOFF_DURATIONS.len() - 1],
-                            );
                         malformed_redirect_retries += 1;
+                        mark_nomads_rate_limited(&request_url, "redirect_missing_location");
                         eprintln!(
-                            "  Retry {}/{} for {} after {:?} (probable NOMADS malformed redirect {})",
+                            "  NOMADS cooldown {}/{} for {} (probable over-rate-limit redirect {})",
                             malformed_redirect_retries,
                             self.max_retries,
                             request_url,
-                            backoff,
                             status
                         );
-                        std::thread::sleep(backoff);
                         continue;
                     }
 
@@ -296,6 +494,12 @@ impl DownloadClient {
                                 .get(LOCATION)
                                 .and_then(|value| value.to_str().ok())
                             else {
+                                if is_nomads_url(&current_url) {
+                                    mark_nomads_rate_limited(
+                                        &current_url,
+                                        "range_probe_redirect_missing_location",
+                                    );
+                                }
                                 retry = attempt == 0;
                                 break;
                             };
@@ -313,10 +517,13 @@ impl DownloadClient {
                     Err(ureq::Error::StatusCode(code)) if code == 404 || code == 403 => {
                         return false;
                     }
-                    Err(err) => {
-                        retry = attempt == 0 && is_retryable(&err);
-                        break;
+                Err(err) => {
+                    if is_probable_nomads_rate_limit(&current_url, &err) {
+                        mark_nomads_rate_limited(&current_url, "range_probe_rate_limit_error");
                     }
+                    retry = attempt == 0 && is_retryable(&err);
+                    break;
+                }
                 }
             }
 
@@ -404,6 +611,9 @@ impl DownloadClient {
                 Ok(val) => return Ok(val),
                 Err(e) => {
                     let probable_nomads_rate_limit = is_probable_nomads_rate_limit(url, &e);
+                    if probable_nomads_rate_limit {
+                        mark_nomads_rate_limited(url, "retry_rate_limit_error");
+                    }
                     last_err = if probable_nomads_rate_limit {
                         format!("probable NOMADS rate-limit response for {}: {}", url, e)
                     } else {

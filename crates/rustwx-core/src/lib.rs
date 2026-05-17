@@ -1632,7 +1632,7 @@ impl ModelId {
             Self::RrfsPublic => "rrfs-public",
             Self::Refs => "refs",
             Self::RrfsFireWx => "rrfs-firewx",
-            Self::WrfGdex => "wrf-gdex",
+            Self::WrfGdex => "wrf",
         }
     }
 }
@@ -1678,7 +1678,9 @@ impl std::str::FromStr for ModelId {
             "rrfs-firewx" | "rrfs_firewx" | "rrfsfirewx" | "firewx" | "fire-weather" => {
                 Ok(Self::RrfsFireWx)
             }
-            "wrf-gdex" | "wrf_gdex" | "wrfgdex" | "wrf" => Ok(Self::WrfGdex),
+            "wrf" | "wrf-arw" | "wrf_arw" | "wrf-gdex" | "wrf_gdex" | "wrfgdex" => {
+                Ok(Self::WrfGdex)
+            }
             other => Err(RustwxError::UnknownModel(other.to_string())),
         }
     }
@@ -2108,7 +2110,8 @@ mod tests {
         assert_eq!(ModelId::RrfsFireWx.to_string(), "rrfs-firewx");
         assert_eq!(ModelId::RrfsPublic.to_string(), "rrfs-public");
         assert_eq!(ModelId::Refs.to_string(), "refs");
-        assert_eq!(ModelId::WrfGdex.to_string(), "wrf-gdex");
+        assert_eq!(ModelId::WrfGdex.to_string(), "wrf");
+        assert_eq!("wrf-gdex".parse::<ModelId>().unwrap(), ModelId::WrfGdex);
         assert_eq!("gdex".parse::<SourceId>().unwrap(), SourceId::Gdex);
         assert_eq!(SourceId::Gdex.to_string(), "gdex");
         assert_eq!(

@@ -58,7 +58,8 @@ pub fn parse_idx(text: &str) -> Vec<IdxEntry> {
         if parts.len() < 6 {
             continue;
         }
-        let msg_num = match parts[0].parse::<u32>() {
+        let msg_num_token = parts[0].split_once('.').map_or(parts[0], |(base, _)| base);
+        let msg_num = match msg_num_token.parse::<u32>() {
             Ok(n) => n,
             Err(_) => continue,
         };
@@ -500,6 +501,12 @@ mod tests {
 106:700000:d=2026031012:TMIN:2 m above ground:0-6 hr min fcst:
 ";
 
+    const SPLIT_VECTOR_IDX: &str = "\
+13.1:194463:d=2026051506:UGRD:1 hybrid level:anl:
+13.2:194463:d=2026051506:VGRD:1 hybrid level:anl:
+14:250000:d=2026051506:TMP:50 mb:anl:
+";
+
     #[test]
     fn test_parse_idx() {
         let entries = parse_idx(SAMPLE_IDX);
@@ -544,6 +551,20 @@ mod tests {
 
         // TMIN
         assert_eq!(entries[5].statistical_process, Some("min".to_string()));
+    }
+
+    #[test]
+    fn test_parse_split_vector_message_numbers() {
+        let entries = parse_idx(SPLIT_VECTOR_IDX);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].msg_num, 13);
+        assert_eq!(entries[1].msg_num, 13);
+        assert_eq!(entries[0].variable, "UGRD");
+        assert_eq!(entries[1].variable, "VGRD");
+
+        let found = find_entries(&entries, "VGRD:1 hybrid level");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].byte_offset, 194463);
     }
 
     #[test]

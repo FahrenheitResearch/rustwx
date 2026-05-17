@@ -32,7 +32,7 @@ struct DashboardMetadata {
     product: String,
     cycle: String,
     variables: Vec<String>,
-    forecast_hours: Vec<u8>,
+    forecast_hours: Vec<u16>,
     levels_hpa: Vec<u16>,
     grid: GridSummary,
 }
@@ -129,7 +129,7 @@ fn handle_connection(mut stream: TcpStream, store: Arc<VolumeStore>) -> Result<(
             let lat2 = parse_f64(&params, "lat2")?;
             let lon2 = parse_f64(&params, "lon2")?;
             let hour =
-                parse_u8(&params, "hour").unwrap_or_else(|_| store.manifest().forecast_hours[0]);
+                parse_u16(&params, "hour").unwrap_or_else(|_| store.manifest().forecast_hours[0]);
             let variable = params.get("variable").map(String::as_str).unwrap_or("TMP");
             let spacing_km = params
                 .get("spacing_km")
@@ -288,12 +288,12 @@ fn parse_f64(params: &BTreeMap<String, String>, key: &str) -> Result<f64> {
         .with_context(|| format!("parse query parameter '{key}' as f64"))
 }
 
-fn parse_u8(params: &BTreeMap<String, String>, key: &str) -> Result<u8> {
+fn parse_u16(params: &BTreeMap<String, String>, key: &str) -> Result<u16> {
     params
         .get(key)
         .ok_or_else(|| anyhow!("missing query parameter '{key}'"))?
-        .parse::<u8>()
-        .with_context(|| format!("parse query parameter '{key}' as u8"))
+        .parse::<u16>()
+        .with_context(|| format!("parse query parameter '{key}' as u16"))
 }
 
 fn write_json<T: Serialize>(stream: &mut TcpStream, value: &T) -> Result<()> {

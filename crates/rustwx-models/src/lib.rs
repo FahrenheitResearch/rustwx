@@ -719,7 +719,7 @@ const MODELS: &[ModelSummary] = &[
         default_product: "awp130pgrb",
         cycle_hours_utc: RAP_CYCLE_HOURS,
         max_forecast_hour: 51,
-        sources: NOMADS_ONLY_SOURCES,
+        sources: NOMADS_AWS_SOURCES,
         runtime_family: ModelRuntimeFamily::Grib2Forecast,
         ensemble_mode: EnsembleMode::Deterministic,
     },
@@ -729,7 +729,7 @@ const MODELS: &[ModelSummary] = &[
         default_product: "awip12",
         cycle_hours_utc: NAM_CYCLE_HOURS,
         max_forecast_hour: 84,
-        sources: NOMADS_ONLY_SOURCES,
+        sources: NOMADS_AWS_SOURCES,
         runtime_family: ModelRuntimeFamily::Grib2Forecast,
         ensemble_mode: EnsembleMode::Deterministic,
     },
@@ -835,7 +835,7 @@ const MODELS: &[ModelSummary] = &[
     },
     ModelSummary {
         id: ModelId::WrfGdex,
-        description: "WRF wrfout archive on UCAR GDEX THREDDS",
+        description: "WRF NetCDF/wrfout datasets; UCAR GDEX is one supported source",
         default_product: WRF_GDEX_DEFAULT_SURFACE_PRODUCT,
         cycle_hours_utc: WRF_GDEX_CYCLE_HOURS,
         max_forecast_hour: 0,
@@ -6048,7 +6048,9 @@ fn default_canonical_bundle_product(
         (ModelId::EcmwfOpenData, _) => "oper",
         (ModelId::Aifs, _) => "oper",
         (ModelId::Rap, _) => "awp130pgrb",
-        (ModelId::Nam, _) => "awip12",
+        (ModelId::Nam, CanonicalBundleDescriptor::SurfaceAnalysis) => "awip3d",
+        (ModelId::Nam, CanonicalBundleDescriptor::PressureAnalysis) => "awip3d",
+        (ModelId::Nam, CanonicalBundleDescriptor::NativeAnalysis) => "awip12",
         (ModelId::Hiresw, _) => "arw_2p5km/conus",
         (ModelId::Href, _) => "ensprod/conus/sprd",
         (ModelId::Sref, _) => "ensprod/pgrb212/mean_3hrly",
@@ -7050,9 +7052,6 @@ fn build_hgefs_url(source: SourceId, request: &ModelRunRequest) -> Result<String
 }
 
 fn build_rap_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
-    if source != SourceId::Nomads {
-        return Ok(unsupported_source(source, request.model));
-    }
     if !forecast_hour_supported(request.model, request.cycle.hour_utc, request.forecast_hour) {
         return Err(ModelError::UnsupportedForecastHour {
             model: request.model,
@@ -7076,16 +7075,20 @@ fn build_rap_url(source: SourceId, request: &ModelRunRequest) -> Result<String, 
             });
         }
     };
-    Ok(format!(
-        "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rap/prod/rap.{}/rap.t{:02}z.{}f{:02}.grib2",
-        request.cycle.date_yyyymmdd, request.cycle.hour_utc, prefix, request.forecast_hour
-    ))
+    Ok(match source {
+        SourceId::Aws => format!(
+            "https://noaa-rap-pds.s3.amazonaws.com/rap.{}/rap.t{:02}z.{}f{:02}.grib2",
+            request.cycle.date_yyyymmdd, request.cycle.hour_utc, prefix, request.forecast_hour
+        ),
+        SourceId::Nomads => format!(
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rap/prod/rap.{}/rap.t{:02}z.{}f{:02}.grib2",
+            request.cycle.date_yyyymmdd, request.cycle.hour_utc, prefix, request.forecast_hour
+        ),
+        other => unsupported_source(other, request.model),
+    })
 }
 
 fn build_nam_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
-    if source != SourceId::Nomads {
-        return Ok(unsupported_source(source, request.model));
-    }
     let filename = match normalize_token(&request.product).as_str() {
         "awip12" | "conus" | "conus12" | "conus_12km" => format!(
             "nam.t{:02}z.awip12{:02}.tm00.grib2",
@@ -7122,10 +7125,17 @@ fn build_nam_url(source: SourceId, request: &ModelRunRequest) -> Result<String, 
             });
         }
     };
-    Ok(format!(
-        "https://nomads.ncep.noaa.gov/pub/data/nccf/com/nam/prod/nam.{}/{}",
-        request.cycle.date_yyyymmdd, filename
-    ))
+    Ok(match source {
+        SourceId::Aws => format!(
+            "https://noaa-nam-pds.s3.amazonaws.com/nam.{}/{}",
+            request.cycle.date_yyyymmdd, filename
+        ),
+        SourceId::Nomads => format!(
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/nam/prod/nam.{}/{}",
+            request.cycle.date_yyyymmdd, filename
+        ),
+        other => unsupported_source(other, request.model),
+    })
 }
 
 fn build_hiresw_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
@@ -7806,11 +7816,14 @@ fn wrf_gdex_recipe_product_override(
         && fields.iter().all(|field| {
             matches!(
                 field.key,
-                "composite_reflectivity" | "radar_reflectivity_1km_agl" | "updraft_helicity"
+                "composite_reflectivity" | "radar_reflectivity_1km_agl"
             )
         });
     if all_native_surface_diagnostics {
         return Some(WRF_GDEX_DEFAULT_SURFACE_PRODUCT);
+    }
+    if fields.iter().any(|field| field.key == "updraft_helicity") {
+        return Some(WRF_GDEX_DEFAULT_PRESSURE_PRODUCT);
     }
     let all_cloud_cover = !fields.is_empty()
         && fields.iter().all(|field| {
@@ -8355,6 +8368,20 @@ mod tests {
         );
         assert_eq!(hrrr_pressure.family, CanonicalDataFamily::Pressure);
         assert_eq!(hrrr_pressure.native_product, "prs");
+
+        let nam_surface = resolve_canonical_bundle_product(
+            ModelId::Nam,
+            CanonicalBundleDescriptor::SurfaceAnalysis,
+            None,
+        );
+        assert_eq!(nam_surface.native_product, "awip3d");
+
+        let nam_pressure = resolve_canonical_bundle_product(
+            ModelId::Nam,
+            CanonicalBundleDescriptor::PressureAnalysis,
+            None,
+        );
+        assert_eq!(nam_pressure.native_product, "awip3d");
 
         let rrfs_pressure = resolve_canonical_bundle_product(
             ModelId::RrfsA,
@@ -8998,6 +9025,20 @@ mod tests {
     }
 
     #[test]
+    fn ncep_regional_summaries_include_aws_archive_sources() {
+        for model in [ModelId::Rap, ModelId::Nam] {
+            let summary = model_summary(model);
+            assert!(
+                summary
+                    .sources
+                    .iter()
+                    .any(|source| source.id == SourceId::Aws),
+                "{model} should advertise AWS so operational fetches can avoid NOMADS"
+            );
+        }
+    }
+
+    #[test]
     fn ecmwf_supported_forecast_hours_follow_open_data_cadence() {
         let hours_00z = supported_forecast_hours(ModelId::EcmwfOpenData, 0);
         assert!(hours_00z.contains(&0));
@@ -9116,11 +9157,19 @@ mod tests {
 
         let rap = ModelRunRequest::new(ModelId::Rap, cycle.clone(), 21, "awp130pgrb").unwrap();
         assert_eq!(
+            build_grib_url(SourceId::Aws, &rap).unwrap(),
+            "https://noaa-rap-pds.s3.amazonaws.com/rap.20260502/rap.t00z.awp130pgrbf21.grib2"
+        );
+        assert_eq!(
             build_grib_url(SourceId::Nomads, &rap).unwrap(),
             "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rap/prod/rap.20260502/rap.t00z.awp130pgrbf21.grib2"
         );
 
         let nam = ModelRunRequest::new(ModelId::Nam, cycle.clone(), 24, "awip12").unwrap();
+        assert_eq!(
+            build_grib_url(SourceId::Aws, &nam).unwrap(),
+            "https://noaa-nam-pds.s3.amazonaws.com/nam.20260502/nam.t00z.awip1224.tm00.grib2"
+        );
         assert_eq!(
             build_grib_url(SourceId::Nomads, &nam).unwrap(),
             "https://nomads.ncep.noaa.gov/pub/data/nccf/com/nam/prod/nam.20260502/nam.t00z.awip1224.tm00.grib2"
@@ -9753,10 +9802,28 @@ mod tests {
     }
 
     #[test]
-    fn wrf_gdex_native_combo_and_uh_recipes_use_surface_fetch_plan() {
-        for slug in ["1km_reflectivity", "uh_2to5km", "composite_reflectivity_uh"] {
+    fn wrf_gdex_native_reflectivity_recipe_uses_surface_fetch_plan() {
+        for slug in ["1km_reflectivity"] {
             let plan = plot_recipe_fetch_plan(slug, ModelId::WrfGdex).unwrap();
             assert_eq!(plan.product, WRF_GDEX_DEFAULT_SURFACE_PRODUCT, "{slug}");
+            assert_eq!(
+                plan.fetch_policy,
+                PlotRecipeFetchPolicy::WholeFile,
+                "{slug}"
+            );
+            assert_eq!(
+                plan.fetch_mode,
+                PlotRecipeFetchMode::WholeFileStructuredExtract,
+                "{slug}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrf_gdex_uh_recipes_use_3d_fetch_plan() {
+        for slug in ["uh_2to5km", "composite_reflectivity_uh"] {
+            let plan = plot_recipe_fetch_plan(slug, ModelId::WrfGdex).unwrap();
+            assert_eq!(plan.product, WRF_GDEX_DEFAULT_PRESSURE_PRODUCT, "{slug}");
             assert_eq!(
                 plan.fetch_policy,
                 PlotRecipeFetchPolicy::WholeFile,

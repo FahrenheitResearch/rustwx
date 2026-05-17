@@ -16,6 +16,7 @@ use rustwx_products::derived::is_heavy_derived_recipe_slug;
 use rustwx_products::non_ecape::{
     NonEcapeHourRequest, NonEcapeMultiDomainRequest, run_model_non_ecape_hour,
     run_model_non_ecape_hour_build, run_model_non_ecape_hour_multi_domain,
+    run_model_non_ecape_hour_wxstore_only,
 };
 use rustwx_products::places::{PlaceLabelDensityTier, default_place_label_overlay_for_domain};
 use rustwx_products::publication::{
@@ -259,6 +260,12 @@ struct Args {
     wxstore_region: Option<RegionPreset>,
     #[arg(long = "wxstore-product", value_delimiter = ',', num_args = 0..)]
     wxstore_products: Vec<String>,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "When exporting WxStore grids, skip static PNG rendering and write only the WxStore grid manifest"
+    )]
+    skip_static_plots: bool,
     #[arg(long)]
     cache_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
@@ -399,7 +406,14 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             earth2_ensemble,
             domain_jobs: Some(args.domain_jobs),
         };
-        let report = run_model_non_ecape_hour_build(&request, wxstore_request.as_ref())?;
+        let report = if args.skip_static_plots {
+            let wxstore_request = wxstore_request
+                .as_ref()
+                .ok_or("--skip-static-plots requires --wxstore-out-dir")?;
+            run_model_non_ecape_hour_wxstore_only(&request, wxstore_request)?
+        } else {
+            run_model_non_ecape_hour_build(&request, wxstore_request.as_ref())?
+        };
         let model_slug = report.static_report.model.as_str().replace('-', "_");
         let report_path = args.out_dir.join(format!(
             "rustwx_{}_{}_{}z_f{:03}_{}_non_ecape_hour_build_report.json",

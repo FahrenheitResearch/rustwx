@@ -3,8 +3,8 @@ use super::codec::ChunkCodec;
 use super::index::{ChunkExtent, ChunkIndex, read_index_records};
 use super::manifest::VolumeManifest;
 use super::sampling::{
-    PointProfile, PointSample, RouteDef, RouteSample, RouteSectionPrimitives, RouteValue,
-    haversine_km, route_unit_components,
+    BoxProfile, PointProfile, PointSample, RouteDef, RouteSample, RouteSectionPrimitives,
+    RouteValue, haversine_km, route_unit_components,
 };
 use super::{VolumeResult, VolumeStoreError};
 use std::collections::HashMap;
@@ -12,6 +12,7 @@ use std::fs;
 use std::path::Path;
 
 type DecodeCache = HashMap<usize, super::DecodedChunk>;
+const MAX_BOX_SAMPLE_CELLS: usize = 50_000;
 
 #[derive(Debug, Clone)]
 pub struct VolumeStore {
@@ -45,7 +46,7 @@ impl VolumeStore {
     pub fn read_tile_f32(
         &self,
         variable: &str,
-        forecast_hour: u8,
+        forecast_hour: u16,
         level_hpa: u16,
         y_tile: usize,
         x_tile: usize,
@@ -79,7 +80,7 @@ impl VolumeStore {
         lat_deg: f64,
         lon_deg: f64,
         variables: &[&str],
-        forecast_hours: &[u8],
+        forecast_hours: &[u16],
         levels_hpa: &[u16],
     ) -> VolumeResult<PointProfile> {
         let (grid_x, grid_y) = self.manifest.grid.grid_xy(lat_deg, lon_deg)?;
@@ -107,11 +108,79 @@ impl VolumeStore {
         })
     }
 
+    pub fn sample_box_3d(
+        &self,
+        lat_deg: f64,
+        lon_deg: f64,
+        radius_lat_deg: f64,
+        radius_lon_deg: f64,
+        variables: &[&str],
+        forecast_hours: &[u16],
+        levels_hpa: &[u16],
+    ) -> VolumeResult<BoxProfile> {
+        if !lat_deg.is_finite()
+            || !lon_deg.is_finite()
+            || !radius_lat_deg.is_finite()
+            || !radius_lon_deg.is_finite()
+            || radius_lat_deg < 0.0
+            || radius_lon_deg < 0.0
+        {
+            return Err(VolumeStoreError::OutOfBounds(
+                "box sounding lat/lon and radii must be finite, non-negative values".to_string(),
+            ));
+        }
+
+        let min_lat = (lat_deg - radius_lat_deg).max(-90.0);
+        let max_lat = (lat_deg + radius_lat_deg).min(90.0);
+        let min_lon = lon_deg - radius_lon_deg;
+        let max_lon = lon_deg + radius_lon_deg;
+        let (x0, x1, y0, y1) = self.box_grid_bounds(min_lat, max_lat, min_lon, max_lon)?;
+        let cell_count = (x1 - x0 + 1) * (y1 - y0 + 1);
+        if cell_count > MAX_BOX_SAMPLE_CELLS {
+            return Err(VolumeStoreError::OutOfBounds(format!(
+                "box sounding covers {cell_count} grid cells; max is {MAX_BOX_SAMPLE_CELLS}"
+            )));
+        }
+
+        let mut cache = DecodeCache::new();
+        let mut samples =
+            Vec::with_capacity(variables.len() * forecast_hours.len() * levels_hpa.len());
+        for variable in variables {
+            for hour in forecast_hours {
+                for level in levels_hpa {
+                    samples.push(PointSample {
+                        variable: (*variable).to_string(),
+                        forecast_hour: *hour,
+                        level_hpa: *level,
+                        value: self.sample_grid_box_cached(
+                            variable, *hour, *level, x0, x1, y0, y1, &mut cache,
+                        )?,
+                    });
+                }
+            }
+        }
+
+        Ok(BoxProfile {
+            center_lat_deg: lat_deg,
+            center_lon_deg: lon_deg,
+            min_lat_deg: min_lat,
+            max_lat_deg: max_lat,
+            min_lon_deg: min_lon,
+            max_lon_deg: max_lon,
+            x0,
+            x1,
+            y0,
+            y1,
+            cell_count,
+            samples,
+        })
+    }
+
     pub fn sample_route_3d(
         &self,
         route: &RouteDef,
         variables: &[&str],
-        forecast_hour: u8,
+        forecast_hour: u16,
         levels_hpa: &[u16],
     ) -> VolumeResult<RouteSectionPrimitives> {
         let route_samples = self.precompute_route(route)?;
@@ -163,7 +232,7 @@ impl VolumeStore {
     fn sample_grid_point_cached(
         &self,
         variable: &str,
-        forecast_hour: u8,
+        forecast_hour: u16,
         level_hpa: u16,
         grid_x: f32,
         grid_y: f32,
@@ -193,10 +262,40 @@ impl VolumeStore {
         Ok(bilinear(v00, v10, v01, v11, wx, wy))
     }
 
+    fn sample_grid_box_cached(
+        &self,
+        variable: &str,
+        forecast_hour: u16,
+        level_hpa: u16,
+        x0: usize,
+        x1: usize,
+        y0: usize,
+        y1: usize,
+        cache: &mut DecodeCache,
+    ) -> VolumeResult<f32> {
+        let mut sum = 0.0_f64;
+        let mut count = 0_usize;
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let value =
+                    self.sample_grid_cell_cached(variable, forecast_hour, level_hpa, y, x, cache)?;
+                if value.is_finite() {
+                    sum += f64::from(value);
+                    count += 1;
+                }
+            }
+        }
+        if count == 0 {
+            Ok(f32::NAN)
+        } else {
+            Ok((sum / count as f64) as f32)
+        }
+    }
+
     fn sample_grid_cell_cached(
         &self,
         variable: &str,
-        forecast_hour: u8,
+        forecast_hour: u16,
         level_hpa: u16,
         y: usize,
         x: usize,
@@ -219,6 +318,53 @@ impl VolumeStore {
         let local_y = y - extent.y0;
         let local_x = x - extent.x0;
         Ok(decoded.values[extent.linear_index(local_t, local_z, local_y, local_x)])
+    }
+
+    fn box_grid_bounds(
+        &self,
+        min_lat: f64,
+        max_lat: f64,
+        min_lon: f64,
+        max_lon: f64,
+    ) -> VolumeResult<(usize, usize, usize, usize)> {
+        let corners = [
+            self.manifest.grid.grid_xy(min_lat, min_lon)?,
+            self.manifest.grid.grid_xy(min_lat, max_lon)?,
+            self.manifest.grid.grid_xy(max_lat, min_lon)?,
+            self.manifest.grid.grid_xy(max_lat, max_lon)?,
+        ];
+        let nx = self.manifest.grid.nx();
+        let ny = self.manifest.grid.ny();
+        let min_x = corners
+            .iter()
+            .map(|(x, _)| *x)
+            .fold(f32::INFINITY, f32::min)
+            .floor()
+            .clamp(0.0, (nx - 1) as f32) as usize;
+        let max_x = corners
+            .iter()
+            .map(|(x, _)| *x)
+            .fold(f32::NEG_INFINITY, f32::max)
+            .ceil()
+            .clamp(0.0, (nx - 1) as f32) as usize;
+        let min_y = corners
+            .iter()
+            .map(|(_, y)| *y)
+            .fold(f32::INFINITY, f32::min)
+            .floor()
+            .clamp(0.0, (ny - 1) as f32) as usize;
+        let max_y = corners
+            .iter()
+            .map(|(_, y)| *y)
+            .fold(f32::NEG_INFINITY, f32::max)
+            .ceil()
+            .clamp(0.0, (ny - 1) as f32) as usize;
+        Ok((
+            min_x.min(max_x),
+            min_x.max(max_x),
+            min_y.min(max_y),
+            min_y.max(max_y),
+        ))
     }
 
     fn precompute_route(&self, route: &RouteDef) -> VolumeResult<Vec<RouteSample>> {

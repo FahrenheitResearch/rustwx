@@ -14,13 +14,13 @@ pub const SURFACE_TERRAIN_PAYLOAD_FILE: &str = "surface_terrain.bin";
 
 #[derive(Debug, Clone)]
 pub struct SurfaceTerrainTimestep {
-    pub forecast_hour: u8,
+    pub forecast_hour: u16,
     pub psfc_pa: Vec<f32>,
     pub orog_m: Vec<f32>,
 }
 
 impl SurfaceTerrainTimestep {
-    pub fn from_surface(forecast_hour: u8, surface: &SurfaceFields) -> Self {
+    pub fn from_surface(forecast_hour: u16, surface: &SurfaceFields) -> Self {
         Self {
             forecast_hour,
             psfc_pa: surface.psfc_pa.iter().map(|value| *value as f32).collect(),
@@ -32,17 +32,17 @@ impl SurfaceTerrainTimestep {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurfaceTerrainManifest {
     pub format: String,
-    pub forecast_hours: Vec<u8>,
+    pub forecast_hours: Vec<u16>,
     pub grid_cells: usize,
     pub payload_file: String,
     pub orog_offset_bytes: u64,
-    pub psfc_offsets_bytes: BTreeMap<u8, u64>,
+    pub psfc_offsets_bytes: BTreeMap<u16, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurfaceTerrainBuildStats {
     pub format: String,
-    pub forecast_hours: Vec<u8>,
+    pub forecast_hours: Vec<u16>,
     pub grid_cells: usize,
     pub payload_bytes: u64,
     pub manifest_bytes: u64,
@@ -52,7 +52,7 @@ pub struct SurfaceTerrainBuildStats {
 pub struct SurfaceTerrainStore {
     manifest: SurfaceTerrainManifest,
     orog_m: Vec<f32>,
-    psfc_by_hour: BTreeMap<u8, Vec<f32>>,
+    psfc_by_hour: BTreeMap<u16, Vec<f32>>,
 }
 
 impl SurfaceTerrainStore {
@@ -117,7 +117,7 @@ impl SurfaceTerrainStore {
 
     pub fn terrain_profile(
         &self,
-        forecast_hour: u8,
+        forecast_hour: u16,
         route_samples: &[RouteSample],
         distances_km: Vec<f64>,
         nx: usize,
@@ -144,7 +144,7 @@ impl SurfaceTerrainStore {
 
     pub fn sample_grid_point(
         &self,
-        forecast_hour: u8,
+        forecast_hour: u16,
         grid_x: f32,
         grid_y: f32,
         nx: usize,
@@ -157,6 +157,58 @@ impl SurfaceTerrainStore {
         Ok(SurfaceTerrainPoint {
             surface_pressure_hpa: bilinear(psfc_pa, nx, ny, grid_x, grid_y).max(0.0) as f64 / 100.0,
             surface_height_m_msl: bilinear(&self.orog_m, nx, ny, grid_x, grid_y) as f64,
+        })
+    }
+
+    pub fn sample_grid_box(
+        &self,
+        forecast_hour: u16,
+        x0: usize,
+        x1: usize,
+        y0: usize,
+        y1: usize,
+        nx: usize,
+        ny: usize,
+    ) -> VolumeResult<SurfaceTerrainPoint> {
+        let psfc_pa = self
+            .psfc_by_hour
+            .get(&forecast_hour)
+            .ok_or(VolumeStoreError::MissingHour(forecast_hour))?;
+        let mut psfc_sum = 0.0_f64;
+        let mut psfc_count = 0_usize;
+        let mut orog_sum = 0.0_f64;
+        let mut orog_count = 0_usize;
+        let max_x = nx.saturating_sub(1);
+        let max_y = ny.saturating_sub(1);
+        for y in y0.min(max_y)..=y1.min(max_y) {
+            for x in x0.min(max_x)..=x1.min(max_x) {
+                let idx = y * nx + x;
+                if let Some(value) = psfc_pa.get(idx).copied().filter(|value| value.is_finite()) {
+                    psfc_sum += f64::from(value);
+                    psfc_count += 1;
+                }
+                if let Some(value) = self
+                    .orog_m
+                    .get(idx)
+                    .copied()
+                    .filter(|value| value.is_finite())
+                {
+                    orog_sum += f64::from(value);
+                    orog_count += 1;
+                }
+            }
+        }
+        Ok(SurfaceTerrainPoint {
+            surface_pressure_hpa: if psfc_count > 0 {
+                (psfc_sum / psfc_count as f64).max(0.0) / 100.0
+            } else {
+                f64::NAN
+            },
+            surface_height_m_msl: if orog_count > 0 {
+                orog_sum / orog_count as f64
+            } else {
+                f64::NAN
+            },
         })
     }
 }

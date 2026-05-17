@@ -13,19 +13,19 @@ use std::time::Instant;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PressureVolumeTimestep<'a> {
-    pub forecast_hour: u8,
+    pub forecast_hour: u16,
     pub pressure: &'a PressureFields,
 }
 
 pub trait PressureTimestepProvider {
-    fn pressure_fields(&mut self, forecast_hour: u8) -> VolumeResult<PressureFields>;
+    fn pressure_fields(&mut self, forecast_hour: u16) -> VolumeResult<PressureFields>;
 }
 
 impl<F> PressureTimestepProvider for F
 where
-    F: FnMut(u8) -> VolumeResult<PressureFields>,
+    F: FnMut(u16) -> VolumeResult<PressureFields>,
 {
-    fn pressure_fields(&mut self, forecast_hour: u8) -> VolumeResult<PressureFields> {
+    fn pressure_fields(&mut self, forecast_hour: u16) -> VolumeResult<PressureFields> {
         self(forecast_hour)
     }
 }
@@ -99,7 +99,7 @@ pub fn write_pressure_volume_from_provider<P: PressureTimestepProvider>(
     cycle: impl Into<String>,
     grid: GridSpec,
     chunk_shape: ChunkShape,
-    forecast_hours: Vec<u8>,
+    forecast_hours: Vec<u16>,
     levels_hpa: Vec<u16>,
     variables: Vec<VolumeVariable>,
     mut provider: P,
@@ -269,7 +269,7 @@ pub fn pressure_volume_variables_for_fields(pressure: &PressureFields) -> Vec<Vo
 }
 
 struct LoadedPressureProvider<'a> {
-    by_hour: BTreeMap<u8, &'a PressureFields>,
+    by_hour: BTreeMap<u16, &'a PressureFields>,
     grid_len: usize,
 }
 
@@ -277,7 +277,7 @@ impl VolumeFieldProvider for LoadedPressureProvider<'_> {
     fn field_plane(
         &mut self,
         variable: &str,
-        forecast_hour: u8,
+        forecast_hour: u16,
         level_hpa: u16,
     ) -> VolumeResult<Vec<f32>> {
         let pressure = self
@@ -434,7 +434,7 @@ mod tests {
         ))
     }
 
-    fn pressure(hour: u8, nx: usize, ny: usize) -> PressureFields {
+    fn pressure(hour: u16, nx: usize, ny: usize) -> PressureFields {
         let levels = vec![1000.0, 850.0];
         let mut temperature = Vec::new();
         let mut qvapor = Vec::new();
@@ -471,7 +471,7 @@ mod tests {
         }
     }
 
-    fn pressure_with_levels(hour: u8, nx: usize, ny: usize, levels: Vec<f64>) -> PressureFields {
+    fn pressure_with_levels(hour: u16, nx: usize, ny: usize, levels: Vec<f64>) -> PressureFields {
         let mut pressure = pressure(hour, nx, ny);
         pressure.pressure_levels_hpa = levels.clone();
         let grid_len = nx * ny;

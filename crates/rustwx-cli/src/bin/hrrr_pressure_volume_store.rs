@@ -89,7 +89,7 @@ struct Args {
 
 #[derive(Debug, Clone, Serialize)]
 struct HourLoadReport {
-    forecast_hour: u8,
+    forecast_hour: u16,
     nx: usize,
     ny: usize,
     levels: usize,
@@ -139,7 +139,7 @@ struct RequestReport {
     date: String,
     cycle: u8,
     source: SourceId,
-    forecast_hours: Vec<u8>,
+    forecast_hours: Vec<u16>,
     bounds: (f64, f64, f64, f64),
     chunk_shape: ChunkShape,
     load_parallelism: usize,
@@ -162,14 +162,14 @@ struct LoadedHour {
 
 struct HrrrPressureProvider {
     args: Args,
-    first_hours: BTreeMap<u8, PressureFields>,
+    first_hours: BTreeMap<u16, PressureFields>,
     prefetch: Option<HourPrefetch>,
-    surface_terrain: Rc<RefCell<BTreeMap<u8, SurfaceTerrainTimestep>>>,
+    surface_terrain: Rc<RefCell<BTreeMap<u16, SurfaceTerrainTimestep>>>,
     reports: Rc<RefCell<Vec<HourLoadReport>>>,
 }
 
 impl PressureTimestepProvider for HrrrPressureProvider {
-    fn pressure_fields(&mut self, forecast_hour: u8) -> VolumeResult<PressureFields> {
+    fn pressure_fields(&mut self, forecast_hour: u16) -> VolumeResult<PressureFields> {
         if let Some(pressure) = self.first_hours.remove(&forecast_hour) {
             return Ok(pressure);
         }
@@ -207,12 +207,6 @@ fn main() -> Result<()> {
     let args = Args::parse();
     if args.end_hour < args.start_hour {
         bail!("--end-hour must be >= --start-hour");
-    }
-    if args.end_hour > u16::from(u8::MAX) {
-        bail!(
-            "VolumeStore forecast hours are currently u8, got {}",
-            args.end_hour
-        );
     }
     if args.chunk_t != 1 {
         bail!("live pressure VolumeStore currently requires --chunk-t 1");
@@ -340,18 +334,18 @@ fn main() -> Result<()> {
 }
 
 struct PrefetchResult {
-    forecast_hour: u8,
+    forecast_hour: u16,
     loaded: Result<LoadedHour, String>,
 }
 
 struct HourPrefetch {
     receiver: Receiver<PrefetchResult>,
-    pending: BTreeMap<u8, Result<LoadedHour, String>>,
+    pending: BTreeMap<u16, Result<LoadedHour, String>>,
     _workers: Vec<thread::JoinHandle<()>>,
 }
 
 impl HourPrefetch {
-    fn new(args: Args, hours: Vec<u8>, load_parallelism: usize) -> Self {
+    fn new(args: Args, hours: Vec<u16>, load_parallelism: usize) -> Self {
         let worker_count = load_parallelism.max(1).min(hours.len());
         let queue = Arc::new(Mutex::new(VecDeque::from(hours)));
         let (sender, receiver) = sync_channel(worker_count);
@@ -393,7 +387,7 @@ impl HourPrefetch {
         }
     }
 
-    fn take(&mut self, forecast_hour: u8) -> Result<LoadedHour> {
+    fn take(&mut self, forecast_hour: u16) -> Result<LoadedHour> {
         if let Some(result) = self.pending.remove(&forecast_hour) {
             return result.map_err(|err| anyhow!(err));
         }
@@ -425,7 +419,7 @@ fn effective_load_parallelism(args: &Args) -> Result<usize> {
     Ok(value)
 }
 
-fn forecast_hours_from_args(args: &Args) -> Result<Vec<u8>> {
+fn forecast_hours_from_args(args: &Args) -> Result<Vec<u16>> {
     let hours = if let Some(spec) = args.hours.as_deref() {
         parse_hour_spec(spec)?
     } else {
@@ -436,10 +430,7 @@ fn forecast_hours_from_args(args: &Args) -> Result<Vec<u8>> {
     };
     let mut out = Vec::with_capacity(hours.len());
     for hour in hours {
-        if hour > u16::from(u8::MAX) {
-            bail!("VolumeStore forecast hours are currently u8, got {hour}");
-        }
-        out.push(hour as u8);
+        out.push(hour);
     }
     out.sort_unstable();
     out.dedup();
@@ -480,13 +471,13 @@ fn parse_hour_spec(spec: &str) -> Result<Vec<u16>> {
     Ok(hours)
 }
 
-fn load_hour(args: &Args, forecast_hour: u8) -> Result<LoadedHour> {
+fn load_hour(args: &Args, forecast_hour: u16) -> Result<LoadedHour> {
     let started = Instant::now();
     let loaded = load_model_timestep_from_parts_cropped(
         args.model,
         &args.date,
         Some(args.cycle),
-        u16::from(forecast_hour),
+        forecast_hour,
         args.source,
         None,
         None,
@@ -551,7 +542,7 @@ fn levels_from_pressure(pressure: &PressureFields) -> Result<Vec<u16>> {
 
 fn smoke_profile_store(
     store_dir: &Path,
-    forecast_hours: &[u8],
+    forecast_hours: &[u16],
     levels_hpa: &[u16],
     args: &Args,
 ) -> Result<SmokeProfile> {

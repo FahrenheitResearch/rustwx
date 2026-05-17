@@ -39,7 +39,7 @@ struct Args {
     #[arg(long, default_value = DEFAULT_PRODUCTS)]
     products: String,
     #[arg(long, default_value_t = 0)]
-    hour: u8,
+    hour: u16,
     #[arg(
         long,
         help = "Forecast hours to render: all, a comma list like 0,1,2, or ranges like 0-48"
@@ -109,8 +109,8 @@ struct RenderSummary {
     generated_at_store_cycle: String,
     store: String,
     out_dir: String,
-    hour: u8,
-    forecast_hours: Vec<u8>,
+    hour: u16,
+    forecast_hours: Vec<u16>,
     spacing_km: f32,
     top_pressure_hpa: f64,
     route_count: usize,
@@ -126,7 +126,7 @@ struct RenderSummary {
 struct RenderedOutput {
     route_id: String,
     route_name: String,
-    hour: u8,
+    hour: u16,
     product: String,
     product_label: String,
     png_path: String,
@@ -227,7 +227,7 @@ fn sample_route_inputs(
     store: &VolumeStore,
     terrain_store: Option<&SurfaceTerrainStore>,
     route: &RouteSpec,
-    hour: u8,
+    hour: u16,
 ) -> Result<SampledRouteInputs> {
     let levels =
         filter_levels_by_top_pressure(&store.manifest().levels_hpa, args.top_pressure_hpa)?;
@@ -378,7 +378,7 @@ fn render_one(
     route: &RouteSpec,
     sampled: &SampledRouteInputs,
     product: CrossSectionProduct,
-    hour: u8,
+    hour: u16,
 ) -> Result<RenderedOutput> {
     let total_start = Instant::now();
     let product_start = Instant::now();
@@ -838,7 +838,11 @@ fn parse_products(value: &str) -> Result<Vec<CrossSectionProduct>> {
         .collect()
 }
 
-fn parse_hours(value: Option<&str>, default_hour: u8, available_hours: &[u8]) -> Result<Vec<u8>> {
+fn parse_hours(
+    value: Option<&str>,
+    default_hour: u16,
+    available_hours: &[u16],
+) -> Result<Vec<u16>> {
     let available = available_hours.iter().copied().collect::<BTreeSet<_>>();
     if available.is_empty() {
         return Err(anyhow!(
@@ -897,10 +901,10 @@ fn parse_hours(value: Option<&str>, default_hour: u8, available_hours: &[u8]) ->
     Ok(requested)
 }
 
-fn parse_hour_token(value: &str) -> Result<u8> {
+fn parse_hour_token(value: &str) -> Result<u16> {
     value
         .trim_start_matches(['f', 'F'])
-        .parse::<u8>()
+        .parse::<u16>()
         .with_context(|| format!("invalid forecast hour '{value}'"))
 }
 

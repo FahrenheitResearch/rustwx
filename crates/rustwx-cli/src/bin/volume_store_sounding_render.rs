@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, ValueEnum};
-use rustwx_products::volume_store::{SurfaceTerrainStore, VolumeStore};
+use rustwx_products::volume_store::{BoxProfile, PointProfile, SurfaceTerrainStore, VolumeStore};
 use rustwx_sounding::{SoundingColumn, SoundingMetadata, write_full_sounding_png};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,13 +21,17 @@ struct Args {
     #[arg(long, default_value = "proof/volume_store_soundings")]
     out_dir: PathBuf,
     #[arg(long, default_value_t = 0)]
-    hour: u8,
+    hour: u16,
     #[arg(long, allow_hyphen_values = true)]
     lat: f64,
     #[arg(long, allow_hyphen_values = true)]
     lon: f64,
     #[arg(long, value_enum, default_value_t = SoundingSampleMethod::Nearest)]
     sample_method: SoundingSampleMethod,
+    #[arg(long, default_value_t = 0.0)]
+    box_radius_lat_deg: f64,
+    #[arg(long, default_value_t = 0.0)]
+    box_radius_lon_deg: f64,
     #[arg(long)]
     station_id: Option<String>,
     #[arg(long)]
@@ -42,6 +46,7 @@ struct Args {
 #[serde(rename_all = "snake_case")]
 enum SoundingSampleMethod {
     Nearest,
+    BoxMean,
 }
 
 #[derive(Debug, Serialize)]
@@ -61,10 +66,12 @@ struct VolumeStoreSoundingReport {
 #[derive(Debug, Serialize)]
 struct SoundingRequest {
     store: String,
-    hour: u8,
+    hour: u16,
     requested_lat: f64,
     requested_lon: f64,
     sample_method: SoundingSampleMethod,
+    box_radius_lat_deg: Option<f64>,
+    box_radius_lon_deg: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -72,7 +79,7 @@ struct StoreSummary {
     model: String,
     domain: String,
     cycle: String,
-    forecast_hours: Vec<u8>,
+    forecast_hours: Vec<u16>,
     levels_hpa: Vec<u16>,
     variables: Vec<String>,
     grid_cells: usize,
@@ -84,6 +91,16 @@ struct SampledPointSummary {
     lon: f64,
     grid_x: f32,
     grid_y: f32,
+    sample_method: SoundingSampleMethod,
+    box_min_lat_deg: Option<f64>,
+    box_max_lat_deg: Option<f64>,
+    box_min_lon_deg: Option<f64>,
+    box_max_lon_deg: Option<f64>,
+    box_grid_x0: Option<usize>,
+    box_grid_x1: Option<usize>,
+    box_grid_y0: Option<usize>,
+    box_grid_y1: Option<usize>,
+    box_cell_count: Option<usize>,
     surface_pressure_hpa: Option<f64>,
     surface_height_m_msl: Option<f64>,
     pressure_level_count: usize,
@@ -171,31 +188,75 @@ fn main() -> Result<()> {
     let variables = available_profile_variables(&store)?;
     let variable_refs = variables.iter().map(String::as_str).collect::<Vec<_>>();
     let levels = store.manifest().levels_hpa.clone();
-    let profile = store
-        .sample_point_3d(args.lat, args.lon, &variable_refs, &[args.hour], &levels)
-        .map_err(|err| anyhow!(err.to_string()))?;
+    let (profile, box_profile) = match args.sample_method {
+        SoundingSampleMethod::Nearest => (
+            store
+                .sample_point_3d(args.lat, args.lon, &variable_refs, &[args.hour], &levels)
+                .map_err(|err| anyhow!(err.to_string()))?,
+            None,
+        ),
+        SoundingSampleMethod::BoxMean => {
+            if args.box_radius_lat_deg <= 0.0 || args.box_radius_lon_deg <= 0.0 {
+                bail!(
+                    "box-mean sampling requires positive --box-radius-lat-deg and --box-radius-lon-deg"
+                );
+            }
+            let box_profile = store
+                .sample_box_3d(
+                    args.lat,
+                    args.lon,
+                    args.box_radius_lat_deg,
+                    args.box_radius_lon_deg,
+                    &variable_refs,
+                    &[args.hour],
+                    &levels,
+                )
+                .map_err(|err| anyhow!(err.to_string()))?;
+            let profile = PointProfile {
+                lat_deg: box_profile.center_lat_deg,
+                lon_deg: box_profile.center_lon_deg,
+                samples: box_profile.samples.clone(),
+            };
+            (profile, Some(box_profile))
+        }
+    };
     let (grid_x, grid_y) = store
         .manifest()
         .grid
         .grid_xy(args.lat, args.lon)
         .map_err(|err| anyhow!(err.to_string()))?;
-    let terrain_point = terrain
-        .as_ref()
-        .map(|terrain| {
-            terrain.sample_grid_point(
-                args.hour,
-                grid_x,
-                grid_y,
-                store.manifest().grid.nx(),
-                store.manifest().grid.ny(),
-            )
-        })
-        .transpose()
-        .map_err(|err| anyhow!(err.to_string()))?;
+    let terrain_point = match (&terrain, &box_profile) {
+        (Some(terrain), Some(profile)) => Some(
+            terrain
+                .sample_grid_box(
+                    args.hour,
+                    profile.x0,
+                    profile.x1,
+                    profile.y0,
+                    profile.y1,
+                    store.manifest().grid.nx(),
+                    store.manifest().grid.ny(),
+                )
+                .map_err(|err| anyhow!(err.to_string()))?,
+        ),
+        (Some(terrain), None) => Some(
+            terrain
+                .sample_grid_point(
+                    args.hour,
+                    grid_x,
+                    grid_y,
+                    store.manifest().grid.nx(),
+                    store.manifest().grid.ny(),
+                )
+                .map_err(|err| anyhow!(err.to_string()))?,
+        ),
+        (None, _) => None,
+    };
     let sample_ms = sample_start.elapsed().as_millis();
 
     let build_start = Instant::now();
-    let (column, sampled_point) = build_sounding_column(&args, &store, &profile, terrain_point)?;
+    let (column, sampled_point) =
+        build_sounding_column(&args, &store, &profile, terrain_point, box_profile.as_ref())?;
     let build_column_ms = build_start.elapsed().as_millis();
 
     let output_path = args
@@ -223,6 +284,10 @@ fn main() -> Result<()> {
             requested_lat: args.lat,
             requested_lon: normalize_lon(args.lon),
             sample_method: args.sample_method,
+            box_radius_lat_deg: (args.sample_method == SoundingSampleMethod::BoxMean)
+                .then_some(args.box_radius_lat_deg),
+            box_radius_lon_deg: (args.sample_method == SoundingSampleMethod::BoxMean)
+                .then_some(args.box_radius_lon_deg),
         },
         store: StoreSummary {
             model: store.manifest().model.clone(),
@@ -292,8 +357,9 @@ fn available_profile_variables(store: &VolumeStore) -> Result<Vec<String>> {
 fn build_sounding_column(
     args: &Args,
     store: &VolumeStore,
-    profile: &rustwx_products::volume_store::PointProfile,
+    profile: &PointProfile,
     terrain_point: Option<rustwx_products::volume_store::SurfaceTerrainPoint>,
+    box_profile: Option<&BoxProfile>,
 ) -> Result<(SoundingColumn, SampledPointSummary)> {
     let values = profile
         .samples
@@ -366,20 +432,23 @@ fn build_sounding_column(
 
     let metadata = SoundingMetadata {
         station_id: args.station_id.clone().unwrap_or_else(|| {
-            format!(
-                "{} {:.2},{:.2}",
-                store.manifest().model,
-                args.lat,
-                normalize_lon(args.lon)
-            )
+            let prefix = if args.sample_method == SoundingSampleMethod::BoxMean {
+                "box mean"
+            } else {
+                store.manifest().model.as_str()
+            };
+            format!("{prefix} {:.2},{:.2}", args.lat, normalize_lon(args.lon))
         }),
         valid_time: format!("{} F{:03}", store.manifest().cycle, args.hour),
         latitude_deg: Some(args.lat),
         longitude_deg: Some(normalize_lon(args.lon)),
         elevation_m: surface_height_m_msl,
-        sample_method: Some("volume_store_nearest".to_string()),
-        box_radius_lat_deg: None,
-        box_radius_lon_deg: None,
+        sample_method: Some(match args.sample_method {
+            SoundingSampleMethod::Nearest => "volume_store_nearest".to_string(),
+            SoundingSampleMethod::BoxMean => "box_mean".to_string(),
+        }),
+        box_radius_lat_deg: box_profile.map(|_| args.box_radius_lat_deg),
+        box_radius_lon_deg: box_profile.map(|_| args.box_radius_lon_deg),
     };
 
     let mut column = SoundingColumn {
@@ -417,6 +486,16 @@ fn build_sounding_column(
             .grid_xy(args.lat, args.lon)
             .map_err(|err| anyhow!(err.to_string()))?
             .1,
+        sample_method: args.sample_method,
+        box_min_lat_deg: box_profile.map(|profile| profile.min_lat_deg),
+        box_max_lat_deg: box_profile.map(|profile| profile.max_lat_deg),
+        box_min_lon_deg: box_profile.map(|profile| normalize_lon(profile.min_lon_deg)),
+        box_max_lon_deg: box_profile.map(|profile| normalize_lon(profile.max_lon_deg)),
+        box_grid_x0: box_profile.map(|profile| profile.x0),
+        box_grid_x1: box_profile.map(|profile| profile.x1),
+        box_grid_y0: box_profile.map(|profile| profile.y0),
+        box_grid_y1: box_profile.map(|profile| profile.y1),
+        box_cell_count: box_profile.map(|profile| profile.cell_count),
         surface_pressure_hpa,
         surface_height_m_msl,
         pressure_level_count: column.len(),

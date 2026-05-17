@@ -575,19 +575,19 @@ impl WeatherPreset {
                 mask_below: None,
             },
             Self::Stp => DiscreteColorScale {
-                levels: range_step(0.0, 10.1, 0.1),
+                levels: concat_ranges(&[(0.0, 10.0, 0.1), (10.0, 20.1, 0.5)]),
                 colors: weather_palette(WeatherPalette::Stp),
                 extend: ExtendMode::Max,
                 mask_below: None,
             },
             Self::Scp => DiscreteColorScale {
-                levels: range_step(0.0, 11.0, 1.0),
+                levels: range_step(0.0, 30.0, 0.5),
                 colors: weather_palette(WeatherPalette::Cape),
                 extend: ExtendMode::Max,
                 mask_below: None,
             },
             Self::Ehi => DiscreteColorScale {
-                levels: concat_ranges(&[(0.0, 2.0, 0.1), (2.0, 16.2, 0.2)]),
+                levels: concat_ranges(&[(0.0, 2.0, 0.1), (2.0, 20.2, 0.2)]),
                 colors: weather_palette(WeatherPalette::Ehi),
                 extend: ExtendMode::Max,
                 mask_below: None,
@@ -996,11 +996,15 @@ mod tests {
         );
         assert_eq!(
             WeatherPreset::Stp.scale().levels,
-            range_step(0.0, 10.1, 0.1)
+            concat_ranges(&[(0.0, 10.0, 0.1), (10.0, 20.1, 0.5)])
+        );
+        assert_eq!(
+            WeatherPreset::Scp.scale().levels,
+            range_step(0.0, 30.0, 0.5)
         );
         assert_eq!(
             WeatherPreset::Ehi.scale().levels,
-            concat_ranges(&[(0.0, 2.0, 0.1), (2.0, 16.2, 0.2)])
+            concat_ranges(&[(0.0, 2.0, 0.1), (2.0, 20.2, 0.2)])
         );
         assert_eq!(
             WeatherPreset::EcapeCapeRatio.scale().levels,
