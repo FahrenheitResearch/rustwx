@@ -422,6 +422,7 @@ fn mean_mixratio(prof: &Profile, pbot: f64, ptop: f64) -> f64 {
 }
 
 /// Mean potential temperature (C) in the layer from `pbot` to `ptop` (hPa).
+#[allow(dead_code)]
 fn mean_theta(prof: &Profile, pbot: f64, ptop: f64) -> f64 {
     let dp = -1.0;
     let mut p = pbot;
@@ -440,6 +441,61 @@ fn mean_theta(prof: &Profile, pbot: f64, ptop: f64) -> f64 {
     } else {
         f64::NAN
     }
+}
+
+/// SHARPpy-style "exact" mean mixing ratio (g/kg).
+///
+/// This mirrors `mean_mixratio(..., exact=True)`: interpolate endpoint
+/// pressure/dewpoint values, duplicate native levels inside the layer, then
+/// convert the averaged pressure/dewpoint back to a mixing ratio.
+fn mean_mixratio_exact(prof: &Profile, pbot: f64, ptop: f64) -> f64 {
+    let td_bot = interp_dwpt(prof, pbot);
+    let td_top = interp_dwpt(prof, ptop);
+    if !td_bot.is_finite() || !td_top.is_finite() || !pbot.is_finite() || !ptop.is_finite() {
+        return f64::NAN;
+    }
+
+    let mut p_sum = pbot + ptop;
+    let mut td_sum = td_bot + td_top;
+    let mut weight = 2.0;
+
+    for i in 0..prof.nlevels() {
+        let p = prof.pres[i];
+        let td = prof.dwpc[i];
+        if p.is_finite() && td.is_finite() && p < pbot && p > ptop {
+            p_sum += 2.0 * p;
+            td_sum += 2.0 * td;
+            weight += 2.0;
+        }
+    }
+
+    mixratio(p_sum / weight, td_sum / weight)
+}
+
+/// SHARPpy-style "exact" mean potential temperature (C).
+///
+/// Endpoint values are interpolated, while native levels inside the layer are
+/// duplicated before averaging, matching SHARPpy's exact mixed-layer parcel.
+fn mean_theta_exact(prof: &Profile, pbot: f64, ptop: f64) -> f64 {
+    let t_bot = interp_temp(prof, pbot);
+    let t_top = interp_temp(prof, ptop);
+    if !t_bot.is_finite() || !t_top.is_finite() || !pbot.is_finite() || !ptop.is_finite() {
+        return f64::NAN;
+    }
+
+    let mut sum = theta(pbot, t_bot, 1000.0) + theta(ptop, t_top, 1000.0);
+    let mut weight = 2.0;
+
+    for i in 0..prof.nlevels() {
+        let p = prof.pres[i];
+        let t = prof.tmpc[i];
+        if p.is_finite() && t.is_finite() && p < pbot && p > ptop {
+            sum += 2.0 * theta(p, t, 1000.0);
+            weight += 2.0;
+        }
+    }
+
+    sum / weight
 }
 
 /// Mean theta-e (C) in the layer from `pbot` to `ptop` (hPa).
@@ -533,10 +589,10 @@ pub fn define_parcel(prof: &Profile, ptype: ParcelType) -> LiftedParcelLevel {
         ParcelType::MixedLayer { depth_hpa } => {
             let pbot = prof.pres[prof.sfc];
             let ptop = pbot - depth_hpa;
-            let mtheta = mean_theta(prof, pbot, ptop);
+            let mtheta = mean_theta_exact(prof, pbot, ptop);
             let pres = pbot;
             let tmpc = theta(1000.0, mtheta, pres);
-            let mmr = mean_mixratio(prof, pbot, ptop);
+            let mmr = mean_mixratio_exact(prof, pbot, ptop);
             let dwpc = temp_at_mixrat(mmr, pres);
             LiftedParcelLevel {
                 pres,
@@ -1765,6 +1821,24 @@ mod tests {
             (th1 - th2).abs() < 0.5,
             "Theta not preserved in drylift: {th1} vs {th2}"
         );
+    }
+
+    #[test]
+    fn test_exact_mixed_layer_native_weighting() {
+        let prof = make_test_profile();
+        let pbot = 1000.0;
+        let ptop = 900.0;
+
+        let expected_theta = (theta(1000.0, 30.0, 1000.0)
+            + 2.0 * theta(975.0, 27.0, 1000.0)
+            + 2.0 * theta(950.0, 24.0, 1000.0)
+            + 2.0 * theta(925.0, 21.0, 1000.0)
+            + theta(900.0, 18.0, 1000.0))
+            / 8.0;
+        let expected_mixratio = mixratio(950.0, 19.5);
+
+        assert!((mean_theta_exact(&prof, pbot, ptop) - expected_theta).abs() < 1e-10);
+        assert!((mean_mixratio_exact(&prof, pbot, ptop) - expected_mixratio).abs() < 1e-10);
     }
 
     #[test]
