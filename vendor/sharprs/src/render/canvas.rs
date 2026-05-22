@@ -684,12 +684,17 @@ impl Canvas {
 
     // ── Wind barbs (adapted from wrf-rust-plots) ────────────────────
 
+    fn wind_barb_tail_unit_vector(u_screen: f64, v_screen: f64, speed: f64) -> (f64, f64) {
+        (-u_screen / speed, -v_screen / speed)
+    }
+
     /// Draw a meteorological wind barb.
     ///
     /// - `x_tip, y_tip`: position of the barb tip (observation point)
     /// - `u, v`: wind components in **screen** coordinates
-    ///   (u right-positive, v down-positive). From met convention:
-    ///   `u_screen = -wspd*sin(wdir_rad)`, `v_screen = wspd*cos(wdir_rad)`.
+    ///   (u right-positive, v down-positive) representing where the air is
+    ///   moving. From met convention: `u_screen = -wspd*sin(wdir_rad)`,
+    ///   `v_screen = wspd*cos(wdir_rad)`.
     /// - `shaft_len`: shaft length in pixels
     /// - `line_width`: line thickness
     pub fn draw_wind_barb(
@@ -712,8 +717,7 @@ impl Canvas {
             return;
         }
 
-        let tail_dx = -u / speed;
-        let tail_dy = v / speed;
+        let (tail_dx, tail_dy) = Self::wind_barb_tail_unit_vector(u, v, speed);
         let perp_dx = -tail_dy;
         let perp_dy = tail_dx;
 
@@ -1322,6 +1326,23 @@ mod tests {
         }
         assert_eq!(c.get_pixel(15, 15), [255, 0, 0, 255]);
         assert_eq!(c.get_pixel(5, 5), [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn wind_barb_tail_points_upwind_in_screen_space() {
+        let eps = 1e-12;
+
+        // North wind: the wind vector points down-screen, but the barb staff
+        // extends toward the source direction, up-screen.
+        let (dx, dy) = Canvas::wind_barb_tail_unit_vector(0.0, 10.0, 10.0);
+        assert!(dx.abs() < eps);
+        assert!((dy + 1.0).abs() < eps);
+
+        // West wind: the wind vector points right-screen, and the staff
+        // extends left toward the source direction.
+        let (dx, dy) = Canvas::wind_barb_tail_unit_vector(10.0, 0.0, 10.0);
+        assert!((dx + 1.0).abs() < eps);
+        assert!(dy.abs() < eps);
     }
 
     #[test]
