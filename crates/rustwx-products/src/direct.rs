@@ -1967,9 +1967,8 @@ fn crop_direct_fields_for_domain(
         if uses_inverse_raster {
             pad_cells = pad_cells.max(inverse_raster_crop_pad_cells());
         }
-        let preserve_full_longitude_axis = uses_inverse_raster
-            && matches!(field.projection.as_ref(), Some(GridProjection::Geographic))
-            && grid_has_full_periodic_longitude_axis(&field.grid);
+        let preserve_full_longitude_axis =
+            uses_inverse_raster && direct_field_has_periodic_geographic_axis(field);
         cropped.insert(
             selector,
             crop_selected_field_for_domain(field, bounds, pad_cells, preserve_full_longitude_axis)?,
@@ -2071,11 +2070,16 @@ fn crop_selected_field_for_domain(
     else {
         return Ok(field.clone());
     };
+    let mut cropped_grid = crop_latlon_grid_for_direct(&field.grid, crop)?;
+    if should_normalize_periodic_direct_crop_longitudes(field, bounds, preserve_full_longitude_axis)
+    {
+        normalize_grid_longitudes_around(&mut cropped_grid, center_longitude_for_bounds(bounds));
+    }
     let mut cropped = SelectedField2D::new(
         field.selector,
         field.units.clone(),
-        crop_latlon_grid(&field.grid, crop)?,
-        crop_values_f32(&field.values, field.grid.shape.nx, crop),
+        cropped_grid,
+        crop_values_f32_for_direct(&field.values, field.grid.shape.nx, crop),
     )?;
     if let Some(projection) = field.projection.clone() {
         cropped = cropped.with_projection(projection);
@@ -2083,18 +2087,123 @@ fn crop_selected_field_for_domain(
     Ok(cropped)
 }
 
+fn should_normalize_periodic_direct_crop_longitudes(
+    field: &SelectedField2D,
+    bounds: (f64, f64, f64, f64),
+    preserve_full_longitude_axis: bool,
+) -> bool {
+    preserve_full_longitude_axis
+        && longitude_bounds_span_deg(bounds) < 359.0
+        && direct_field_has_periodic_geographic_axis(field)
+}
+
+fn normalize_grid_longitudes_around(grid: &mut rustwx_core::LatLonGrid, center_lon: f64) {
+    for lon in &mut grid.lon_deg {
+        let mut value = *lon as f64;
+        while value - center_lon > 180.0 {
+            value -= 360.0;
+        }
+        while value - center_lon < -180.0 {
+            value += 360.0;
+        }
+        *lon = value as f32;
+    }
+}
+
+fn direct_field_has_periodic_geographic_axis(field: &SelectedField2D) -> bool {
+    let regular_latlon = matches!(field.projection.as_ref(), Some(GridProjection::Geographic))
+        || (field.projection.is_none()
+            && rectilinear_latlon_mesh_for_inverse(&field.grid.lat_deg, &field.grid.lon_deg));
+    regular_latlon && grid_has_full_periodic_longitude_axis(&field.grid)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectGridCrop {
+    Contiguous(GridCrop),
+    Wrapped {
+        x_start: usize,
+        x_end: usize,
+        y_start: usize,
+        y_end: usize,
+    },
+}
+
+impl DirectGridCrop {
+    fn width(self, source_nx: usize) -> usize {
+        match self {
+            Self::Contiguous(crop) => crop.width(),
+            Self::Wrapped { x_start, x_end, .. } => source_nx - x_start + x_end,
+        }
+    }
+
+    fn height(self) -> usize {
+        match self {
+            Self::Contiguous(crop) => crop.height(),
+            Self::Wrapped { y_start, y_end, .. } => y_end - y_start,
+        }
+    }
+
+    fn is_full(self, source_nx: usize, source_ny: usize) -> bool {
+        match self {
+            Self::Contiguous(crop) => {
+                crop.x_start == 0
+                    && crop.x_end == source_nx
+                    && crop.y_start == 0
+                    && crop.y_end == source_ny
+            }
+            Self::Wrapped { .. } => false,
+        }
+    }
+}
+
+fn crop_latlon_grid_for_direct(
+    grid: &rustwx_core::LatLonGrid,
+    crop: DirectGridCrop,
+) -> Result<rustwx_core::LatLonGrid, Box<dyn std::error::Error>> {
+    if let DirectGridCrop::Contiguous(crop) = crop {
+        return crop_latlon_grid(grid, crop);
+    }
+
+    Ok(rustwx_core::LatLonGrid::new(
+        rustwx_core::GridShape::new(crop.width(grid.shape.nx), crop.height())?,
+        crop_values_f32_for_direct(&grid.lat_deg, grid.shape.nx, crop),
+        crop_values_f32_for_direct(&grid.lon_deg, grid.shape.nx, crop),
+    )?)
+}
+
+fn crop_values_f32_for_direct(values: &[f32], source_nx: usize, crop: DirectGridCrop) -> Vec<f32> {
+    match crop {
+        DirectGridCrop::Contiguous(crop) => crop_values_f32(values, source_nx, crop),
+        DirectGridCrop::Wrapped {
+            x_start,
+            x_end,
+            y_start,
+            y_end,
+        } => {
+            let mut cropped = Vec::with_capacity(crop.width(source_nx) * crop.height());
+            for y in y_start..y_end {
+                let row_start = y * source_nx;
+                cropped.extend_from_slice(&values[row_start + x_start..row_start + source_nx]);
+                cropped.extend_from_slice(&values[row_start..row_start + x_end]);
+            }
+            cropped
+        }
+    }
+}
+
 fn crop_for_direct_grid(
     grid: &rustwx_core::LatLonGrid,
     bounds: (f64, f64, f64, f64),
     pad_cells: usize,
     preserve_full_longitude_axis: bool,
-) -> Result<Option<GridCrop>, Box<dyn std::error::Error>> {
+) -> Result<Option<DirectGridCrop>, Box<dyn std::error::Error>> {
     let nx = grid.shape.nx;
     let ny = grid.shape.ny;
     if nx == 0 || ny == 0 {
         return Ok(None);
     }
 
+    let mut hit_columns = vec![false; nx];
     let mut min_x = nx;
     let mut max_x = 0usize;
     let mut min_y = ny;
@@ -2112,6 +2221,7 @@ fn crop_for_direct_grid(
                 max_x = max_x.max(x);
                 min_y = min_y.min(y);
                 max_y = max_y.max(y);
+                hit_columns[x] = true;
                 found = true;
             }
         }
@@ -2121,25 +2231,115 @@ fn crop_for_direct_grid(
         return Ok(None);
     }
 
-    let crop = GridCrop {
-        x_start: if preserve_full_longitude_axis {
-            0
-        } else {
-            min_x.saturating_sub(pad_cells)
-        },
-        x_end: if preserve_full_longitude_axis {
-            nx
-        } else {
-            (max_x + 1 + pad_cells).min(nx)
-        },
-        y_start: min_y.saturating_sub(pad_cells),
-        y_end: (max_y + 1 + pad_cells).min(ny),
+    let y_start = min_y.saturating_sub(pad_cells);
+    let y_end = (max_y + 1 + pad_cells).min(ny);
+
+    let crop = if preserve_full_longitude_axis
+        && longitude_bounds_span_deg(bounds) < 359.0
+        && grid_has_full_periodic_longitude_axis(grid)
+    {
+        circular_crop_for_hit_columns(&hit_columns, y_start, y_end, pad_cells).unwrap_or(
+            DirectGridCrop::Contiguous(GridCrop {
+                x_start: 0,
+                x_end: nx,
+                y_start,
+                y_end,
+            }),
+        )
+    } else {
+        DirectGridCrop::Contiguous(GridCrop {
+            x_start: if preserve_full_longitude_axis {
+                0
+            } else {
+                min_x.saturating_sub(pad_cells)
+            },
+            x_end: if preserve_full_longitude_axis {
+                nx
+            } else {
+                (max_x + 1 + pad_cells).min(nx)
+            },
+            y_start,
+            y_end,
+        })
     };
 
-    if crop.x_start == 0 && crop.x_end == nx && crop.y_start == 0 && crop.y_end == ny {
+    if crop.is_full(nx, ny) {
         Ok(None)
     } else {
         Ok(Some(crop))
+    }
+}
+
+fn circular_crop_for_hit_columns(
+    hit_columns: &[bool],
+    y_start: usize,
+    y_end: usize,
+    pad_cells: usize,
+) -> Option<DirectGridCrop> {
+    let nx = hit_columns.len();
+    if nx == 0 {
+        return None;
+    }
+    let hits = hit_columns
+        .iter()
+        .enumerate()
+        .filter_map(|(index, hit)| hit.then_some(index))
+        .collect::<Vec<_>>();
+    if hits.is_empty() {
+        return None;
+    }
+    if hits.len() == nx {
+        return Some(DirectGridCrop::Contiguous(GridCrop {
+            x_start: 0,
+            x_end: nx,
+            y_start,
+            y_end,
+        }));
+    }
+
+    let mut largest_gap = 0usize;
+    let mut gap_before_hit = hits[0];
+    let mut gap_after_hit = *hits.last().unwrap();
+    for idx in 0..hits.len() {
+        let current = hits[idx];
+        let next = hits[(idx + 1) % hits.len()];
+        let gap = if next > current {
+            next - current - 1
+        } else {
+            next + nx - current - 1
+        };
+        if gap > largest_gap {
+            largest_gap = gap;
+            gap_after_hit = current;
+            gap_before_hit = next;
+        }
+    }
+
+    if largest_gap <= pad_cells.saturating_mul(2) {
+        return Some(DirectGridCrop::Contiguous(GridCrop {
+            x_start: 0,
+            x_end: nx,
+            y_start,
+            y_end,
+        }));
+    }
+
+    let x_start = (gap_before_hit + nx - (pad_cells % nx)) % nx;
+    let x_end_inclusive = (gap_after_hit + pad_cells) % nx;
+    if x_start <= x_end_inclusive {
+        Some(DirectGridCrop::Contiguous(GridCrop {
+            x_start,
+            x_end: x_end_inclusive + 1,
+            y_start,
+            y_end,
+        }))
+    } else {
+        Some(DirectGridCrop::Wrapped {
+            x_start,
+            x_end: x_end_inclusive + 1,
+            y_start,
+            y_end,
+        })
     }
 }
 
@@ -3455,9 +3655,6 @@ fn build_streamline_layers(
     streamline_layer_cache: &SharedStreamlineLayerCache,
     barb_stride_cache: &SharedBarbStrideCache,
 ) -> Vec<WindStreamlineLayer> {
-    if !static_streamlines_enabled() {
-        return Vec::new();
-    }
     let (Some(u_spec), Some(v_spec)) = (&recipe.barbs_u, &recipe.barbs_v) else {
         return Vec::new();
     };
@@ -3467,6 +3664,9 @@ fn build_streamline_layers(
     let (Some(u), Some(v)) = (extracted.get(&u_selector), extracted.get(&v_selector)) else {
         return Vec::new();
     };
+    if !static_streamlines_enabled_for_grid(&u.grid) {
+        return Vec::new();
+    }
     let key = BarbStrideCacheKey {
         u_selector,
         v_selector,
@@ -3655,16 +3855,39 @@ fn static_barb_density_scale() -> f64 {
         .clamp(0.25, 4.0)
 }
 
-fn static_streamlines_enabled() -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamlineSetting {
+    Auto,
+    Enabled,
+    Disabled,
+}
+
+fn static_streamline_setting() -> StreamlineSetting {
     std::env::var("RUSTWX_WIND_STREAMLINES")
         .ok()
-        .map(|value| {
-            !matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "0" | "false" | "off" | "no"
-            )
+        .map(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "0" | "false" | "off" | "no" => StreamlineSetting::Disabled,
+            "1" | "true" | "on" | "yes" | "force" => StreamlineSetting::Enabled,
+            _ => StreamlineSetting::Auto,
         })
-        .unwrap_or(true)
+        .unwrap_or(StreamlineSetting::Auto)
+}
+
+fn static_streamlines_enabled_for_grid(grid: &rustwx_core::LatLonGrid) -> bool {
+    streamlines_enabled_for_grid(static_streamline_setting(), grid)
+}
+
+fn streamlines_enabled_for_grid(
+    setting: StreamlineSetting,
+    grid: &rustwx_core::LatLonGrid,
+) -> bool {
+    match setting {
+        StreamlineSetting::Disabled => false,
+        StreamlineSetting::Enabled => true,
+        StreamlineSetting::Auto => {
+            !rectilinear_latlon_mesh_for_inverse(&grid.lat_deg, &grid.lon_deg)
+        }
+    }
 }
 
 fn static_streamline_density_scale() -> f64 {
@@ -4482,6 +4705,82 @@ mod tests {
         assert!(point_in_geographic_bounds(0.0, 0.0, bounds));
         assert!(point_in_geographic_bounds(90.0, 0.0, bounds));
         assert!(point_in_geographic_bounds(179.5, 0.0, bounds));
+    }
+
+    fn periodic_global_grid() -> rustwx_core::LatLonGrid {
+        let nx = 36usize;
+        let ny = 3usize;
+        let mut lat = Vec::with_capacity(nx * ny);
+        let mut lon = Vec::with_capacity(nx * ny);
+        for row_lat in [-10.0_f32, 0.0, 10.0] {
+            for x in 0..nx {
+                lat.push(row_lat);
+                lon.push((x as f32) * 10.0);
+            }
+        }
+        rustwx_core::LatLonGrid::new(rustwx_core::GridShape::new(nx, ny).unwrap(), lat, lon)
+            .unwrap()
+    }
+
+    #[test]
+    fn periodic_global_crop_wraps_regional_domains_across_greenwich() {
+        let grid = periodic_global_grid();
+
+        let crop = crop_for_direct_grid(&grid, (-12.0, 12.0, -2.0, 2.0), 1, true)
+            .unwrap()
+            .expect("regional Greenwich crop should trim the periodic axis");
+
+        assert_eq!(
+            crop,
+            DirectGridCrop::Wrapped {
+                x_start: 34,
+                x_end: 3,
+                y_start: 0,
+                y_end: 3,
+            }
+        );
+
+        let cropped = crop_latlon_grid_for_direct(&grid, crop).unwrap();
+        assert_eq!(cropped.shape.nx, 5);
+        assert_eq!(cropped.shape.ny, 3);
+        assert_eq!(&cropped.lon_deg[0..5], &[340.0, 350.0, 0.0, 10.0, 20.0]);
+    }
+
+    #[test]
+    fn periodic_global_direct_crop_normalizes_longitudes_near_domain_center() {
+        let grid = periodic_global_grid();
+        let values = (0..grid.shape.nx * grid.shape.ny)
+            .map(|value| value as f32)
+            .collect::<Vec<_>>();
+        let field = SelectedField2D::new(
+            FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 300),
+            "m",
+            grid,
+            values,
+        )
+        .unwrap();
+
+        let cropped =
+            crop_selected_field_for_domain(&field, (-12.0, 12.0, -2.0, 2.0), 1, true).unwrap();
+
+        assert_eq!(cropped.grid.shape.nx, 5);
+        assert_eq!(cropped.grid.shape.ny, 3);
+        assert_eq!(
+            &cropped.grid.lon_deg[0..5],
+            &[-20.0, -10.0, 0.0, 10.0, 20.0]
+        );
+    }
+
+    #[test]
+    fn streamline_auto_mode_disables_regular_latlon_grids() {
+        assert!(!streamlines_enabled_for_grid(
+            StreamlineSetting::Auto,
+            &periodic_global_grid()
+        ));
+        assert!(streamlines_enabled_for_grid(
+            StreamlineSetting::Enabled,
+            &periodic_global_grid()
+        ));
     }
 
     #[test]

@@ -2169,7 +2169,9 @@ fn contour_cell_corners(
             points[base + overlay.nx + 1],
             points[base + overlay.nx],
         ) {
-            (Some(a), Some(b), Some(c), Some(d)) => Some((a, b, c, d)),
+            (Some(a), Some(b), Some(c), Some(d)) if projected_quad_is_continuous(a, b, c, d) => {
+                Some((a, b, c, d))
+            }
             _ => None,
         }
     } else {
@@ -2188,6 +2190,34 @@ fn contour_cell_corners(
             grid_to_pixel(i as f64, (j + 1) as f64, overlay.nx, overlay.ny, layout),
         ))
     }
+}
+
+fn projected_quad_is_continuous(
+    c0: (f64, f64),
+    c1: (f64, f64),
+    c2: (f64, f64),
+    c3: (f64, f64),
+) -> bool {
+    let top = point_distance(c0, c1);
+    let right = point_distance(c1, c2);
+    let bottom = point_distance(c2, c3);
+    let left = point_distance(c3, c0);
+    if ![top, right, bottom, left]
+        .iter()
+        .all(|value| value.is_finite())
+    {
+        return false;
+    }
+
+    let horizontal = top.max(bottom);
+    let vertical = right.max(left);
+    let large = horizontal.max(vertical);
+    let small = horizontal.min(vertical).max(1.0e-6);
+    !(large > 128.0 && large / small > 10.0)
+}
+
+fn point_distance(a: (f64, f64), b: (f64, f64)) -> f64 {
+    (b.0 - a.0).hypot(b.1 - a.1)
 }
 
 fn emit_interp_point(
@@ -3255,6 +3285,9 @@ fn projected_pixel_bilinear(
         .iter()
         .all(|value| value.is_finite())
     {
+        return None;
+    }
+    if !projected_quad_is_continuous(p00, p10, p11, p01) {
         return None;
     }
 
@@ -5285,6 +5318,44 @@ mod tests {
         );
 
         assert_eq!(legacy, bucketed);
+    }
+
+    #[test]
+    fn contour_cells_reject_projected_seam_jumps() {
+        let layout = contour_test_layout();
+        let overlay = ContourOverlay {
+            data: vec![0.0, 1.0, 2.0, 3.0],
+            ny: 2,
+            nx: 2,
+            levels: vec![1.5],
+            color: Rgba::BLACK,
+            width: 1,
+            labels: false,
+            show_extrema: false,
+            pattern: crate::request::ContourLinePattern::Solid,
+            major_every: None,
+            major_width: None,
+        };
+        let pixel_points = vec![
+            Some((0.0, 0.0)),
+            Some((1000.0, 0.0)),
+            Some((0.0, 64.0)),
+            Some((1000.0, 64.0)),
+        ];
+
+        assert!(contour_cell_corners(&layout, &overlay, Some(&pixel_points), 0).is_none());
+    }
+
+    #[test]
+    fn projected_pixel_bilinear_rejects_projected_seam_jumps() {
+        let pixel_points = vec![
+            Some((0.0, 0.0)),
+            Some((1000.0, 0.0)),
+            Some((0.0, 64.0)),
+            Some((1000.0, 64.0)),
+        ];
+
+        assert!(projected_pixel_bilinear(&pixel_points, 2, 2, 0.5, 0.5).is_none());
     }
 
     #[test]
