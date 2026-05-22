@@ -197,28 +197,6 @@ fn probe_sources_json(
 #[cfg(feature = "python")]
 const AGENT_API_VERSION: &str = "rustwx-agent-v1";
 #[cfg(feature = "python")]
-const BUILT_IN_MODELS: &[ModelId] = &[
-    ModelId::Hrrr,
-    ModelId::HrrrAk,
-    ModelId::Gfs,
-    ModelId::Gdas,
-    ModelId::Gefs,
-    ModelId::Aigfs,
-    ModelId::Aigefs,
-    ModelId::EcmwfOpenData,
-    ModelId::Aifs,
-    ModelId::Rap,
-    ModelId::Nam,
-    ModelId::Hiresw,
-    ModelId::Sref,
-    ModelId::Rtma,
-    ModelId::Urma,
-    ModelId::Nbm,
-    ModelId::RrfsA,
-    ModelId::WrfGdex,
-];
-
-#[cfg(feature = "python")]
 static POINT_TIMESERIES_GRID_STORES: LazyLock<
     Mutex<HashMap<String, Arc<PointTimeseriesGridStore>>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -696,12 +674,11 @@ struct RoutedRenderProducts {
 
 #[cfg(feature = "python")]
 fn agent_capabilities_json_impl() -> PyResult<String> {
-    let models = BUILT_IN_MODELS
+    let models = rustwx_models::built_in_models()
         .iter()
-        .copied()
-        .map(|model| {
+        .map(|summary| {
+            let model = summary.id;
             let derived_inventory = supported_derived_recipe_inventory();
-            let summary = rustwx_models::model_summary(model);
             serde_json::json!({
                 "id": model.as_str(),
                 "default_product": summary.default_product,
@@ -1378,6 +1355,7 @@ fn run_heavy_derived_domains(
             surface_product_override: plan.request.surface_product_override.clone(),
             pressure_product_override: plan.request.pressure_product_override.clone(),
             source_mode: plan.request.source_mode,
+            earth2_ensemble: plan.request.earth2_ensemble,
             allow_large_heavy_domain: plan.request.allow_large_heavy_domain,
             contour_mode: NativeContourRenderMode::Automatic,
             native_fill_level_multiplier: 1,

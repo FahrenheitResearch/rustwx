@@ -38,7 +38,7 @@ impl StaticPlotStyle {
         std::env::var("RUSTWX_PLOT_STYLE")
             .ok()
             .and_then(|value| Self::parse(&value))
-            .unwrap_or_default()
+            .unwrap_or(Self::OperationalFast)
     }
 
     pub fn parse(value: &str) -> Option<Self> {
