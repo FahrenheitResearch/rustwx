@@ -1255,13 +1255,13 @@ fn parcel_row(
         label: label.to_string(),
         ecape: finite_or(ecape.ecape, f64::NAN),
         ncape: finite_or(ecape.ncape, f64::NAN),
-        cape: finite_or(ecape.cape, native.bplus),
-        cape_3km: finite_or(ecape.cape_3km, native.b3km),
-        cape_6km: finite_or(ecape.cape_6km, native.b6km),
-        cinh: finite_or(ecape.cinh, native.bminus),
+        cape: finite_or(native.bplus, ecape.cape),
+        cape_3km: finite_or(native.b3km, ecape.cape_3km),
+        cape_6km: finite_or(native.b6km, ecape.cape_6km),
+        cinh: finite_or(native.bminus, ecape.cinh),
         lcl_m: native.lclhght,
-        lfc_m: finite_or(ecape.lfc_m, native.lfchght),
-        el_m: finite_or(ecape.el_m, native.elhght),
+        lfc_m: native.lfchght,
+        el_m: native.elhght,
     }
 }
 
@@ -1819,4 +1819,45 @@ struct StormMotionRow {
     label: String,
     direction: f64,
     speed: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parcel_row_uses_native_parcel_values() {
+        let ecape = VerifiedEcapeParcelParams {
+            ecape: 1151.0,
+            ncape: 0.17,
+            cape: 1964.0,
+            cinh: 0.0,
+            cape_3km: 220.0,
+            cape_6km: 828.0,
+            lfc_m: 0.0,
+            el_m: 9999.0,
+        };
+        let native = cape::ParcelResult {
+            bplus: 1361.0,
+            bminus: 0.0,
+            b3km: 180.0,
+            b6km: 700.0,
+            lclhght: 343.0,
+            lfchght: 343.0,
+            elhght: 11538.0,
+            ..cape::ParcelResult::default()
+        };
+
+        let row = parcel_row("Surface", &ecape, &native);
+
+        assert_eq!(row.ecape, 1151.0);
+        assert_eq!(row.ncape, 0.17);
+        assert_eq!(row.cape, 1361.0);
+        assert_eq!(row.cape_3km, 180.0);
+        assert_eq!(row.cape_6km, 700.0);
+        assert_eq!(row.cinh, 0.0);
+        assert_eq!(row.lcl_m, 343.0);
+        assert_eq!(row.lfc_m, 343.0);
+        assert_eq!(row.el_m, 11538.0);
+    }
 }

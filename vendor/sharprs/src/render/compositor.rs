@@ -590,40 +590,40 @@ fn build_param_table(profile: &Profile, p: &ComputedParams) -> ParamTableData {
             label: "SFC".into(),
             ecape: nan_or(p.sfc_ecape.ecape),
             ncape: nan_or(p.sfc_ecape.ncape),
-            cape: finite_or(p.sfc_ecape.cape, nan_or(p.sfcpcl.bplus)),
-            cape_3km: finite_or(p.sfc_ecape.cape_3km, nan_or(p.sfcpcl.b3km)),
-            cape_6km: finite_or(p.sfc_ecape.cape_6km, nan_or(p.sfcpcl.b6km)),
-            cinh: finite_or(p.sfc_ecape.cinh, nan_or(p.sfcpcl.bminus)),
+            cape: finite_or(p.sfcpcl.bplus, nan_or(p.sfc_ecape.cape)),
+            cape_3km: finite_or(p.sfcpcl.b3km, nan_or(p.sfc_ecape.cape_3km)),
+            cape_6km: finite_or(p.sfcpcl.b6km, nan_or(p.sfc_ecape.cape_6km)),
+            cinh: finite_or(p.sfcpcl.bminus, nan_or(p.sfc_ecape.cinh)),
             lcl_m: nan_or(p.sfcpcl.lclhght),
             li: nan_or(p.sfcpcl.li5),
-            lfc_m: finite_or(p.sfc_ecape.lfc_m, nan_or(p.sfcpcl.lfchght)),
-            el_m: finite_or(p.sfc_ecape.el_m, nan_or(p.sfcpcl.elhght)),
+            lfc_m: nan_or(p.sfcpcl.lfchght),
+            el_m: nan_or(p.sfcpcl.elhght),
         },
         ParcelRow {
             label: "ML".into(),
             ecape: nan_or(p.ml_ecape.ecape),
             ncape: nan_or(p.ml_ecape.ncape),
-            cape: finite_or(p.ml_ecape.cape, nan_or(p.mlpcl.bplus)),
-            cape_3km: finite_or(p.ml_ecape.cape_3km, nan_or(p.mlpcl.b3km)),
-            cape_6km: finite_or(p.ml_ecape.cape_6km, nan_or(p.mlpcl.b6km)),
-            cinh: finite_or(p.ml_ecape.cinh, nan_or(p.mlpcl.bminus)),
+            cape: finite_or(p.mlpcl.bplus, nan_or(p.ml_ecape.cape)),
+            cape_3km: finite_or(p.mlpcl.b3km, nan_or(p.ml_ecape.cape_3km)),
+            cape_6km: finite_or(p.mlpcl.b6km, nan_or(p.ml_ecape.cape_6km)),
+            cinh: finite_or(p.mlpcl.bminus, nan_or(p.ml_ecape.cinh)),
             lcl_m: nan_or(p.mlpcl.lclhght),
             li: nan_or(p.mlpcl.li5),
-            lfc_m: finite_or(p.ml_ecape.lfc_m, nan_or(p.mlpcl.lfchght)),
-            el_m: finite_or(p.ml_ecape.el_m, nan_or(p.mlpcl.elhght)),
+            lfc_m: nan_or(p.mlpcl.lfchght),
+            el_m: nan_or(p.mlpcl.elhght),
         },
         ParcelRow {
             label: "MU".into(),
             ecape: nan_or(p.mu_ecape.ecape),
             ncape: nan_or(p.mu_ecape.ncape),
-            cape: finite_or(p.mu_ecape.cape, nan_or(p.mupcl.bplus)),
-            cape_3km: finite_or(p.mu_ecape.cape_3km, nan_or(p.mupcl.b3km)),
-            cape_6km: finite_or(p.mu_ecape.cape_6km, nan_or(p.mupcl.b6km)),
-            cinh: finite_or(p.mu_ecape.cinh, nan_or(p.mupcl.bminus)),
+            cape: finite_or(p.mupcl.bplus, nan_or(p.mu_ecape.cape)),
+            cape_3km: finite_or(p.mupcl.b3km, nan_or(p.mu_ecape.cape_3km)),
+            cape_6km: finite_or(p.mupcl.b6km, nan_or(p.mu_ecape.cape_6km)),
+            cinh: finite_or(p.mupcl.bminus, nan_or(p.mu_ecape.cinh)),
             lcl_m: nan_or(p.mupcl.lclhght),
             li: nan_or(p.mupcl.li5),
-            lfc_m: finite_or(p.mu_ecape.lfc_m, nan_or(p.mupcl.lfchght)),
-            el_m: finite_or(p.mu_ecape.el_m, nan_or(p.mupcl.elhght)),
+            lfc_m: nan_or(p.mupcl.lfchght),
+            el_m: nan_or(p.mupcl.elhght),
         },
     ];
 
@@ -1160,6 +1160,21 @@ mod tests {
         .unwrap()
     }
 
+    fn assert_same_value(actual: f64, expected: f64) {
+        if actual.is_nan() && expected.is_nan() {
+            return;
+        }
+        assert_eq!(actual, expected);
+    }
+
+    fn table_value(value: f64) -> f64 {
+        if value.is_finite() {
+            value
+        } else {
+            f64::NAN
+        }
+    }
+
     #[test]
     fn compute_params_runs() {
         let prof = test_profile();
@@ -1168,6 +1183,38 @@ mod tests {
         assert!(params.sfcpcl.bplus.is_finite() || params.sfcpcl.bplus.is_nan());
         // Storm motion should have been computed.
         assert!(params.rstu.is_finite() || params.rstu.is_nan());
+    }
+
+    #[test]
+    fn param_table_prefers_native_parcel_values_over_ecape_bridge() {
+        let prof = test_profile();
+        let mut params = compute_all_params(&prof);
+        params.sfc_ecape = EcapeParcelParams {
+            ecape: 1111.0,
+            ncape: 0.42,
+            cape: 9999.0,
+            cinh: -9999.0,
+            cape_3km: 9999.0,
+            cape_6km: 9999.0,
+            lfc_m: 0.0,
+            el_m: 9999.0,
+        };
+
+        let table = build_param_table(&prof, &params);
+        let sfc = table
+            .parcels
+            .iter()
+            .find(|row| row.label == "SFC")
+            .expect("SFC row");
+
+        assert_eq!(sfc.ecape, 1111.0);
+        assert_eq!(sfc.ncape, 0.42);
+        assert_same_value(sfc.cape, table_value(params.sfcpcl.bplus));
+        assert_same_value(sfc.cape_3km, table_value(params.sfcpcl.b3km));
+        assert_same_value(sfc.cape_6km, table_value(params.sfcpcl.b6km));
+        assert_same_value(sfc.cinh, table_value(params.sfcpcl.bminus));
+        assert_same_value(sfc.lfc_m, table_value(params.sfcpcl.lfchght));
+        assert_same_value(sfc.el_m, table_value(params.sfcpcl.elhght));
     }
 
     #[test]
