@@ -24,15 +24,36 @@ With the `python` feature enabled, the module exposes:
 - native sounding-column rendering via `render_sounding_column` and `render_sounding_column_json`
 
 The wheel also installs a stable `rustwx` console command for agent and MCP
-adapters:
+adapters, plus a standalone local web UI command:
 
 ```powershell
 rustwx capabilities
 rustwx list-domains --kind country --limit 5
+rustwx prepare-data --date 20260424 --model hrrr --forecast-hours 0-2 --products 2m_temperature_10m_winds,2m_dewpoint_10m_winds
 rustwx render-maps --date 20260424 --model hrrr --domain california --product 2m_temperature_10m_winds --out-dir out
 rustwx render-lightning --domain california --data-dir C:\Users\drew\lightning-test\data\glm --out-dir out
 rustwx sample-point-timeseries --date 20260427 --cycle 0 --lat 40.802 --lon -124.164 --forecast-hour-end 6
+rustwx-studio
 ```
+
+`rustwx-studio` runs a no-AI browser UI directly from the `rustwx` wheel. The
+first surface includes every model/product advertised by
+`agent_capabilities_json`, GOES satellite rendering through
+`render_goes_satellite_json`, click-to-sounding, pressure VolumeStore
+cross-sections, WxStore export/import/plotting, point time-series sampling
+through `sample_point_timeseries_json`, and NEXRAD rendering when the optional
+`radar_export` binary is available on `PATH` or via `--bin-dir`.
+Studio launches generation through a local background job queue, so larger
+domain/product batches can be monitored from the browser while outputs stream
+into the configured artifact directory.
+The **Prepare Data** action and `prepare_model_data_json` API warm the shared
+GRIB cache for selected products, forecast hours, model runs, and sources before
+plotting, so subsequent map renders reuse cached subsets. The same workflow is
+available from the console as `rustwx prepare-data`.
+Interactive soundings and cross sections use a pressure VolumeStore when the
+optional store builder/renderers are available: the first request warms the
+model/domain/hour cache, and subsequent clicks render from the store rather than
+re-decoding pressure GRIBs.
 
 `render-maps` accepts mixed product slugs and routes them to the appropriate
 direct, light derived, heavy ECAPE-derived, or HRRR windowed product path. Heavy

@@ -18,7 +18,7 @@ use rustwx_core::{Field2D, ProductKey};
 use rustwx_render::{
     Color, ColorScale, DiscreteColorScale, ExtendMode, WeatherPalette, WeatherProduct,
     palette_scale,
-    weather::{dewpoint_palette_params, temperature_palette_cropped_f},
+    weather::{dewpoint_palette_celsius_for_levels, temperature_palette_cropped_f},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -1261,9 +1261,10 @@ pub(crate) fn rh2m_scale(range: bool) -> DiscreteColorScale {
 }
 
 pub(crate) fn dewpoint2m_scale() -> DiscreteColorScale {
+    let levels = range_step(-40.0, 31.0, 1.0);
     DiscreteColorScale {
-        levels: range_step(-40.0, 31.0, 1.0),
-        colors: dewpoint_palette_params(90, 50),
+        colors: dewpoint_palette_celsius_for_levels(&levels),
+        levels,
         extend: ExtendMode::Both,
         mask_below: None,
     }

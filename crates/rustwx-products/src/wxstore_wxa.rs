@@ -6,8 +6,11 @@ use crate::shared_context::{
 };
 use rustwx_core::{Field2D, GridProjection, GridShape, LatLonGrid, ModelId, ProductKey};
 use rustwx_models::{PlotRecipe, RenderStyle, plot_recipe};
+use rustwx_render::weather::{
+    dewpoint_palette_celsius_for_levels, dewpoint_palette_fahrenheit_for_levels,
+};
 use rustwx_render::{
-    Color, ColorScale, DiscreteColorScale, ExtendMode, LineworkRole, MapRenderRequest,
+    Color, ColorScale, DiscreteColorScale, ExtendMode, LegendMode, LineworkRole, MapRenderRequest,
     PngCompressionMode, PngWriteOptions, ProductVisualMode, StaticPlotStyle, WeatherPalette,
     WeatherPreset, WeatherProduct, WindBarbLayer, WindStreamlineLayer, palette_scale,
     save_png_profile_with_options_and_style,
@@ -342,6 +345,9 @@ fn build_wxa_map_request(
     request.supersample_sharpen = static_supersample_sharpen();
     request.cbar_tick_step = tick_step;
     StaticPlotDesign::new(bounds, visual_mode).apply_to_request(&mut request);
+    if wxa.meta.variable.to_ascii_lowercase().contains("dewpoint") {
+        request.legend.mode = LegendMode::Stepped;
+    }
 
     let target_ratio =
         rustwx_render::map_frame_aspect_ratio_for_mode_with_domain_frame_and_chrome_scale(
@@ -623,13 +629,30 @@ fn plot_style_for_wxa_product(
         } else {
             range_step(-50.0, 51.0, 1.0)
         };
-        let palette = if lower.contains("dewpoint") {
-            WeatherPalette::Dewpoint
-        } else {
-            WeatherPalette::Temperature
-        };
+        if lower.contains("dewpoint") {
+            let colors = if units.eq_ignore_ascii_case("degF") {
+                dewpoint_palette_fahrenheit_for_levels(&levels)
+            } else {
+                dewpoint_palette_celsius_for_levels(&levels)
+            };
+            return (
+                ColorScale::Discrete(DiscreteColorScale {
+                    levels,
+                    colors,
+                    extend: ExtendMode::Both,
+                    mask_below: None,
+                }),
+                ProductVisualMode::FilledMeteorology,
+                Some(10.0),
+            );
+        }
         return (
-            ColorScale::Discrete(palette_scale(palette, levels, ExtendMode::Both, None)),
+            ColorScale::Discrete(palette_scale(
+                WeatherPalette::Temperature,
+                levels,
+                ExtendMode::Both,
+                None,
+            )),
             ProductVisualMode::FilledMeteorology,
             Some(10.0),
         );

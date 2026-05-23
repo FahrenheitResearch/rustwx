@@ -5,7 +5,8 @@ use rustwx_render::{
     ExtendMode, LegendControls, LegendMode, LevelDensity, MapRenderRequest, ProductVisualMode,
     RenderDensity, WindStreamlineStyle,
     weather::{
-        WeatherPalette, dewpoint_palette_params, temperature_palette_cropped_f, weather_palette,
+        WeatherPalette, dewpoint_palette_celsius_for_levels,
+        dewpoint_palette_fahrenheit_for_levels, temperature_palette_cropped_f, weather_palette,
         winds_palette_segments,
     },
 };
@@ -429,24 +430,33 @@ fn ten_meter_wind_speed_scale() -> DiscreteColorScale {
 
 fn dewpoint_scale_for_selector(selector: FieldSelector) -> DiscreteColorScale {
     match selector.vertical {
-        VerticalSelector::HeightAboveGroundMeters(2) => DiscreteColorScale {
-            levels: range_step(-40.0, 80.0, 1.0),
-            colors: dewpoint_palette_params(90, 50),
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
-        VerticalSelector::IsobaricHpa(_) => DiscreteColorScale {
-            levels: range_step(-40.0, 30.0, 5.0),
-            colors: dewpoint_palette_params(45, 25),
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
-        _ => DiscreteColorScale {
-            levels: range_step(-40.0, 80.0, 5.0),
-            colors: dewpoint_palette_params(90, 50),
-            extend: ExtendMode::Both,
-            mask_below: None,
-        },
+        VerticalSelector::HeightAboveGroundMeters(2) => {
+            let levels = range_step(-40.0, 91.0, 1.0);
+            DiscreteColorScale {
+                colors: dewpoint_palette_fahrenheit_for_levels(&levels),
+                levels,
+                extend: ExtendMode::Both,
+                mask_below: None,
+            }
+        }
+        VerticalSelector::IsobaricHpa(_) => {
+            let levels = range_step(-40.0, 31.0, 1.0);
+            DiscreteColorScale {
+                colors: dewpoint_palette_celsius_for_levels(&levels),
+                levels,
+                extend: ExtendMode::Both,
+                mask_below: None,
+            }
+        }
+        _ => {
+            let levels = range_step(-40.0, 91.0, 1.0);
+            DiscreteColorScale {
+                colors: dewpoint_palette_fahrenheit_for_levels(&levels),
+                levels,
+                extend: ExtendMode::Both,
+                mask_below: None,
+            }
+        }
     }
 }
 

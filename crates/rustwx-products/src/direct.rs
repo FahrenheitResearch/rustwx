@@ -14,8 +14,8 @@ use rustwx_models::{
 };
 use rustwx_render::{
     BasemapDetail, Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode,
-    GeographicClipBounds, InverseRasterProjection, LevelDensity, MapRenderRequest, PanelGridLayout,
-    PanelPadding, PngCompressionMode, PngWriteOptions, ProductVisualMode,
+    GeographicClipBounds, InverseRasterProjection, LegendMode, LevelDensity, MapRenderRequest,
+    PanelGridLayout, PanelPadding, PngCompressionMode, PngWriteOptions, ProductVisualMode,
     ProjectedContourLineStyle, ProjectedDomain, ProjectedMap, ProjectedMapBuildOptions,
     RasterSampleMode, RenderImageTiming, RenderStateTiming, WindBarbLayer, WindStreamlineLayer,
     build_projected_contour_geometry_profile, densify_discrete_scale, draw_centered_text_line,
@@ -2797,6 +2797,12 @@ fn render_direct_recipe(
     })
 }
 
+fn apply_direct_recipe_render_controls(recipe: &PlotRecipe, request: &mut MapRenderRequest) {
+    if matches!(recipe.style, RenderStyle::WeatherDewpoint) {
+        request.legend.mode = LegendMode::Stepped;
+    }
+}
+
 fn render_direct_composite_panel(
     recipe: &PlotRecipe,
     spec: CompositePanelSpec,
@@ -3050,6 +3056,7 @@ fn build_render_request(
     crate::plot_design::StaticPlotDesign::new(bounds, visual_mode)
         .overlay_only(overlay_only)
         .apply_to_request(&mut request);
+    apply_direct_recipe_render_controls(recipe, &mut request);
     request.title = Some(static_title_with_suffix(recipe.title));
     request.width = output_width;
     request.height = output_height;

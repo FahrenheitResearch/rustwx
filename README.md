@@ -112,6 +112,33 @@ The Python package is intentionally thin. It exposes model/source metadata and
 projected-map rendering helpers while keeping fetch, decode, compute, and render
 hot paths in Rust.
 
+It also ships a standalone no-AI local web UI:
+
+```bash
+rustwx-studio
+```
+
+For local development with optional radar/sounding/cross-section binaries:
+
+```powershell
+rustwx-studio --bin-dir C:\Users\drew\rustwx\target\release
+```
+
+The Studio surface covers model maps for every model/product advertised by
+`agent_capabilities_json`, GOES satellite products, NEXRAD rendering through
+`radar_export` when present, click-to-sounding, pressure VolumeStore
+cross-sections, WxStore export/import/plotting, and point time-series sampling.
+Long-running generation runs through a local background job queue so full-domain
+and multi-product batches can keep reporting status while artifacts are written.
+Use **Prepare Data** in Studio to warm the shared GRIB cache for the selected
+model, run, forecast hour, and products before plotting; map rendering then
+reuses those fetched subsets instead of re-downloading data. The same cache
+warming path is exposed as `rustwx prepare-data` for terminal users and wrapper
+apps.
+For interactive soundings and cross sections, Studio can warm a pressure
+VolumeStore once for the selected model/domain/hour and then render follow-up
+samples from that store in tens of milliseconds instead of decoding GRIB again.
+
 ## What works today
 
 ### Model and source plumbing

@@ -42,6 +42,10 @@ struct Args {
     box_radius_km: Option<f64>,
     #[arg(long, allow_hyphen_values = true)]
     box_radius_deg: Option<f64>,
+    #[arg(long, allow_hyphen_values = true)]
+    box_radius_lat_deg: Option<f64>,
+    #[arg(long, allow_hyphen_values = true)]
+    box_radius_lon_deg: Option<f64>,
     #[arg(long)]
     station_id: Option<String>,
     #[arg(long)]
@@ -96,6 +100,10 @@ struct SoundingPlotRequest {
     box_radius_km: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     box_radius_deg: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    box_radius_lat_deg: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    box_radius_lon_deg: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     effective_box_radius_deg: Option<(f64, f64)>,
 }
@@ -268,6 +276,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sample_method: args.sample_method,
             box_radius_km: args.box_radius_km,
             box_radius_deg: args.box_radius_deg,
+            box_radius_lat_deg: args.box_radius_lat_deg,
+            box_radius_lon_deg: args.box_radius_lon_deg,
             effective_box_radius_deg: box_radius.map(|radius| (radius.lat, radius.lon)),
         },
         shared_timing: loaded.shared_timing.clone(),
@@ -527,6 +537,21 @@ const DEFAULT_BOX_RADIUS_KM: f64 = 25.0;
 fn box_radius_deg_for_args(
     args: &Args,
 ) -> Result<Option<BoxRadiusDeg>, Box<dyn std::error::Error>> {
+    if args.box_radius_lat_deg.is_some() || args.box_radius_lon_deg.is_some() {
+        let lat = args
+            .box_radius_lat_deg
+            .ok_or("--box-radius-lat-deg requires --box-radius-lon-deg")?;
+        let lon = args
+            .box_radius_lon_deg
+            .ok_or("--box-radius-lon-deg requires --box-radius-lat-deg")?;
+        if lat < 0.0 || !lat.is_finite() || lon < 0.0 || !lon.is_finite() {
+            return Err(
+                "--box-radius-lat-deg and --box-radius-lon-deg must be finite non-negative values"
+                    .into(),
+            );
+        }
+        return Ok(Some(BoxRadiusDeg { lat, lon }));
+    }
     if let Some(radius_deg) = args.box_radius_deg {
         if radius_deg < 0.0 || !radius_deg.is_finite() {
             return Err("--box-radius-deg must be a finite non-negative value".into());

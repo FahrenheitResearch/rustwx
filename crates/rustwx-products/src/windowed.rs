@@ -25,8 +25,8 @@ use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId
 use rustwx_models::{LatestRun, resolve_canonical_bundle_product};
 use rustwx_render::map_frame_aspect_ratio;
 use rustwx_render::{
-    MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode, WeatherProduct,
-    save_png_profile_with_options,
+    LegendMode, MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode,
+    WeatherProduct, save_png_profile_with_options,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1818,6 +1818,20 @@ fn build_windowed_render_request(
     };
     crate::plot_design::StaticPlotDesign::new(request.domain.bounds, visual_mode)
         .apply_to_request(&mut render_request);
+    if matches!(
+        product,
+        HrrrWindowedProduct::Dewpoint2m0to24hMax
+            | HrrrWindowedProduct::Dewpoint2m24to48hMax
+            | HrrrWindowedProduct::Dewpoint2m0to48hMax
+            | HrrrWindowedProduct::Dewpoint2m0to24hMin
+            | HrrrWindowedProduct::Dewpoint2m24to48hMin
+            | HrrrWindowedProduct::Dewpoint2m0to48hMin
+            | HrrrWindowedProduct::Dewpoint2m0to24hRange
+            | HrrrWindowedProduct::Dewpoint2m24to48hRange
+            | HrrrWindowedProduct::Dewpoint2m0to48hRange
+    ) {
+        render_request.legend.mode = LegendMode::Stepped;
+    }
     render_request.projected_domain = Some(rustwx_render::ProjectedDomain {
         x: projected.projected_x.clone(),
         y: projected.projected_y.clone(),

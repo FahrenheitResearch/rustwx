@@ -4,11 +4,12 @@ build-backend = "maturin"
 
 [project]
 name = "rustwx"
-version = "0.5.10"
+version = "0.5.11"
 description = "Rust-first weather model metadata and projected map rendering bindings"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
+dependencies = ["numpy>=1.26,<2.3"]
 keywords = ["weather", "meteorology", "hrrr", "grib", "rendering"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -28,7 +29,9 @@ Repository = "https://github.com/FahrenheitResearch/rustwx"
 
 [project.scripts]
 rustwx = "rustwx:cli_main"
+rustwx-studio = "rustwx.studio:run_cli"
 
 [tool.maturin]
-module-name = "rustwx"
+module-name = "rustwx.rustwx"
+python-source = "python"
 features = ["python"]

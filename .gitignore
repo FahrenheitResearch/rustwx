@@ -38,6 +38,8 @@ proof/*decode_stats.json
 /cache/
 /data/
 /scratch/
+/release_dist/
+/rustwx_outputs*/
 /aifs_inference_archive/
 /earth2_archive/
 /node_local/

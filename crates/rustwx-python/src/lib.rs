@@ -16,7 +16,7 @@ use rustwx_core::{
 #[cfg(feature = "python")]
 use rustwx_io::earth2_archive::{Earth2EnsembleSelector, Earth2EnsembleStat};
 #[cfg(feature = "python")]
-use rustwx_io::{FetchRequest, available_forecast_hours, probe_sources};
+use rustwx_io::{FetchRequest, available_forecast_hours, fetch_bytes_with_cache, probe_sources};
 #[cfg(feature = "python")]
 use rustwx_products::{
     derived::{
@@ -52,7 +52,7 @@ use rustwx_sounding::{SoundingColumn, write_full_sounding_png};
 #[cfg(feature = "python")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "python")]
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(feature = "python")]
 use std::fs;
 #[cfg(feature = "python")]
@@ -69,6 +69,9 @@ use wrf_render::{
     normalize_cross_section_request_json, render_projected_map, render_projected_map_json,
     render_wrf_map, render_wrf_map_json,
 };
+
+#[cfg(feature = "python")]
+const DEFAULT_GOES_SATELLITE: &str = "goes19";
 
 #[cfg(feature = "python")]
 #[pyfunction]
@@ -134,12 +137,27 @@ fn resolve_urls_json(
 
 #[cfg(feature = "python")]
 #[pyfunction]
-#[pyo3(signature = (model, date, source=None))]
-fn latest_run_json(model: &str, date: &str, source: Option<&str>) -> PyResult<String> {
+#[pyo3(signature = (model, date, source=None, forecast_hour=None))]
+fn latest_run_json(
+    model: &str,
+    date: &str,
+    source: Option<&str>,
+    forecast_hour: Option<u16>,
+) -> PyResult<String> {
     let model: ModelId = parse_model(model)?;
     let source = parse_optional_source(source)?;
-    let latest = rustwx_models::latest_available_run(model, source, date)
-        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+    let latest = match forecast_hour {
+        Some(forecast_hour) => {
+            rustwx_models::latest_available_run_at_forecast_hour(
+                model,
+                source,
+                date,
+                forecast_hour,
+            )
+        }
+        None => rustwx_models::latest_available_run(model, source, date),
+    }
+    .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
     serde_json::to_string_pretty(&latest)
         .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
 }
@@ -210,63 +228,76 @@ fn agent_capabilities_json() -> PyResult<String> {
 #[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (request_json))]
-fn render_maps_json(request_json: &str) -> PyResult<String> {
+fn render_maps_json(py: Python<'_>, request_json: &str) -> PyResult<String> {
     let request: RenderMapsRequestJson = serde_json::from_str(request_json).map_err(|err| {
         pyo3::exceptions::PyValueError::new_err(format!("Invalid render-maps request: {err}"))
     })?;
-    render_maps_json_impl(request)
+    py.allow_threads(|| render_maps_json_impl(request))
 }
 
 #[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (request_json))]
-fn render_glm_lightning_json(request_json: &str) -> PyResult<String> {
+fn prepare_model_data_json(py: Python<'_>, request_json: &str) -> PyResult<String> {
+    let request: PrepareModelDataRequestJson =
+        serde_json::from_str(request_json).map_err(|err| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "Invalid prepare-model-data request: {err}"
+            ))
+        })?;
+    py.allow_threads(|| prepare_model_data_json_impl(request))
+}
+
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (request_json))]
+fn render_glm_lightning_json(py: Python<'_>, request_json: &str) -> PyResult<String> {
     let request: RenderGlmLightningRequestJson =
         serde_json::from_str(request_json).map_err(|err| {
             pyo3::exceptions::PyValueError::new_err(format!(
                 "Invalid render-glm-lightning request: {err}"
             ))
         })?;
-    render_glm_lightning_json_impl(request)
+    py.allow_threads(|| render_glm_lightning_json_impl(request))
 }
 
 #[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (request_json))]
-fn render_goes_satellite_json(request_json: &str) -> PyResult<String> {
+fn render_goes_satellite_json(py: Python<'_>, request_json: &str) -> PyResult<String> {
     let request: RenderGoesSatelliteRequestJson =
         serde_json::from_str(request_json).map_err(|err| {
             pyo3::exceptions::PyValueError::new_err(format!(
                 "Invalid render-goes-satellite request: {err}"
             ))
         })?;
-    render_goes_satellite_json_impl(request)
+    py.allow_threads(|| render_goes_satellite_json_impl(request))
 }
 
 #[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (request_json))]
-fn render_goes_native_sequence_json(request_json: &str) -> PyResult<String> {
+fn render_goes_native_sequence_json(py: Python<'_>, request_json: &str) -> PyResult<String> {
     let request: RenderGoesNativeSequenceRequestJson =
         serde_json::from_str(request_json).map_err(|err| {
             pyo3::exceptions::PyValueError::new_err(format!(
                 "Invalid render-goes-native-sequence request: {err}"
             ))
         })?;
-    render_goes_native_sequence_json_impl(request)
+    py.allow_threads(|| render_goes_native_sequence_json_impl(request))
 }
 
 #[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (request_json))]
-fn sample_point_timeseries_json(request_json: &str) -> PyResult<String> {
+fn sample_point_timeseries_json(py: Python<'_>, request_json: &str) -> PyResult<String> {
     let request: SamplePointTimeseriesRequestJson =
         serde_json::from_str(request_json).map_err(|err| {
             pyo3::exceptions::PyValueError::new_err(format!(
                 "Invalid sample-point-timeseries request: {err}"
             ))
         })?;
-    sample_point_timeseries_json_impl(request)
+    py.allow_threads(|| sample_point_timeseries_json_impl(request))
 }
 
 #[cfg(feature = "python")]
@@ -408,6 +439,43 @@ struct RenderMapsRequestJson {
     domain_jobs: Option<usize>,
     #[serde(default)]
     ensemble: Option<RenderMapsEnsembleRequestJson>,
+}
+
+#[cfg(feature = "python")]
+#[derive(Debug, Clone, Default, Deserialize)]
+struct PrepareModelDataRequestJson {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default, alias = "date")]
+    date_yyyymmdd: Option<String>,
+    #[serde(default, alias = "cycle")]
+    cycle_utc: Option<u8>,
+    #[serde(default, alias = "forecastHour")]
+    forecast_hour: Option<u16>,
+    #[serde(default)]
+    forecast_hours: Option<Vec<u16>>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    products: Option<Vec<String>>,
+    #[serde(default)]
+    cache_dir: Option<PathBuf>,
+    #[serde(default)]
+    use_cache: Option<bool>,
+    #[serde(default)]
+    no_cache: Option<bool>,
+}
+
+#[cfg(feature = "python")]
+#[derive(Debug, Clone)]
+struct PreparedFetchSpec {
+    requested_product: String,
+    fetch_product: String,
+    variable_patterns: Vec<String>,
+    plan_kind: &'static str,
+    fetch_policy: Option<String>,
+    fetch_mode: Option<String>,
+    plan_error: Option<String>,
 }
 
 #[cfg(feature = "python")]
@@ -712,6 +780,7 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
             "python": [
                 "rustwx.agent_capabilities_json()",
                 "rustwx.list_domains_json(kind=None, limit=None)",
+                "rustwx.prepare_model_data_json(request_json)",
                 "rustwx.render_maps_json(request_json)",
                 "rustwx.render_glm_lightning_json(request_json)",
                 "rustwx.render_goes_satellite_json(request_json)",
@@ -720,7 +789,7 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
             "console_scripts": [
                 {
                     "name": "rustwx",
-                    "commands": ["capabilities", "list-domains", "render-maps", "render-lightning", "render-satellite", "sample-point-timeseries"]
+                    "commands": ["capabilities", "list-domains", "prepare-data", "render-maps", "render-lightning", "render-satellite", "sample-point-timeseries"]
                 }
             ]
         },
@@ -748,6 +817,16 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
             "cache_dir": "optional shared fetch/decode cache; default rustwx_outputs/cache, or RUSTWX_CACHE_DIR when set",
             "place_label_density": "none, major, major-and-aux, or dense"
         },
+        "prepare_model_data_request_schema": {
+            "model": "optional model id; default hrrr",
+            "date_yyyymmdd": "YYYYMMDD, required",
+            "cycle_utc": "optional integer UTC cycle; omitted means latest available for date/forecast_hour/source",
+            "forecast_hour": "optional integer forecast hour; default 0",
+            "forecast_hours": "optional explicit forecast-hour list",
+            "source": "optional source id; omitted means latest available source when cycle_utc is omitted",
+            "products": "model map product slugs; rustwx resolves plot-recipe fetch plans and caches the needed GRIB subset or file",
+            "cache_dir": "optional shared fetch/decode cache; default rustwx_outputs/cache, or RUSTWX_CACHE_DIR when set"
+        },
         "render_glm_lightning_request_schema": {
             "domain": "optional built-in domain/country/metro slug; default california",
             "bounds": "optional [west,east,south,north] custom domain override",
@@ -759,7 +838,7 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
             "max_age_min": "recency color-ramp upper bound; default 30"
         },
         "render_goes_satellite_request_schema": {
-            "satellite": "GOES satellite id; default goes18",
+            "satellite": "GOES satellite id; default goes19",
             "abi_product": "NOAA ABI S3 product prefix; default ABI-L2-CMIPC",
             "sector": "optional sector shortcut: conus, full_disk, meso1, or meso2; maps to CMIPC/CMIPF/CMIPM1/CMIPM2",
             "domain": "optional built-in domain slug; default pacific_southwest",
@@ -799,6 +878,183 @@ fn render_maps_json_impl(request: RenderMapsRequestJson) -> PyResult<String> {
     let report = run_render_maps_plan(plan)?;
     serde_json::to_string_pretty(&report)
         .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
+}
+
+#[cfg(feature = "python")]
+fn prepare_model_data_json_impl(request: PrepareModelDataRequestJson) -> PyResult<String> {
+    let model = request.model.as_deref().unwrap_or("hrrr").parse().map_err(
+        |err: rustwx_core::RustwxError| pyo3::exceptions::PyValueError::new_err(err.to_string()),
+    )?;
+    let mut date_yyyymmdd = request.date_yyyymmdd.clone().ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err("prepare-model-data request requires date_yyyymmdd")
+    })?;
+    let requested_source = parse_optional_source(request.source.as_deref())?;
+    let mut source = requested_source;
+    let cycle_utc = match request.cycle_utc {
+        Some(cycle) => cycle,
+        None => {
+            let latest =
+                rustwx_models::latest_available_run(model, requested_source, &date_yyyymmdd)
+                    .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+            date_yyyymmdd = latest.cycle.date_yyyymmdd;
+            if source.is_none() {
+                source = Some(latest.source);
+            }
+            latest.cycle.hour_utc
+        }
+    };
+    let cycle = CycleSpec::new(date_yyyymmdd.clone(), cycle_utc)
+        .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))?;
+    let cache_root = request
+        .cache_dir
+        .clone()
+        .unwrap_or_else(default_render_maps_cache_dir);
+    let use_cache = request.use_cache.unwrap_or(true) && !request.no_cache.unwrap_or(false);
+    let forecast_hours = request
+        .forecast_hours
+        .clone()
+        .filter(|hours| !hours.is_empty())
+        .unwrap_or_else(|| vec![request.forecast_hour.unwrap_or(0)]);
+    let products = request
+        .products
+        .clone()
+        .filter(|products| !products.is_empty())
+        .unwrap_or_else(|| vec![default_render_product(model)]);
+    let started = Instant::now();
+    let mut seen = HashSet::new();
+    let mut prepared = Vec::new();
+    let mut errors = Vec::new();
+    let mut total_bytes: u64 = 0;
+    let mut cache_hits = 0usize;
+
+    for product in &products {
+        let specs = prepare_fetch_specs_for_product(model, product);
+        for spec in specs {
+            for &forecast_hour in &forecast_hours {
+                let key = serde_json::json!({
+                    "hour": forecast_hour,
+                    "fetch_product": spec.fetch_product,
+                    "variable_patterns": spec.variable_patterns,
+                })
+                .to_string();
+                if !seen.insert(key) {
+                    continue;
+                }
+                let fetch_request = match ModelRunRequest::new(
+                    model,
+                    cycle.clone(),
+                    forecast_hour,
+                    spec.fetch_product.clone(),
+                ) {
+                    Ok(model_request) => FetchRequest {
+                        request: model_request,
+                        source_override: source,
+                        variable_patterns: spec.variable_patterns.clone(),
+                        earth2_ensemble: None,
+                    },
+                    Err(err) => {
+                        errors.push(serde_json::json!({
+                            "requested_product": spec.requested_product,
+                            "fetch_product": spec.fetch_product,
+                            "forecast_hour": forecast_hour,
+                            "stage": "build_request",
+                            "error": err.to_string(),
+                            "plan_error": spec.plan_error,
+                        }));
+                        continue;
+                    }
+                };
+                match fetch_bytes_with_cache(&fetch_request, &cache_root, use_cache) {
+                    Ok(cached) => {
+                        let bytes = cached.result.bytes.len() as u64;
+                        total_bytes += bytes;
+                        if cached.cache_hit {
+                            cache_hits += 1;
+                        }
+                        prepared.push(serde_json::json!({
+                            "requested_product": spec.requested_product,
+                            "fetch_product": spec.fetch_product,
+                            "plan_kind": spec.plan_kind,
+                            "fetch_policy": spec.fetch_policy,
+                            "fetch_mode": spec.fetch_mode,
+                            "forecast_hour": forecast_hour,
+                            "source": cached.result.source,
+                            "url": cached.result.url,
+                            "bytes": bytes,
+                            "cache_hit": cached.cache_hit,
+                            "cache_path": cached.bytes_path.display().to_string(),
+                            "metadata_path": cached.metadata_path.display().to_string(),
+                            "variable_patterns": spec.variable_patterns,
+                            "plan_error": spec.plan_error,
+                        }));
+                    }
+                    Err(err) => {
+                        errors.push(serde_json::json!({
+                            "requested_product": spec.requested_product,
+                            "fetch_product": spec.fetch_product,
+                            "plan_kind": spec.plan_kind,
+                            "forecast_hour": forecast_hour,
+                            "stage": "fetch",
+                            "error": err.to_string(),
+                            "variable_patterns": spec.variable_patterns,
+                            "plan_error": spec.plan_error,
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    let payload = serde_json::json!({
+        "schema": "rustwx.prepare_model_data.v1",
+        "ok": !prepared.is_empty() || errors.is_empty(),
+        "partial": !prepared.is_empty() && !errors.is_empty(),
+        "model": model,
+        "date_yyyymmdd": date_yyyymmdd,
+        "cycle_utc": cycle_utc,
+        "source": source,
+        "forecast_hours": forecast_hours,
+        "requested_products": products,
+        "cache_root": cache_root,
+        "use_cache": use_cache,
+        "prepared_count": prepared.len(),
+        "error_count": errors.len(),
+        "cache_hits": cache_hits,
+        "total_bytes": total_bytes,
+        "elapsed_ms": started.elapsed().as_millis(),
+        "prepared": prepared,
+        "errors": errors,
+    });
+    serde_json::to_string_pretty(&payload)
+        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
+}
+
+#[cfg(feature = "python")]
+fn prepare_fetch_specs_for_product(model: ModelId, product: &str) -> Vec<PreparedFetchSpec> {
+    match rustwx_models::plot_recipe_fetch_plan(product, model) {
+        Ok(plan) => vec![PreparedFetchSpec {
+            requested_product: product.to_string(),
+            fetch_product: plan.product.to_string(),
+            variable_patterns: plan
+                .variable_patterns()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            plan_kind: "plot_recipe_fetch_plan",
+            fetch_policy: Some(format!("{:?}", plan.fetch_policy)),
+            fetch_mode: Some(format!("{:?}", plan.fetch_mode)),
+            plan_error: None,
+        }],
+        Err(err) => vec![PreparedFetchSpec {
+            requested_product: product.to_string(),
+            fetch_product: product.to_string(),
+            variable_patterns: Vec::new(),
+            plan_kind: "direct_product_fallback",
+            fetch_policy: None,
+            fetch_mode: None,
+            plan_error: Some(err.to_string()),
+        }],
+    }
 }
 
 #[cfg(feature = "python")]
@@ -951,7 +1207,9 @@ fn render_goes_native_sequence_json_impl(
         .domain_slug
         .unwrap_or_else(|| "native_crop".to_string());
     let mut sequence_request = GoesNativeSequenceRequest {
-        satellite: request.satellite.unwrap_or_else(|| "goes18".to_string()),
+        satellite: request
+            .satellite
+            .unwrap_or_else(|| DEFAULT_GOES_SATELLITE.to_string()),
         abi_product: request
             .abi_product
             .unwrap_or_else(|| "ABI-L2-CMIPC".to_string()),
@@ -2248,6 +2506,21 @@ fn run_agent_cli(argv: &[String]) -> Result<i32, String> {
             );
             Ok(0)
         }
+        "prepare-data" | "prepare-model-data" | "fetch" => {
+            if args[1..]
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+            {
+                print_prepare_data_help();
+                return Ok(0);
+            }
+            let request = prepare_model_data_request_from_cli(&args[1..])?;
+            println!(
+                "{}",
+                prepare_model_data_json_impl(request).map_err(|err| err.to_string())?
+            );
+            Ok(0)
+        }
         "render-lightning" | "render-glm-lightning" | "lightning" => {
             if args[1..]
                 .iter()
@@ -2300,7 +2573,7 @@ fn run_agent_cli(argv: &[String]) -> Result<i32, String> {
 #[cfg(feature = "python")]
 fn print_agent_help() {
     println!(
-        "rustwx {}\n\nUSAGE:\n  rustwx capabilities\n  rustwx list-domains [--kind country|region|metro|watch-area] [--limit N]\n  rustwx render-maps --date YYYYMMDD [--model hrrr] [--cycle H] [--forecast-hour H] [--domain conus] [--product PRODUCT] [--out-dir DIR]\n  rustwx render-maps --request request.json\n  rustwx render-lightning [--domain california] [--data-dir DIR] [--out-dir DIR]\n  rustwx render-satellite [--domain pacific_southwest] [--cache-dir DIR] [--out-dir DIR]\n  rustwx sample-point-timeseries --date YYYYMMDD --lat LAT --lon LON [--forecast-hour-end 48]\n\nPython API: rustwx.agent_capabilities_json(), rustwx.list_domains_json(), rustwx.render_maps_json(request_json), rustwx.render_glm_lightning_json(request_json), rustwx.render_goes_satellite_json(request_json), rustwx.sample_point_timeseries_json(request_json).",
+        "rustwx {}\n\nUSAGE:\n  rustwx capabilities\n  rustwx list-domains [--kind country|region|metro|watch-area] [--limit N]\n  rustwx prepare-data --date YYYYMMDD [--model hrrr] [--cycle H] [--forecast-hour H] [--product PRODUCT]\n  rustwx render-maps --date YYYYMMDD [--model hrrr] [--cycle H] [--forecast-hour H] [--domain conus] [--product PRODUCT] [--out-dir DIR]\n  rustwx render-maps --request request.json\n  rustwx render-lightning [--domain california] [--data-dir DIR] [--out-dir DIR]\n  rustwx render-satellite [--domain pacific_southwest] [--cache-dir DIR] [--out-dir DIR]\n  rustwx sample-point-timeseries --date YYYYMMDD --lat LAT --lon LON [--forecast-hour-end 48]\n\nPython API: rustwx.agent_capabilities_json(), rustwx.list_domains_json(), rustwx.prepare_model_data_json(request_json), rustwx.render_maps_json(request_json), rustwx.render_glm_lightning_json(request_json), rustwx.render_goes_satellite_json(request_json), rustwx.sample_point_timeseries_json(request_json).",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -2318,6 +2591,13 @@ fn print_render_maps_help() {
 }
 
 #[cfg(feature = "python")]
+fn print_prepare_data_help() {
+    println!(
+        "USAGE:\n  rustwx prepare-data --date YYYYMMDD [--model hrrr] [--cycle H] [--forecast-hour H] [--product PRODUCT]\n  rustwx prepare-data --date YYYYMMDD --forecast-hours 0-2 --products 2m_temperature_10m_winds,2m_dewpoint_10m_winds\n  rustwx prepare-data --request request.json\n\nPrepare Data resolves each requested product to its RustWx fetch plan and warms the shared GRIB cache without rendering PNGs. Options include --source, --cache-dir, and --no-cache.\n\nDefault cache: rustwx_outputs/cache, or RUSTWX_CACHE_DIR when set."
+    );
+}
+
+#[cfg(feature = "python")]
 fn print_render_lightning_help() {
     println!(
         "USAGE:\n  rustwx render-lightning [--domain california] [--data-dir DIR] [--out-dir DIR]\n  rustwx render-lightning --bounds west,east,south,north [--label NAME]\n  rustwx render-lightning --request request.json\n\nOptions include --width, --height, --max-age-min, and --high-speed-png.\n\nDefault GLM data dir: RUSTWX_GLM_DIR, CWT_GLM_DIR, or ~/lightning-test/data/glm."
@@ -2327,7 +2607,7 @@ fn print_render_lightning_help() {
 #[cfg(feature = "python")]
 fn print_render_satellite_help() {
     println!(
-        "USAGE:\n  rustwx render-satellite [--satellite goes18] [--domain pacific_southwest] [--cache-dir DIR] [--out-dir DIR]\n  rustwx render-satellite --sector full-disk --auto-bounds [--product goes_abi_band_13]\n  rustwx render-satellite --sector meso1 --auto-bounds --sequence-count 8 --sequence-gif [--product goes_abi_band_13]\n  rustwx render-satellite --bounds west,east,south,north [--label NAME]\n  rustwx render-satellite --request request.json\n\nOptions include --sector conus|full_disk|meso1|meso2, --auto-bounds, --allow-high-resolution-full-disk, --sequence-count, --sequence-gif, --product comma-list, --width, --height, --scan-lookback-hours, --glm-fetch-count, --no-glm, --no-cache, and --high-speed-png.\n\nDefault ABI source: NOAA noaa-goes18 / ABI-L2-CMIPC. Full-disk defaults avoid high-resolution visible channels unless explicitly allowed. Raw NetCDF cache defaults to rustwx_outputs/cache or RUSTWX_CACHE_DIR."
+        "USAGE:\n  rustwx render-satellite [--satellite goes19] [--domain pacific_southwest] [--cache-dir DIR] [--out-dir DIR]\n  rustwx render-satellite --sector full-disk --auto-bounds [--product goes_abi_band_13]\n  rustwx render-satellite --sector meso1 --auto-bounds --sequence-count 8 --sequence-gif [--product goes_abi_band_13]\n  rustwx render-satellite --bounds west,east,south,north [--label NAME]\n  rustwx render-satellite --request request.json\n\nOptions include --sector conus|full_disk|meso1|meso2, --auto-bounds, --allow-high-resolution-full-disk, --sequence-count, --sequence-gif, --product comma-list, --width, --height, --scan-lookback-hours, --glm-fetch-count, --no-glm, --no-cache, and --high-speed-png.\n\nDefault ABI source: NOAA noaa-goes19 / ABI-L2-CMIPC. Full-disk defaults avoid high-resolution visible channels unless explicitly allowed. Raw NetCDF cache defaults to rustwx_outputs/cache or RUSTWX_CACHE_DIR."
     );
 }
 
@@ -2583,6 +2863,69 @@ fn sample_point_timeseries_request_from_cli(
 }
 
 #[cfg(feature = "python")]
+fn prepare_model_data_request_from_cli(
+    args: &[String],
+) -> Result<PrepareModelDataRequestJson, String> {
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
+        print_prepare_data_help();
+        return Err("help requested".to_string());
+    }
+
+    let mut request = PrepareModelDataRequestJson::default();
+    let mut products = Vec::<String>::new();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        match arg {
+            "--request" => {
+                let path = next_cli_value(args, &mut index, arg)?;
+                let payload = fs::read_to_string(&path)
+                    .map_err(|err| format!("failed to read request file '{path}': {err}"))?;
+                return serde_json::from_str(&payload)
+                    .map_err(|err| format!("invalid request JSON in '{path}': {err}"));
+            }
+            "--request-json" => {
+                let payload = next_cli_value(args, &mut index, arg)?;
+                return serde_json::from_str(&payload)
+                    .map_err(|err| format!("invalid request JSON: {err}"));
+            }
+            "--model" => request.model = Some(next_cli_value(args, &mut index, arg)?),
+            "--date" | "--date-yyyymmdd" => {
+                request.date_yyyymmdd = Some(next_cli_value(args, &mut index, arg)?);
+            }
+            "--cycle" | "--cycle-utc" => {
+                request.cycle_utc = Some(parse_cli_value(args, &mut index, arg)?);
+            }
+            "--forecast-hour" | "--hour" => {
+                request.forecast_hour = Some(parse_cli_value(args, &mut index, arg)?);
+            }
+            "--forecast-hours" | "--hours" => {
+                let raw = next_cli_value(args, &mut index, arg)?;
+                request.forecast_hours = Some(parse_comma_u16s_or_ranges(&raw, arg)?);
+            }
+            "--source" => request.source = Some(next_cli_value(args, &mut index, arg)?),
+            "--product" | "--products" => {
+                extend_comma_values(&mut products, &next_cli_value(args, &mut index, arg)?);
+            }
+            "--cache-dir" => {
+                request.cache_dir = Some(PathBuf::from(next_cli_value(args, &mut index, arg)?));
+            }
+            "--no-cache" => request.no_cache = Some(true),
+            other => return Err(format!("unknown prepare-data option '{other}'")),
+        }
+        index += 1;
+    }
+
+    if !products.is_empty() {
+        request.products = Some(products);
+    }
+    Ok(request)
+}
+
+#[cfg(feature = "python")]
 fn render_maps_request_from_cli(args: &[String]) -> Result<RenderMapsRequestJson, String> {
     if args
         .iter()
@@ -2749,6 +3092,39 @@ fn parse_comma_u16s(raw: &str, flag: &str) -> Result<Vec<u16>, String> {
                 .map_err(|err| format!("invalid {flag} component '{part}': {err}"))
         })
         .collect()
+}
+
+#[cfg(feature = "python")]
+fn parse_comma_u16s_or_ranges(raw: &str, flag: &str) -> Result<Vec<u16>, String> {
+    let mut values = Vec::new();
+    for part in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        if let Some((start, end)) = part.split_once('-') {
+            let start = start
+                .trim()
+                .parse::<u16>()
+                .map_err(|err| format!("invalid {flag} range start '{part}': {err}"))?;
+            let end = end
+                .trim()
+                .parse::<u16>()
+                .map_err(|err| format!("invalid {flag} range end '{part}': {err}"))?;
+            if start > end {
+                return Err(format!("invalid {flag} range '{part}': start is after end"));
+            }
+            values.extend(start..=end);
+        } else {
+            values.push(
+                part.parse::<u16>()
+                    .map_err(|err| format!("invalid {flag} component '{part}': {err}"))?,
+            );
+        }
+    }
+    values.sort_unstable();
+    values.dedup();
+    Ok(values)
 }
 
 #[cfg(feature = "python")]
@@ -3064,6 +3440,7 @@ fn rustwx(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(probe_sources_json, module)?)?;
     module.add_function(wrap_pyfunction!(agent_capabilities_json, module)?)?;
     module.add_function(wrap_pyfunction!(list_domains_json, module)?)?;
+    module.add_function(wrap_pyfunction!(prepare_model_data_json, module)?)?;
     module.add_function(wrap_pyfunction!(render_maps_json, module)?)?;
     module.add_function(wrap_pyfunction!(render_glm_lightning_json, module)?)?;
     module.add_function(wrap_pyfunction!(render_goes_satellite_json, module)?)?;

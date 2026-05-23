@@ -690,7 +690,9 @@ pub fn weather_palette(palette: WeatherPalette) -> Vec<Color> {
         WeatherPalette::Reflectivity => colormaps::reflectivity(),
         WeatherPalette::Winds => colormaps::winds(60),
         WeatherPalette::Temperature => colormaps::temperature(180),
-        WeatherPalette::Dewpoint => colormaps::dewpoint(80, 50),
+        WeatherPalette::Dewpoint => {
+            return dewpoint_palette_fahrenheit_for_levels(&range_step(-40.0, 91.0, 1.0));
+        }
         WeatherPalette::Rh => colormaps::rh(),
         WeatherPalette::RelVort => colormaps::relvort(100),
         WeatherPalette::Advection => advection_palette(),
@@ -722,6 +724,14 @@ pub fn dewpoint_palette_params(dry_points: usize, moist_points_total: usize) -> 
         .into_iter()
         .map(Into::into)
         .collect()
+}
+
+pub fn dewpoint_palette_fahrenheit_for_levels(levels_f: &[f64]) -> Vec<Color> {
+    dewpoint_palette_for_levels(levels_f, |value_f| value_f)
+}
+
+pub fn dewpoint_palette_celsius_for_levels(levels_c: &[f64]) -> Vec<Color> {
+    dewpoint_palette_for_levels(levels_c, |value_c| value_c * 9.0 / 5.0 + 32.0)
 }
 
 pub fn palette_scale(
@@ -760,6 +770,63 @@ fn ecape_ratio_palette() -> Vec<crate::color::Rgba> {
         .into_iter()
         .map(rgba_from_hex)
         .collect::<Vec<_>>()
+}
+
+fn dewpoint_palette_for_levels(levels: &[f64], to_fahrenheit: impl Fn(f64) -> f64) -> Vec<Color> {
+    if levels.len() < 2 {
+        return Vec::new();
+    }
+
+    levels
+        .windows(2)
+        .map(|window| {
+            let midpoint = (window[0] + window[1]) * 0.5;
+            let dewpoint_f = to_fahrenheit(midpoint);
+            dewpoint_threshold_color_f(dewpoint_f)
+        })
+        .collect()
+}
+
+fn dewpoint_threshold_color_f(value_f: f64) -> Color {
+    const BANDS: &[(f64, f64, &str, &str)] = &[
+        (-80.0, 0.0, "#6d6758", "#8a846f"),
+        (0.0, 20.0, "#8f8976", "#aaa58f"),
+        (20.0, 30.0, "#a9a38e", "#bfb89e"),
+        (30.0, 40.0, "#c8c0a6", "#e2dcc0"),
+        (40.0, 50.0, "#e6e7d0", "#b8e0b6"),
+        (50.0, 60.0, "#8bd38a", "#15951d"),
+        (60.0, 70.0, "#008f1e", "#005625"),
+        (70.0, 80.0, "#2a6e69", "#17284d"),
+        (80.0, 90.0, "#35256f", "#76547c"),
+        (90.0, 120.0, "#8f6586", "#b88f9a"),
+    ];
+
+    let (lo, hi, start, end) = BANDS
+        .iter()
+        .copied()
+        .find(|(lo, hi, _, _)| value_f >= *lo && value_f < *hi)
+        .unwrap_or_else(|| {
+            if value_f < BANDS[0].0 {
+                BANDS[0]
+            } else {
+                BANDS[BANDS.len() - 1]
+            }
+        });
+
+    let span = (hi - lo).max(f64::EPSILON);
+    let t = ((value_f - lo) / span).clamp(0.0, 1.0);
+    lerp_color_hex(start, end, t)
+}
+
+fn lerp_color_hex(start: &str, end: &str, t: f64) -> Color {
+    let start = crate::color::Rgba::from_hex(start);
+    let end = crate::color::Rgba::from_hex(end);
+    Color::rgba(
+        (start.r as f64 + t * (end.r as f64 - start.r as f64)).round() as u8,
+        (start.g as f64 + t * (end.g as f64 - start.g as f64)).round() as u8,
+        (start.b as f64 + t * (end.b as f64 - start.b as f64)).round() as u8,
+        u8::MAX,
+    )
 }
 
 fn rgba_from_hex(value: &str) -> crate::color::Rgba {
@@ -945,6 +1012,42 @@ mod tests {
         assert_eq!(scale.extend, ExtendMode::Max);
         assert_eq!(scale.mask_below, Some(5.0));
         assert!(!scale.colors.is_empty());
+    }
+
+    #[test]
+    fn dewpoint_palette_has_hard_moisture_thresholds() {
+        let levels = vec![59.0, 60.0, 69.0, 70.0, 79.0, 80.0, 89.0, 90.0];
+        let colors = dewpoint_palette_fahrenheit_for_levels(&levels);
+
+        assert_eq!(colors.len(), levels.len() - 1);
+        assert_ne!(colors[0], colors[1], "60F should start a new green band");
+        assert_ne!(colors[2], colors[3], "70F should start the blue/slate band");
+        assert_ne!(colors[4], colors[5], "80F should start the purple band");
+        assert!(colors[0].g > colors[0].r, "50s dewpoints should read green");
+        assert!(
+            colors[3].b >= colors[3].g,
+            "70s dewpoints should tilt blue/slate"
+        );
+        assert!(
+            colors[5].b > colors[5].g,
+            "80s dewpoints should tilt purple"
+        );
+    }
+
+    #[test]
+    fn celsius_dewpoint_palette_uses_fahrenheit_thresholds() {
+        let levels_c = vec![
+            (69.0 - 32.0) * 5.0 / 9.0,
+            (70.0 - 32.0) * 5.0 / 9.0,
+            (79.0 - 32.0) * 5.0 / 9.0,
+            (80.0 - 32.0) * 5.0 / 9.0,
+        ];
+        let levels_f = vec![69.0, 70.0, 79.0, 80.0];
+
+        assert_eq!(
+            dewpoint_palette_celsius_for_levels(&levels_c),
+            dewpoint_palette_fahrenheit_for_levels(&levels_f)
+        );
     }
 
     #[test]
