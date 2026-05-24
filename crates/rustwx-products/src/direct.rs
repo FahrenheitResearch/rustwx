@@ -9,45 +9,45 @@ use rustwx_io::{
     load_cached_selected_field, store_cached_selected_field,
 };
 use rustwx_models::{
-    LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
-    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan,
+    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan, LatestRun,
+    ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
 };
 use rustwx_render::{
+    build_projected_contour_geometry_profile, densify_discrete_scale, draw_centered_text_line,
+    render_panel_grid, save_png_profile_with_options, save_rgba_png_profile_with_options,
     BasemapDetail, Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode,
     GeographicClipBounds, InverseRasterProjection, LegendMode, LevelDensity, MapRenderRequest,
     PanelGridLayout, PanelPadding, PngCompressionMode, PngWriteOptions, ProductVisualMode,
     ProjectedContourLineStyle, ProjectedDomain, ProjectedMap, ProjectedMapBuildOptions,
     RasterSampleMode, RenderImageTiming, RenderStateTiming, WindBarbLayer, WindStreamlineLayer,
-    build_projected_contour_geometry_profile, densify_discrete_scale, draw_centered_text_line,
-    render_panel_grid, save_png_profile_with_options, save_rgba_png_profile_with_options,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{
-    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
 };
 use std::thread;
 use std::time::Instant;
 
-use crate::custom_poi::{CustomPoiOverlay, apply_custom_poi_overlay};
-use crate::gridded::{GridCrop, crop_latlon_grid, crop_values_f32};
+use crate::custom_poi::{apply_custom_poi_overlay, CustomPoiOverlay};
+use crate::gridded::{crop_latlon_grid, crop_values_f32, GridCrop};
 use crate::places::PlaceLabelOverlay;
 use crate::planner::{ExecutionPlan, ExecutionPlanBuilder};
 use crate::publication::{
-    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
-    fetch_identity_from_cached_result_with_aliases,
+    artifact_identity_from_path, fetch_identity_from_cached_result_with_aliases,
+    ArtifactContentIdentity, PublishedFetchIdentity,
 };
 use crate::runtime::{
-    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
+    load_execution_plan, BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet,
 };
 use crate::shared_context::{
-    DomainSpec, ProjectedMapProvider, model_time_subtitle, source_subtitle, static_chrome_scale,
-    static_supersample_factor, static_supersample_sharpen, static_title_with_suffix,
+    model_time_subtitle, source_subtitle, static_chrome_scale, static_supersample_factor,
+    static_supersample_sharpen, static_title_with_suffix, DomainSpec, ProjectedMapProvider,
 };
-use crate::source::{ProductSourceRoute, direct_route_for_recipe_slug};
+use crate::source::{direct_route_for_recipe_slug, ProductSourceRoute};
 use crate::spec::direct_product_specs;
 
 const OUTPUT_WIDTH: u32 = 1600;
@@ -5138,28 +5138,20 @@ mod tests {
             groups[0].fetch_mode,
             PlotRecipeFetchMode::WholeFileStructuredExtract
         );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500))
-        );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700))
-        );
-        assert!(
-            groups[0]
-                .variable_patterns
-                .iter()
-                .any(|pattern| pattern.contains("500 mb"))
-        );
-        assert!(
-            groups[0]
-                .variable_patterns
-                .iter()
-                .any(|pattern| pattern.contains("700 mb"))
-        );
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 500)));
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::isobaric(CanonicalField::Temperature, 700)));
+        assert!(groups[0]
+            .variable_patterns
+            .iter()
+            .any(|pattern| pattern.contains("500 mb")));
+        assert!(groups[0]
+            .variable_patterns
+            .iter()
+            .any(|pattern| pattern.contains("700 mb")));
     }
 
     #[test]
@@ -5432,18 +5424,14 @@ mod tests {
         let groups = group_direct_fetches(&request, &planned);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].product, "sfc");
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::entire_atmosphere(
-                    CanonicalField::LowCloudCover
-                ))
-        );
-        assert!(
-            groups[0]
-                .selectors
-                .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow))
-        );
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::entire_atmosphere(
+                CanonicalField::LowCloudCover
+            )));
+        assert!(groups[0]
+            .selectors
+            .contains(&FieldSelector::surface(CanonicalField::CategoricalSnow)));
     }
 
     #[test]
@@ -5465,29 +5453,21 @@ mod tests {
         let supported = supported_direct_recipe_slugs(ModelId::Nbm);
         assert!(!supported.iter().any(|slug| slug.starts_with("nbm_qmd_")));
         let sref_supported = supported_direct_recipe_slugs(ModelId::Sref);
-        assert!(
-            !sref_supported
-                .iter()
-                .any(|slug| slug.starts_with("sref_prob_"))
-        );
+        assert!(!sref_supported
+            .iter()
+            .any(|slug| slug.starts_with("sref_prob_")));
         let gefs_supported = supported_direct_recipe_slugs(ModelId::Gefs);
-        assert!(
-            !gefs_supported
-                .iter()
-                .any(|slug| slug.starts_with("gefs_avg_") || slug.starts_with("gefs_spr_"))
-        );
+        assert!(!gefs_supported
+            .iter()
+            .any(|slug| slug.starts_with("gefs_avg_") || slug.starts_with("gefs_spr_")));
         let aigefs_supported = supported_direct_recipe_slugs(ModelId::Aigefs);
-        assert!(
-            !aigefs_supported
-                .iter()
-                .any(|slug| slug.starts_with("aigefs_spr_"))
-        );
+        assert!(!aigefs_supported
+            .iter()
+            .any(|slug| slug.starts_with("aigefs_spr_")));
         let hgefs_supported = supported_direct_recipe_slugs(ModelId::Hgefs);
-        assert!(
-            !hgefs_supported
-                .iter()
-                .any(|slug| slug.starts_with("hgefs_spr_"))
-        );
+        assert!(!hgefs_supported
+            .iter()
+            .any(|slug| slug.starts_with("hgefs_spr_")));
         let href_supported = supported_direct_recipe_slugs(ModelId::Href);
         assert!(!href_supported.iter().any(|slug| {
             slug.starts_with("href_sprd_")
@@ -5495,11 +5475,9 @@ mod tests {
                 || slug.starts_with("href_mean_")
         }));
         let refs_supported = supported_direct_recipe_slugs(ModelId::Refs);
-        assert!(
-            !refs_supported
-                .iter()
-                .any(|slug| { slug.starts_with("refs_sprd_") || slug.starts_with("refs_prob_") })
-        );
+        assert!(!refs_supported
+            .iter()
+            .any(|slug| { slug.starts_with("refs_sprd_") || slug.starts_with("refs_prob_") }));
 
         let planned =
             plan_direct_recipes(ModelId::Nbm, &["nbm_qmd_2m_temperature_p50".to_string()]).unwrap();

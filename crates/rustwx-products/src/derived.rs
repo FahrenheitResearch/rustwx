@@ -1,27 +1,28 @@
-use crate::custom_poi::{CustomPoiOverlay, apply_custom_poi_overlay};
+use crate::custom_poi::{apply_custom_poi_overlay, CustomPoiOverlay};
 use crate::direct::{
     build_projected_map, build_projected_map_with_projection, inverse_raster_projection_for_grid,
 };
 use rayon::prelude::*;
 use rustwx_calc::{
-    CalcError, EcapeVolumeInputs, FixedStpInputs, GridShape as CalcGridShape, SurfaceInputs,
-    TemperatureAdvectionInputs, VolumeShape, WindGridInputs, compute_2m_apparent_temperature,
-    compute_dcape, compute_ehi_01km, compute_ehi_03km, compute_lapse_rate_0_3km,
-    compute_lapse_rate_700_500, compute_lifted_index, compute_mlcape_cin, compute_mucape_cin,
-    compute_sbcape_cin, compute_shear_01km, compute_shear_06km, compute_srh_01km_hemispheric,
-    compute_srh_03km_hemispheric, compute_stp_fixed, compute_surface_thermo,
+    compute_2m_apparent_temperature, compute_dcape, compute_ehi_01km, compute_ehi_03km,
+    compute_lapse_rate_0_3km, compute_lapse_rate_700_500, compute_lifted_index, compute_mlcape_cin,
+    compute_mucape_cin, compute_sbcape_cin, compute_shear_01km, compute_shear_06km,
+    compute_srh_01km_hemispheric, compute_srh_03km_hemispheric, compute_stp_fixed,
+    compute_surface_thermo, CalcError, EcapeVolumeInputs, FixedStpInputs,
+    GridShape as CalcGridShape, SurfaceInputs, TemperatureAdvectionInputs, VolumeShape,
+    WindGridInputs,
 };
 use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId,
 };
 use rustwx_io::earth2_archive::Earth2EnsembleSelector;
 use rustwx_render::{
-    Color, ColorScale, DerivedProductStyle, DiscreteColorScale, DomainFrame, ExtendMode,
-    LevelDensity, MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode,
+    build_projected_contour_geometry_profile, densify_discrete_scale, map_frame_aspect_ratio,
+    save_png_profile_with_options, weather::temperature_palette_cropped_f, Color, ColorScale,
+    DerivedProductStyle, DiscreteColorScale, DomainFrame, ExtendMode, LevelDensity,
+    MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode,
     ProjectedContourLineStyle, ProjectedDomain, ProjectedExtent, ProjectedMap, RasterSampleMode,
     RenderImageTiming, RenderStateTiming, WeatherPalette, WeatherProduct, WindBarbLayer,
-    build_projected_contour_geometry_profile, densify_discrete_scale, map_frame_aspect_ratio,
-    save_png_profile_with_options, weather::temperature_palette_cropped_f,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -29,49 +30,49 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc,
     atomic::{AtomicUsize, Ordering},
+    Arc,
 };
 use std::thread;
 use std::time::Instant;
 
 use crate::ecape::compute_ecape_map_fields_with_prepared_volume;
 use crate::gridded::{
-    GridCrop, PressureFields as GenericPressureFields, ProjectedGridIntersection,
-    SharedTiming as GenericSharedTiming, SurfaceFields as GenericSurfaceFields,
     broadcast_levels_pa, classify_projected_grid_intersection, crop_latlon_grid, crop_values_f64,
     decode_cache_path, decode_surface_grid, fetch_family_file,
     load_or_decode_pressure_cropped_with_shape, load_or_decode_surface_cropped,
-    prepare_heavy_volume_timed, resolve_thermo_pair_run,
+    prepare_heavy_volume_timed, resolve_thermo_pair_run, GridCrop,
+    PressureFields as GenericPressureFields, ProjectedGridIntersection,
+    SharedTiming as GenericSharedTiming, SurfaceFields as GenericSurfaceFields,
 };
-use crate::heavy::{HeavyComputeTiming, crop_and_guard_heavy_domain};
+use crate::heavy::{crop_and_guard_heavy_domain, HeavyComputeTiming};
 use crate::places::PlaceLabelOverlay;
 use crate::planner::{ExecutionPlanBuilder, PlannedBundle};
 use crate::publication::{
-    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
+    artifact_identity_from_path, ArtifactContentIdentity, PublishedFetchIdentity,
 };
 use crate::runtime::{
-    BundleLoaderConfig, CroppedDecodeProfile, FetchedBundleBytes, LoadedBundleSet,
-    LoadedBundleTiming, load_execution_plan,
+    load_execution_plan, BundleLoaderConfig, CroppedDecodeProfile, FetchedBundleBytes,
+    LoadedBundleSet, LoadedBundleTiming,
 };
 use crate::severe::{
     build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
 };
 use crate::shared_context::{
-    DomainSpec, WeatherPanelField, build_weather_map_request, model_time_subtitle, source_subtitle,
-    static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
-    static_title_with_suffix,
+    build_weather_map_request, model_time_subtitle, source_subtitle, static_chrome_scale,
+    static_supersample_factor, static_supersample_sharpen, static_title_with_suffix, DomainSpec,
+    WeatherPanelField,
 };
 use crate::source::{ProductSourceMode, ProductSourceRoute};
 use crate::thermo_native::{
-    NativeSemantics, NativeThermoRecipe, extract_native_thermo_field, native_candidate,
+    extract_native_thermo_field, native_candidate, NativeSemantics, NativeThermoRecipe,
 };
 use rustwx_models::{
-    LatestRun, latest_available_run_at_forecast_hour,
-    latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
+    latest_available_run_at_forecast_hour, latest_available_run_for_products_at_forecast_hour,
+    resolve_canonical_bundle_product, LatestRun,
 };
 #[cfg(feature = "wrf")]
-use rustwx_wrf::{WrfFile, looks_like_wrf};
+use rustwx_wrf::{looks_like_wrf, WrfFile};
 
 const OUTPUT_WIDTH: u32 = 1200;
 const OUTPUT_HEIGHT: u32 = 900;
@@ -6646,14 +6647,12 @@ mod tests {
         .unwrap();
 
         assert!(artifact.request.projected_data_polygons.is_empty());
-        assert!(
-            artifact
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(artifact
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
         let ColorScale::Discrete(scale) = artifact.request.scale else {
             panic!("wet-bulb scale should be discrete");
         };
@@ -6691,14 +6690,12 @@ mod tests {
         .unwrap();
         assert!(!automatic.request.projected_data_polygons.is_empty());
         assert!(!automatic.request.projected_lines.is_empty());
-        assert!(
-            automatic
-                .request
-                .field
-                .values
-                .iter()
-                .all(|value| value.is_nan())
-        );
+        assert!(automatic
+            .request
+            .field
+            .values
+            .iter()
+            .all(|value| value.is_nan()));
 
         let legacy = build_native_render_artifact(
             DerivedRecipe::Sbcape,
@@ -6717,14 +6714,12 @@ mod tests {
         )
         .unwrap();
         assert!(legacy.request.projected_data_polygons.is_empty());
-        assert!(
-            legacy
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(legacy
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
     }
 
     #[test]
@@ -6800,14 +6795,12 @@ mod tests {
         )
         .unwrap();
         assert!(!experimental.request.projected_data_polygons.is_empty());
-        assert!(
-            experimental
-                .request
-                .field
-                .values
-                .iter()
-                .all(|value| value.is_nan())
-        );
+        assert!(experimental
+            .request
+            .field
+            .values
+            .iter()
+            .all(|value| value.is_nan()));
     }
 
     #[test]
@@ -6833,14 +6826,12 @@ mod tests {
         )
         .unwrap();
         assert!(signature.request.projected_data_polygons.is_empty());
-        assert!(
-            signature
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(signature
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
     }
 
     #[test]
@@ -6866,14 +6857,12 @@ mod tests {
         )
         .unwrap();
         assert!(signature.request.projected_data_polygons.is_empty());
-        assert!(
-            signature
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(signature
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
     }
 
     #[test]
@@ -6926,14 +6915,12 @@ mod tests {
         )
         .unwrap();
         assert!(signature.request.projected_data_polygons.is_empty());
-        assert!(
-            signature
-                .request
-                .field
-                .values
-                .iter()
-                .any(|value| value.is_finite())
-        );
+        assert!(signature
+            .request
+            .field
+            .values
+            .iter()
+            .any(|value| value.is_finite()));
     }
 
     #[test]
@@ -7087,11 +7074,9 @@ mod tests {
         assert!(planned.output_recipes.is_empty());
         assert!(planned.native_routes.is_empty());
         assert_eq!(planned.blockers.len(), 1);
-        assert!(
-            planned.blockers[0]
-                .reason
-                .contains("will not fall back to canonical-derived compute")
-        );
+        assert!(planned.blockers[0]
+            .reason
+            .contains("will not fall back to canonical-derived compute"));
     }
 
     #[test]
@@ -7107,11 +7092,9 @@ mod tests {
         assert!(planned.compute_recipes.is_empty());
         assert!(planned.heavy_recipes.is_empty());
         assert_eq!(planned.blockers.len(), 1);
-        assert!(
-            planned.blockers[0]
-                .reason
-                .contains("cropped heavy ECAPE path")
-        );
+        assert!(planned.blockers[0]
+            .reason
+            .contains("cropped heavy ECAPE path"));
     }
 
     #[test]

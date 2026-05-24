@@ -1,5 +1,5 @@
 use super::codec::ChunkCodec;
-use super::index::{ChunkIndex, read_index_records, write_index_records};
+use super::index::{read_index_records, write_index_records, ChunkIndex};
 use super::manifest::VolumeManifest;
 use super::{VolumeResult, VolumeStoreError};
 use serde::{Deserialize, Serialize};

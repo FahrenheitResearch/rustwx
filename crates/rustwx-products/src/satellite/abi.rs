@@ -3,10 +3,10 @@ use std::error::Error;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::geostationary::{SweepAngleAxis, scan_angles_to_lat_lon};
-use super::goes::{GoesSatellite, parse_goes_abi_filename};
+use super::geostationary::{scan_angles_to_lat_lon, SweepAngleAxis};
+use super::goes::{parse_goes_abi_filename, GoesSatellite};
 use super::netcdf::{
-    ScaledVariable, open_goes_netcdf_lossy, read_scaled_f32, read_scaled_f32_window,
+    open_goes_netcdf_lossy, read_scaled_f32, read_scaled_f32_window, ScaledVariable,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

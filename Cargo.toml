@@ -7,6 +7,7 @@ members = [
     "crates/rustwx-cross-section",
     "crates/rustwx-io",
     "crates/rustwx-models",
+    "crates/rustwx-model-maps-launcher",
     "crates/rustwx-products",
     "crates/rustwx-prep",
     "crates/rustwx-python",

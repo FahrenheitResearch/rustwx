@@ -1,26 +1,30 @@
 use crate::catalog::{
-    ProductCatalogEntry, ProductCatalogKind, ProductTargetStatus, build_supported_products_catalog,
+    build_supported_products_catalog, ProductCatalogEntry, ProductCatalogKind, ProductTargetStatus,
 };
 use crate::derived::{
-    DerivedRecipeBlocker, build_derived_sampled_execution_plan, is_heavy_derived_recipe_slug,
-    load_derived_sampled_fields_from_loaded,
+    build_derived_sampled_execution_plan, is_heavy_derived_recipe_slug,
+    load_derived_sampled_fields_from_loaded, DerivedRecipeBlocker,
 };
 use crate::direct::{
-    DirectRecipeBlocker, build_direct_sampled_execution_plan,
-    load_direct_sampled_fields_from_loaded,
+    build_direct_sampled_execution_plan, load_direct_sampled_fields_from_loaded,
+    DirectRecipeBlocker,
 };
 use crate::gridded::resolve_model_run;
 use crate::planner::{ExecutionPlan, ExecutionPlanBuilder};
-use crate::publication::PublishedFetchIdentity;
 use crate::publication::atomic_write_json;
-use crate::runtime::{BundleLoaderConfig, LoadedBundleSet, load_execution_plan};
+use crate::publication::PublishedFetchIdentity;
+use crate::runtime::{load_execution_plan, BundleLoaderConfig, LoadedBundleSet};
 use crate::shared_context::DomainSpec;
 use crate::windowed::{
-    HrrrWindowedBlocker, HrrrWindowedProduct, load_windowed_sampled_fields_for_hours_from_latest,
+    load_windowed_sampled_fields_for_hours_from_latest, HrrrWindowedBlocker, HrrrWindowedProduct,
+};
+use crate::wxstore_wxa::{
+    write_wxa_dense2d_grids, write_wxa_spatial_run_manifest, wxa_grid_meta_from_latlon,
+    WxaDense2dWriteGrid, WxaGridCrop,
 };
 use chrono::{Duration, NaiveDate, Utc};
 use rustwx_core::{BundleRequirement, Field2D, ModelId, SourceId};
-use rustwx_models::{LatestRun, plot_recipe, plot_recipe_fetch_blockers, plot_recipe_fetch_plan};
+use rustwx_models::{plot_recipe, plot_recipe_fetch_blockers, plot_recipe_fetch_plan, LatestRun};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -41,6 +45,10 @@ pub struct WxStoreGridExportRequest {
     pub out_dir: PathBuf,
     pub cache_root: PathBuf,
     pub use_cache: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_wxa_root: Option<PathBuf>,
+    #[serde(default)]
+    pub publish_wxa_latest: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +86,8 @@ pub struct WxStoreGridExportRecord {
     pub values_path: PathBuf,
     pub lat_path: PathBuf,
     pub lon_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wxa_path: Option<PathBuf>,
     pub grid_geometry: WxStoreGridGeometrySummary,
     pub no_data: WxStoreNoDataInfo,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -227,6 +237,7 @@ pub fn export_wxstore_grid_bundle(
     let mut load_ms = 0u128;
     let mut write_ms = 0u128;
     let mut geometry_cache = GeometryLatLonCache::default();
+    let mut direct_wxa_grids = BTreeMap::<String, Vec<WxaDense2dWriteGrid>>::new();
 
     for &forecast_hour in &request.forecast_hours {
         let non_windowed_loaded = if !classified_products.direct_slugs.is_empty()
@@ -298,6 +309,7 @@ pub fn export_wxstore_grid_bundle(
                                 &run_id,
                                 forecast_hour,
                                 &mut geometry_cache,
+                                &mut direct_wxa_grids,
                                 ExportableSampledField {
                                     product_slug: sampled_field.recipe_slug,
                                     title: sampled_field.title,
@@ -315,6 +327,7 @@ pub fn export_wxstore_grid_bundle(
                                     &run_id,
                                     forecast_hour,
                                     &mut geometry_cache,
+                                    &mut direct_wxa_grids,
                                     ExportableSampledField {
                                         product_slug: component.product_slug,
                                         title: component.title,
@@ -370,6 +383,7 @@ pub fn export_wxstore_grid_bundle(
                                 &run_id,
                                 forecast_hour,
                                 &mut geometry_cache,
+                                &mut direct_wxa_grids,
                                 ExportableSampledField {
                                     product_slug: sampled_field.recipe_slug,
                                     title,
@@ -421,6 +435,7 @@ pub fn export_wxstore_grid_bundle(
                         &run_id,
                         sampled_field.forecast_hour,
                         &mut geometry_cache,
+                        &mut direct_wxa_grids,
                         ExportableSampledField {
                             product_slug: sampled_field.product.slug().to_string(),
                             title: sampled_field.product.title().to_string(),
@@ -463,6 +478,8 @@ pub fn export_wxstore_grid_bundle(
             .then(a.reason.cmp(&b.reason))
     });
 
+    write_ms += write_direct_wxa_products(request, &run_id, direct_wxa_grids)?;
+
     let manifest_path = manifest_dir.join("manifest.json");
     let report = WxStoreGridExportReport {
         schema: "rustwx.wxstore_grid_export.v1".to_string(),
@@ -485,6 +502,7 @@ pub fn export_wxstore_grid_bundle(
         },
     };
     atomic_write_json(&manifest_path, &report)?;
+    publish_direct_wxa_run_manifest(request, &report, &manifest_path)?;
     Ok(report)
 }
 
@@ -547,6 +565,7 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
     let mut load_ms = 0u128;
     let mut write_ms = 0u128;
     let mut geometry_cache = GeometryLatLonCache::default();
+    let mut direct_wxa_grids = BTreeMap::<String, Vec<WxaDense2dWriteGrid>>::new();
 
     if !classified_products.direct_slugs.is_empty() {
         let load_start = Instant::now();
@@ -576,6 +595,7 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
                             &run_id,
                             forecast_hour,
                             &mut geometry_cache,
+                            &mut direct_wxa_grids,
                             ExportableSampledField {
                                 product_slug: sampled_field.recipe_slug,
                                 title: sampled_field.title,
@@ -593,6 +613,7 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
                                 &run_id,
                                 forecast_hour,
                                 &mut geometry_cache,
+                                &mut direct_wxa_grids,
                                 ExportableSampledField {
                                     product_slug: component.product_slug,
                                     title: component.title,
@@ -654,6 +675,7 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
                             &run_id,
                             forecast_hour,
                             &mut geometry_cache,
+                            &mut direct_wxa_grids,
                             ExportableSampledField {
                                 product_slug: sampled_field.recipe_slug,
                                 title,
@@ -710,6 +732,7 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
                         &run_id,
                         sampled_field.forecast_hour,
                         &mut geometry_cache,
+                        &mut direct_wxa_grids,
                         ExportableSampledField {
                             product_slug: sampled_field.product.slug().to_string(),
                             title: sampled_field.product.title().to_string(),
@@ -750,6 +773,8 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
             .then(a.reason.cmp(&b.reason))
     });
 
+    write_ms += write_direct_wxa_products(request, &run_id, direct_wxa_grids)?;
+
     let manifest_path = manifest_dir.join("manifest.json");
     let report = WxStoreGridExportReport {
         schema: "rustwx.wxstore_grid_export.v1".to_string(),
@@ -772,7 +797,62 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
         },
     };
     atomic_write_json(&manifest_path, &report)?;
+    publish_direct_wxa_run_manifest(request, &report, &manifest_path)?;
     Ok(report)
+}
+
+fn write_direct_wxa_products(
+    request: &WxStoreGridExportRequest,
+    run_id: &str,
+    direct_wxa_grids: BTreeMap<String, Vec<WxaDense2dWriteGrid>>,
+) -> Result<u128, Box<dyn std::error::Error>> {
+    let Some(spatial_root) = request.direct_wxa_root.as_ref() else {
+        return Ok(0);
+    };
+    if direct_wxa_grids.is_empty() {
+        return Ok(0);
+    }
+    let started = Instant::now();
+    for (product, grids) in direct_wxa_grids {
+        write_wxa_dense2d_grids(
+            spatial_root,
+            request.model.as_str(),
+            run_id,
+            Some("control"),
+            &product,
+            &grids,
+        )?;
+    }
+    Ok(started.elapsed().as_millis())
+}
+
+fn publish_direct_wxa_run_manifest(
+    request: &WxStoreGridExportRequest,
+    report: &WxStoreGridExportReport,
+    manifest_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(spatial_root) = request.direct_wxa_root.as_ref() else {
+        return Ok(());
+    };
+    if report.fields.is_empty() {
+        return Ok(());
+    }
+    let blocker_values = report
+        .blockers
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()?;
+    write_wxa_spatial_run_manifest(
+        spatial_root,
+        &report.model,
+        &report.run_id,
+        &report.source,
+        Some(manifest_path),
+        &blocker_values,
+        report.timing.total_ms,
+        request.publish_wxa_latest,
+    )?;
+    Ok(())
 }
 
 fn load_non_windowed_wxstore_bundles(
@@ -1147,6 +1227,7 @@ fn write_export_field(
     run_id: &str,
     forecast_hour: u16,
     geometry_cache: &mut GeometryLatLonCache,
+    direct_wxa_grids: &mut BTreeMap<String, Vec<WxaDense2dWriteGrid>>,
     sampled_field: ExportableSampledField,
 ) -> Result<(WxStoreGridExportRecord, u128), Box<dyn std::error::Error>> {
     let write_start = Instant::now();
@@ -1159,10 +1240,58 @@ fn write_export_field(
         safe_slug(&sampled_field.product_slug),
         forecast_hour
     );
-    let values_path = PathBuf::from(format!("{prefix}_values.f32"));
-    write_f32_file(&manifest_dir.join(&values_path), &cropped.values)?;
-    let (lat_path, lon_path) =
-        geometry_cache.latlon_paths(manifest_dir, source_nx, source_ny, &cropped)?;
+    let (values_path, lat_path, lon_path, wxa_path) =
+        if let Some(spatial_root) = request.direct_wxa_root.as_ref() {
+            let member = Some("control");
+            let wxa_path = crate::wxstore_wxa::wxa_product_path(
+                spatial_root,
+                request.model.as_str(),
+                run_id,
+                member,
+                &sampled_field.product_slug,
+            );
+            let grid_meta = wxa_grid_meta_from_latlon(
+                request.model.as_str(),
+                cropped.nx,
+                cropped.ny,
+                &cropped.lat,
+                &cropped.lon,
+                cropped.crop.map(|crop| WxaGridCrop {
+                    x_start: crop.x_start,
+                    x_end: crop.x_end,
+                    y_start: crop.y_start,
+                    y_end: crop.y_end,
+                }),
+                Some(cropped.bounds),
+            );
+            direct_wxa_grids
+                .entry(sampled_field.product_slug.clone())
+                .or_default()
+                .push(WxaDense2dWriteGrid {
+                    model: request.model.as_str().to_string(),
+                    run_id: run_id.to_string(),
+                    member: member.map(str::to_string),
+                    product_slug: sampled_field.product_slug.clone(),
+                    units: units.clone(),
+                    forecast_hour: u32::from(forecast_hour),
+                    nx: cropped.nx,
+                    ny: cropped.ny,
+                    grid_meta,
+                    values: cropped.values.clone(),
+                });
+            (
+                PathBuf::new(),
+                PathBuf::new(),
+                PathBuf::new(),
+                Some(wxa_path),
+            )
+        } else {
+            let values_path = PathBuf::from(format!("{prefix}_values.f32"));
+            write_f32_file(&manifest_dir.join(&values_path), &cropped.values)?;
+            let (lat_path, lon_path) =
+                geometry_cache.latlon_paths(manifest_dir, source_nx, source_ny, &cropped)?;
+            (values_path, lat_path, lon_path, None)
+        };
     let elapsed_ms = write_start.elapsed().as_millis();
 
     let no_data = no_data_info(&cropped.values);
@@ -1183,6 +1312,7 @@ fn write_export_field(
             values_path,
             lat_path,
             lon_path,
+            wxa_path,
             grid_geometry: WxStoreGridGeometrySummary {
                 kind: "lat_lon_arrays".to_string(),
                 source_nx,
@@ -1566,12 +1696,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["qpf_1h"]
         );
-        assert!(
-            products
-                .blockers
-                .iter()
-                .any(|blocker| blocker.product_slug == "sbecape")
-        );
+        assert!(products
+            .blockers
+            .iter()
+            .any(|blocker| blocker.product_slug == "sbecape"));
     }
 
     #[test]

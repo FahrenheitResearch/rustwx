@@ -576,11 +576,9 @@ mod tests {
             "pressure",
             ForecastGroupKind::Pressure3d,
             vec![hour_axis, pressure_axis],
-            vec![
-                ForecastVariable::new("TMP", "Temperature", "K")
-                    .with_axes(["forecast_hour", "pressure"])
-                    .with_blob("chunks"),
-            ],
+            vec![ForecastVariable::new("TMP", "Temperature", "K")
+                .with_axes(["forecast_hour", "pressure"])
+                .with_blob("chunks")],
             vec![ForecastBlob::new("chunks", "chunks.bin")],
         );
         manifest.validate().expect("valid group manifest");

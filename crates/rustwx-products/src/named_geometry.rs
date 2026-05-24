@@ -1,7 +1,7 @@
 use crate::places::{self, PlacePreset};
 use crate::shared_context::DomainSpec;
 use serde::{Deserialize, Serialize};
-use shapefile::{Shape, dbase};
+use shapefile::{dbase, Shape};
 use std::fs;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -941,16 +941,12 @@ mod tests {
         let selected = catalog.select(&selector);
 
         assert!(!selected.is_empty());
-        assert!(
-            selected
-                .iter()
-                .all(|asset| asset.kind == NamedGeometryKind::Region)
-        );
-        assert!(
-            selected
-                .iter()
-                .all(|asset| asset.has_group(GROUP_US_SPLIT_REGION))
-        );
+        assert!(selected
+            .iter()
+            .all(|asset| asset.kind == NamedGeometryKind::Region));
+        assert!(selected
+            .iter()
+            .all(|asset| asset.has_group(GROUP_US_SPLIT_REGION)));
         assert!(selected.iter().all(|asset| asset.has_tag("split")));
     }
 

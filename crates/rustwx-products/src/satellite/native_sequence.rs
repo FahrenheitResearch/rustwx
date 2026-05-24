@@ -2,7 +2,7 @@ use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
 use image::RgbaImage;
 use rayon::prelude::*;
 use rustwx_render::{
-    Color, PngCompressionMode, PngWriteOptions, save_rgba_png_profile_with_options,
+    save_rgba_png_profile_with_options, Color, PngCompressionMode, PngWriteOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -15,11 +15,11 @@ use std::time::Instant;
 
 use crate::publication::{atomic_write_bytes, atomic_write_json};
 
-use super::abi::{GoesAbiField, GoesAbiScene, read_goes_abi_field_window, read_goes_abi_scene};
+use super::abi::{read_goes_abi_field_window, read_goes_abi_scene, GoesAbiField, GoesAbiScene};
 use super::batch::{GoesSatelliteProduct, GoesSourceFile};
 use super::geostationary::lat_lon_to_scan_angles_fast;
-use super::goes::{GoesSatellite, parse_goes_abi_filename};
-use super::rgb::{GoesAbiRgbCompositeStyle, compose_goes_abi_rgb_pixel};
+use super::goes::{parse_goes_abi_filename, GoesSatellite};
+use super::rgb::{compose_goes_abi_rgb_pixel, GoesAbiRgbCompositeStyle};
 
 const DEFAULT_ABI_PRODUCT: &str = "ABI-L2-CMIPC";
 const DEFAULT_LOOKBACK_HOURS: u32 = 6;

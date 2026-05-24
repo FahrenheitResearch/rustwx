@@ -7769,7 +7769,9 @@ fn plot_recipe_fetch_defaults(
             ("qmd/co", PlotRecipeFetchPolicy::PreferIndexedSubset)
         }
         (ModelId::Nbm, _, _) => ("core/co", PlotRecipeFetchPolicy::PreferIndexedSubset),
-        (ModelId::RrfsA, _, _) => ("prs-conus", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::RrfsA, true, _) => ("prs-conus", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::RrfsA, false, true) => ("nat-na", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::RrfsA, false, false) => ("prs-conus", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::RrfsPublic, true, _) => {
             ("2dfld-conus", PlotRecipeFetchPolicy::PreferIndexedSubset)
         }
@@ -9503,6 +9505,23 @@ mod tests {
 
     #[test]
     fn rrfs_public_variants_direct_fetches_use_matching_public_products() {
+        let rrfs_a_surface =
+            plot_recipe_fetch_plan("2m_temperature_10m_winds", ModelId::RrfsA).unwrap();
+        assert_eq!(rrfs_a_surface.product, "nat-na");
+        assert_eq!(
+            rrfs_a_surface.fetch_policy,
+            PlotRecipeFetchPolicy::PreferIndexedSubset
+        );
+        assert_eq!(rrfs_a_surface.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
+
+        let rrfs_a_pressure = plot_recipe_fetch_plan("500mb_height_winds", ModelId::RrfsA).unwrap();
+        assert_eq!(rrfs_a_pressure.product, "prs-conus");
+        assert_eq!(
+            rrfs_a_pressure.fetch_policy,
+            PlotRecipeFetchPolicy::PreferIndexedSubset
+        );
+        assert_eq!(rrfs_a_pressure.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
+
         let cases = [
             (ModelId::RrfsPublic, "2dfld-conus", "prs-conus"),
             (ModelId::RrfsFireWx, "2dfld-firewx", "prs-firewx"),

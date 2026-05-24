@@ -441,11 +441,17 @@ mod tests {
             }
             ProjectionVariant::LambertConformal { n, f, rho0, stand_lon_deg } => {
                 let dy = rho0 - y;
-                let rho = (x * x + dy * dy).sqrt();
-                if !rho.is_finite() || rho <= 0.0 || n.abs() < 1.0e-12 || f.abs() < 1.0e-12 {
+                let rho_abs = (x * x + dy * dy).sqrt();
+                if !rho_abs.is_finite()
+                    || rho_abs <= 0.0
+                    || n.abs() < 1.0e-12
+                    || f.abs() < 1.0e-12
+                {
                     return None;
                 }
-                let theta = x.atan2(dy);
+                let rho_sign = n.signum();
+                let rho = rho_abs * rho_sign;
+                let theta = (x * rho_sign).atan2(dy * rho_sign);
                 let ratio = R * f / rho;
                 if ratio <= 0.0 || !ratio.is_finite() {
                     return None;
@@ -456,11 +462,13 @@ mod tests {
             }
             ProjectionVariant::AlbersEqualArea { n, c, rho0, central_meridian_deg } => {
                 let dy = rho0 - y;
-                let rho = (x * x + dy * dy).sqrt();
-                if !rho.is_finite() || rho <= 0.0 || n.abs() < 1.0e-12 {
+                let rho_abs = (x * x + dy * dy).sqrt();
+                if !rho_abs.is_finite() || rho_abs <= 0.0 || n.abs() < 1.0e-12 {
                     return None;
                 }
-                let theta = x.atan2(dy);
+                let rho_sign = n.signum();
+                let rho = rho_abs * rho_sign;
+                let theta = (x * rho_sign).atan2(dy * rho_sign);
                 let rn = rho * n / R;
                 let arg = (c - rn * rn) / (2.0 * n);
                 if !arg.is_finite() || !(-1.0..=1.0).contains(&arg) {

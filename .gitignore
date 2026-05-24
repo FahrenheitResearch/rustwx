@@ -39,7 +39,9 @@ proof/*decode_stats.json
 /data/
 /scratch/
 /release_dist/
+/dist/
 /rustwx_outputs*/
+rustwx_model_maps_*.log
 /aifs_inference_archive/
 /earth2_archive/
 /node_local/

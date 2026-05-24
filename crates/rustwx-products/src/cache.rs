@@ -1,6 +1,6 @@
 use crate::publication::{atomic_write_bytes, sha256_hex};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -230,11 +230,9 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert!(
-            quarantined
-                .iter()
-                .any(|entry| entry.file_name().to_string_lossy().contains("corrupt"))
-        );
+        assert!(quarantined
+            .iter()
+            .any(|entry| entry.file_name().to_string_lossy().contains("corrupt")));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -256,11 +254,9 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert!(
-            quarantined
-                .iter()
-                .any(|entry| entry.file_name().to_string_lossy().contains("corrupt"))
-        );
+        assert!(quarantined
+            .iter()
+            .any(|entry| entry.file_name().to_string_lossy().contains("corrupt")));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -299,11 +295,9 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert!(
-            quarantined
-                .iter()
-                .any(|entry| entry.file_name().to_string_lossy().contains("corrupt"))
-        );
+        assert!(quarantined
+            .iter()
+            .any(|entry| entry.file_name().to_string_lossy().contains("corrupt")));
 
         let _ = fs::remove_dir_all(root);
     }

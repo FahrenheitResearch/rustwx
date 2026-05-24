@@ -1,47 +1,47 @@
 use crate::custom_poi::CustomPoiOverlay;
 use crate::derived::{
-    DerivedBatchRequest, DerivedRecipeBlocker, HrrrDerivedBatchReport, PlannedDerivedSourceRoutes,
     derived_compute_recipes_need_pressure, is_heavy_derived_recipe_slug,
     maybe_load_special_pair_for_derived, plan_derived_recipes,
     plan_native_thermo_routes_with_surface_product, prepare_shared_derived_fields,
     run_model_derived_batch_from_loaded, run_model_derived_batch_from_loaded_with_precomputed,
-    run_model_derived_batch_without_loaded,
+    run_model_derived_batch_without_loaded, DerivedBatchRequest, DerivedRecipeBlocker,
+    HrrrDerivedBatchReport, PlannedDerivedSourceRoutes,
 };
 use crate::direct::{
-    DirectBatchRequest, FetchGroup, HrrrDirectBatchReport, PreparedDirectBatch,
     prepare_direct_batch_from_loaded, run_direct_batch_from_loaded, run_direct_batch_from_prepared,
+    DirectBatchRequest, FetchGroup, HrrrDirectBatchReport, PreparedDirectBatch,
 };
-use crate::hrrr::{DomainSpec, resolve_hrrr_run};
+use crate::hrrr::{resolve_hrrr_run, DomainSpec};
 use crate::orchestrator::{lane, run_fanout3};
 use crate::places::PlaceLabelOverlay;
 use crate::planner::ExecutionPlanBuilder;
 use crate::publication::{
-    ArtifactPublicationState, PublishedArtifactRecord, PublishedFetchIdentity,
-    RunPublicationManifest, artifact_identity_from_path, default_run_manifest_path,
-    finalize_and_publish_run_manifest, publish_run_manifest_with_attempt,
+    artifact_identity_from_path, default_run_manifest_path, finalize_and_publish_run_manifest,
+    publish_run_manifest_with_attempt, ArtifactPublicationState, PublishedArtifactRecord,
+    PublishedFetchIdentity, RunPublicationManifest,
 };
 use crate::publication_provenance::capture_default_build_provenance;
-use crate::runtime::{BundleLoaderConfig, load_execution_plan};
+use crate::runtime::{load_execution_plan, BundleLoaderConfig};
 use crate::severe::build_severe_execution_plan;
 use crate::source::{ProductSourceMode, ProductSourceRoute};
 use crate::windowed::{
-    HrrrWindowedBatchReport, HrrrWindowedBatchRequest, HrrrWindowedProduct,
-    HrrrWindowedRenderedProduct, PreparedWindowedBatch, collect_windowed_input_fetches,
-    prepare_hrrr_windowed_batch_with_context, run_hrrr_windowed_batch_from_prepared,
-    run_hrrr_windowed_batch_with_context, windowed_product_input_fetch_keys,
+    collect_windowed_input_fetches, prepare_hrrr_windowed_batch_with_context,
+    run_hrrr_windowed_batch_from_prepared, run_hrrr_windowed_batch_with_context,
+    windowed_product_input_fetch_keys, HrrrWindowedBatchReport, HrrrWindowedBatchRequest,
+    HrrrWindowedProduct, HrrrWindowedRenderedProduct, PreparedWindowedBatch,
 };
 use crate::wxstore_export::{
-    WxStoreGridExportReport, WxStoreGridExportRequest, export_wxstore_grid_bundle_from_loaded_parts,
+    export_wxstore_grid_bundle_from_loaded_parts, WxStoreGridExportReport, WxStoreGridExportRequest,
 };
 use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
 use rustwx_io::earth2_archive::Earth2EnsembleSelector;
-use rustwx_models::{LatestRun, latest_available_run_at_forecast_hour, plot_recipe};
+use rustwx_models::{latest_available_run_at_forecast_hour, plot_recipe, LatestRun};
 use rustwx_render::PngCompressionMode;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
@@ -814,24 +814,22 @@ fn run_prepared_model_non_ecape_hour_multi_domain(
                 let request_ref = request_ref;
                 let prepared_ref = prepared_ref;
                 let domains_ref = domains_ref;
-                scope.spawn(move || {
-                    loop {
-                        let next = {
-                            let mut queue = queue.lock().expect("domain queue poisoned");
-                            queue.pop_front()
-                        };
-                        let Some(index) = next else {
-                            break;
-                        };
-                        let result = run_prepared_non_ecape_domain(
-                            request_ref,
-                            prepared_ref,
-                            &domains_ref[index],
-                        )
-                        .map_err(|err| err.to_string());
-                        if tx.send((index, result)).is_err() {
-                            break;
-                        }
+                scope.spawn(move || loop {
+                    let next = {
+                        let mut queue = queue.lock().expect("domain queue poisoned");
+                        queue.pop_front()
+                    };
+                    let Some(index) = next else {
+                        break;
+                    };
+                    let result = run_prepared_non_ecape_domain(
+                        request_ref,
+                        prepared_ref,
+                        &domains_ref[index],
+                    )
+                    .map_err(|err| err.to_string());
+                    if tx.send((index, result)).is_err() {
+                        break;
                     }
                 });
             }
@@ -2386,8 +2384,8 @@ mod tests {
         HrrrDerivedRecipeTiming, HrrrDerivedRenderedRecipe, HrrrDerivedSharedTiming,
     };
     use crate::direct::{
-        DirectBatchRequest, HrrrDirectRecipeTiming, HrrrDirectRenderedRecipe,
-        plan_direct_fetch_groups,
+        plan_direct_fetch_groups, DirectBatchRequest, HrrrDirectRecipeTiming,
+        HrrrDirectRenderedRecipe,
     };
     use crate::hrrr::HrrrFetchRuntimeInfo;
     use crate::windowed::{
@@ -3131,13 +3129,11 @@ mod tests {
             .find(|artifact| artifact.artifact_key == "direct:500mb_height_winds")
             .unwrap();
         assert_eq!(direct_record.state, ArtifactPublicationState::Complete);
-        assert!(
-            direct_record
-                .detail
-                .as_deref()
-                .unwrap()
-                .contains("planned_family=prs fetched_family=prs resolved_source=aws")
-        );
+        assert!(direct_record
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("planned_family=prs fetched_family=prs resolved_source=aws"));
 
         let derived_record = manifest
             .artifacts
@@ -3145,11 +3141,11 @@ mod tests {
             .find(|artifact| artifact.artifact_key == "derived:sbcape")
             .unwrap();
         assert_eq!(derived_record.state, ArtifactPublicationState::Complete);
-        assert!(
-            derived_record.detail.as_deref().unwrap().contains(
-                "shared_surface planned_family=sfc fetched_family=sfc resolved_source=aws"
-            )
-        );
+        assert!(derived_record
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("shared_surface planned_family=sfc fetched_family=sfc resolved_source=aws"));
 
         let blocked_record = manifest
             .artifacts

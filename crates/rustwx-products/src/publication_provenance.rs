@@ -235,7 +235,11 @@ fn capture_toolchain_provenance() -> ToolchainProvenance {
         .and_then(|out| {
             if out.status.success() {
                 let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if text.is_empty() { None } else { Some(text) }
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(text)
+                }
             } else {
                 None
             }

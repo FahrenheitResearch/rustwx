@@ -1,6 +1,6 @@
 use grib_core::grib2::{
-    Grib2File, Grib2Message, flip_rows, grid_latlon, level_name, parameter_name, parameter_units,
-    unpack_message,
+    flip_rows, grid_latlon, level_name, parameter_name, parameter_units, unpack_message, Grib2File,
+    Grib2Message,
 };
 use rustwx_core::{GridShape, LatLonGrid, ModelId};
 use serde::{Deserialize, Serialize};
@@ -768,7 +768,11 @@ fn mean(values: &[f64]) -> f64 {
 }
 
 fn normalize_longitude(lon: f64) -> f64 {
-    if lon > 180.0 { lon - 360.0 } else { lon }
+    if lon > 180.0 {
+        lon - 360.0
+    } else {
+        lon
+    }
 }
 
 fn normalize_and_rotate_longitude_rows(

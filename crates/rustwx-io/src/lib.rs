@@ -3,8 +3,9 @@ pub mod earth2_archive;
 
 pub use cache::{
     CachedFetchMetadata, CachedFetchResult, CachedFieldResult, artifact_cache_dir,
-    fetch_cache_paths, field_cache_path, load_cached_fetch, load_cached_selected_field,
-    store_cached_fetch, store_cached_selected_field,
+    fetch_cache_paths, field_cache_path, load_cached_fetch, load_cached_raw_fetch,
+    load_cached_selected_field, raw_fetch_cache_paths, store_cached_fetch,
+    store_cached_raw_fetch, store_cached_selected_field,
 };
 
 use grib_core::grib2::{
@@ -274,10 +275,19 @@ pub fn fetch_bytes_with_cache(
         if let Some(cached) = load_cached_fetch(cache_root, fetch)? {
             return Ok(cached);
         }
+        if let Some(cached) = load_cached_raw_full_fetch(cache_root, fetch)? {
+            return Ok(cached);
+        }
     }
     if use_cache {
         let _cache_lock = acquire_fetch_cache_lock(cache_root, fetch)?;
         if let Some(cached) = load_cached_fetch(cache_root, fetch)? {
+            return Ok(cached);
+        }
+        if let Some(cached) = load_cached_raw_full_fetch(cache_root, fetch)? {
+            return Ok(cached);
+        }
+        if let Some(cached) = fetch_bytes_with_raw_full_cache(fetch, cache_root)? {
             return Ok(cached);
         }
         let result = fetch_bytes(fetch)?;
@@ -292,6 +302,78 @@ pub fn fetch_bytes_with_cache(
             metadata_path,
         })
     }
+}
+
+fn load_cached_raw_full_fetch(
+    cache_root: &std::path::Path,
+    fetch: &FetchRequest,
+) -> Result<Option<CachedFetchResult>, IoError> {
+    if !fetch_can_use_raw_full_file_cache(fetch) {
+        return Ok(None);
+    }
+    for resolved in filtered_urls(fetch)? {
+        if let Some(cached) =
+            load_cached_raw_fetch(cache_root, resolved.source, &resolved.grib_url)?
+        {
+            return Ok(Some(cached));
+        }
+    }
+    Ok(None)
+}
+
+fn fetch_bytes_with_raw_full_cache(
+    fetch: &FetchRequest,
+    cache_root: &std::path::Path,
+) -> Result<Option<CachedFetchResult>, IoError> {
+    if !fetch_can_use_raw_full_file_cache(fetch) {
+        return Ok(None);
+    }
+    let client = client()?;
+    let urls = filtered_urls(fetch)?;
+    let patterns = fetch
+        .variable_patterns
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let mut errors = Vec::new();
+    for resolved in urls {
+        if let Some(cached) =
+            load_cached_raw_fetch(cache_root, resolved.source, &resolved.grib_url)?
+        {
+            return Ok(Some(cached));
+        }
+        let _raw_lock =
+            acquire_raw_fetch_cache_lock(cache_root, resolved.source, &resolved.grib_url)?;
+        if let Some(cached) =
+            load_cached_raw_fetch(cache_root, resolved.source, &resolved.grib_url)?
+        {
+            return Ok(Some(cached));
+        }
+        match try_fetch_one(&client, &resolved, &patterns) {
+            Ok(bytes) => {
+                let result = FetchResult {
+                    source: resolved.source,
+                    url: resolved.grib_url,
+                    bytes,
+                };
+                return store_cached_raw_fetch(cache_root, fetch, &result).map(Some);
+            }
+            Err(err) => errors.push(format!("{}: {}", resolved.source, err)),
+        }
+    }
+
+    Err(IoError::Download(format!(
+        "all sources failed for {} f{:03}: {}",
+        fetch.request.model,
+        fetch.request.forecast_hour,
+        errors.join(" | ")
+    )))
+}
+
+fn fetch_can_use_raw_full_file_cache(fetch: &FetchRequest) -> bool {
+    fetch.earth2_ensemble.is_none()
+        && (fetch.variable_patterns.is_empty()
+            || matches!(fetch.source_override, Some(SourceId::Nomads)))
 }
 
 struct FetchCacheLock {
@@ -347,6 +429,56 @@ fn acquire_fetch_cache_lock(
                 if started.elapsed() > FETCH_CACHE_LOCK_WAIT_TIMEOUT {
                     return Err(IoError::Cache(format!(
                         "timed out waiting for fetch cache lock {}",
+                        lock_path.display()
+                    )));
+                }
+                thread::sleep(FETCH_CACHE_LOCK_RETRY_AFTER);
+            }
+            Err(err) => return Err(IoError::Cache(err.to_string())),
+        }
+    }
+}
+
+fn acquire_raw_fetch_cache_lock(
+    cache_root: &std::path::Path,
+    source: SourceId,
+    resolved_url: &str,
+) -> Result<FetchCacheLock, IoError> {
+    let (bytes_path, _) = raw_fetch_cache_paths(cache_root, source, resolved_url);
+    let lock_path = bytes_path.with_file_name("fetch.grib2.lock");
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| IoError::Cache(err.to_string()))?;
+    }
+
+    let started = Instant::now();
+    loop {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(mut file) => {
+                writeln!(
+                    file,
+                    "pid={} source={} url={}",
+                    std::process::id(),
+                    source,
+                    resolved_url
+                )
+                .map_err(|err| IoError::Cache(err.to_string()))?;
+                return Ok(FetchCacheLock {
+                    path: lock_path,
+                    file: Some(file),
+                });
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                if is_stale_fetch_cache_lock(&lock_path) {
+                    let _ = fs::remove_file(&lock_path);
+                    continue;
+                }
+                if started.elapsed() > FETCH_CACHE_LOCK_WAIT_TIMEOUT {
+                    return Err(IoError::Cache(format!(
+                        "timed out waiting for raw fetch cache lock {}",
                         lock_path.display()
                     )));
                 }

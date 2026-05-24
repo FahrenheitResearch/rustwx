@@ -6248,12 +6248,10 @@ mod tests {
             },
         );
         assert!(pass_gate.passed, "{:#?}", pass_gate.checks);
-        assert!(
-            pass_gate
-                .checks
-                .iter()
-                .any(|check| check.name == "required_holdout_strategies" && check.passed)
-        );
+        assert!(pass_gate
+            .checks
+            .iter()
+            .any(|check| check.name == "required_holdout_strategies" && check.passed));
         let fail_gate = evaluate_surface_mesoanalysis_calibration_gate(
             &report,
             SurfaceMesoanalysisCalibrationGateThresholds {
@@ -6301,11 +6299,10 @@ mod tests {
             },
         );
         assert!(!fail_gate.passed);
-        assert!(
-            fail_gate.checks.iter().any(|check| check.name
-                == "domain_candidate_minus_background_mae"
-                && !check.passed)
-        );
+        assert!(fail_gate
+            .checks
+            .iter()
+            .any(|check| check.name == "domain_candidate_minus_background_mae" && !check.passed));
 
         let station_gate = evaluate_surface_mesoanalysis_calibration_gate(
             &report,
@@ -6325,24 +6322,20 @@ mod tests {
             },
         );
         assert!(station_gate.passed, "{:#?}", station_gate.checks);
-        assert!(
-            station_gate
-                .checks
-                .iter()
-                .any(|check| check.name == "station_analysis_mae" && check.passed)
-        );
+        assert!(station_gate
+            .checks
+            .iter()
+            .any(|check| check.name == "station_analysis_mae" && check.passed));
 
         let mut failing_station_thresholds = station_gate.thresholds.clone();
         failing_station_thresholds.max_station_analysis_mae = Some(0.1);
         let failing_station_gate =
             evaluate_surface_mesoanalysis_calibration_gate(&report, failing_station_thresholds);
         assert!(!failing_station_gate.passed);
-        assert!(
-            failing_station_gate
-                .checks
-                .iter()
-                .any(|check| check.name == "station_analysis_mae" && !check.passed)
-        );
+        assert!(failing_station_gate
+            .checks
+            .iter()
+            .any(|check| check.name == "station_analysis_mae" && !check.passed));
     }
 
     #[test]
@@ -6490,12 +6483,10 @@ mod tests {
             },
         );
         assert!(pass_gate.passed, "{:#?}", pass_gate.checks);
-        assert!(
-            pass_gate
-                .checks
-                .iter()
-                .any(|check| check.name == "stratum_candidate_minus_barnes_mae" && check.passed)
-        );
+        assert!(pass_gate
+            .checks
+            .iter()
+            .any(|check| check.name == "stratum_candidate_minus_barnes_mae" && check.passed));
 
         let fail_gate = evaluate_surface_mesoanalysis_calibration_gate(
             &report,
@@ -6505,12 +6496,10 @@ mod tests {
             },
         );
         assert!(!fail_gate.passed);
-        assert!(
-            fail_gate
-                .checks
-                .iter()
-                .any(|check| check.name == "stratum_candidate_minus_barnes_mae" && !check.passed)
-        );
+        assert!(fail_gate
+            .checks
+            .iter()
+            .any(|check| check.name == "stratum_candidate_minus_barnes_mae" && !check.passed));
     }
 
     #[test]
@@ -6677,31 +6666,27 @@ mod tests {
         };
         let pass_gate = evaluate_surface_mesoanalysis_calibration_gate(&report, thresholds.clone());
         assert!(pass_gate.passed);
-        assert!(
-            pass_gate
-                .checks
-                .iter()
-                .any(|check| check.name == "domain_high_minus_low_confidence_mae" && check.passed)
-        );
+        assert!(pass_gate
+            .checks
+            .iter()
+            .any(|check| check.name == "domain_high_minus_low_confidence_mae" && check.passed));
         assert!(pass_gate.checks.iter().any(|check| check.name
             == "domain_ranked_high_minus_low_confidence_mae"
             && check.passed
             && check.comparator == "<= and reliability=passed"));
-        assert!(
-            pass_gate.checks.iter().any(|check| check.name
-                == "domain_high_confidence_observation_count"
-                && check.passed)
-        );
+        assert!(pass_gate
+            .checks
+            .iter()
+            .any(|check| check.name == "domain_high_confidence_observation_count" && check.passed));
 
         let mut fail_thresholds = thresholds;
         fail_thresholds.max_domain_confidence_abs_error_correlation = Some(-0.8);
         let fail_gate = evaluate_surface_mesoanalysis_calibration_gate(&report, fail_thresholds);
         assert!(!fail_gate.passed);
-        assert!(
-            fail_gate.checks.iter().any(|check| check.name
-                == "domain_confidence_abs_error_correlation"
-                && !check.passed)
-        );
+        assert!(fail_gate
+            .checks
+            .iter()
+            .any(|check| check.name == "domain_confidence_abs_error_correlation" && !check.passed));
     }
 
     #[test]
@@ -7034,12 +7019,10 @@ mod tests {
             },
         );
         assert!(pass_gate.passed);
-        assert!(
-            pass_gate
-                .checks
-                .iter()
-                .any(|check| check.name == "max_case_mesoanalysis_compute_ms" && check.passed)
-        );
+        assert!(pass_gate
+            .checks
+            .iter()
+            .any(|check| check.name == "max_case_mesoanalysis_compute_ms" && check.passed));
 
         let fail_gate = evaluate_surface_mesoanalysis_calibration_gate(
             &report,
@@ -7115,11 +7098,9 @@ mod tests {
                 .len(),
             1
         );
-        assert!(
-            duplicate_signature_report
-                .quality_flags
-                .contains(&"single_case_signature_matrix".to_string())
-        );
+        assert!(duplicate_signature_report
+            .quality_flags
+            .contains(&"single_case_signature_matrix".to_string()));
         let duplicate_gate = evaluate_surface_mesoanalysis_calibration_gate(
             &duplicate_signature_report,
             SurfaceMesoanalysisCalibrationGateThresholds {
@@ -7170,18 +7151,14 @@ mod tests {
             },
         );
         assert!(!duplicate_gate.passed);
-        assert!(
-            duplicate_gate
-                .checks
-                .iter()
-                .any(|check| check.name == "unique_case_signature_count" && !check.passed)
-        );
-        assert!(
-            duplicate_gate
-                .checks
-                .iter()
-                .any(|check| check.name == "required_holdout_strategies" && check.passed)
-        );
+        assert!(duplicate_gate
+            .checks
+            .iter()
+            .any(|check| check.name == "unique_case_signature_count" && !check.passed));
+        assert!(duplicate_gate
+            .checks
+            .iter()
+            .any(|check| check.name == "required_holdout_strategies" && check.passed));
 
         let diverse_report = build_surface_mesoanalysis_calibration_report_from_values([
             (
@@ -7209,11 +7186,9 @@ mod tests {
                 .get("regime=nocturnal_llj"),
             Some(&1)
         );
-        assert!(
-            !diverse_report
-                .quality_flags
-                .contains(&"single_case_signature_matrix".to_string())
-        );
+        assert!(!diverse_report
+            .quality_flags
+            .contains(&"single_case_signature_matrix".to_string()));
         let diverse_gate = evaluate_surface_mesoanalysis_calibration_gate(
             &diverse_report,
             SurfaceMesoanalysisCalibrationGateThresholds {
@@ -7267,18 +7242,14 @@ mod tests {
             },
         );
         assert!(diverse_gate.passed);
-        assert!(
-            diverse_gate
-                .checks
-                .iter()
-                .any(|check| check.name == "required_case_tags" && check.passed)
-        );
-        assert!(
-            diverse_gate
-                .checks
-                .iter()
-                .any(|check| check.name == "unique_case_tag_count" && check.passed)
-        );
+        assert!(diverse_gate
+            .checks
+            .iter()
+            .any(|check| check.name == "required_case_tags" && check.passed));
+        assert!(diverse_gate
+            .checks
+            .iter()
+            .any(|check| check.name == "unique_case_tag_count" && check.passed));
 
         let mut missing_tag_thresholds = diverse_gate.thresholds.clone();
         missing_tag_thresholds.required_case_tags = vec!["regime=cold_pool".to_string()];
@@ -7286,18 +7257,14 @@ mod tests {
         let missing_tag_gate =
             evaluate_surface_mesoanalysis_calibration_gate(&diverse_report, missing_tag_thresholds);
         assert!(!missing_tag_gate.passed);
-        assert!(
-            missing_tag_gate
-                .checks
-                .iter()
-                .any(|check| check.name == "required_case_tags" && !check.passed)
-        );
-        assert!(
-            missing_tag_gate
-                .checks
-                .iter()
-                .any(|check| check.name == "unique_case_tag_count" && !check.passed)
-        );
+        assert!(missing_tag_gate
+            .checks
+            .iter()
+            .any(|check| check.name == "required_case_tags" && !check.passed));
+        assert!(missing_tag_gate
+            .checks
+            .iter()
+            .any(|check| check.name == "unique_case_tag_count" && !check.passed));
     }
 
     fn diversity_case_json(cycle: u8, forecast_hour: u16, holdout_strategy: &str) -> Value {
@@ -7376,16 +7343,12 @@ mod tests {
             report.quality_flags,
             vec!["empty_calibration_matrix", "skipped_reports_present"]
         );
-        assert!(
-            report.skipped_reports[0]
-                .reason
-                .contains("unsupported run schema")
-        );
-        assert!(
-            report.skipped_reports[1]
-                .reason
-                .contains("no Barnes baseline")
-        );
+        assert!(report.skipped_reports[0]
+            .reason
+            .contains("unsupported run schema"));
+        assert!(report.skipped_reports[1]
+            .reason
+            .contains("no Barnes baseline"));
     }
 
     fn assert_close(left: f64, right: f64) {

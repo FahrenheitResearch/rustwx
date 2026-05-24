@@ -12,13 +12,13 @@
 //! does no I/O of its own beyond the optional bincode cache.
 use crate::cache::{load_bincode, store_bincode};
 use crate::windowed::{HrrrWindowedProduct, HrrrWindowedProductMetadata};
-use grib_core::grib2::{Grib2File, Grib2Message, unpack_message_normalized};
+use grib_core::grib2::{unpack_message_normalized, Grib2File, Grib2Message};
 use rustwx_calc::{max_window_fields, sum_window_fields};
 use rustwx_core::{Field2D, ProductKey};
 use rustwx_render::{
-    Color, ColorScale, DiscreteColorScale, ExtendMode, WeatherPalette, WeatherProduct,
     palette_scale,
     weather::{dewpoint_palette_celsius_for_levels, temperature_palette_cropped_f},
+    Color, ColorScale, DiscreteColorScale, ExtendMode, WeatherPalette, WeatherProduct,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

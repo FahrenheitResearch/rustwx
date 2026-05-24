@@ -30,6 +30,7 @@ Repository = "https://github.com/FahrenheitResearch/rustwx"
 [project.scripts]
 rustwx = "rustwx:cli_main"
 rustwx-studio = "rustwx.studio:run_cli"
+rustwx-model-maps = "rustwx.model_maps:run_cli"
 
 [tool.maturin]
 module-name = "rustwx.rustwx"

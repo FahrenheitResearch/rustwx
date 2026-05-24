@@ -1,10 +1,10 @@
 use super::chunk_payload::ChunkPayload;
 use super::codec::ChunkCodec;
-use super::index::{ChunkExtent, ChunkIndex, read_index_records};
+use super::index::{read_index_records, ChunkExtent, ChunkIndex};
 use super::manifest::VolumeManifest;
 use super::sampling::{
-    BoxProfile, PointProfile, PointSample, RouteDef, RouteSample, RouteSectionPrimitives,
-    RouteValue, haversine_km, route_unit_components,
+    haversine_km, route_unit_components, BoxProfile, PointProfile, PointSample, RouteDef,
+    RouteSample, RouteSectionPrimitives, RouteValue,
 };
 use super::{VolumeResult, VolumeStoreError};
 use std::collections::HashMap;

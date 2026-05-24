@@ -1,23 +1,23 @@
 use crate::direct::{build_projected_map_with_projection, direct_component_slug};
-use crate::plot_design::{StaticPlotDesign, is_global_scale_domain, longitude_bounds_span_deg};
+use crate::plot_design::{is_global_scale_domain, longitude_bounds_span_deg, StaticPlotDesign};
 use crate::shared_context::{
-    DomainSpec, static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
-    static_title_with_suffix,
+    static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
+    static_title_with_suffix, DomainSpec,
 };
 use rustwx_core::{Field2D, GridProjection, GridShape, LatLonGrid, ModelId, ProductKey};
-use rustwx_models::{PlotRecipe, RenderStyle, plot_recipe};
+use rustwx_models::{plot_recipe, PlotRecipe, RenderStyle};
 use rustwx_render::weather::{
     dewpoint_palette_celsius_for_levels, dewpoint_palette_fahrenheit_for_levels,
 };
 use rustwx_render::{
-    Color, ColorScale, DiscreteColorScale, ExtendMode, LegendMode, LineworkRole, MapRenderRequest,
-    PngCompressionMode, PngWriteOptions, ProductVisualMode, StaticPlotStyle, WeatherPalette,
-    WeatherPreset, WeatherProduct, WindBarbLayer, WindStreamlineLayer, palette_scale,
-    save_png_profile_with_options_and_style,
+    palette_scale, save_png_profile_with_options_and_style, Color, ColorScale, DiscreteColorScale,
+    ExtendMode, LegendMode, LineworkRole, MapRenderRequest, PngCompressionMode, PngWriteOptions,
+    ProductVisualMode, StaticPlotStyle, WeatherPalette, WeatherPreset, WeatherProduct,
+    WindBarbLayer, WindStreamlineLayer,
 };
 use rustwx_render::{DerivedProductStyle, ProjectedDomain};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -27,6 +27,8 @@ const WXA_DENSE2D_MAGIC: &[u8; 8] = b"WXAD2D1!";
 const WXA_DENSE2D_VERSION: u32 = 1;
 const WXA_DENSE2D_HEADER_LEN: usize = 64;
 const WXA_DENSE2D_INDEX_RECORD_LEN: usize = 64;
+const WXA_SPATIAL_CHUNK_Y: usize = 256;
+const WXA_SPATIAL_CHUNK_X: usize = 256;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WxaDense2dMeta {
@@ -66,6 +68,28 @@ pub struct WxaDense2dGrid {
     pub meta: WxaDense2dMeta,
     pub forecast_hour: u32,
     pub values: Vec<f32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WxaDense2dWriteGrid {
+    pub model: String,
+    pub run_id: String,
+    pub member: Option<String>,
+    pub product_slug: String,
+    pub units: String,
+    pub forecast_hour: u32,
+    pub nx: usize,
+    pub ny: usize,
+    pub grid_meta: Value,
+    pub values: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct WxaGridCrop {
+    pub x_start: usize,
+    pub x_end: usize,
+    pub y_start: usize,
+    pub y_end: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +152,20 @@ pub fn read_wxa_dense2d_metadata(
     let meta: WxaDense2dMeta = serde_json::from_slice(&bytes[WXA_DENSE2D_HEADER_LEN..meta_end])?;
     let records = parse_wxa_index(&bytes, header)?;
     Ok((meta, records))
+}
+
+fn read_wxa_dense2d(
+    path: &Path,
+) -> Result<(Vec<u8>, WxaDense2dMeta, Vec<WxaDense2dIndexRecord>), Box<dyn std::error::Error>> {
+    let bytes = fs::read(path)?;
+    let header = parse_wxa_dense2d_header(&bytes)?;
+    let meta_end = WXA_DENSE2D_HEADER_LEN + header.metadata_len;
+    if meta_end > bytes.len() {
+        return Err("WXA metadata exceeds file length".into());
+    }
+    let meta: WxaDense2dMeta = serde_json::from_slice(&bytes[WXA_DENSE2D_HEADER_LEN..meta_end])?;
+    let records = parse_wxa_index(&bytes, header)?;
+    Ok((bytes, meta, records))
 }
 
 pub fn read_wxa_dense2d_grid(
@@ -241,6 +279,452 @@ pub fn wxa_member_dir(
         dir = dir.join("members").join(member);
     }
     dir
+}
+
+pub fn wxa_grid_meta_from_latlon(
+    model: &str,
+    nx: usize,
+    ny: usize,
+    lat: &[f32],
+    lon: &[f32],
+    crop: Option<WxaGridCrop>,
+    bounds: Option<[f64; 4]>,
+) -> Value {
+    if matches!(model, "hrrr" | "hrrr_archive")
+        && !lat.is_empty()
+        && lat.len() == nx * ny
+        && lon.len() == nx * ny
+    {
+        let hrrr = HrrrLambert::default();
+        let (x_start, y_start, x_end, y_end) = if let Some(crop) = crop {
+            (crop.x_start, crop.y_start, crop.x_end, crop.y_end)
+        } else if nx == hrrr.nx && ny == hrrr.ny {
+            (0, 0, hrrr.nx, hrrr.ny)
+        } else {
+            let (xf, yf) = hrrr.project_relative(lat[0] as f64, lon[0] as f64);
+            let x_start = (xf / hrrr.dx).round().max(0.0) as usize;
+            let y_start = (yf / hrrr.dy).round().max(0.0) as usize;
+            (x_start, y_start, x_start + nx, y_start + ny)
+        };
+        let bounds = bounds
+            .map(normalize_bounds)
+            .or_else(|| bounds_from_latlon_normalized(lat, lon));
+        return json!({
+            "type": "hrrr_lambert_crop",
+            "nx": nx,
+            "ny": ny,
+            "full_nx": hrrr.nx,
+            "full_ny": hrrr.ny,
+            "x_start": x_start,
+            "y_start": y_start,
+            "x_end": x_end,
+            "y_end": y_end,
+            "bounds": bounds,
+            "lat1": hrrr.lat1,
+            "lon1": hrrr.lon1,
+            "dx_m": hrrr.dx,
+            "dy_m": hrrr.dy,
+            "latin1": hrrr.latin1,
+            "latin2": hrrr.latin2,
+            "lov": hrrr.lov
+        });
+    }
+
+    if !lat.is_empty() && lat.len() == nx * ny && lon.len() == nx * ny {
+        let bounds = bounds
+            .map(normalize_bounds)
+            .or_else(|| bounds_from_latlon_normalized(lat, lon));
+        let corners = corners_from_latlon(nx, ny, lat, lon);
+        if let Some((lat_axis, lon_axis)) = rectilinear_axes_from_latlon(nx, ny, lat, lon) {
+            let lon_wrap = longitude_axis_wraps(&lon_axis);
+            if let (Some(lat_step), Some(lon_step)) =
+                (linear_axis_step(&lat_axis), linear_axis_step(&lon_axis))
+            {
+                return json!({
+                    "type": "regular_latlon",
+                    "nx": nx,
+                    "ny": ny,
+                    "bounds": bounds,
+                    "corners": corners,
+                    "lat_start": lat_axis[0],
+                    "lat_end": lat_axis[lat_axis.len() - 1],
+                    "lon_start": lon_axis[0],
+                    "lon_end": lon_axis[lon_axis.len() - 1],
+                    "lat_step": lat_step,
+                    "lon_step": lon_step,
+                    "lon_wrap": lon_wrap,
+                    "monotonic": {
+                        "lat_y": axis_direction(&lat_axis),
+                        "lon_x": axis_direction(&lon_axis)
+                    },
+                    "sample_strategy": "regular_nearest"
+                });
+            }
+            return json!({
+                "type": "rectilinear_latlon",
+                "nx": nx,
+                "ny": ny,
+                "bounds": bounds,
+                "corners": corners,
+                "lat_axis": lat_axis,
+                "lon_axis": lon_axis,
+                "lon_wrap": lon_wrap,
+                "monotonic": {
+                    "lat_y": axis_direction(&lat_axis),
+                    "lon_x": axis_direction(&lon_axis)
+                },
+                "sample_strategy": "rectilinear_nearest"
+            });
+        }
+        return sampled_curvilinear_meta(nx, ny, lat, lon, bounds, corners);
+    }
+
+    fallback_spatial_grid_meta(model, nx, ny)
+}
+
+pub fn write_wxa_dense2d_grids(
+    spatial_root: &Path,
+    model: &str,
+    run: &str,
+    member: Option<&str>,
+    product: &str,
+    grids: &[WxaDense2dWriteGrid],
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let first = grids.first().ok_or("cannot write empty WXA product")?;
+    for grid in grids {
+        if grid.nx != first.nx || grid.ny != first.ny {
+            return Err("all WXA grids for a product must share dimensions".into());
+        }
+        if grid.values.len() != grid.nx * grid.ny {
+            return Err(format!(
+                "WXA grid '{}' f{:03} values length does not match shape",
+                product, grid.forecast_hour
+            )
+            .into());
+        }
+    }
+
+    let mut base = spatial_root.join(model).join(run);
+    if let Some(member) = member {
+        base = base.join("members").join(member);
+    }
+    fs::create_dir_all(&base)?;
+    let path = base.join(format!("{product}.wxa"));
+    let first_grid_meta = first.grid_meta.clone();
+    let cy = WXA_SPATIAL_CHUNK_Y.min(first.ny);
+    let cx = WXA_SPATIAL_CHUNK_X.min(first.nx);
+    let n_chunks_y = first.ny.div_ceil(cy);
+    let n_chunks_x = first.nx.div_ceil(cx);
+
+    let mut records = Vec::<WxaDense2dIndexRecord>::new();
+    let mut payload = Vec::<u8>::new();
+    let incoming_hours = grids
+        .iter()
+        .map(|grid| grid.forecast_hour)
+        .collect::<BTreeSet<_>>();
+
+    if path.is_file() {
+        let (existing_bytes, existing_meta, existing_records) = read_wxa_dense2d(&path)?;
+        let mut incompatibilities = Vec::new();
+        if existing_meta.model != model {
+            incompatibilities.push(format!(
+                "model existing={} incoming={}",
+                existing_meta.model, model
+            ));
+        }
+        if existing_meta.run != run {
+            incompatibilities.push(format!(
+                "run existing={} incoming={}",
+                existing_meta.run, run
+            ));
+        }
+        if existing_meta.member.as_deref() != member {
+            incompatibilities.push(format!(
+                "member existing={:?} incoming={:?}",
+                existing_meta.member.as_deref(),
+                member
+            ));
+        }
+        if existing_meta.variable != product {
+            incompatibilities.push(format!(
+                "variable existing={} incoming={}",
+                existing_meta.variable, product
+            ));
+        }
+        if existing_meta.nx != first.nx || existing_meta.ny != first.ny {
+            incompatibilities.push(format!(
+                "shape existing={}x{} incoming={}x{}",
+                existing_meta.nx, existing_meta.ny, first.nx, first.ny
+            ));
+        }
+        if existing_meta.chunk_y != cy || existing_meta.chunk_x != cx {
+            incompatibilities.push(format!(
+                "chunk existing={}x{} incoming={}x{}",
+                existing_meta.chunk_x, existing_meta.chunk_y, cx, cy
+            ));
+        }
+        if existing_meta.dtype != "f32_le" {
+            incompatibilities.push(format!("dtype existing={}", existing_meta.dtype));
+        }
+        if existing_meta.codec != "zstd_level_1" {
+            incompatibilities.push(format!("codec existing={}", existing_meta.codec));
+        }
+        if existing_meta.units != first.units {
+            incompatibilities.push(format!(
+                "units existing={} incoming={}",
+                existing_meta.units, first.units
+            ));
+        }
+        if !wxa_grid_metadata_compatible(&existing_meta.grid, &first_grid_meta) {
+            incompatibilities.push("grid metadata differs".to_string());
+        }
+        if !incompatibilities.is_empty() {
+            return Err(format!(
+                "existing WXA product is incompatible with incoming grids: {} ({})",
+                path.display(),
+                incompatibilities.join("; ")
+            )
+            .into());
+        }
+        for record in existing_records
+            .into_iter()
+            .filter(|record| !incoming_hours.contains(&record.forecast_hour))
+        {
+            let end = record.offset + record.len;
+            if end > existing_bytes.len() {
+                return Err(
+                    format!("existing WXA chunk exceeds file length: {}", path.display()).into(),
+                );
+            }
+            let offset = payload.len();
+            payload.extend_from_slice(&existing_bytes[record.offset..end]);
+            records.push(WxaDense2dIndexRecord { offset, ..record });
+        }
+    }
+
+    for grid in grids {
+        for chunk_y in 0..n_chunks_y {
+            for chunk_x in 0..n_chunks_x {
+                let y0 = chunk_y * cy;
+                let x0 = chunk_x * cx;
+                let y1 = (y0 + cy).min(grid.ny);
+                let x1 = (x0 + cx).min(grid.nx);
+                let y_count = y1 - y0;
+                let x_count = x1 - x0;
+                let mut raw = Vec::with_capacity(y_count * x_count * 4);
+                let mut min = f32::INFINITY;
+                let mut max = f32::NEG_INFINITY;
+                let mut valid_count = 0u32;
+                for yy in 0..y_count {
+                    for xx in 0..x_count {
+                        let value = grid.values[(y0 + yy) * grid.nx + (x0 + xx)];
+                        if value.is_finite() {
+                            min = min.min(value);
+                            max = max.max(value);
+                            valid_count += 1;
+                        }
+                        raw.extend_from_slice(&value.to_le_bytes());
+                    }
+                }
+                if valid_count == 0 {
+                    min = f32::NAN;
+                    max = f32::NAN;
+                }
+                let compressed = zstd::stream::encode_all(raw.as_slice(), 1)?;
+                let offset = payload.len();
+                let len = compressed.len();
+                payload.extend_from_slice(&compressed);
+                records.push(WxaDense2dIndexRecord {
+                    forecast_hour: grid.forecast_hour,
+                    chunk_y,
+                    chunk_x,
+                    y_count,
+                    x_count,
+                    raw_len: raw.len(),
+                    offset,
+                    len,
+                    min,
+                    max,
+                    valid_count,
+                });
+            }
+        }
+    }
+    records.sort_by_key(|record| (record.forecast_hour, record.chunk_y, record.chunk_x));
+
+    let mut forecast_hours = records
+        .iter()
+        .map(|record| record.forecast_hour)
+        .collect::<Vec<_>>();
+    forecast_hours.sort_unstable();
+    forecast_hours.dedup();
+    let meta = WxaDense2dMeta {
+        schema: "wxstore.wxa.dense2d.v1".to_string(),
+        model: model.to_string(),
+        run: run.to_string(),
+        member: member.map(str::to_string),
+        variable: product.to_string(),
+        units: first.units.clone(),
+        nx: first.nx,
+        ny: first.ny,
+        forecast_hours,
+        chunk_y: cy,
+        chunk_x: cx,
+        dtype: "f32_le".to_string(),
+        codec: "zstd_level_1".to_string(),
+        grid: first_grid_meta,
+    };
+    let meta_bytes = serde_json::to_vec(&meta)?;
+    let index_offset = WXA_DENSE2D_HEADER_LEN + meta_bytes.len();
+    let payload_offset = index_offset + records.len() * WXA_DENSE2D_INDEX_RECORD_LEN;
+
+    let mut output = Vec::with_capacity(payload_offset + payload.len());
+    output.extend_from_slice(WXA_DENSE2D_MAGIC);
+    output.extend_from_slice(&WXA_DENSE2D_VERSION.to_le_bytes());
+    output.extend_from_slice(&(meta_bytes.len() as u32).to_le_bytes());
+    output.extend_from_slice(&(records.len() as u64).to_le_bytes());
+    output.extend_from_slice(&(index_offset as u64).to_le_bytes());
+    output.extend_from_slice(&(payload_offset as u64).to_le_bytes());
+    output.resize(WXA_DENSE2D_HEADER_LEN, 0);
+    output.extend_from_slice(&meta_bytes);
+    for record in &records {
+        output.extend_from_slice(&record.forecast_hour.to_le_bytes());
+        output.extend_from_slice(&(record.chunk_y as u32).to_le_bytes());
+        output.extend_from_slice(&(record.chunk_x as u32).to_le_bytes());
+        output.extend_from_slice(&(record.y_count as u32).to_le_bytes());
+        output.extend_from_slice(&(record.x_count as u32).to_le_bytes());
+        output.extend_from_slice(&(record.raw_len as u32).to_le_bytes());
+        output.extend_from_slice(&((payload_offset + record.offset) as u64).to_le_bytes());
+        output.extend_from_slice(&(record.len as u64).to_le_bytes());
+        output.extend_from_slice(&record.min.to_le_bytes());
+        output.extend_from_slice(&record.max.to_le_bytes());
+        output.extend_from_slice(&record.valid_count.to_le_bytes());
+        output.resize(output.len() + 12, 0);
+    }
+    output.extend_from_slice(&payload);
+    crate::publication::atomic_write_bytes(&path, &output)?;
+    Ok(path)
+}
+
+pub fn write_wxa_spatial_run_manifest(
+    spatial_root: &Path,
+    model: &str,
+    run: &str,
+    source: &str,
+    source_manifest: Option<&Path>,
+    blockers: &[Value],
+    elapsed_ms: u128,
+    publish_latest: bool,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let run_dir = spatial_root.join(model).join(run);
+    if !run_dir.is_dir() {
+        return Err(format!("run directory does not exist: {}", run_dir.display()).into());
+    }
+    let manifest_path = wxa_run_manifest_path(spatial_root, model, run);
+    let mut sources = fs::read(&manifest_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|value| value.get("sources").and_then(Value::as_array).cloned())
+        .unwrap_or_default();
+    sources.push(json!({
+        "kind": "rustwx_direct_wxa",
+        "source_manifest": source_manifest.map(|path| path.display().to_string()),
+        "imported_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "elapsed_ms": elapsed_ms,
+        "blocker_count": blockers.len(),
+        "blockers": blockers
+    }));
+    if sources.len() > 100 {
+        sources.drain(0..sources.len() - 100);
+    }
+    let products = collect_wxa_spatial_run_products(spatial_root, model, run)?;
+    let members = products
+        .iter()
+        .filter_map(|product| {
+            product
+                .get("member")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let manifest = json!({
+        "schema": "wxstore.spatial.run_manifest.v1",
+        "model": model,
+        "run": run,
+        "run_path": run_dir.display().to_string(),
+        "updated_at": now,
+        "product_count": products.len(),
+        "members": members,
+        "products": products,
+        "sources": sources
+    });
+    crate::publication::atomic_write_json(&manifest_path, &manifest)?;
+    let latest_pointer = if publish_latest {
+        publish_wxa_latest_pointer(spatial_root, model, run, source)?
+    } else {
+        Value::Null
+    };
+    Ok(json!({
+        "path": manifest_path.display().to_string(),
+        "product_count": products.len(),
+        "updated_at": now,
+        "latest_pointer": latest_pointer
+    }))
+}
+
+pub fn publish_wxa_latest_pointer(
+    spatial_root: &Path,
+    model: &str,
+    run: &str,
+    source: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let run_dir = spatial_root.join(model).join(run);
+    if !run_dir.is_dir() {
+        return Err(format!(
+            "cannot publish missing run directory: {}",
+            run_dir.display()
+        )
+        .into());
+    }
+    let pointer_path = spatial_root.join(model).join("latest.json");
+    if let Some(current) = fs::read(&pointer_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+    {
+        if let Some(current_run) = current.get("run").and_then(Value::as_str) {
+            if run_cycle_order(current_run, run).is_some_and(|order| order.is_gt()) {
+                return Ok(json!({
+                    "path": pointer_path.display().to_string(),
+                    "model": model,
+                    "run": run,
+                    "published": false,
+                    "skipped": true,
+                    "reason": "existing_latest_is_newer",
+                    "current_run": current_run
+                }));
+            }
+        }
+    }
+    let pointer = json!({
+        "schema": "wxstore.spatial.latest.v1",
+        "model": model,
+        "run": run,
+        "published_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "source": source,
+        "run_path": relative_wxa_path(spatial_root, &run_dir),
+        "run_manifest": relative_wxa_path(spatial_root, &wxa_run_manifest_path(spatial_root, model, run))
+    });
+    crate::publication::atomic_write_json(&pointer_path, &pointer)?;
+    Ok(json!({
+        "path": pointer_path.display().to_string(),
+        "model": model,
+        "run": run,
+        "published": true,
+        "published_at": pointer.get("published_at").cloned()
+    }))
 }
 
 pub fn render_wxa_static_plot(
@@ -1064,6 +1548,448 @@ pub fn common_forecast_hours(paths: &[PathBuf]) -> Result<Vec<u32>, Box<dyn std:
     Ok(common.unwrap_or_default().into_iter().collect())
 }
 
+fn wxa_run_manifest_path(spatial_root: &Path, model: &str, run: &str) -> PathBuf {
+    spatial_root.join(model).join(run).join("run-manifest.json")
+}
+
+fn collect_wxa_spatial_run_products(
+    spatial_root: &Path,
+    model: &str,
+    run: &str,
+) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+    let run_dir = spatial_root.join(model).join(run);
+    let mut products = Vec::new();
+    collect_wxa_products_in_dir(spatial_root, &run_dir, None, &mut products)?;
+    let members_dir = run_dir.join("members");
+    if members_dir.is_dir() {
+        for entry in fs::read_dir(&members_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(member) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            collect_wxa_products_in_dir(spatial_root, &path, Some(member), &mut products)?;
+        }
+    }
+    products.sort_by_key(|value| {
+        format!(
+            "{}|{}",
+            value.get("member").and_then(Value::as_str).unwrap_or(""),
+            value.get("product").and_then(Value::as_str).unwrap_or("")
+        )
+    });
+    Ok(products)
+}
+
+fn collect_wxa_products_in_dir(
+    spatial_root: &Path,
+    dir: &Path,
+    member: Option<&str>,
+    products: &mut Vec<Value>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("wxa") {
+            continue;
+        }
+        let (meta, index) = read_wxa_dense2d_metadata(&path)?;
+        let valid_points = index
+            .iter()
+            .map(|record| u64::from(record.valid_count))
+            .sum::<u64>();
+        products.push(json!({
+            "product": meta.variable,
+            "member": member,
+            "path": relative_wxa_path(spatial_root, &path),
+            "format": "wxa_dense2d",
+            "bytes": fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0),
+            "units": meta.units,
+            "nx": meta.nx,
+            "ny": meta.ny,
+            "forecast_hours": meta.forecast_hours,
+            "chunk_y": meta.chunk_y,
+            "chunk_x": meta.chunk_x,
+            "chunk_count": index.len(),
+            "valid_points": valid_points,
+            "grid": meta.grid
+        }));
+    }
+    Ok(())
+}
+
+fn relative_wxa_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+fn run_cycle_order(left: &str, right: &str) -> Option<std::cmp::Ordering> {
+    Some(parse_run_id_cycle_utc(left)?.cmp(&parse_run_id_cycle_utc(right)?))
+}
+
+fn parse_run_id_cycle_utc(run: &str) -> Option<(String, u8)> {
+    let date = run.get(0..8)?.to_string();
+    if !date.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    for part in run.split('_') {
+        let lower = part.to_ascii_lowercase();
+        if let Some(hour) = lower
+            .strip_suffix('z')
+            .and_then(|value| value.parse::<u8>().ok())
+        {
+            return Some((date, hour));
+        }
+    }
+    None
+}
+
+fn wxa_grid_metadata_compatible(existing: &Value, incoming: &Value) -> bool {
+    if existing == incoming {
+        return true;
+    }
+    let existing_type = existing.get("type").and_then(Value::as_str);
+    let incoming_type = incoming.get("type").and_then(Value::as_str);
+    if existing_type != incoming_type {
+        return false;
+    }
+    if existing_type == Some("curvilinear_latlon_sampled") {
+        return sampled_curvilinear_grid_metadata_compatible(existing, incoming);
+    }
+    false
+}
+
+fn sampled_curvilinear_grid_metadata_compatible(existing: &Value, incoming: &Value) -> bool {
+    ["type", "sample_strategy", "monotonic"]
+        .iter()
+        .all(|key| existing.get(*key) == incoming.get(*key))
+        && ["nx", "ny"].iter().all(|key| {
+            existing.get(*key).and_then(Value::as_u64) == incoming.get(*key).and_then(Value::as_u64)
+        })
+        && json_f64_array_close(existing.get("bounds"), incoming.get("bounds"), 1.0e-6)
+        && sampled_curvilinear_corners_close(
+            existing.get("corners"),
+            incoming.get("corners"),
+            2.0e-2,
+        )
+}
+
+fn json_f64_array_close(
+    existing: Option<&Value>,
+    incoming: Option<&Value>,
+    tolerance: f64,
+) -> bool {
+    let (Some(existing), Some(incoming)) = (existing, incoming) else {
+        return existing == incoming;
+    };
+    let (Some(existing), Some(incoming)) = (existing.as_array(), incoming.as_array()) else {
+        return false;
+    };
+    existing.len() == incoming.len()
+        && existing.iter().zip(incoming).all(|(existing, incoming)| {
+            match (existing.as_f64(), incoming.as_f64()) {
+                (Some(existing), Some(incoming)) => (existing - incoming).abs() <= tolerance,
+                _ => existing == incoming,
+            }
+        })
+}
+
+fn sampled_curvilinear_corners_close(
+    existing: Option<&Value>,
+    incoming: Option<&Value>,
+    tolerance: f64,
+) -> bool {
+    let (Some(existing), Some(incoming)) = (existing, incoming) else {
+        return existing == incoming;
+    };
+    ["top_left", "top_right", "bottom_left", "bottom_right"]
+        .iter()
+        .all(|corner| {
+            let (Some(existing), Some(incoming)) = (existing.get(*corner), incoming.get(*corner))
+            else {
+                return existing.get(*corner) == incoming.get(*corner);
+            };
+            ["x", "y"]
+                .iter()
+                .all(|key| existing.get(*key) == incoming.get(*key))
+                && ["lat", "lon"].iter().all(|key| {
+                    match (
+                        existing.get(*key).and_then(Value::as_f64),
+                        incoming.get(*key).and_then(Value::as_f64),
+                    ) {
+                        (Some(existing), Some(incoming)) => {
+                            (existing - incoming).abs() <= tolerance
+                        }
+                        _ => existing.get(*key) == incoming.get(*key),
+                    }
+                })
+        })
+}
+
+fn rectilinear_axes_from_latlon(
+    nx: usize,
+    ny: usize,
+    lat: &[f32],
+    lon: &[f32],
+) -> Option<(Vec<f64>, Vec<f64>)> {
+    if nx == 0 || ny == 0 || lat.len() != nx * ny || lon.len() != nx * ny {
+        return None;
+    }
+    let tolerance = 0.01;
+    let mut lat_axis = Vec::with_capacity(ny);
+    for y in 0..ny {
+        let row = &lat[y * nx..(y + 1) * nx];
+        let first = row.first().copied()? as f64;
+        if !first.is_finite() {
+            return None;
+        }
+        if row
+            .iter()
+            .any(|value| !value.is_finite() || ((*value as f64) - first).abs() > tolerance)
+        {
+            return None;
+        }
+        lat_axis.push(first);
+    }
+    let mut lon_axis = Vec::with_capacity(nx);
+    for x in 0..nx {
+        let value = lon[x] as f64;
+        if !value.is_finite() {
+            return None;
+        }
+        let reference = lon_axis.last().copied().unwrap_or(value);
+        lon_axis.push(unwrap_lon_near(value, reference));
+    }
+    for y in 0..ny {
+        for x in 0..nx {
+            let index = y * nx + x;
+            if ((lat[index] as f64) - lat_axis[y]).abs() > tolerance
+                || normalized_lon_delta(lon[index] as f64 - lon_axis[x]).abs() > tolerance
+            {
+                return None;
+            }
+        }
+    }
+    if !axis_is_monotonic(&lat_axis) || !axis_is_monotonic(&lon_axis) {
+        return None;
+    }
+    Some((lat_axis, lon_axis))
+}
+
+fn axis_is_monotonic(axis: &[f64]) -> bool {
+    if axis.len() < 2 {
+        return true;
+    }
+    let increasing = axis[axis.len() - 1] >= axis[0];
+    axis.windows(2).all(|pair| {
+        if increasing {
+            pair[1] >= pair[0]
+        } else {
+            pair[1] <= pair[0]
+        }
+    })
+}
+
+fn axis_direction(axis: &[f64]) -> &'static str {
+    if axis.len() < 2 {
+        "constant"
+    } else if axis[axis.len() - 1] >= axis[0] {
+        "increasing"
+    } else {
+        "decreasing"
+    }
+}
+
+fn linear_axis_step(axis: &[f64]) -> Option<f64> {
+    if axis.len() < 2 {
+        return Some(0.0);
+    }
+    let step = (axis[axis.len() - 1] - axis[0]) / axis.len().saturating_sub(1) as f64;
+    if step == 0.0 {
+        return None;
+    }
+    let tolerance = step.abs().max(1.0) * 0.001;
+    axis.iter()
+        .enumerate()
+        .all(|(index, value)| (*value - (axis[0] + index as f64 * step)).abs() <= tolerance)
+        .then_some(step)
+}
+
+fn longitude_axis_wraps(axis: &[f64]) -> bool {
+    if axis.len() < 2 {
+        return false;
+    }
+    let span = (axis[axis.len() - 1] - axis[0]).abs();
+    let step = span / axis.len().saturating_sub(1) as f64;
+    (span + step - 360.0).abs() <= step.max(0.01) * 2.0
+}
+
+fn sampled_curvilinear_meta(
+    nx: usize,
+    ny: usize,
+    lat: &[f32],
+    lon: &[f32],
+    bounds: Option<[f64; 4]>,
+    corners: Value,
+) -> Value {
+    let xs = sample_positions(nx, 33);
+    let ys = sample_positions(ny, 33);
+    let mut sample_lat = Vec::with_capacity(xs.len() * ys.len());
+    let mut sample_lon = Vec::with_capacity(xs.len() * ys.len());
+    for &y in &ys {
+        for &x in &xs {
+            let index = y * nx + x;
+            sample_lat.push(lat[index] as f64);
+            sample_lon.push(normalize_lon(lon[index] as f64));
+        }
+    }
+    json!({
+        "type": "curvilinear_latlon_sampled",
+        "nx": nx,
+        "ny": ny,
+        "bounds": bounds,
+        "corners": corners,
+        "monotonic": edge_monotonic_from_latlon(nx, ny, lat, lon),
+        "sample_strategy": "sampled_control_mesh_nearest",
+        "sample": {
+            "nx": xs.len(),
+            "ny": ys.len(),
+            "x": xs,
+            "y": ys,
+            "lat": sample_lat,
+            "lon": sample_lon
+        }
+    })
+}
+
+fn edge_monotonic_from_latlon(nx: usize, ny: usize, lat: &[f32], lon: &[f32]) -> Value {
+    let top_lon = (0..nx)
+        .map(|x| unwrap_lon_near(lon[x] as f64, lon[0] as f64))
+        .collect::<Vec<_>>();
+    let bottom_offset = ny.saturating_sub(1) * nx;
+    let bottom_lon = (0..nx)
+        .map(|x| unwrap_lon_near(lon[bottom_offset + x] as f64, lon[bottom_offset] as f64))
+        .collect::<Vec<_>>();
+    let left_lat = (0..ny).map(|y| lat[y * nx] as f64).collect::<Vec<_>>();
+    let right_lat = (0..ny)
+        .map(|y| lat[y * nx + nx.saturating_sub(1)] as f64)
+        .collect::<Vec<_>>();
+    json!({
+        "top_lon_x": axis_is_monotonic(&top_lon).then(|| axis_direction(&top_lon)),
+        "bottom_lon_x": axis_is_monotonic(&bottom_lon).then(|| axis_direction(&bottom_lon)),
+        "left_lat_y": axis_is_monotonic(&left_lat).then(|| axis_direction(&left_lat)),
+        "right_lat_y": axis_is_monotonic(&right_lat).then(|| axis_direction(&right_lat))
+    })
+}
+
+fn sample_positions(len: usize, max_count: usize) -> Vec<usize> {
+    if len == 0 {
+        return Vec::new();
+    }
+    if len <= max_count {
+        return (0..len).collect();
+    }
+    let count = max_count.max(2);
+    let mut positions = Vec::with_capacity(count);
+    for index in 0..count {
+        let value = (index as f64 * (len - 1) as f64 / (count - 1) as f64).round() as usize;
+        if positions.last().copied() != Some(value) {
+            positions.push(value);
+        }
+    }
+    positions
+}
+
+fn corners_from_latlon(nx: usize, ny: usize, lat: &[f32], lon: &[f32]) -> Value {
+    let point = |x: usize, y: usize| {
+        let index = y * nx + x;
+        json!({"lat": lat[index] as f64, "lon": normalize_lon(lon[index] as f64), "x": x, "y": y})
+    };
+    json!({
+        "top_left": point(0, 0),
+        "top_right": point(nx.saturating_sub(1), 0),
+        "bottom_left": point(0, ny.saturating_sub(1)),
+        "bottom_right": point(nx.saturating_sub(1), ny.saturating_sub(1))
+    })
+}
+
+fn bounds_from_latlon_normalized(lat: &[f32], lon: &[f32]) -> Option<[f64; 4]> {
+    let mut west = f64::INFINITY;
+    let mut east = f64::NEG_INFINITY;
+    let mut south = f64::INFINITY;
+    let mut north = f64::NEG_INFINITY;
+    let mut found = false;
+    for (&lat, &lon) in lat.iter().zip(lon) {
+        let lat = lat as f64;
+        let lon = normalize_lon(lon as f64);
+        if lat.is_finite() && lon.is_finite() {
+            west = west.min(lon);
+            east = east.max(lon);
+            south = south.min(lat);
+            north = north.max(lat);
+            found = true;
+        }
+    }
+    found.then_some([west, south, east, north])
+}
+
+fn normalize_bounds(bounds: [f64; 4]) -> [f64; 4] {
+    let west = normalize_lon(bounds[0]);
+    let east = normalize_lon(bounds[2]);
+    [
+        west.min(east),
+        bounds[1].min(bounds[3]),
+        west.max(east),
+        bounds[1].max(bounds[3]),
+    ]
+}
+
+fn unwrap_lon_near(lon: f64, reference: f64) -> f64 {
+    let mut value = normalize_lon(lon);
+    while value - reference > 180.0 {
+        value -= 360.0;
+    }
+    while value - reference < -180.0 {
+        value += 360.0;
+    }
+    value
+}
+
+fn fallback_spatial_grid_meta(model: &str, nx: usize, ny: usize) -> Value {
+    if model == "hrrr" && nx == 1799 && ny == 1059 {
+        json!({
+            "type": "lambert_conformal",
+            "nx": nx,
+            "ny": ny,
+            "lat1": 21.138123,
+            "lon1": 237.280472,
+            "dx_m": 3000.0,
+            "dy_m": 3000.0,
+            "latin1": 38.5,
+            "latin2": 38.5,
+            "lov": 262.5
+        })
+    } else {
+        json!({
+            "type": "regular_latlon",
+            "nx": nx,
+            "ny": ny,
+            "lat_start": 90.0,
+            "lat_end": -90.0,
+            "lon_start": 0.0,
+            "lon_end": 360.0 - 360.0 / nx.max(1) as f64
+        })
+    }
+}
+
 fn bounds_from_latlon(lat: &[f32], lon: &[f32]) -> Option<[f64; 4]> {
     if lat.len() != lon.len() || lat.is_empty() {
         return None;
@@ -1270,6 +2196,7 @@ fn f32_from(bytes: &[u8]) -> Result<f32, Box<dyn std::error::Error>> {
 
 #[derive(Debug, Clone, Copy)]
 struct HrrrLambert {
+    nx: usize,
     ny: usize,
     lat1: f64,
     lon1: f64,
@@ -1281,9 +2208,27 @@ struct HrrrLambert {
     earth_radius_m: f64,
 }
 
+impl Default for HrrrLambert {
+    fn default() -> Self {
+        Self {
+            nx: 1799,
+            ny: 1059,
+            lat1: 21.138123,
+            lon1: 237.280472,
+            dx: 3000.0,
+            dy: 3000.0,
+            latin1: 38.5,
+            latin2: 38.5,
+            lov: 262.5,
+            earth_radius_m: 6_371_229.0,
+        }
+    }
+}
+
 impl HrrrLambert {
     fn from_meta(meta: &Value) -> Self {
         Self {
+            nx: meta_f64(meta, "full_nx").unwrap_or(1799.0) as usize,
             ny: meta_f64(meta, "full_ny").unwrap_or(1059.0) as usize,
             lat1: meta_f64(meta, "lat1").unwrap_or(21.138123),
             lon1: meta_f64(meta, "lon1").unwrap_or(237.280472),
@@ -1315,8 +2260,29 @@ impl HrrrLambert {
         (lat.to_degrees(), normalize_lon(lon.to_degrees()))
     }
 
+    fn project_relative(&self, lat: f64, lon: f64) -> (f64, f64) {
+        let n = self.n();
+        let f = self.f(n);
+        let lon1 = Self::normalize_lon_east(self.lon1);
+        let lov = Self::normalize_lon_east(self.lov);
+        let theta1 = n * (lon1.to_radians() - lov.to_radians());
+        let rho1 = self.rho(self.lat1, n, f);
+        let lon = Self::normalize_lon_east(lon);
+        let theta = n * (lon.to_radians() - lov.to_radians());
+        let rho = self.rho(lat, n, f);
+        let x_abs = rho * theta.sin();
+        let y_abs = rho * theta.cos();
+        let x_origin = rho1 * theta1.sin();
+        let y_origin = rho1 * theta1.cos();
+        (x_abs - x_origin, y_origin - y_abs)
+    }
+
     fn normalize_lon_east(lon: f64) -> f64 {
-        if lon < 0.0 { lon + 360.0 } else { lon }
+        if lon < 0.0 {
+            lon + 360.0
+        } else {
+            lon
+        }
     }
 
     fn n(&self) -> f64 {

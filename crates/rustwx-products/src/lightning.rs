@@ -1,10 +1,10 @@
 use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
 use rustwx_render::{
-    ChromeScale, Color, ColorScale, DiscreteColorScale, ExtendMode, Field2D, GridShape,
-    LambertConformal, LatLonGrid, LegendControls, LegendMode, LevelDensity, MapRenderRequest,
-    PngCompressionMode, PngWriteOptions, ProductKey, ProductVisualMode, ProjectedDomain,
-    ProjectedMapBuildOptions, ProjectedMarkerShape, ProjectedPointOverlay, ProjectionSpec,
-    RenderDensity, build_projected_map_with_options, save_png_profile_with_options,
+    build_projected_map_with_options, save_png_profile_with_options, ChromeScale, Color,
+    ColorScale, DiscreteColorScale, ExtendMode, Field2D, GridShape, LambertConformal, LatLonGrid,
+    LegendControls, LegendMode, LevelDensity, MapRenderRequest, PngCompressionMode,
+    PngWriteOptions, ProductKey, ProductVisualMode, ProjectedDomain, ProjectedMapBuildOptions,
+    ProjectedMarkerShape, ProjectedPointOverlay, ProjectionSpec, RenderDensity,
 };
 use serde::{Deserialize, Serialize};
 use std::error::Error;

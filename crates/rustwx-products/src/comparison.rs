@@ -8,12 +8,12 @@ use crate::non_ecape::{
     NonEcapeMultiDomainReport,
 };
 use crate::publication::{
-    ArtifactContentIdentity, ArtifactPublicationState, PublishedFetchIdentity,
-    RunPublicationManifest, artifact_identity_from_path,
+    artifact_identity_from_path, ArtifactContentIdentity, ArtifactPublicationState,
+    PublishedFetchIdentity, RunPublicationManifest,
 };
 use crate::severe::SevereBatchReport;
 use crate::windowed::{
-    HrrrWindowedBatchReport, collect_windowed_input_fetches, windowed_product_input_fetch_keys,
+    collect_windowed_input_fetches, windowed_product_input_fetch_keys, HrrrWindowedBatchReport,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

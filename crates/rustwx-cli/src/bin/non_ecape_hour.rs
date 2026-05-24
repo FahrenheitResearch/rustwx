@@ -573,6 +573,8 @@ fn wxstore_request_for_args(
         out_dir,
         cache_root: cache_root.clone(),
         use_cache: !args.no_cache,
+        direct_wxa_root: None,
+        publish_wxa_latest: false,
     }))
 }
 

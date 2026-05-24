@@ -2,8 +2,8 @@ use crate::cache::{load_bincode, store_bincode};
 use crate::direct::build_projected_map_with_projection;
 use crate::shared_context::PreparedProjectedContext;
 use grib_core::grib2::{
-    Grib2File, Grib2Message, flip_rows, grid_latlon,
-    unpack_message_normalized as unpack_message_scan_normalized,
+    flip_rows, grid_latlon, unpack_message_normalized as unpack_message_scan_normalized, Grib2File,
+    Grib2Message,
 };
 use rayon::prelude::*;
 use rustwx_calc::{GridShape as CalcGridShape, VolumeShape};
@@ -12,14 +12,14 @@ use rustwx_core::{
     LatLonGrid, ModelId, ModelRunRequest, RustwxError, SourceId,
 };
 use rustwx_io::{
-    CachedFetchResult, FetchRequest, artifact_cache_dir, earth2_archive, fetch_bytes_with_cache,
-    grid_projection_from_grib2_grid,
+    artifact_cache_dir, earth2_archive, fetch_bytes_with_cache, grid_projection_from_grib2_grid,
+    CachedFetchResult, FetchRequest,
 };
 use rustwx_models::{
-    LatestRun, ResolvedCanonicalBundleProduct, latest_available_run_at_forecast_hour,
-    latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
+    latest_available_run_at_forecast_hour, latest_available_run_for_products_at_forecast_hour,
+    resolve_canonical_bundle_product, LatestRun, ResolvedCanonicalBundleProduct,
 };
-use rustwx_render::{ProjectedExtent, map_frame_aspect_ratio};
+use rustwx_render::{map_frame_aspect_ratio, ProjectedExtent};
 #[cfg(feature = "wrf")]
 use rustwx_wrf as wrf;
 use serde::{Deserialize, Serialize};
@@ -2884,7 +2884,11 @@ pub(crate) fn validate_pressure_decode_against_surface(
 }
 
 fn normalize_longitude(lon: f64) -> f64 {
-    if lon > 180.0 { lon - 360.0 } else { lon }
+    if lon > 180.0 {
+        lon - 360.0
+    } else {
+        lon
+    }
 }
 
 fn point_in_geographic_bounds(lon: f64, lat: f64, bounds: (f64, f64, f64, f64)) -> bool {
@@ -3042,25 +3046,21 @@ mod tests {
 
     #[test]
     fn rap_pressure_bundle_uses_full_family_fetch() {
-        assert!(
-            bundle_fetch_variable_patterns(
-                ModelId::Rap,
-                CanonicalBundleDescriptor::PressureAnalysis,
-                "awp130pgrb",
-            )
-            .is_empty()
-        );
+        assert!(bundle_fetch_variable_patterns(
+            ModelId::Rap,
+            CanonicalBundleDescriptor::PressureAnalysis,
+            "awp130pgrb",
+        )
+        .is_empty());
     }
 
     #[test]
     fn rap_same_file_surface_pressure_merge_uses_full_fetch() {
-        assert!(
-            merge_variable_patterns([
-                surface_analysis_fetch_patterns(ModelId::Rap),
-                pressure_analysis_fetch_patterns(ModelId::Rap),
-            ])
-            .is_empty()
-        );
+        assert!(merge_variable_patterns([
+            surface_analysis_fetch_patterns(ModelId::Rap),
+            pressure_analysis_fetch_patterns(ModelId::Rap),
+        ])
+        .is_empty());
     }
 
     #[test]

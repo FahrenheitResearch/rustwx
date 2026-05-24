@@ -1,8 +1,8 @@
 use crate::shared_context::DomainSpec;
 use rustwx_core::GridProjection;
 use rustwx_render::{
-    Color, LineworkRole, MapRenderRequest, ProjectedDomainBuildOptions, ProjectedLineOverlay,
-    ProjectionSpec, build_projected_domain,
+    build_projected_domain, Color, LineworkRole, MapRenderRequest, ProjectedDomainBuildOptions,
+    ProjectedLineOverlay, ProjectionSpec,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -1327,13 +1327,11 @@ mod tests {
             .expect("projection should succeed");
         assert_eq!(projected.len(), catalog.items.len());
         assert_eq!(projected[0].azimuth_deg, Some(90.0));
-        assert!(
-            projected[0]
-                .label
-                .as_deref()
-                .unwrap_or_default()
-                .contains("alpha")
-        );
+        assert!(projected[0]
+            .label
+            .as_deref()
+            .unwrap_or_default()
+            .contains("alpha"));
     }
 
     #[test]

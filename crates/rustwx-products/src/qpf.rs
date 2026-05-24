@@ -1,4 +1,4 @@
-use rustwx_render::{DiscreteColorScale, ExtendMode, WeatherPalette, palette_scale};
+use rustwx_render::{palette_scale, DiscreteColorScale, ExtendMode, WeatherPalette};
 
 pub(crate) fn qpf_inches_scale() -> DiscreteColorScale {
     palette_scale(

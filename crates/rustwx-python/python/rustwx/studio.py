@@ -16,6 +16,7 @@ import json
 import math
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -50,6 +51,7 @@ NEXRAD_LEVEL2_BASE_URL = "https://unidata-nexrad-level2.s3.amazonaws.com"
 DEFAULT_OUTPUT_WIDTH = 1600
 DEFAULT_OUTPUT_HEIGHT = 1100
 MAX_BODY_BYTES = 2_000_000
+WXPROFILE_STORE_BINARY_NAMES = ("model_wxprofile_store", "hrrr_wxprofile_store")
 RADAR_BASEMAP_WIDTH = 1000
 RADAR_BASEMAP_HEIGHT = 590
 RADAR_BASEMAP_BOUNDS = (-126.0, -66.0, 24.0, 50.0)
@@ -61,6 +63,18 @@ RADAR_BASEMAP_PROJECTION = {
     "cen_lat": 38.5,
     "cen_lon": -98.0,
 }
+
+
+def _wxprofile_store_binary(binaries: dict[str, Path]) -> Path | None:
+    for name in WXPROFILE_STORE_BINARY_NAMES:
+        binary = binaries.get(name)
+        if binary is not None:
+            return binary
+    return None
+
+
+def _has_wxprofile_store_binary(binaries: dict[str, Path]) -> bool:
+    return _wxprofile_store_binary(binaries) is not None
 
 SATELLITE_PRODUCTS = [
     "goes_geocolor",
@@ -393,6 +407,7 @@ class StudioHandler(BaseHTTPRequestHandler):
             ("native_obs_preview", "Native Obs", out_root / "native_obs_preview", "outputs"),
             ("satellite_cache", "Satellite Cache", cache_root / "satellite", "cache"),
             ("radar_cache", "Radar Level-II Cache", cache_root / "radar", "cache"),
+            ("wxprofile_stores", "WxProfile Stores", cache_root / "studio_wxprofile_stores", "cache"),
             ("pressure_stores", "Pressure Stores", cache_root / "studio_pressure_stores", "cache"),
             ("volume_stores", "Volume Stores", cache_root / "studio_volume_stores", "cache"),
             ("wxstore_spatial", "WxStore Spatial", cache_root / "studio_wxstore_spatial", "cache"),
@@ -413,6 +428,7 @@ class StudioHandler(BaseHTTPRequestHandler):
             *_inventory_wxstore_runs(cache_root / "studio_wxstore_spatial"),
             *_inventory_satellite_layers(cache_root / "studio_satellite_tiles"),
             *_inventory_radar_layers(cache_root / "studio_radar_tiles"),
+            *_inventory_store_dirs(cache_root / "studio_wxprofile_stores", "wxprofile_store"),
             *_inventory_store_dirs(cache_root / "studio_pressure_stores", "pressure_store"),
             *_inventory_store_dirs(cache_root / "studio_volume_stores", "volume_store"),
         ]
@@ -648,8 +664,18 @@ class StudioHandler(BaseHTTPRequestHandler):
                 "satellite_tiles": "goes_web_tiles" in env.binaries,
                 "sounding": "sounding_plot" in env.binaries,
                 "fast_soundings": (
-                    "hrrr_pressure_volume_store" in env.binaries
-                    and "volume_store_sounding_render" in env.binaries
+                    (
+                        _has_wxprofile_store_binary(env.binaries)
+                        and "wxprofile_sounding_render" in env.binaries
+                    )
+                    or (
+                        "hrrr_pressure_volume_store" in env.binaries
+                        and "volume_store_sounding_render" in env.binaries
+                    )
+                ),
+                "wxprofile_soundings": (
+                    _has_wxprofile_store_binary(env.binaries)
+                    and "wxprofile_sounding_render" in env.binaries
                 ),
                 "cross_section": (
                     "hrrr_pressure_volume_store" in env.binaries
@@ -1019,6 +1045,7 @@ class StudioHandler(BaseHTTPRequestHandler):
             "source": source,
             "products": selected,
             "cache_dir": str(self.server.env.cache_dir),
+            "download_workers": int(payload.get("download_workers") or payload.get("jobs") or 4),
         }
         started = time.time()
         result = _load_json(rustwx.prepare_model_data_json(json.dumps(request)))
@@ -1821,6 +1848,18 @@ class StudioHandler(BaseHTTPRequestHandler):
         )
         return self._attach_previews(result, started, ["pressure_volume_store"])
 
+    def _prepare_wxprofile_store(self, payload: dict) -> dict:
+        started = time.time()
+        context = self._wxprofile_store_context(payload)
+        result = self._ensure_wxprofile_store(
+            context,
+            payload,
+            force=bool(payload.get("force") or payload.get("force_store")),
+            timeout=int(payload.get("timeout") or payload.get("store_timeout") or 1200),
+        )
+        result["ui_elapsed_s"] = round(time.time() - started, 2)
+        return result
+
     def _pressure_store_context(self, payload: dict, *, route: dict | None = None) -> dict:
         model = str(payload.get("model") or "hrrr")
         source = str(payload.get("source") or "aws")
@@ -1883,6 +1922,31 @@ class StudioHandler(BaseHTTPRequestHandler):
             "sample_lat": sample_lat,
             "sample_lon": sample_lon,
             "route": route,
+            "store_root": store_root,
+            "store_path": store_root / "store",
+        }
+
+    def _wxprofile_store_context(self, payload: dict, *, route: dict | None = None) -> dict:
+        context = self._pressure_store_context(payload, route=route)
+        key = {
+            "model": context["model"],
+            "source": context["source"],
+            "date": context["date_yyyymmdd"],
+            "cycle": context["cycle_utc"],
+            "hours": context["hours"],
+            "domain": context["domain"],
+            "bounds": [round(float(value), 4) for value in context["bounds"]],
+            "format": "wxprofile-v0",
+        }
+        store_root = (
+            self.server.env.cache_dir
+            / "studio_wxprofile_stores"
+            / _safe_slug(context["model"])
+            / f"{context['date_yyyymmdd']}_{int(context['cycle_utc']):02d}z"
+            / f"{_safe_slug(context['domain'])}_{_safe_slug(context['hours'])}_{_short_hash(key)}"
+        )
+        return {
+            **context,
             "store_root": store_root,
             "store_path": store_root / "store",
         }
@@ -2007,6 +2071,107 @@ class StudioHandler(BaseHTTPRequestHandler):
                 "elapsed_s": round(time.time() - started, 2),
             }
 
+    def _ensure_wxprofile_store(
+        self,
+        context: dict,
+        payload: dict,
+        *,
+        force: bool = False,
+        timeout: int = 1200,
+    ) -> dict:
+        binary = _wxprofile_store_binary(self.server.env.binaries)
+        store_path = Path(context["store_path"])
+        if binary is None:
+            return {
+                "ok": False,
+                "stage": "build_wxprofile_store",
+                "error": "model_wxprofile_store binary not found. Build it with cargo build -p rustwx-cli --release --bin model_wxprofile_store or pass --bin-dir.",
+                "store_root": str(context["store_root"]),
+                "store_path": str(store_path),
+            }
+
+        with self.server.pressure_store_lock:
+            if _wxprofile_store_complete(store_path) and not force:
+                return {
+                    "ok": True,
+                    "stage": "wxprofile_store_ready",
+                    "cache_hit": True,
+                    "model": context["model"],
+                    "source": context["source"],
+                    "date_yyyymmdd": context["date_yyyymmdd"],
+                    "cycle_utc": context["cycle_utc"],
+                    "hours": context["hours"],
+                    "domain": context["domain"],
+                    "bounds": context["bounds"],
+                    "store_root": str(context["store_root"]),
+                    "store_path": str(store_path),
+                }
+
+            context["store_root"].mkdir(parents=True, exist_ok=True)
+            cmd = [
+                str(binary),
+                "--model",
+                context["model"],
+                "--domain",
+                context["domain"],
+                "--date",
+                context["date_yyyymmdd"],
+                "--cycle",
+                str(context["cycle_utc"]),
+                "--hours",
+                str(context["hours"]),
+                "--source",
+                context["source"],
+                f"--west={context['bounds'][0]}",
+                f"--east={context['bounds'][1]}",
+                f"--south={context['bounds'][2]}",
+                f"--north={context['bounds'][3]}",
+                "--cache-dir",
+                str(self.server.env.cache_dir),
+                "--out-dir",
+                str(context["store_root"]),
+                "--chunk-x",
+                str(int(payload.get("wxprofile_chunk_x") or payload.get("chunk_x") or 4096)),
+                "--chunk-y",
+                str(int(payload.get("wxprofile_chunk_y") or payload.get("chunk_y") or 4)),
+            ]
+            if payload.get("no_cache"):
+                cmd.append("--no-cache")
+
+            started = time.time()
+            command_result = _run_command(
+                cmd,
+                self.server.env.subprocess_env(),
+                timeout=timeout,
+            )
+            report_path = Path(context["store_root"]) / "report.json"
+            report = None
+            if report_path.exists():
+                try:
+                    report = json.loads(report_path.read_text(encoding="utf-8"))
+                except Exception:
+                    report = None
+            elif command_result.get("json"):
+                report = command_result["json"]
+            return {
+                "ok": bool(command_result["ok"]) and _wxprofile_store_complete(store_path),
+                "stage": "build_wxprofile_store",
+                "cache_hit": False,
+                "model": context["model"],
+                "source": context["source"],
+                "date_yyyymmdd": context["date_yyyymmdd"],
+                "cycle_utc": context["cycle_utc"],
+                "hours": context["hours"],
+                "domain": context["domain"],
+                "bounds": context["bounds"],
+                "store_root": str(context["store_root"]),
+                "store_path": str(store_path),
+                "report_path": str(report_path),
+                "report": report,
+                "build": command_result,
+                "elapsed_s": round(time.time() - started, 2),
+            }
+
     def _render_sounding(self, payload: dict) -> dict:
         try:
             lat = float(payload.get("lat"))
@@ -2026,11 +2191,109 @@ class StudioHandler(BaseHTTPRequestHandler):
         sample_method = str(payload.get("sample_method") or "nearest")
         data_mode = str(payload.get("data_mode") or "auto").lower().replace("_", "-")
         store_result = None
+        wxprofile_store_result = None
+        wxprofile_binary = self.server.env.binaries.get("wxprofile_sounding_render")
+        can_try_wxprofile = (
+            data_mode != "grib"
+            and wxprofile_binary is not None
+            and _has_wxprofile_store_binary(self.server.env.binaries)
+            and sample_method in {"nearest", "box-mean"}
+            and 0 <= forecast_hour <= 255
+        )
+        if can_try_wxprofile:
+            context = self._wxprofile_store_context(
+                {
+                    **payload,
+                    "model": model,
+                    "source": source,
+                    "run_str": f"{date}/{cycle:02d}",
+                    "forecast_hour": forecast_hour,
+                    "lat": lat,
+                    "lon": lon,
+                }
+            )
+            wxprofile_store_result = self._ensure_wxprofile_store(
+                context,
+                payload,
+                force=bool(payload.get("force_store")),
+                timeout=int(payload.get("store_timeout") or 1200),
+            )
+            if wxprofile_store_result.get("ok"):
+                stamp = time.strftime("%Y%m%d_%H%M%S")
+                out_dir = self.server.env.out_root / "studio" / "soundings" / model / stamp
+                out_dir.mkdir(parents=True, exist_ok=True)
+                output = out_dir / f"rustwx_{model}_{date}_{cycle:02d}z_f{forecast_hour:03d}_{lat:.3f}_{lon:.3f}_sounding.png"
+                manifest = out_dir / "sounding_manifest.json"
+                wxprofile_method = "box-mean" if sample_method == "box-mean" else "nearest"
+                cmd = [
+                    str(wxprofile_binary),
+                    "--store",
+                    str(context["store_path"]),
+                    "--out-dir",
+                    str(out_dir),
+                    "--hour",
+                    str(forecast_hour),
+                    "--lat",
+                    str(lat),
+                    "--lon",
+                    str(lon),
+                    "--sample-method",
+                    wxprofile_method,
+                    "--output",
+                    str(output),
+                    "--manifest",
+                    str(manifest),
+                ]
+                station_id = str(payload.get("station_id") or "").strip()
+                if station_id:
+                    cmd.extend(["--station-id", station_id])
+                if wxprofile_method == "box-mean":
+                    lat_deg, lon_deg = _box_radius_degrees_from_payload(payload, lat)
+                    cmd.extend(["--box-radius-lat-deg", str(lat_deg), "--box-radius-lon-deg", str(lon_deg)])
+                else:
+                    lat_deg = lon_deg = None
+                if payload.get("include_column"):
+                    cmd.append("--include-column")
+                proc_result = _run_command(
+                    cmd,
+                    self.server.env.subprocess_env(),
+                    timeout=int(payload.get("timeout") or 420),
+                )
+                result = {
+                    **proc_result,
+                    "backend": "wxprofile",
+                    "model": model,
+                    "source": "wxprofile",
+                    "date_yyyymmdd": date,
+                    "cycle_utc": cycle,
+                    "forecast_hour": forecast_hour,
+                    "lat": lat,
+                    "lon": lon,
+                    "sample_method_requested": sample_method,
+                    "sample_method_used": wxprofile_method,
+                    "box_width_km": payload.get("box_width_km"),
+                    "box_height_km": payload.get("box_height_km"),
+                    "box_bounds": payload.get("box_bounds"),
+                    "box_radius_lat_deg": lat_deg,
+                    "box_radius_lon_deg": lon_deg,
+                    "out_dir": str(out_dir),
+                    "wxprofile_store": wxprofile_store_result,
+                }
+                if manifest.exists():
+                    try:
+                        result["sounding"] = json.loads(manifest.read_text(encoding="utf-8"))
+                    except Exception:
+                        result["sounding_manifest"] = str(manifest)
+                elif proc_result.get("json"):
+                    result["sounding"] = proc_result["json"]
+                return self._attach_previews(result, started, ["sounding"])
+
         volume_binary = self.server.env.binaries.get("volume_store_sounding_render")
         can_try_store = (
             data_mode != "grib"
             and volume_binary is not None
             and self.server.env.binaries.get("hrrr_pressure_volume_store") is not None
+            and sample_method in {"nearest", "box-mean"}
             and 0 <= forecast_hour <= 255
         )
         if can_try_store:
@@ -2081,11 +2344,10 @@ class StudioHandler(BaseHTTPRequestHandler):
                 if station_id:
                     cmd.extend(["--station-id", station_id])
                 if volume_method == "box-mean":
-                    lat_deg, lon_deg = _box_radius_degrees(
-                        float(payload.get("box_radius_km") or 25.0),
-                        lat,
-                    )
+                    lat_deg, lon_deg = _box_radius_degrees_from_payload(payload, lat)
                     cmd.extend(["--box-radius-lat-deg", str(lat_deg), "--box-radius-lon-deg", str(lon_deg)])
+                else:
+                    lat_deg = lon_deg = None
                 if payload.get("include_column"):
                     cmd.append("--include-column")
                 proc_result = _run_command(
@@ -2105,7 +2367,13 @@ class StudioHandler(BaseHTTPRequestHandler):
                     "lon": lon,
                     "sample_method_requested": sample_method,
                     "sample_method_used": volume_method,
+                    "box_width_km": payload.get("box_width_km"),
+                    "box_height_km": payload.get("box_height_km"),
+                    "box_bounds": payload.get("box_bounds"),
+                    "box_radius_lat_deg": lat_deg,
+                    "box_radius_lon_deg": lon_deg,
                     "out_dir": str(out_dir),
+                    "wxprofile_store": wxprofile_store_result,
                     "pressure_store": store_result,
                 }
                 if manifest.exists():
@@ -2129,6 +2397,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                         "forecast_hour": forecast_hour,
                         "lat": lat,
                         "lon": lon,
+                        "wxprofile_store": wxprofile_store_result,
                         "pressure_store": store_result,
                     },
                     started,
@@ -2142,6 +2411,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                     "ok": False,
                     "backend": "grib",
                     "error": "sounding_plot binary not found. Build it with cargo build -p rustwx-cli --release --bin sounding_plot or pass --bin-dir.",
+                    "wxprofile_store": wxprofile_store_result,
                     "pressure_store": store_result,
                 },
                 started,
@@ -2185,8 +2455,10 @@ class StudioHandler(BaseHTTPRequestHandler):
         if station_id:
             cmd.extend(["--station-id", station_id])
         if sample_method == "box-mean":
-            radius_km = float(payload.get("box_radius_km") or 25.0)
-            cmd.extend(["--box-radius-km", str(radius_km)])
+            lat_deg, lon_deg = _box_radius_degrees_from_payload(payload, lat)
+            cmd.extend(["--box-radius-lat-deg", str(lat_deg), "--box-radius-lon-deg", str(lon_deg)])
+        else:
+            lat_deg = lon_deg = None
         if payload.get("include_column"):
             cmd.append("--include-column")
         proc_result = _run_command(
@@ -2203,8 +2475,16 @@ class StudioHandler(BaseHTTPRequestHandler):
             "forecast_hour": forecast_hour,
             "lat": lat,
             "lon": lon,
+            "sample_method_requested": sample_method,
+            "sample_method_used": sample_method,
+            "box_width_km": payload.get("box_width_km"),
+            "box_height_km": payload.get("box_height_km"),
+            "box_bounds": payload.get("box_bounds"),
+            "box_radius_lat_deg": lat_deg,
+            "box_radius_lon_deg": lon_deg,
             "out_dir": str(out_dir),
             "backend": "grib",
+            "wxprofile_store": wxprofile_store_result,
             "pressure_store": store_result,
         }
         if manifest.exists():
@@ -2345,7 +2625,8 @@ class StudioHandler(BaseHTTPRequestHandler):
                 "ok": False,
                 "error": "rustwx_grid_export binary not found. Build it with cargo build -p rustwx-cli --release --bin rustwx_grid_export or pass --bin-dir.",
             }
-        import_wxa = bool(payload.get("import_wxa", True))
+        direct_wxa = bool(payload.get("direct_wxa", True))
+        import_wxa = bool(payload.get("import_wxa", True)) and not direct_wxa
         render_plots = bool(payload.get("render_plots", True))
         if import_wxa and import_binary is None:
             return {
@@ -2409,6 +2690,12 @@ class StudioHandler(BaseHTTPRequestHandler):
             "--jobs",
             str(jobs),
         ]
+        if direct_wxa:
+            export_cmd.extend([
+                "--direct-wxa-root",
+                str(spatial_root),
+                "--publish-wxa-latest",
+            ])
         if payload.get("hour_chunk_size"):
             export_cmd.extend(["--hour-chunk-size", str(int(payload["hour_chunk_size"]))])
         export_result = _run_command(
@@ -2448,7 +2735,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                 products,
             )
 
-        import_result = None
+        import_result = {"ok": True, "skipped": True, "mode": "direct_wxa"} if direct_wxa else None
         if import_wxa:
             import_cmd = [
                 str(import_binary),
@@ -2482,10 +2769,10 @@ class StudioHandler(BaseHTTPRequestHandler):
         showcase_result = None
         showcase_report = None
         if render_plots:
-            if not import_wxa:
+            if not (import_wxa or direct_wxa):
                 return {
                     "ok": False,
-                    "error": "Rendering WxStore plots requires importing WXA first.",
+                    "error": "Rendering WxStore plots requires WXA data first.",
                 }
             run_id = str(export_report.get("run_id") or f"{date}_{model}_{cycle:02d}z")
             showcase_cmd = [
@@ -2729,11 +3016,27 @@ class StudioHandler(BaseHTTPRequestHandler):
             }
         available = _wxstore_product_rows(manifest, member=member)
         available_slugs = {row["slug"] for row in available}
-        products = [
+        requested_products = [
             str(item).strip()
             for item in payload.get("products") or []
-            if str(item).strip() and str(item).strip() in available_slugs
+            if str(item).strip()
         ]
+        products = [item for item in requested_products if item in available_slugs]
+        missing_products = [item for item in requested_products if item not in available_slugs]
+        if requested_products and not products:
+            return {
+                "ok": False,
+                "stage": "wxstore_plot_existing",
+                "error": "Requested WXA products are not available in this store.",
+                "model": model,
+                "run": run_id,
+                "member": member,
+                "requested_products": requested_products,
+                "missing_products": missing_products,
+                "available_products": sorted(available_slugs)[:100],
+                "spatial_root": str(spatial_root),
+                "manifest_path": str(manifest_path),
+            }
         if not products:
             products = [row["slug"] for row in available if "__" not in row["slug"]][:1]
         if not products:
@@ -3199,11 +3502,10 @@ class StudioHandler(BaseHTTPRequestHandler):
 
     def _resolve_run(self, run_str: str, model: str, source: str, *, forecast_hour: int = 0) -> tuple[str, int]:
         if run_str and run_str != "latest":
-            raw = run_str.replace("/", " ").replace("_", " ").replace("z", " ").replace("Z", " ")
-            parts = [part for part in raw.split() if part]
-            if len(parts) >= 2:
-                return parts[0], int(parts[1])
-            raise ValueError("Run must be latest or YYYYMMDD/HH.")
+            parsed = _parse_run_string(run_str)
+            if parsed:
+                return parsed
+            raise ValueError("Run must be latest or a date/cycle such as YYYYMMDD/HH, YYYY-MM-DD HHz, or M/D/YY HHz.")
         today = datetime.now(UTC).strftime("%Y%m%d")
         latest = _load_json(rustwx.latest_run_json(model, today, source, int(forecast_hour)))
         cycle = latest.get("cycle") or {}
@@ -3289,6 +3591,46 @@ def _package_version() -> str:
 
 def _load_json(payload: str) -> dict:
     return json.loads(payload)
+
+
+def _parse_run_string(run_str: str) -> tuple[str, int] | None:
+    value = str(run_str or "").strip()
+    if not value or value.lower() == "latest":
+        return None
+    normalized = value.lower().replace("_", " ").replace("z", " ")
+    patterns = [
+        r"(?P<ymd>\d{8})\D*(?P<hour>\d{1,2})",
+        r"(?P<ymdh>\d{10})",
+        r"(?P<year>\d{4})[-/](?P<month>\d{1,2})[-/](?P<day>\d{1,2})\D+(?P<hour>\d{1,2})",
+        r"(?P<month>\d{1,2})[-/](?P<day>\d{1,2})[-/](?P<year>\d{2,4})\D+(?P<hour>\d{1,2})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized)
+        if not match:
+            continue
+        groups = match.groupdict()
+        if groups.get("ymdh"):
+            ymd = str(groups["ymdh"][:8])
+            hour = int(groups["ymdh"][8:10])
+        elif groups.get("ymd"):
+            ymd = str(groups["ymd"])
+            hour = int(groups["hour"])
+        else:
+            year = int(groups["year"])
+            if year < 100:
+                year += 2000 if year < 70 else 1900
+            month = int(groups["month"])
+            day = int(groups["day"])
+            hour = int(groups["hour"])
+            ymd = f"{year:04d}{month:02d}{day:02d}"
+        if not 0 <= hour <= 23:
+            raise ValueError(f"Run cycle hour must be 00-23, got {hour:02d}.")
+        try:
+            datetime.strptime(ymd, "%Y%m%d")
+        except ValueError as exc:
+            raise ValueError(f"Run date must be a real UTC date, got {ymd}.") from exc
+        return ymd, hour
+    return None
 
 
 def _json_file_payload(path: Path) -> dict:
@@ -3983,7 +4325,10 @@ def _job_snapshot(job: dict, *, detail: bool) -> dict:
         "cancel_requested": bool(job.get("cancel_requested")),
         "active_process_pid": job.get("active_process_pid"),
         "active_command": job.get("active_command"),
+        "progress": job.get("progress"),
     }
+    if job.get("log"):
+        snapshot["log"] = list(job.get("log") or [])[-12:]
     if result:
         snapshot["ok"] = result.get("ok")
         snapshot["preview_count"] = len(result.get("previews") or [])
@@ -4891,6 +5236,26 @@ def _pressure_store_complete(store_path: Path) -> bool:
     )
 
 
+def _wxprofile_store_complete(store_path: Path) -> bool:
+    required = [
+        "manifest.json",
+        "profile_wx/TMP.wxp",
+        "profile_wx/SPFH.wxp",
+        "profile_wx/UGRD.wxp",
+        "profile_wx/VGRD.wxp",
+        "profile_wx/HGT.wxp",
+        "surface_wx/LAT.f32",
+        "surface_wx/LON.f32",
+        "surface_wx/PSFC.f32",
+        "surface_wx/OROG.f32",
+        "surface_wx/T2.f32",
+        "surface_wx/Q2.f32",
+        "surface_wx/U10.f32",
+        "surface_wx/V10.f32",
+    ]
+    return all(store_path.joinpath(part).is_file() for part in required)
+
+
 def _safe_slug(value: object) -> str:
     text = str(value).strip().lower()
     cleaned = []
@@ -4938,6 +5303,19 @@ def _box_radius_degrees(radius_km: float, lat: float) -> tuple[float, float]:
     cos_lat = max(0.2, abs(math.cos(math.radians(lat))))
     lon_deg = radius / (111.0 * cos_lat)
     return lat_deg, lon_deg
+
+
+def _box_radius_degrees_from_payload(payload: dict, lat: float) -> tuple[float, float]:
+    if payload.get("box_radius_lat_deg") is not None or payload.get("box_radius_lon_deg") is not None:
+        lat_deg = float(payload.get("box_radius_lat_deg") or 0.0)
+        lon_deg = float(payload.get("box_radius_lon_deg") or 0.0)
+        return max(0.0, lat_deg), max(0.0, lon_deg)
+    if payload.get("box_width_km") is not None or payload.get("box_height_km") is not None:
+        width_km = max(0.0, float(payload.get("box_width_km") or payload.get("box_height_km") or 25.0))
+        height_km = max(0.0, float(payload.get("box_height_km") or payload.get("box_width_km") or 25.0))
+        cos_lat = max(0.2, abs(math.cos(math.radians(lat))))
+        return (height_km / 2.0) / 111.0, (width_km / 2.0) / (111.0 * cos_lat)
+    return _box_radius_degrees(float(payload.get("box_radius_km") or 25.0), lat)
 
 
 def _run_command(cmd: list[str], env: dict[str, str], *, timeout: int) -> dict:
@@ -5088,8 +5466,11 @@ def _discover_binaries(bin_dir: Path | None) -> dict[str, Path]:
         "goes_web_tiles",
         "sounding_plot",
         "hrrr_pressure_volume_store",
+        "model_wxprofile_store",
+        "hrrr_wxprofile_store",
         "volume_store_cross_section_render",
         "volume_store_sounding_render",
+        "wxprofile_sounding_render",
         "rustwx_grid_export",
         "wxstore_wxa_showcase",
         "wxstore",
@@ -5099,18 +5480,20 @@ def _discover_binaries(bin_dir: Path | None) -> dict[str, Path]:
         "native_dataset_runner",
         "native_obs_preview",
     ]
+    packaged = os.environ.get("RUSTWX_PACKAGED") == "1"
     roots = []
     if bin_dir:
         roots.append(bin_dir)
-    roots.extend([
-        Path.cwd() / "target" / "release",
-        Path.cwd() / "target" / "debug",
-        Path.home() / "rustwx" / "target" / "release",
-        Path.home() / "rustwx" / "target" / "debug",
-        Path.home() / "wxstore" / "target" / "release",
-        Path.home() / "wxstore" / "target" / "debug",
-        Path.home() / ".cargo" / "bin",
-    ])
+    if not packaged:
+        roots.extend([
+            Path.cwd() / "target" / "release",
+            Path.cwd() / "target" / "debug",
+            Path.home() / "rustwx" / "target" / "release",
+            Path.home() / "rustwx" / "target" / "debug",
+            Path.home() / "wxstore" / "target" / "release",
+            Path.home() / "wxstore" / "target" / "debug",
+            Path.home() / ".cargo" / "bin",
+        ])
     found: dict[str, Path] = {}
     for name in names:
         candidates = [f"{name}.exe", name] if os.name == "nt" else [name, f"{name}.exe"]
@@ -5122,12 +5505,14 @@ def _discover_binaries(bin_dir: Path | None) -> dict[str, Path]:
                     break
             if name in found:
                 break
-        if name not in found:
+        if name not in found and not packaged:
             for candidate in candidates:
                 hit = shutil.which(candidate)
                 if hit:
                     found[name] = Path(hit).resolve()
                     break
+    if "model_wxprofile_store" in found:
+        found.pop("hrrr_wxprofile_store", None)
     return found
 
 

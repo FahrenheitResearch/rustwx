@@ -65,6 +65,17 @@ struct Args {
     out_dir: PathBuf,
     #[arg(long, default_value = "H:\\weather-api-proof\\rustwx_cache")]
     cache_dir: PathBuf,
+    #[arg(
+        long,
+        help = "Write native WxStore .wxa files directly under this spatial root, skipping f32 sidecars/import."
+    )]
+    direct_wxa_root: Option<PathBuf>,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "When --direct-wxa-root is set, publish this run as the model latest pointer."
+    )]
+    publish_wxa_latest: bool,
     #[arg(long, default_value_t = false)]
     no_cache: bool,
     #[arg(
@@ -120,8 +131,12 @@ fn main() -> Result<()> {
         out_dir: args.out_dir,
         cache_root: args.cache_dir,
         use_cache: !args.no_cache,
+        direct_wxa_root: args.direct_wxa_root,
+        publish_wxa_latest: args.publish_wxa_latest,
     };
-    let report = if args.jobs > 1
+    let direct_wxa = request.direct_wxa_root.is_some();
+    let report = if !direct_wxa
+        && args.jobs > 1
         && request.forecast_hours.len() > 1
         && request.model == ModelId::Hrrr
         && hrrr_windowed_product_partition(&request.product_slugs)
@@ -130,7 +145,7 @@ fn main() -> Result<()> {
             > 0
     {
         export_parallel_hrrr_split_windowed(&request, args.jobs, args.hour_chunk_size)?
-    } else if args.jobs > 1 && request.forecast_hours.len() > 1 {
+    } else if !direct_wxa && args.jobs > 1 && request.forecast_hours.len() > 1 {
         export_parallel_hour_chunks(&request, args.jobs, args.hour_chunk_size)?
     } else {
         export_wxstore_grid_bundle(&request).map_err(|err| anyhow::anyhow!(err.to_string()))?

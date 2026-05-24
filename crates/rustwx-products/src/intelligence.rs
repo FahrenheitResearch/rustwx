@@ -7,8 +7,8 @@ use rustwx_core::{
     Field2D, FieldAreaSummary, FieldPointSample, FieldPointSampleMethod, GeoPoint, GeoPolygon,
     ModelId, ProductKey, SourceId,
 };
-use rustwx_models::LatestRun;
 use rustwx_models::plot_recipe;
+use rustwx_models::LatestRun;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 

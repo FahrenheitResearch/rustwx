@@ -22,6 +22,7 @@ rustwx-render = { path = "../rustwx-render" }
 rustwx-sounding = { path = "../rustwx-sounding" }
 chrono = { version = "0.4", default-features = false, features = ["serde"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 pyo3 = { version = "0.23", features = ["extension-module"], optional = true }

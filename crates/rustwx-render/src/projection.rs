@@ -297,11 +297,17 @@ impl LambertConformal {
     }
 
     fn unproject(self, x: f64, y: f64) -> Option<(f64, f64)> {
-        let rho = (x * x + (self.rho0 - y).powi(2)).sqrt();
-        if !rho.is_finite() || rho <= 0.0 || self.n.abs() < 1.0e-12 || self.f.abs() < 1.0e-12 {
+        let rho_abs = (x * x + (self.rho0 - y).powi(2)).sqrt();
+        if !rho_abs.is_finite()
+            || rho_abs <= 0.0
+            || self.n.abs() < 1.0e-12
+            || self.f.abs() < 1.0e-12
+        {
             return None;
         }
-        let theta = x.atan2(self.rho0 - y);
+        let rho_sign = self.n.signum();
+        let rho = rho_abs * rho_sign;
+        let theta = (x * rho_sign).atan2((self.rho0 - y) * rho_sign);
         let ratio = R_EARTH * self.f / rho;
         if ratio <= 0.0 || !ratio.is_finite() {
             return None;
@@ -455,11 +461,13 @@ impl AlbersEqualAreaProjection {
     }
 
     fn unproject(self, x: f64, y: f64) -> Option<(f64, f64)> {
-        let rho = (x * x + (self.rho0 - y).powi(2)).sqrt();
-        if !rho.is_finite() || rho <= 0.0 || self.n.abs() < 1.0e-12 {
+        let rho_abs = (x * x + (self.rho0 - y).powi(2)).sqrt();
+        if !rho_abs.is_finite() || rho_abs <= 0.0 || self.n.abs() < 1.0e-12 {
             return None;
         }
-        let theta = x.atan2(self.rho0 - y);
+        let rho_sign = self.n.signum();
+        let rho = rho_abs * rho_sign;
+        let theta = (x * rho_sign).atan2((self.rho0 - y) * rho_sign);
         let arg = (self.c - (rho * self.n / R_EARTH).powi(2)) / (2.0 * self.n);
         if !arg.is_finite() || !(-1.0..=1.0).contains(&arg) {
             return None;
@@ -930,6 +938,45 @@ mod tests {
         assert!(x_west < 0.0);
         assert!(x_east > 0.0);
         assert_eq!(y, 40.0);
+    }
+
+    #[test]
+    fn southern_hemisphere_lambert_round_trips() {
+        let spec = ProjectionSpec::LambertConformal {
+            standard_parallel_1_deg: -39.0,
+            standard_parallel_2_deg: -15.0,
+            central_meridian_deg: 133.0,
+        };
+        let projector = spec
+            .build_projector(Some(-27.0), None, &[-45.0, -9.0], &[111.0, 156.0])
+            .expect("southern Lambert projector");
+
+        for (lat, lon) in [(-12.5, 130.0), (-27.0, 133.0), (-37.8, 145.0)] {
+            let (x, y) = projector.project(lat, lon);
+            let (actual_lat, actual_lon) = projector.unproject(x, y).expect("round trip");
+            assert!((actual_lat - lat).abs() < 1.0e-8);
+            assert!((normalize_longitude_deg(actual_lon - lon)).abs() < 1.0e-8);
+        }
+    }
+
+    #[test]
+    fn southern_hemisphere_albers_round_trips() {
+        let spec = ProjectionSpec::AlbersEqualArea {
+            standard_parallel_1_deg: -40.0,
+            standard_parallel_2_deg: -18.0,
+            central_meridian_deg: 133.0,
+            latitude_of_origin_deg: -27.0,
+        };
+        let projector = spec
+            .build_projector(None, None, &[-45.0, -9.0], &[111.0, 156.0])
+            .expect("southern Albers projector");
+
+        for (lat, lon) in [(-12.5, 130.0), (-27.0, 133.0), (-37.8, 145.0)] {
+            let (x, y) = projector.project(lat, lon);
+            let (actual_lat, actual_lon) = projector.unproject(x, y).expect("round trip");
+            assert!((actual_lat - lat).abs() < 1.0e-8);
+            assert!((normalize_longitude_deg(actual_lon - lon)).abs() < 1.0e-8);
+        }
     }
 
     #[test]

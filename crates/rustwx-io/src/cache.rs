@@ -1,7 +1,7 @@
 use crate::{FetchRequest, FetchResult, IoError};
 use rustwx_core::{
     CanonicalField, FieldProduct, FieldSelector, GridProjection, GridShape, LatLonGrid,
-    SelectedField2D, VerticalSelector,
+    SelectedField2D, SourceId, VerticalSelector,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -185,6 +185,19 @@ pub fn fetch_cache_paths(cache_root: &Path, fetch: &FetchRequest) -> (PathBuf, P
     (root.join("fetch.grib2"), root.join("fetch_meta.json"))
 }
 
+pub fn raw_fetch_cache_paths(
+    cache_root: &Path,
+    source: SourceId,
+    resolved_url: &str,
+) -> (PathBuf, PathBuf) {
+    let url_hash = sha256_hex(resolved_url.as_bytes());
+    let root = cache_root
+        .join("_raw_fetch")
+        .join(sanitize_component(source.as_str()))
+        .join(&url_hash[..16]);
+    (root.join("fetch.grib2"), root.join("fetch_meta.json"))
+}
+
 pub fn field_cache_path(
     cache_root: &Path,
     fetch: &FetchRequest,
@@ -259,6 +272,61 @@ pub fn load_cached_fetch(
     }))
 }
 
+pub fn load_cached_raw_fetch(
+    cache_root: &Path,
+    source: SourceId,
+    resolved_url: &str,
+) -> Result<Option<CachedFetchResult>, IoError> {
+    let (bytes_path, metadata_path) = raw_fetch_cache_paths(cache_root, source, resolved_url);
+    if !bytes_path.exists() || !metadata_path.exists() {
+        if bytes_path.exists() || metadata_path.exists() {
+            quarantine_cache_paths(&[&bytes_path, &metadata_path], "incomplete_raw_fetch_cache");
+        }
+        return Ok(None);
+    }
+    let bytes = match fs::read(&bytes_path) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            quarantine_cache_paths(&[&bytes_path, &metadata_path], "raw_fetch_bytes_read_error");
+            return Ok(None);
+        }
+    };
+    let metadata_bytes = match fs::read(&metadata_path) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            quarantine_cache_paths(&[&bytes_path, &metadata_path], "raw_fetch_metadata_read_error");
+            return Ok(None);
+        }
+    };
+    let Some(metadata) =
+        load_cached_fetch_metadata(&metadata_bytes, &bytes, "<raw-fetch-cache>")
+    else {
+        quarantine_cache_paths(
+            &[&bytes_path, &metadata_path],
+            "raw_fetch_metadata_decode_error",
+        );
+        return Ok(None);
+    };
+    if metadata.bytes_len != bytes.len()
+        || metadata.resolved_source != source
+        || metadata.resolved_url != resolved_url
+        || metadata.bytes_sha256 != sha256_hex(&bytes)
+    {
+        quarantine_cache_paths(&[&bytes_path, &metadata_path], "raw_fetch_metadata_mismatch");
+        return Ok(None);
+    }
+    Ok(Some(CachedFetchResult {
+        result: FetchResult {
+            source: metadata.resolved_source,
+            url: metadata.resolved_url,
+            bytes,
+        },
+        cache_hit: true,
+        bytes_path,
+        metadata_path,
+    }))
+}
+
 fn cached_fetch_request_matches(
     cached: &rustwx_core::ModelRunRequest,
     requested: &rustwx_core::ModelRunRequest,
@@ -293,6 +361,42 @@ pub fn store_cached_fetch(
         request: fetch.request.clone(),
         source_override: fetch.source_override,
         variable_patterns: fetch.variable_patterns.clone(),
+        earth2_ensemble: fetch.earth2_ensemble,
+        resolved_source: result.source,
+        resolved_url: result.url.clone(),
+        resolved_family: fetch.request.product.clone(),
+        bytes_len: result.bytes.len(),
+        bytes_sha256: sha256_hex(&result.bytes),
+    };
+    let metadata_bytes = serde_json::to_vec_pretty(&VersionedJsonPayload {
+        schema_version: FETCH_METADATA_SCHEMA_VERSION,
+        payload: metadata,
+    })
+    .map_err(|err| IoError::Cache(err.to_string()))?;
+    atomic_write_bytes(&metadata_path, &metadata_bytes)?;
+
+    Ok(CachedFetchResult {
+        result: result.clone(),
+        cache_hit: false,
+        bytes_path,
+        metadata_path,
+    })
+}
+
+pub fn store_cached_raw_fetch(
+    cache_root: &Path,
+    fetch: &FetchRequest,
+    result: &FetchResult,
+) -> Result<CachedFetchResult, IoError> {
+    let (bytes_path, metadata_path) = raw_fetch_cache_paths(cache_root, result.source, &result.url);
+    if let Some(parent) = bytes_path.parent() {
+        fs::create_dir_all(parent).map_err(cache_error)?;
+    }
+    atomic_write_bytes(&bytes_path, &result.bytes)?;
+    let metadata = CachedFetchMetadata {
+        request: fetch.request.clone(),
+        source_override: fetch.source_override,
+        variable_patterns: Vec::new(),
         earth2_ensemble: fetch.earth2_ensemble,
         resolved_source: result.source,
         resolved_url: result.url.clone(),
@@ -948,6 +1052,39 @@ mod tests {
         let loaded = load_cached_fetch(&cache_root, &second).unwrap().unwrap();
         assert!(loaded.cache_hit);
         assert_eq!(loaded.result, result);
+
+        fs::remove_dir_all(cache_root).ok();
+    }
+
+    #[test]
+    fn raw_fetch_cache_reuses_full_file_bytes_by_url() {
+        let cache_root = temp_cache_root();
+        let first = sample_fetch_request();
+        let mut second = first.clone();
+        second.request = ModelRunRequest::new(
+            ModelId::Hrrr,
+            CycleSpec::new("20260414", 23).unwrap(),
+            0,
+            "sfc",
+        )
+        .unwrap();
+        second.variable_patterns = Vec::new();
+        let result = FetchResult {
+            source: SourceId::Aws,
+            url: "https://example.test/hrrr.t23z.wrfsfcf00.grib2".to_string(),
+            bytes: vec![5, 4, 3, 2, 1],
+        };
+
+        let stored = store_cached_raw_fetch(&cache_root, &first, &result).unwrap();
+        assert!(!stored.cache_hit);
+        let loaded =
+            load_cached_raw_fetch(&cache_root, SourceId::Aws, &result.url).unwrap().unwrap();
+        assert!(loaded.cache_hit);
+        assert_eq!(loaded.result, result);
+        let (raw_bytes_path, _) = raw_fetch_cache_paths(&cache_root, SourceId::Aws, &result.url);
+        assert_eq!(loaded.bytes_path, raw_bytes_path);
+        let (product_bytes_path, _) = fetch_cache_paths(&cache_root, &second);
+        assert_ne!(loaded.bytes_path, product_bytes_path);
 
         fs::remove_dir_all(cache_root).ok();
     }

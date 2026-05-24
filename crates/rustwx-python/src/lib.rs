@@ -9,6 +9,8 @@ use chrono::{DateTime, Utc};
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
 #[cfg(feature = "python")]
+use rayon::prelude::*;
+#[cfg(feature = "python")]
 use rustwx_core::{
     CycleSpec, FieldPointSampleMethod, GeoBounds, GeoPoint, ModelId, ModelRunRequest, ResolvedUrl,
     SourceId,
@@ -464,6 +466,8 @@ struct PrepareModelDataRequestJson {
     use_cache: Option<bool>,
     #[serde(default)]
     no_cache: Option<bool>,
+    #[serde(default)]
+    download_workers: Option<usize>,
 }
 
 #[cfg(feature = "python")]
@@ -476,6 +480,26 @@ struct PreparedFetchSpec {
     fetch_policy: Option<String>,
     fetch_mode: Option<String>,
     plan_error: Option<String>,
+    skip_fetch: bool,
+}
+
+#[cfg(feature = "python")]
+#[derive(Debug, Clone)]
+struct PrepareFetchWorkItem {
+    index: usize,
+    spec: PreparedFetchSpec,
+    forecast_hour: u16,
+    fetch_request: FetchRequest,
+}
+
+#[cfg(feature = "python")]
+#[derive(Debug)]
+struct PrepareFetchOutcome {
+    index: usize,
+    prepared: Option<serde_json::Value>,
+    error: Option<serde_json::Value>,
+    bytes: u64,
+    cache_hit: bool,
 }
 
 #[cfg(feature = "python")]
@@ -825,7 +849,8 @@ fn agent_capabilities_json_impl() -> PyResult<String> {
             "forecast_hours": "optional explicit forecast-hour list",
             "source": "optional source id; omitted means latest available source when cycle_utc is omitted",
             "products": "model map product slugs; rustwx resolves plot-recipe fetch plans and caches the needed GRIB subset or file",
-            "cache_dir": "optional shared fetch/decode cache; default rustwx_outputs/cache, or RUSTWX_CACHE_DIR when set"
+            "cache_dir": "optional shared fetch/decode cache; default rustwx_outputs/cache, or RUSTWX_CACHE_DIR when set",
+            "download_workers": "optional number of concurrent fetch/cache workers for full-run warming; default 1"
         },
         "render_glm_lightning_request_schema": {
             "domain": "optional built-in domain/country/metro slug; default california",
@@ -922,14 +947,31 @@ fn prepare_model_data_json_impl(request: PrepareModelDataRequestJson) -> PyResul
         .unwrap_or_else(|| vec![default_render_product(model)]);
     let started = Instant::now();
     let mut seen = HashSet::new();
+    let mut work_items = Vec::new();
     let mut prepared = Vec::new();
     let mut errors = Vec::new();
     let mut total_bytes: u64 = 0;
     let mut cache_hits = 0usize;
+    let mut skipped_fetches = 0usize;
+    let mut next_index = 0usize;
 
     for product in &products {
         let specs = prepare_fetch_specs_for_product(model, product);
         for spec in specs {
+            if spec.skip_fetch {
+                skipped_fetches += 1;
+                errors.push(serde_json::json!({
+                    "requested_product": &spec.requested_product,
+                    "fetch_product": &spec.fetch_product,
+                    "plan_kind": spec.plan_kind,
+                    "stage": "plan_fetch",
+                    "skipped": true,
+                    "error": "Derived map product does not have a precise GRIB fetch warm plan; skipping full-file fallback warm so render/WxStore can build it from the needed fields.",
+                    "variable_patterns": &spec.variable_patterns,
+                    "plan_error": &spec.plan_error,
+                }));
+                continue;
+            }
             for &forecast_hour in &forecast_hours {
                 let key = serde_json::json!({
                     "hour": forecast_hour,
@@ -940,6 +982,8 @@ fn prepare_model_data_json_impl(request: PrepareModelDataRequestJson) -> PyResul
                 if !seen.insert(key) {
                     continue;
                 }
+                let index = next_index;
+                next_index += 1;
                 let fetch_request = match ModelRunRequest::new(
                     model,
                     cycle.clone(),
@@ -954,61 +998,63 @@ fn prepare_model_data_json_impl(request: PrepareModelDataRequestJson) -> PyResul
                     },
                     Err(err) => {
                         errors.push(serde_json::json!({
-                            "requested_product": spec.requested_product,
-                            "fetch_product": spec.fetch_product,
+                            "requested_product": &spec.requested_product,
+                            "fetch_product": &spec.fetch_product,
                             "forecast_hour": forecast_hour,
                             "stage": "build_request",
                             "error": err.to_string(),
-                            "plan_error": spec.plan_error,
+                            "plan_error": &spec.plan_error,
                         }));
                         continue;
                     }
                 };
-                match fetch_bytes_with_cache(&fetch_request, &cache_root, use_cache) {
-                    Ok(cached) => {
-                        let bytes = cached.result.bytes.len() as u64;
-                        total_bytes += bytes;
-                        if cached.cache_hit {
-                            cache_hits += 1;
-                        }
-                        prepared.push(serde_json::json!({
-                            "requested_product": spec.requested_product,
-                            "fetch_product": spec.fetch_product,
-                            "plan_kind": spec.plan_kind,
-                            "fetch_policy": spec.fetch_policy,
-                            "fetch_mode": spec.fetch_mode,
-                            "forecast_hour": forecast_hour,
-                            "source": cached.result.source,
-                            "url": cached.result.url,
-                            "bytes": bytes,
-                            "cache_hit": cached.cache_hit,
-                            "cache_path": cached.bytes_path.display().to_string(),
-                            "metadata_path": cached.metadata_path.display().to_string(),
-                            "variable_patterns": spec.variable_patterns,
-                            "plan_error": spec.plan_error,
-                        }));
-                    }
-                    Err(err) => {
-                        errors.push(serde_json::json!({
-                            "requested_product": spec.requested_product,
-                            "fetch_product": spec.fetch_product,
-                            "plan_kind": spec.plan_kind,
-                            "forecast_hour": forecast_hour,
-                            "stage": "fetch",
-                            "error": err.to_string(),
-                            "variable_patterns": spec.variable_patterns,
-                            "plan_error": spec.plan_error,
-                        }));
-                    }
-                }
+                work_items.push(PrepareFetchWorkItem {
+                    index,
+                    spec: spec.clone(),
+                    forecast_hour,
+                    fetch_request,
+                });
             }
         }
     }
+    let download_workers = request.download_workers.unwrap_or(1).max(1);
+    let mut outcomes = if download_workers == 1 || work_items.len() <= 1 {
+        work_items
+            .iter()
+            .map(|item| prepare_fetch_work_item(item, &cache_root, use_cache))
+            .collect::<Vec<_>>()
+    } else {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(download_workers.min(work_items.len()))
+            .thread_name(|index| format!("rustwx-prepare-fetch-{index}"))
+            .build()
+            .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+        pool.install(|| {
+            work_items
+                .par_iter()
+                .map(|item| prepare_fetch_work_item(item, &cache_root, use_cache))
+                .collect::<Vec<_>>()
+        })
+    };
+    outcomes.sort_by_key(|outcome| outcome.index);
+    for outcome in outcomes {
+        if let Some(value) = outcome.prepared {
+            total_bytes += outcome.bytes;
+            if outcome.cache_hit {
+                cache_hits += 1;
+            }
+            prepared.push(value);
+        }
+        if let Some(value) = outcome.error {
+            errors.push(value);
+        }
+    }
 
+    let fatal_error_count = errors.len().saturating_sub(skipped_fetches);
     let payload = serde_json::json!({
         "schema": "rustwx.prepare_model_data.v1",
-        "ok": !prepared.is_empty() || errors.is_empty(),
-        "partial": !prepared.is_empty() && !errors.is_empty(),
+        "ok": !prepared.is_empty() || fatal_error_count == 0,
+        "partial": !prepared.is_empty() && fatal_error_count > 0,
         "model": model,
         "date_yyyymmdd": date_yyyymmdd,
         "cycle_utc": cycle_utc,
@@ -1017,8 +1063,12 @@ fn prepare_model_data_json_impl(request: PrepareModelDataRequestJson) -> PyResul
         "requested_products": products,
         "cache_root": cache_root,
         "use_cache": use_cache,
+        "download_workers": download_workers,
+        "planned_fetch_count": work_items.len(),
         "prepared_count": prepared.len(),
         "error_count": errors.len(),
+        "fatal_error_count": fatal_error_count,
+        "skipped_fetch_count": skipped_fetches,
         "cache_hits": cache_hits,
         "total_bytes": total_bytes,
         "elapsed_ms": started.elapsed().as_millis(),
@@ -1044,16 +1094,80 @@ fn prepare_fetch_specs_for_product(model: ModelId, product: &str) -> Vec<Prepare
             fetch_policy: Some(format!("{:?}", plan.fetch_policy)),
             fetch_mode: Some(format!("{:?}", plan.fetch_mode)),
             plan_error: None,
+            skip_fetch: false,
         }],
-        Err(err) => vec![PreparedFetchSpec {
-            requested_product: product.to_string(),
-            fetch_product: product.to_string(),
-            variable_patterns: Vec::new(),
-            plan_kind: "direct_product_fallback",
-            fetch_policy: None,
-            fetch_mode: None,
-            plan_error: Some(err.to_string()),
-        }],
+        Err(err) => {
+            let normalized = product.trim().to_ascii_lowercase();
+            let derived_product = supported_derived_recipe_slugs(model)
+                .iter()
+                .any(|slug| slug == &normalized)
+                || is_heavy_derived_recipe_slug(&normalized);
+            vec![PreparedFetchSpec {
+                requested_product: product.to_string(),
+                fetch_product: product.to_string(),
+                variable_patterns: Vec::new(),
+                plan_kind: if derived_product {
+                    "derived_recipe_no_fetch_plan"
+                } else {
+                    "direct_product_fallback"
+                },
+                fetch_policy: None,
+                fetch_mode: None,
+                plan_error: Some(err.to_string()),
+                skip_fetch: derived_product,
+            }]
+        }
+    }
+}
+
+#[cfg(feature = "python")]
+fn prepare_fetch_work_item(
+    item: &PrepareFetchWorkItem,
+    cache_root: &Path,
+    use_cache: bool,
+) -> PrepareFetchOutcome {
+    match fetch_bytes_with_cache(&item.fetch_request, cache_root, use_cache) {
+        Ok(cached) => {
+            let bytes = cached.result.bytes.len() as u64;
+            PrepareFetchOutcome {
+                index: item.index,
+                prepared: Some(serde_json::json!({
+                    "requested_product": &item.spec.requested_product,
+                    "fetch_product": &item.spec.fetch_product,
+                    "plan_kind": item.spec.plan_kind,
+                    "fetch_policy": &item.spec.fetch_policy,
+                    "fetch_mode": &item.spec.fetch_mode,
+                    "forecast_hour": item.forecast_hour,
+                    "source": cached.result.source,
+                    "url": cached.result.url,
+                    "bytes": bytes,
+                    "cache_hit": cached.cache_hit,
+                    "cache_path": cached.bytes_path.display().to_string(),
+                    "metadata_path": cached.metadata_path.display().to_string(),
+                    "variable_patterns": &item.spec.variable_patterns,
+                    "plan_error": &item.spec.plan_error,
+                })),
+                error: None,
+                bytes,
+                cache_hit: cached.cache_hit,
+            }
+        }
+        Err(err) => PrepareFetchOutcome {
+            index: item.index,
+            prepared: None,
+            error: Some(serde_json::json!({
+                "requested_product": &item.spec.requested_product,
+                "fetch_product": &item.spec.fetch_product,
+                "plan_kind": item.spec.plan_kind,
+                "forecast_hour": item.forecast_hour,
+                "stage": "fetch",
+                "error": err.to_string(),
+                "variable_patterns": &item.spec.variable_patterns,
+                "plan_error": &item.spec.plan_error,
+            })),
+            bytes: 0,
+            cache_hit: false,
+        },
     }
 }
 
@@ -3319,6 +3433,26 @@ mod tests {
             routed.windowed_products,
             vec![HrrrWindowedProduct::QpfTotal]
         );
+    }
+
+    #[test]
+    fn prepare_data_skips_derived_recipes_without_precise_fetch_plan() {
+        let specs = prepare_fetch_specs_for_product(ModelId::Hrrr, "sbcape");
+
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].plan_kind, "derived_recipe_no_fetch_plan");
+        assert!(specs[0].skip_fetch);
+        assert!(specs[0].variable_patterns.is_empty());
+    }
+
+    #[test]
+    fn prepare_data_keeps_direct_recipe_fetch_plans_enabled() {
+        let specs = prepare_fetch_specs_for_product(ModelId::Hrrr, "2m_temperature_10m_winds");
+
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].plan_kind, "plot_recipe_fetch_plan");
+        assert!(!specs[0].skip_fetch);
+        assert!(!specs[0].variable_patterns.is_empty());
     }
 
     #[test]

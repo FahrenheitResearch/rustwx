@@ -8,20 +8,20 @@ use rustwx_core::{
     CanonicalField, CycleSpec, FieldSelector, ModelId, ModelRunRequest, SelectedField2D, SourceId,
 };
 use rustwx_io::earth2_archive::{Earth2EnsembleSelector, Earth2EnsembleStat};
-use rustwx_io::{FetchRequest, extract_fields_partial_from_model_bytes, fetch_bytes_with_cache};
-use rustwx_models::{LatestRun, plot_recipe, plot_recipe_fetch_plan};
+use rustwx_io::{extract_fields_partial_from_model_bytes, fetch_bytes_with_cache, FetchRequest};
+use rustwx_models::{plot_recipe, plot_recipe_fetch_plan, LatestRun};
 use rustwx_render::{
-    Color, ColorScale, DiscreteColorScale, ExtendMode, MapRenderRequest, PngCompressionMode,
-    PngWriteOptions, ProductVisualMode, map_frame_aspect_ratio_for_mode,
-    save_png_profile_with_options,
+    map_frame_aspect_ratio_for_mode, save_png_profile_with_options, Color, ColorScale,
+    DiscreteColorScale, ExtendMode, MapRenderRequest, PngCompressionMode, PngWriteOptions,
+    ProductVisualMode,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::direct::{DirectBatchRequest, render_direct_recipe_from_selected_fields};
+use crate::direct::{render_direct_recipe_from_selected_fields, DirectBatchRequest};
 use crate::places::PlaceLabelOverlay;
 use crate::shared_context::{
-    DomainSpec, static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
-    static_title_with_suffix,
+    static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
+    static_title_with_suffix, DomainSpec,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

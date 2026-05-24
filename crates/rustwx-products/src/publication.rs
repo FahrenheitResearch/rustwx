@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::publication_provenance::{BuildProvenance, new_attempt_id};
+use crate::publication_provenance::{new_attempt_id, BuildProvenance};
 
 pub const RUN_PUBLICATION_SCHEMA_VERSION: u32 = 4;
 
@@ -887,13 +887,11 @@ mod tests {
         assert_eq!(canonical_path, canonical);
         assert!(canonical.exists());
         assert!(attempt_path.exists());
-        assert!(
-            attempt_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap()
-                .contains(&manifest.attempt_id)
-        );
+        assert!(attempt_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap()
+            .contains(&manifest.attempt_id));
 
         // Rerunning with a fresh attempt id leaves the old attempt file
         // untouched; the canonical file is overwritten in place.
@@ -932,13 +930,11 @@ mod tests {
         assert_eq!(parsed.state, RunPublicationState::Failed);
         assert_eq!(parsed.detail.as_deref(), Some("simulated upstream outage"));
         assert!(parsed.build_provenance.is_some());
-        assert!(
-            attempt
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap()
-                .contains(&parsed.attempt_id)
-        );
+        assert!(attempt
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap()
+            .contains(&parsed.attempt_id));
 
         let _ = fs::remove_dir_all(root);
     }
