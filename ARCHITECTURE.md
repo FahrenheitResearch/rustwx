@@ -5,6 +5,7 @@ This workspace is split along stable engine boundaries instead of one-off plotti
 ## Current boundaries
 
 - `rustwx-products` owns model-aware fetch, decode, crop/window choice, meteorological product assembly, and model-specific cross-section field construction.
+- `rustwx-regrid` owns reusable grid-to-grid transformations: nearest, bilinear, inverse-distance, and first-order conservative remapping plans for prepared fields.
 - `rustwx-render` owns projected map requests, layout, overlays, labels, colorbars, and PNG emission.
 - `rustwx-contour` owns contour topology extraction used by the native projected contour-fill path.
 - `rustwx-cross-section` owns section paths, sampling, vertical axes, terrain masking, lightweight section rendering, and the public cross-section palette/style catalog.
@@ -13,6 +14,7 @@ This workspace is split along stable engine boundaries instead of one-off plotti
 ## What is real now
 
 - Native projection metadata is preserved from decode through projected rendering instead of being collapsed into a generic map frame.
+- Grid-to-grid field transformation belongs in `rustwx-regrid`. Products, verification, blending, model comparison, satellite/model alignment, and exports should build reusable regrid plans there before handing values to rendering.
 - The standard overlay story is unchanged: shared map labels, basemap overlays, colorbars, and composition still come from `rustwx-render`.
 - A separate native projected contour-fill path, built on `rustwx-contour`, is now live in the derived-product lane for `stp_fixed`, `sbcape`, `mlcape`, `srh_0_1km`, `srh_0_3km`, `ehi_0_1km`, and `ehi_0_3km`.
 - That native contour-fill path is not yet the shared live map contour backend for every contour-sensitive product. The current plotted map contours still come from `rustwx-render` for direct synoptic products such as `mslp_10m_winds`, which remain comparison targets.
