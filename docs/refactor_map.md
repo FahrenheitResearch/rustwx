@@ -73,7 +73,7 @@ future Codex edits because unrelated concerns are close together.
 | 21 | 1740 | `crates/rustwx-sounding/src/native_table.rs` | Native sounding table extraction, derived columns, and SHARPpy-style handoff. | Split extraction/table-format helpers only after sounding fixtures are stable. |
 | 22 | 1734 | `crates/rustwx-calc/src/mesoanalysis.rs` | Numeric mesoanalysis kernels and supporting calculations. | Continue splitting science helpers only with parity tests. |
 | 23 | 1719 | `crates/rustwx-products/src/mesoanalysis_calibration/tests.rs` | Calibration report and gate regression fixtures. | Split fixture builders only if future calibration test edits become hard to localize. |
-| 24 | 1696 | `crates/rustwx-cli/src/bin/production_runner.rs` | Production batch runner and operational product lane orchestration. | Candidate for CLI subcommand/module split after bin taxonomy settles. |
+| 24 | 1635 | `crates/rustwx-cli/src/bin/production_runner.rs` | Production batch runner and operational product lane orchestration. | Candidate for CLI subcommand/module split after bin taxonomy settles. |
 | 25 | 1547 | `crates/rustwx-calc/src/severe.rs` | Severe-weather diagnostic formulas, composite parameters, and supporting index helpers. | Keep science changes separate from module splits and preserve parity tests. |
 
 ## Public Surface Snapshot
@@ -193,6 +193,9 @@ explicit bin-local path.
 heavy-derived filtering, windowed product parsing/defaults, non-HRRR route
 selection, WRF GDEX unified support, and REFS/HREF required-product regression
 tests with the same explicit bin-local child-module pattern.
+`crates/rustwx-cli/src/bin/production_runner/tests.rs` owns production runner
+ECAPE recipe filtering and unified non-HRRR lane regression tests with the same
+explicit bin-local child-module pattern.
 
 ### `rustwx-calc`
 
