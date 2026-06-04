@@ -74,7 +74,7 @@ future Codex edits because unrelated concerns are close together.
 | 22 | 1734 | `crates/rustwx-calc/src/mesoanalysis.rs` | Numeric mesoanalysis kernels and supporting calculations. | Continue splitting science helpers only with parity tests. |
 | 23 | 1719 | `crates/rustwx-products/src/mesoanalysis_calibration/tests.rs` | Calibration report and gate regression fixtures. | Split fixture builders only if future calibration test edits become hard to localize. |
 | 24 | 1696 | `crates/rustwx-cli/src/bin/production_runner.rs` | Production batch runner and operational product lane orchestration. | Candidate for CLI subcommand/module split after bin taxonomy settles. |
-| 25 | 1618 | `crates/rustwx-products/src/wxstore_export.rs` | WxStore grid-bundle export and manifest/report plumbing. | Split export/report helpers only after WxStore manifest snapshots are locked. |
+| 25 | 1568 | `crates/rustwx-products/src/satellite/batch.rs` | Satellite batch requests, source selection, render orchestration, and publication/report artifacts. | Split source/render/write helpers only after satellite manifest snapshots are stable. |
 
 ## Public Surface Snapshot
 
@@ -121,6 +121,10 @@ same parent-private test-module pattern.
 domain bounds/aspect-ratio, place selection/declutter/containment, label overlay
 projection, density tiers, compact labels, and split-region place-label plan
 regression tests with the same parent-private test-module pattern.
+`crates/rustwx-products/src/wxstore_export/tests.rs` owns WxStore export crop
+geometry, valid-time construction, default non-ECAPE export product coverage,
+alias classification, ECAPE blocker, and compact hour-range slug regression
+tests with the same parent-private test-module pattern.
 
 Refactor implication: do not convert `pub mod` to `pub(crate) mod` until the
 workspace and Python bindings are checked for each path. The first visibility PR
