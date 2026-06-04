@@ -51,8 +51,8 @@ future Codex edits because unrelated concerns are close together.
 | Rank | LOC | File | Responsibility summary | First safe move |
 | --- | ---: | --- | --- | --- |
 | 1 | 11503 | `crates/rustwx-models/src/lib.rs` | Model/source catalog, forecast-hour support, URL plans, latest-run lookup, and plot recipes. | Split catalog/source/recipe/run-discovery modules after snapshotting model catalog output. |
-| 2 | 6732 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Surface mesoanalysis calibration aggregation, gates, confidence reliability, innovation history, and watchlists. | Continue the mechanical module split around gates/history using the contract snapshot. |
-| 3 | 5712 | `crates/rustwx-render/src/render.rs` | Main map renderer, canvas layout, fills, overlays, barbs, labels, and PNG-facing render path. | Split rendering internals only after render-request fixtures exist. |
+| 2 | 5712 | `crates/rustwx-render/src/render.rs` | Main map renderer, canvas layout, fills, overlays, barbs, labels, and PNG-facing render path. | Split rendering internals only after render-request fixtures exist. |
+| 3 | 5405 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Surface mesoanalysis calibration aggregation, confidence reliability, innovation history, parsing, and watchlists. | Continue the mechanical module split around innovation history and parsing using the contract snapshot. |
 | 4 | 5099 | `crates/rustwx-products/src/mesoanalysis.rs` | Surface objective analysis, observation filtering/QC, background fields, reports, and WxStore export hooks. | Mechanical split with report-schema and default-config tests. |
 | 5 | 4697 | `crates/rustwx-products/src/derived.rs` | Derived product requests, shared loads, native contour mode, compute paths, and batch publication. | Continue mechanical split with render-assembly helpers. |
 | 6 | 3649 | `crates/rustwx-io/src/lib.rs` | Fetch requests/results, probing, extraction, selector handling, and cache-facing IO helpers. | Split fetch/probe/grib modules after product characterization tests. |
@@ -259,6 +259,10 @@ sounding extraction/data separate from PNG presentation if the file grows.
      query, WxStore index, and calibration gate schema structs. The parent
      `mesoanalysis_calibration` module re-exports those names so existing
      external paths remain unchanged.
+     `crates/rustwx-products/src/mesoanalysis_calibration/gates.rs` owns the
+     public calibration gate evaluator, gate metric selectors, threshold-check
+     builders, and confidence-reliability gate helper while preserving
+     `rustwx_products::mesoanalysis_calibration::evaluate_surface_mesoanalysis_calibration_gate`.
 
 7. **Mechanical `mesoanalysis.rs` split**
    - Split config, observations, background, objective analysis, validation,
