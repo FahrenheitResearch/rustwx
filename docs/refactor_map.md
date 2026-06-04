@@ -70,11 +70,11 @@ future Codex edits because unrelated concerns are close together.
 | 18 | 1994 | `crates/rustwx-io/src/lib.rs` | Fetch requests/results, probing, extraction, selector handling, and cache-facing IO helpers. | Continue splitting fetch/probe/grib modules after product characterization tests. |
 | 19 | 1906 | `crates/rustwx-radar/src/tile.rs` | Radar tile generation and related render/report helpers. | Defer until radar export/tile CLI lanes are classified. |
 | 20 | 1874 | `crates/rustwx-core/src/lib.rs` | Shared core types for grids, products, selectors, models, fields, and bundles. | Continue splitting only if public compatibility is protected by re-exports. |
-| 21 | 1853 | `crates/rustwx-calc/src/severe.rs` | Severe-weather diagnostic calculations. | Defer; science kernels should move only with parity tests. |
-| 22 | 1825 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Calibration report orchestration, gate history, summaries, and remaining contract glue. | Continue small mechanical splits after contract snapshots stay green. |
-| 23 | 1818 | `crates/rustwx-products/src/cross_section.rs` | Product-side pressure cross-section construction from decoded model data. | Continue splitting request/support/sampling/render-bridge pieces with fixtures. |
-| 24 | 1793 | `crates/rustwx-products/src/native_dataset_materializer.rs` | Native dataset materialization and local bundle/report plumbing. | Split materialize/report helpers only after dataset manifest fixtures are locked. |
-| 25 | 1740 | `crates/rustwx-sounding/src/native_table.rs` | Native sounding table extraction, derived columns, and SHARPpy-style handoff. | Split extraction/table-format helpers only after sounding fixtures are stable. |
+| 21 | 1825 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Calibration report orchestration, gate history, summaries, and remaining contract glue. | Continue small mechanical splits after contract snapshots stay green. |
+| 22 | 1818 | `crates/rustwx-products/src/cross_section.rs` | Product-side pressure cross-section construction from decoded model data. | Continue splitting request/support/sampling/render-bridge pieces with fixtures. |
+| 23 | 1793 | `crates/rustwx-products/src/native_dataset_materializer.rs` | Native dataset materialization and local bundle/report plumbing. | Split materialize/report helpers only after dataset manifest fixtures are locked. |
+| 24 | 1740 | `crates/rustwx-sounding/src/native_table.rs` | Native sounding table extraction, derived columns, and SHARPpy-style handoff. | Split extraction/table-format helpers only after sounding fixtures are stable. |
+| 25 | 1734 | `crates/rustwx-calc/src/mesoanalysis.rs` | Numeric mesoanalysis kernels and supporting calculations. | Continue splitting science helpers only with parity tests. |
 
 ## Public Surface Snapshot
 
@@ -138,6 +138,8 @@ The operational complexity is mostly in `src/bin`, documented separately in
 diagnostic math. `crates/rustwx-calc/src/mesoanalysis/tests.rs` owns the
 surface mesoanalysis kernel regression tests while retaining parent-private
 access through the `#[cfg(test)] mod tests;` child module.
+`crates/rustwx-calc/src/severe/tests.rs` owns the severe diagnostic regression
+tests with the same parent-private test-module pattern.
 
 ## Dependency-Direction Notes
 
