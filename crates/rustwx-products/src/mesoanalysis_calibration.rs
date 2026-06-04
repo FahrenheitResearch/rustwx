@@ -5642,6 +5642,9 @@ fn option_greater_than_zero(value: Option<f64>) -> bool {
 }
 
 #[cfg(test)]
+mod contract_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
