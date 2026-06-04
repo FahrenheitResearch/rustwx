@@ -52,7 +52,7 @@ future Codex edits because unrelated concerns are close together.
 | --- | ---: | --- | --- | --- |
 | 1 | 10900 | `crates/rustwx-models/src/lib.rs` | Model/source catalog, forecast-hour support, URL plans, latest-run lookup, and plot recipes. | Split catalog/source/recipe/run-discovery modules after snapshotting model catalog output. |
 | 2 | 7056 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Surface mesoanalysis calibration aggregation, gates, confidence reliability, innovation history, and watchlists. | Mechanical module directory split with schema snapshots first. |
-| 3 | 5918 | `crates/rustwx-products/src/derived.rs` | Derived product requests, shared loads, native contour mode, compute paths, and batch publication. | Continue mechanical split with compute/request/render-assembly helpers. |
+| 3 | 5481 | `crates/rustwx-products/src/derived.rs` | Derived product requests, shared loads, native contour mode, compute paths, and batch publication. | Continue mechanical split with compute/request/render-assembly helpers. |
 | 4 | 5307 | `crates/rustwx-render/src/render.rs` | Main map renderer, canvas layout, fills, overlays, barbs, labels, and PNG-facing render path. | Split rendering internals only after render-request fixtures exist. |
 | 5 | 4841 | `crates/rustwx-products/src/mesoanalysis.rs` | Surface objective analysis, observation filtering/QC, background fields, reports, and WxStore export hooks. | Mechanical split with report-schema and default-config tests. |
 | 6 | 3451 | `crates/rustwx-python/src/lib.rs` | Python binding surface and Rust/Python request translation. | Split bindings by feature surface only after Rust APIs stabilize. |
@@ -221,6 +221,14 @@ sounding extraction/data separate from PNG presentation if the file grows.
      heavy-recipe flagging, and derived compute dependency requirements while
      preserving crate-visible `rustwx_products::derived::DerivedRecipe` and
      `rustwx_products::derived::derived_compute_recipes_need_pressure`.
+     `crates/rustwx-products/src/derived/planning.rs` owns derived recipe
+     de-duplication, native route structs, WRF/GDEX native candidate selection,
+     fastest/canonical route partitioning, derived latest-run resolution, and
+     derived execution-plan construction while preserving crate-visible
+     `rustwx_products::derived::plan_derived_recipes`,
+     `rustwx_products::derived::plan_native_thermo_routes_with_surface_product`,
+     `rustwx_products::derived::PlannedDerivedSourceRoutes`, and
+     `rustwx_products::derived::NativeDerivedRecipe`.
 
 6. **Mechanical `mesoanalysis.rs` split**
    - Split config, observations, background, objective analysis, validation,
