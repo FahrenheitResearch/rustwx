@@ -56,7 +56,7 @@ future Codex edits because unrelated concerns are close together.
 | 4 | 4483 | `crates/rustwx-products/src/derived.rs` | Derived product requests, shared loads, native contour mode, compute paths, and batch publication. | Continue mechanical split with render-assembly helpers. |
 | 5 | 3446 | `crates/rustwx-python/src/lib.rs` | Python binding surface and Rust/Python request translation. | Split bindings by feature surface only after Rust APIs stabilize. |
 | 6 | 3373 | `crates/rustwx-io/src/lib.rs` | Fetch requests/results, probing, extraction, selector handling, and cache-facing IO helpers. | Split fetch/probe/grib modules after product characterization tests. |
-| 7 | 2834 | `crates/rustwx-products/src/non_ecape.rs` | Multi-model non-ECAPE orchestration across direct, derived, windowed, and WxStore lanes. | Continue splitting hour runner/publication once request/report types are separated. |
+| 7 | 2689 | `crates/rustwx-products/src/non_ecape.rs` | Multi-model non-ECAPE orchestration across direct, derived, windowed, and WxStore lanes. | Continue splitting hour runner/publication now that request/report and summary helpers are separated. |
 | 8 | 2637 | `crates/rustwx-products/src/direct.rs` | Direct product batch orchestration, fetch/extract from loaded bundles, projected map assembly, rendering workers, and tests. | Continue mechanical split preserving `rustwx_products::direct::*`, likely around batch/fetch extraction. |
 | 9 | 2574 | `crates/rustwx-cross-section/src/render.rs` | Cross-section raster rendering, terrain, colorbars, wind overlays, and labels. | Split draw primitives after product fixtures exist. |
 | 10 | 2565 | `crates/rustwx-products/src/windowed.rs` | Windowed product families such as QPF, UH, wind swaths, and temperature extrema. | Split by product family with catalog snapshot. |
@@ -357,6 +357,9 @@ sounding extraction/data separate from PNG presentation if the file grows.
       report structs, output/default serialization helpers, and the
       compatibility type aliases while the parent module re-exports all public
       names to preserve existing `rustwx_products::non_ecape::*` paths.
+      `crates/rustwx-products/src/non_ecape/summary.rs` owns non-ECAPE
+      output-summary flattening and static-domain/static-product build timing
+      rollups while staying parent-private.
 
 ## Standard Validation Commands
 
