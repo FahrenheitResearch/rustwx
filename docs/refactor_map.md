@@ -59,14 +59,14 @@ future Codex edits because unrelated concerns are close together.
 | 7 | 2574 | `crates/rustwx-cross-section/src/render.rs` | Cross-section raster rendering, terrain, colorbars, wind overlays, and labels. | Split draw primitives after product fixtures exist. |
 | 8 | 2565 | `crates/rustwx-products/src/windowed.rs` | Windowed product families such as QPF, UH, wind swaths, and temperature extrema. | Split by product family with catalog snapshot. |
 | 9 | 2557 | `crates/rustwx-core/src/lib.rs` | Shared core types for grids, products, selectors, models, fields, and bundles. | Split only if public compatibility is protected by re-exports. |
-| 10 | 2502 | `crates/rustwx-products/src/direct.rs` | Direct product batch orchestration, fetch/extract from loaded bundles, projected map assembly, rendering workers, and tests. | Continue mechanical split preserving `rustwx_products::direct::*`, likely around render worker/output assembly. |
-| 11 | 2463 | `crates/rustwx-cli/src/bin/wrf_ops.rs` | WRF operational planning, namelist generation, launch/bootstrap helpers, and HTML output. | Consider a WRF CLI subcommand module after bin taxonomy settles. |
-| 12 | 2460 | `crates/rustwx-calc/src/mesoanalysis.rs` | Numeric mesoanalysis kernels and supporting calculations. | Defer until product-side mesoanalysis is split and tested. |
-| 13 | 2357 | `crates/rustwx-products/src/cross_section.rs` | Product-side pressure cross-section construction from decoded model data. | Split request/support/sampling/render-bridge pieces with fixtures. |
-| 14 | 2351 | `crates/rustwx-cli/src/bin/rustwx_tools_site.rs` | Local tools website serving WXA plots, cross sections, soundings, and store views. | Extract reusable server/job helpers only after Studio/Python boundaries are stable. |
-| 15 | 2346 | `crates/rustwx-products/src/gridded.rs` | Model timestep loading, field decode, pressure/surface field containers, and decode-cache helpers. | Continue splitting load/decode helpers with no behavior changes; crop/domain and fetch helpers are now extracted. |
-| 16 | 2344 | `crates/rustwx-products/src/non_ecape.rs` | Multi-model non-ECAPE orchestration across direct, derived, windowed, and WxStore lanes. | Continue splitting hour preparation and domain runner now that schema, summary, and manifest helpers are separated. |
-| 17 | 2280 | `crates/rustwx-products/src/wxstore_wxa.rs` | WxStore WXA dense2d import/export/static plotting support. | Split format/read-write/plot modules after WXA manifest snapshots. |
+| 10 | 2463 | `crates/rustwx-cli/src/bin/wrf_ops.rs` | WRF operational planning, namelist generation, launch/bootstrap helpers, and HTML output. | Consider a WRF CLI subcommand module after bin taxonomy settles. |
+| 11 | 2460 | `crates/rustwx-calc/src/mesoanalysis.rs` | Numeric mesoanalysis kernels and supporting calculations. | Defer until product-side mesoanalysis is split and tested. |
+| 12 | 2357 | `crates/rustwx-products/src/cross_section.rs` | Product-side pressure cross-section construction from decoded model data. | Split request/support/sampling/render-bridge pieces with fixtures. |
+| 13 | 2351 | `crates/rustwx-cli/src/bin/rustwx_tools_site.rs` | Local tools website serving WXA plots, cross sections, soundings, and store views. | Extract reusable server/job helpers only after Studio/Python boundaries are stable. |
+| 14 | 2346 | `crates/rustwx-products/src/gridded.rs` | Model timestep loading, field decode, pressure/surface field containers, and decode-cache helpers. | Continue splitting load/decode helpers with no behavior changes; crop/domain and fetch helpers are now extracted. |
+| 15 | 2344 | `crates/rustwx-products/src/non_ecape.rs` | Multi-model non-ECAPE orchestration across direct, derived, windowed, and WxStore lanes. | Continue splitting hour preparation and domain runner now that schema, summary, and manifest helpers are separated. |
+| 16 | 2280 | `crates/rustwx-products/src/wxstore_wxa.rs` | WxStore WXA dense2d import/export/static plotting support. | Split format/read-write/plot modules after WXA manifest snapshots. |
+| 17 | 2229 | `crates/rustwx-products/src/direct.rs` | Direct product batch orchestration, projected map assembly, rendering workers, and tests. | Continue mechanical split preserving `rustwx_products::direct::*`, likely around render worker/output assembly. |
 | 18 | 2137 | `crates/rustwx-radar/src/dealias.rs` | Velocity dealiasing algorithms, quality masks, and diagnostics. | Keep semantic changes separate from any module split. |
 | 19 | 2117 | `crates/rustwx-products/src/dataset_export.rs` | Native dataset export and training-bundle shaping. | Split plan/materialize/report helpers after manifest snapshots. |
 | 20 | 2080 | `crates/rustwx-io/src/earth2_archive.rs` | AIFS/Earth2 archive member/stat selection, archive paths, and validation. | Keep with IO split but preserve archive path behavior exactly. |
@@ -213,6 +213,11 @@ sounding extraction/data separate from PNG presentation if the file grows.
      lookup, direct selected-field cache/decode, missing-selector reporting,
      runtime fetch timing, and input-fetch identity construction while staying
      parent-private.
+     `crates/rustwx-products/src/direct/batch.rs` owns direct run resolution,
+     public HRRR/generic batch entrypoints, loaded/prepared batch execution,
+     direct-lane blocker assembly, and loaded execution-plan orchestration
+     while the parent module re-exports the public and crate-visible entrypoint
+     paths.
 
 5. **Mechanical `derived.rs` split**
    - Split recipe inventory, compute paths, contour mode, request/report, and
