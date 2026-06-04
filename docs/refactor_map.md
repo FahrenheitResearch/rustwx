@@ -101,6 +101,10 @@ The advisory ownership map for this broad surface now lives in
 stable public, operational public, compatibility public, proof/research public,
 internal-candidate public, legacy public, or crate-private. A crate-root
 guardrail test checks that every declared module appears in the map and the doc.
+`crates/rustwx-products/src/catalog/tests.rs` owns product catalog support
+matrix, route, metadata, legacy-alias, windowed coverage, proxy/proof, and
+summary-count regression tests while retaining parent-private access through
+the `#[cfg(test)] mod tests;` child module.
 `crates/rustwx-products/src/dataset_export/tests.rs` owns dataset-export channel
 preset, metadata, NPY header, split-count, and wind-direction regression tests
 while retaining parent-private access through the `#[cfg(test)] mod tests;`
