@@ -73,8 +73,8 @@ future Codex edits because unrelated concerns are close together.
 | 21 | 2178 | `crates/rustwx-cli/src/bin/forecast_now.rs` | One-shot operational orchestrator across products and lanes. | Candidate for main CLI subcommand once shared args are extracted. |
 | 22 | 2154 | `crates/rustwx-products/src/comparison.rs` | Product manifest/report comparison and publication deltas. | Split loader/comparison/report serialization if tests cover JSON shape. |
 | 23 | 2043 | `crates/rustwx-radar/src/tile.rs` | Radar tile generation and related render/report helpers. | Defer until radar export/tile CLI lanes are classified. |
-| 24 | 2032 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Surface mesoanalysis calibration file discovery/write facade, shared JSON/value/numeric helpers, tests, and facade exports for split modules. | Split shared helpers only after confirming sibling visibility stays private. |
-| 25 | 2016 | `crates/rustwx-calc/src/severe.rs` | Severe-weather diagnostic calculations. | Defer; science kernels should move only with parity tests. |
+| 24 | 2016 | `crates/rustwx-calc/src/severe.rs` | Severe-weather diagnostic calculations. | Defer; science kernels should move only with parity tests. |
+| 25 | 1902 | `crates/rustwx-products/src/native_dataset_materializer.rs` | Native dataset materialization across source acquisition, derived channels, validity masks, and shard layout. | Split source loaders/materialization/write reporting after manifest and shard-shape fixtures. |
 
 ## Public Surface Snapshot
 
@@ -291,6 +291,14 @@ sounding extraction/data separate from PNG presentation if the file grows.
      validation source/stratum/station summary accumulators, source variable
      summary rollups, and station variable stats accumulation while exposing
      only sibling-visible helper types needed by parsing and aggregation.
+     `crates/rustwx-products/src/mesoanalysis_calibration/helpers.rs` owns
+     shared JSON path accessors, case-tag normalization, count/key builders,
+     finite numeric collection helpers, weighted mean/RMSE helpers, and
+     `Option<f64>` delta/comparison helpers while staying sibling-private and
+     unre-exported by the parent module.
+     The parent `mesoanalysis_calibration.rs` now owns the public file
+     discovery/read/write facade, split-module declarations/re-exports, tests,
+     and crate-private `run_report.json` directory traversal.
 
 7. **Mechanical `mesoanalysis.rs` split**
    - Split config, observations, background, objective analysis, validation,
