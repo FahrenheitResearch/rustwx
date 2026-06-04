@@ -51,7 +51,7 @@ future Codex edits because unrelated concerns are close together.
 | Rank | LOC | File | Responsibility summary | First safe move |
 | --- | ---: | --- | --- | --- |
 | 1 | 11503 | `crates/rustwx-models/src/lib.rs` | Model/source catalog, forecast-hour support, URL plans, latest-run lookup, and plot recipes. | Split catalog/source/recipe/run-discovery modules after snapshotting model catalog output. |
-| 2 | 7400 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Surface mesoanalysis calibration aggregation, gates, confidence reliability, innovation history, and watchlists. | Begin a mechanical module directory split around types/gates/history using the contract snapshot. |
+| 2 | 6732 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Surface mesoanalysis calibration aggregation, gates, confidence reliability, innovation history, and watchlists. | Continue the mechanical module split around gates/history using the contract snapshot. |
 | 3 | 5712 | `crates/rustwx-render/src/render.rs` | Main map renderer, canvas layout, fills, overlays, barbs, labels, and PNG-facing render path. | Split rendering internals only after render-request fixtures exist. |
 | 4 | 5099 | `crates/rustwx-products/src/mesoanalysis.rs` | Surface objective analysis, observation filtering/QC, background fields, reports, and WxStore export hooks. | Mechanical split with report-schema and default-config tests. |
 | 5 | 4697 | `crates/rustwx-products/src/derived.rs` | Derived product requests, shared loads, native contour mode, compute paths, and batch publication. | Continue mechanical split with render-assembly helpers. |
@@ -249,15 +249,21 @@ sounding extraction/data separate from PNG presentation if the file grows.
      `rustwx_products::derived::build_derived_sampled_execution_plan`, and
      `rustwx_products::derived::required_derived_fetch_products`.
 
-6. **Mechanical `mesoanalysis.rs` split**
+6. **Mechanical `mesoanalysis_calibration.rs` split**
+   - Split schema types, gate evaluation, innovation history/index export,
+     parsing, and aggregation while preserving
+     `rustwx_products::mesoanalysis_calibration::*` paths and all JSON shapes.
+   - Validation: calibration contract snapshot plus `rustwx-products` tests.
+   - Current split: `crates/rustwx-products/src/mesoanalysis_calibration/types.rs`
+     owns the public calibration report/case/aggregate, innovation history,
+     query, WxStore index, and calibration gate schema structs. The parent
+     `mesoanalysis_calibration` module re-exports those names so existing
+     external paths remain unchanged.
+
+7. **Mechanical `mesoanalysis.rs` split**
    - Split config, observations, background, objective analysis, validation,
      report, and WxStore export hooks.
    - Validation: report schema/default config/representative analysis tests.
-
-7. **Mechanical `mesoanalysis_calibration.rs` split**
-   - Split types, aggregate, gates, confidence reliability, innovation history,
-     watchlists, and IO.
-   - Validation: schema/gate/history snapshots.
 
 8. **`rustwx-models/src/lib.rs` split**
    - Split model catalog, source policy, URL construction, latest-run probing,
