@@ -70,11 +70,11 @@ future Codex edits because unrelated concerns are close together.
 | 18 | 1906 | `crates/rustwx-radar/src/tile.rs` | Radar tile generation and related render/report helpers. | Defer until radar export/tile CLI lanes are classified. |
 | 19 | 1874 | `crates/rustwx-core/src/lib.rs` | Shared core types for grids, products, selectors, models, fields, and bundles. | Continue splitting only if public compatibility is protected by re-exports. |
 | 20 | 1841 | `crates/rustwx-products/src/comparison.rs` | Product manifest/report comparison and publication deltas. | Split loader/comparison/report serialization if tests cover JSON shape. |
-| 21 | 1825 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Calibration report orchestration, gate history, summaries, and remaining contract glue. | Continue small mechanical splits after contract snapshots stay green. |
-| 22 | 1818 | `crates/rustwx-products/src/cross_section.rs` | Product-side pressure cross-section construction from decoded model data. | Continue splitting request/support/sampling/render-bridge pieces with fixtures. |
-| 23 | 1793 | `crates/rustwx-products/src/native_dataset_materializer.rs` | Native dataset materialization and local bundle/report plumbing. | Split materialize/report helpers only after dataset manifest fixtures are locked. |
-| 24 | 1740 | `crates/rustwx-sounding/src/native_table.rs` | Native sounding table extraction, derived columns, and SHARPpy-style handoff. | Split extraction/table-format helpers only after sounding fixtures are stable. |
-| 25 | 1734 | `crates/rustwx-calc/src/mesoanalysis.rs` | Numeric mesoanalysis kernels and supporting calculations. | Continue splitting science helpers only with parity tests. |
+| 21 | 1818 | `crates/rustwx-products/src/cross_section.rs` | Product-side pressure cross-section construction from decoded model data. | Continue splitting request/support/sampling/render-bridge pieces with fixtures. |
+| 22 | 1793 | `crates/rustwx-products/src/native_dataset_materializer.rs` | Native dataset materialization and local bundle/report plumbing. | Split materialize/report helpers only after dataset manifest fixtures are locked. |
+| 23 | 1740 | `crates/rustwx-sounding/src/native_table.rs` | Native sounding table extraction, derived columns, and SHARPpy-style handoff. | Split extraction/table-format helpers only after sounding fixtures are stable. |
+| 24 | 1734 | `crates/rustwx-calc/src/mesoanalysis.rs` | Numeric mesoanalysis kernels and supporting calculations. | Continue splitting science helpers only with parity tests. |
+| 25 | 1721 | `crates/rustwx-products/src/places.rs` | Place registry, geographic aliases, and product-location lookup helpers. | Split registry data/helpers only after place aliases are snapshotted. |
 
 ## Public Surface Snapshot
 
@@ -108,6 +108,9 @@ child module.
 `crates/rustwx-products/src/comparison/tests.rs` owns comparison relation,
 input-kind, fetch-key, manifest-normalization, and material-change regression
 tests with the same parent-private test-module pattern.
+`crates/rustwx-products/src/mesoanalysis_calibration/tests.rs` owns calibration
+report, gate, confidence reliability, station/source history, and skipped-report
+regression tests with the same parent-private test-module pattern.
 
 Refactor implication: do not convert `pub mod` to `pub(crate) mod` until the
 workspace and Python bindings are checked for each path. The first visibility PR
@@ -338,9 +341,12 @@ sounding extraction/data separate from PNG presentation if the file grows.
      finite numeric collection helpers, weighted mean/RMSE helpers, and
      `Option<f64>` delta/comparison helpers while staying sibling-private and
      unre-exported by the parent module.
+     `crates/rustwx-products/src/mesoanalysis_calibration/tests.rs` owns the
+     calibration report and gate regression tests while retaining
+     parent-private access through the `#[cfg(test)] mod tests;` child module.
      The parent `mesoanalysis_calibration.rs` now owns the public file
-     discovery/read/write facade, split-module declarations/re-exports, tests,
-     and crate-private `run_report.json` directory traversal.
+     discovery/read/write facade, split-module declarations/re-exports, and
+     crate-private `run_report.json` directory traversal.
 
 7. **Mechanical `mesoanalysis.rs` split**
    - Split config, observations, background, objective analysis, validation,
