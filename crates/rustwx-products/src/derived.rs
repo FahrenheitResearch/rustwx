@@ -14,7 +14,6 @@ use rustwx_calc::{
 use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId,
 };
-use rustwx_io::earth2_archive::Earth2EnsembleSelector;
 #[cfg(test)]
 use rustwx_render::PngCompressionMode;
 use rustwx_render::{
@@ -63,7 +62,6 @@ use crate::shared_context::DomainSpec;
 use crate::shared_context::{
     WeatherPanelField, build_weather_map_request, model_time_subtitle, source_subtitle,
     static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
-    static_title_with_suffix,
 };
 use crate::source::{ProductSourceMode, ProductSourceRoute};
 use crate::thermo_native::{
@@ -77,11 +75,16 @@ use rustwx_models::{
 use rustwx_wrf::{WrfFile, looks_like_wrf};
 
 mod inventory;
+mod presentation;
 mod types;
 
 pub use inventory::{
     BlockedDerivedRecipeInventoryEntry, DerivedRecipeInventoryEntry,
     blocked_derived_recipe_inventory, supported_derived_recipe_inventory,
+};
+use presentation::{
+    DerivedRenderOverrides, derived_output_suffix, derived_title_for_model,
+    derived_title_for_request, earth2_filename_suffix, is_gdex_dataset_token,
 };
 pub use types::{
     DerivedBatchReport, DerivedBatchRequest, DerivedMemoryProfile, DerivedRecipeBlocker,
@@ -805,108 +808,6 @@ impl DerivedBatchRequest {
             compression: self.png_compression,
         }
     }
-}
-
-fn dataset_token_from_product(product: &str) -> Option<&str> {
-    let token = product.split(['-', '_']).next().unwrap_or(product);
-    if is_gdex_dataset_token(token) {
-        Some(token)
-    } else {
-        None
-    }
-}
-
-fn derived_title_for_model(model: ModelId, base_title: &str) -> String {
-    if model == ModelId::WrfGdex {
-        let dataset = dataset_token_from_product("d612005-hist2d").unwrap_or("d612005");
-        static_title_with_suffix(format!("{base_title} ({dataset})"))
-    } else {
-        static_title_with_suffix(base_title)
-    }
-}
-
-fn derived_title_for_request(request: &DerivedBatchRequest, base_title: &str) -> String {
-    if request.model == ModelId::Aifs {
-        if let Some(selector) = request.earth2_ensemble {
-            return static_title_with_suffix(format!("{base_title} ({})", selector.label()));
-        }
-    }
-    if is_local_wrf_netcdf_request(request) {
-        return static_title_with_suffix(base_title);
-    }
-    if request.model != ModelId::WrfGdex {
-        return static_title_with_suffix(base_title);
-    }
-
-    let dataset = request
-        .surface_product_override
-        .as_deref()
-        .and_then(dataset_token_from_product)
-        .or_else(|| {
-            request
-                .pressure_product_override
-                .as_deref()
-                .and_then(dataset_token_from_product)
-        })
-        .unwrap_or("d612005");
-    static_title_with_suffix(format!("{base_title} ({dataset})"))
-}
-
-fn is_local_wrf_netcdf_request(request: &DerivedBatchRequest) -> bool {
-    request.model == ModelId::WrfGdex
-        && [
-            request.surface_product_override.as_deref(),
-            request.pressure_product_override.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        .any(|product| product.eq_ignore_ascii_case("local_wrf_netcdf"))
-}
-
-fn earth2_filename_suffix(selector: Option<Earth2EnsembleSelector>) -> String {
-    selector
-        .map(|selector| format!("_{}", selector.filename_slug()))
-        .unwrap_or_default()
-}
-
-#[derive(Clone, Copy, Default)]
-struct DerivedRenderOverrides<'a> {
-    output_suffix: Option<&'a str>,
-    subtitle_left: Option<&'a str>,
-    subtitle_right: Option<&'a str>,
-}
-
-fn sanitize_output_suffix(value: &str) -> String {
-    let mut out = String::new();
-    for ch in value.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-        } else if matches!(ch, '_' | '-' | '.') {
-            out.push(ch);
-        } else if ch.is_whitespace() {
-            out.push('_');
-        }
-    }
-    out.trim_matches(['_', '-', '.']).to_string()
-}
-
-fn derived_output_suffix(
-    earth2_ensemble: Option<Earth2EnsembleSelector>,
-    output_suffix: Option<&str>,
-) -> String {
-    let mut suffix = earth2_filename_suffix(earth2_ensemble);
-    if let Some(output_suffix) = output_suffix {
-        let sanitized = sanitize_output_suffix(output_suffix);
-        if !sanitized.is_empty() {
-            suffix.push('_');
-            suffix.push_str(&sanitized);
-        }
-    }
-    suffix
-}
-
-fn is_gdex_dataset_token(token: &str) -> bool {
-    token.len() > 1 && token.starts_with('d') && token[1..].chars().all(|ch| ch.is_ascii_digit())
 }
 
 pub fn supported_derived_recipe_slugs(model: ModelId) -> Vec<String> {
