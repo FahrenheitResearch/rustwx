@@ -14,7 +14,7 @@ use super::{
         inverse_raster_projection_for_grid, presentation_frame_bounds_for_grid,
         projection_presentation_variant, rectilinear_latlon_mesh_for_inverse,
     },
-    should_render_overlay_only, visual_mode_for_direct_recipe,
+    rendering::{should_render_overlay_only, visual_mode_for_direct_recipe},
 };
 
 pub(super) fn crop_bounds_for_direct_request(
