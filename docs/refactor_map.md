@@ -52,7 +52,7 @@ future Codex edits because unrelated concerns are close together.
 | --- | ---: | --- | --- | --- |
 | 1 | 10906 | `crates/rustwx-models/src/lib.rs` | Model/source catalog, forecast-hour support, URL plans, latest-run lookup, and plot recipes. | Split catalog/source/recipe/run-discovery modules after snapshotting model catalog output. |
 | 2 | 5307 | `crates/rustwx-render/src/render.rs` | Main map renderer, canvas layout, fills, overlays, barbs, labels, and PNG-facing render path. | Split rendering internals only after render-request fixtures exist. |
-| 3 | 4841 | `crates/rustwx-products/src/mesoanalysis.rs` | Surface objective analysis, observation filtering/QC, background fields, reports, and WxStore export hooks. | Mechanical split with report-schema and default-config tests. |
+| 3 | 3681 | `crates/rustwx-products/src/mesoanalysis.rs` | Surface objective analysis, observation filtering/QC, background fields, reports, and WxStore export hooks. | Continue mechanical split with observation/report/export helpers behind existing tests. |
 | 4 | 3630 | `crates/rustwx-products/src/derived.rs` | Derived product requests, shared loads, native contour mode, compute paths, and batch publication. | Continue mechanical split with render-assembly helpers. |
 | 5 | 3446 | `crates/rustwx-python/src/lib.rs` | Python binding surface and Rust/Python request translation. | Split bindings by feature surface only after Rust APIs stabilize. |
 | 6 | 3373 | `crates/rustwx-io/src/lib.rs` | Fetch requests/results, probing, extraction, selector handling, and cache-facing IO helpers. | Split fetch/probe/grib modules after product characterization tests. |
@@ -326,6 +326,9 @@ sounding extraction/data separate from PNG presentation if the file grows.
    - Split config, observations, background, objective analysis, validation,
      report, and WxStore export hooks.
    - Validation: report schema/default config/representative analysis tests.
+   - Current split: `crates/rustwx-products/src/mesoanalysis/tests.rs` owns
+     the surface mesoanalysis regression tests while retaining parent-private
+     access through the `#[cfg(test)] mod tests;` child module.
 
 8. **`rustwx-models/src/lib.rs` split**
    - Split model catalog, source policy, URL construction, latest-run probing,
