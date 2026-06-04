@@ -62,11 +62,11 @@ future Codex edits because unrelated concerns are close together.
 | 10 | 2232 | `crates/rustwx-cli/src/bin/wrf_ops.rs` | WRF operational planning, namelist generation, launch/bootstrap helpers, and HTML output. | Consider a WRF CLI subcommand module after bin taxonomy settles. |
 | 11 | 2189 | `crates/rustwx-products/src/wxstore_wxa.rs` | WxStore WXA dense2d import/export/static plotting support. | Continue splitting format/read-write/plot modules after WXA manifest snapshots. |
 | 12 | 2126 | `crates/rustwx-products/src/gridded.rs` | Model timestep loading, field decode, pressure/surface field containers, and decode-cache helpers. | Continue splitting load/decode helpers with no behavior changes; crop/domain and fetch helpers are now extracted. |
-| 13 | 2057 | `crates/rustwx-cli/src/bin/forecast_now.rs` | One-shot operational orchestrator across products and lanes. | Candidate for main CLI subcommand once shared args are extracted. |
-| 14 | 1994 | `crates/rustwx-io/src/lib.rs` | Fetch requests/results, probing, extraction, selector handling, and cache-facing IO helpers. | Continue splitting fetch/probe/grib modules after product characterization tests. |
-| 15 | 1964 | `crates/rustwx-products/src/dataset_export.rs` | Native dataset export and training-bundle shaping. | Split plan/materialize/report helpers after manifest snapshots. |
-| 16 | 1907 | `crates/rustwx-io/src/earth2_archive.rs` | AIFS/Earth2 archive member/stat selection, archive paths, and validation. | Keep with IO split but preserve archive path behavior exactly. |
-| 17 | 1874 | `crates/rustwx-core/src/lib.rs` | Shared core types for grids, products, selectors, models, fields, and bundles. | Continue splitting only if public compatibility is protected by re-exports. |
+| 13 | 1994 | `crates/rustwx-io/src/lib.rs` | Fetch requests/results, probing, extraction, selector handling, and cache-facing IO helpers. | Continue splitting fetch/probe/grib modules after product characterization tests. |
+| 14 | 1964 | `crates/rustwx-products/src/dataset_export.rs` | Native dataset export and training-bundle shaping. | Split plan/materialize/report helpers after manifest snapshots. |
+| 15 | 1907 | `crates/rustwx-io/src/earth2_archive.rs` | AIFS/Earth2 archive member/stat selection, archive paths, and validation. | Keep with IO split but preserve archive path behavior exactly. |
+| 16 | 1874 | `crates/rustwx-core/src/lib.rs` | Shared core types for grids, products, selectors, models, fields, and bundles. | Continue splitting only if public compatibility is protected by re-exports. |
+| 17 | 1873 | `crates/rustwx-cli/src/bin/forecast_now.rs` | One-shot operational orchestrator across products and lanes. | Candidate for main CLI subcommand once shared args are extracted. |
 | 18 | 1841 | `crates/rustwx-products/src/comparison.rs` | Product manifest/report comparison and publication deltas. | Split loader/comparison/report serialization if tests cover JSON shape. |
 | 19 | 1818 | `crates/rustwx-products/src/cross_section.rs` | Product-side pressure cross-section construction from decoded model data. | Continue splitting request/support/sampling/render-bridge pieces with fixtures. |
 | 20 | 1779 | `crates/rustwx-radar/src/dealias.rs` | Velocity dealiasing algorithms, quality masks, and diagnostics. | Keep semantic changes separate from future module splits. |
@@ -172,6 +172,10 @@ centered and nested domain arguments, doctor-path checks, launch environment
 flags, recipe command assembly, and bootstrap-script regression tests while
 retaining parent-private access through a `#[cfg(test)]` child module with an
 explicit bin-local path.
+`crates/rustwx-cli/src/bin/forecast_now/tests.rs` owns pinned-run request,
+heavy-derived filtering, windowed product parsing/defaults, non-HRRR route
+selection, WRF GDEX unified support, and REFS/HREF required-product regression
+tests with the same explicit bin-local child-module pattern.
 
 ### `rustwx-calc`
 
