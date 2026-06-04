@@ -66,15 +66,15 @@ future Codex edits because unrelated concerns are close together.
 | 14 | 2346 | `crates/rustwx-products/src/gridded.rs` | Model timestep loading, field decode, pressure/surface field containers, and decode-cache helpers. | Continue splitting load/decode helpers with no behavior changes; crop/domain and fetch helpers are now extracted. |
 | 15 | 2344 | `crates/rustwx-products/src/non_ecape.rs` | Multi-model non-ECAPE orchestration across direct, derived, windowed, and WxStore lanes. | Continue splitting hour preparation and domain runner now that schema, summary, and manifest helpers are separated. |
 | 16 | 2280 | `crates/rustwx-products/src/wxstore_wxa.rs` | WxStore WXA dense2d import/export/static plotting support. | Split format/read-write/plot modules after WXA manifest snapshots. |
-| 17 | 2229 | `crates/rustwx-products/src/direct.rs` | Direct product batch orchestration, projected map assembly, rendering workers, and tests. | Continue mechanical split preserving `rustwx_products::direct::*`, likely around render worker/output assembly. |
-| 18 | 2137 | `crates/rustwx-radar/src/dealias.rs` | Velocity dealiasing algorithms, quality masks, and diagnostics. | Keep semantic changes separate from any module split. |
-| 19 | 2117 | `crates/rustwx-products/src/dataset_export.rs` | Native dataset export and training-bundle shaping. | Split plan/materialize/report helpers after manifest snapshots. |
-| 20 | 2080 | `crates/rustwx-io/src/earth2_archive.rs` | AIFS/Earth2 archive member/stat selection, archive paths, and validation. | Keep with IO split but preserve archive path behavior exactly. |
-| 21 | 2057 | `crates/rustwx-cli/src/bin/forecast_now.rs` | One-shot operational orchestrator across products and lanes. | Candidate for main CLI subcommand once shared args are extracted. |
-| 22 | 2043 | `crates/rustwx-products/src/comparison.rs` | Product manifest/report comparison and publication deltas. | Split loader/comparison/report serialization if tests cover JSON shape. |
-| 23 | 1906 | `crates/rustwx-radar/src/tile.rs` | Radar tile generation and related render/report helpers. | Defer until radar export/tile CLI lanes are classified. |
-| 24 | 1853 | `crates/rustwx-calc/src/severe.rs` | Severe-weather diagnostic calculations. | Defer; science kernels should move only with parity tests. |
-| 25 | 1825 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Calibration report orchestration, gate history, summaries, and remaining contract glue. | Continue small mechanical splits after contract snapshots stay green. |
+| 17 | 2137 | `crates/rustwx-radar/src/dealias.rs` | Velocity dealiasing algorithms, quality masks, and diagnostics. | Keep semantic changes separate from any module split. |
+| 18 | 2117 | `crates/rustwx-products/src/dataset_export.rs` | Native dataset export and training-bundle shaping. | Split plan/materialize/report helpers after manifest snapshots. |
+| 19 | 2080 | `crates/rustwx-io/src/earth2_archive.rs` | AIFS/Earth2 archive member/stat selection, archive paths, and validation. | Keep with IO split but preserve archive path behavior exactly. |
+| 20 | 2057 | `crates/rustwx-cli/src/bin/forecast_now.rs` | One-shot operational orchestrator across products and lanes. | Candidate for main CLI subcommand once shared args are extracted. |
+| 21 | 2043 | `crates/rustwx-products/src/comparison.rs` | Product manifest/report comparison and publication deltas. | Split loader/comparison/report serialization if tests cover JSON shape. |
+| 22 | 1906 | `crates/rustwx-radar/src/tile.rs` | Radar tile generation and related render/report helpers. | Defer until radar export/tile CLI lanes are classified. |
+| 23 | 1853 | `crates/rustwx-calc/src/severe.rs` | Severe-weather diagnostic calculations. | Defer; science kernels should move only with parity tests. |
+| 24 | 1825 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Calibration report orchestration, gate history, summaries, and remaining contract glue. | Continue small mechanical splits after contract snapshots stay green. |
+| 25 | 1793 | `crates/rustwx-products/src/native_dataset_materializer.rs` | Native dataset source materialization, remapping, validity masks, and shard-ready band assembly. | Split plan/materialize/report helpers after native dataset manifest snapshots. |
 
 ## Public Surface Snapshot
 
@@ -217,7 +217,11 @@ sounding extraction/data separate from PNG presentation if the file grows.
      public HRRR/generic batch entrypoints, loaded/prepared batch execution,
      direct-lane blocker assembly, and loaded execution-plan orchestration
      while the parent module re-exports the public and crate-visible entrypoint
-     paths.
+     paths. `crates/rustwx-products/src/direct/tests.rs` owns the direct module
+     regression tests while retaining parent-private access through the
+     `#[cfg(test)] mod tests;` child module. The parent `direct.rs` is now
+     below the owned-code hotspot table and mostly holds runtime render/output
+     glue that has not yet moved.
 
 5. **Mechanical `derived.rs` split**
    - Split recipe inventory, compute paths, contour mode, request/report, and
