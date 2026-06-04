@@ -1,7 +1,7 @@
 use crate::derived::NativeContourRenderMode;
 use rustwx_core::{
-    BundleRequirement, CanonicalBundleDescriptor, CanonicalField, CycleSpec, FieldProduct,
-    FieldSelector, GridProjection, ModelId, SelectedField2D, SourceId, VerticalSelector,
+    CanonicalField, CycleSpec, FieldProduct, FieldSelector, GridProjection, ModelId,
+    SelectedField2D, SourceId, VerticalSelector,
 };
 use rustwx_io::{
     earth2_archive::{Earth2EnsembleSelector, Earth2EnsembleStat},
@@ -9,9 +9,10 @@ use rustwx_io::{
     load_cached_selected_field, store_cached_selected_field,
 };
 use rustwx_models::{
-    LatestRun, ModelError, PlotRecipe, PlotRecipeFetchMode, PlotRecipeFetchPlan, RenderStyle,
-    latest_available_run_at_forecast_hour, plot_recipe, plot_recipe_fetch_plan,
+    LatestRun, PlotRecipe, RenderStyle, latest_available_run_at_forecast_hour, plot_recipe,
 };
+#[cfg(test)]
+use rustwx_models::{PlotRecipeFetchMode, plot_recipe_fetch_plan};
 use rustwx_render::{
     BasemapDetail, Color, ColorScale, ContourLayer, DiscreteColorScale, DomainFrame, ExtendMode,
     GeographicClipBounds, InverseRasterProjection, LegendMode, LevelDensity, MapRenderRequest,
@@ -33,7 +34,7 @@ use std::time::Instant;
 
 use crate::custom_poi::apply_custom_poi_overlay;
 use crate::gridded::{GridCrop, crop_latlon_grid, crop_values_f32};
-use crate::planner::{ExecutionPlan, ExecutionPlanBuilder};
+use crate::planner::ExecutionPlan;
 use crate::publication::{
     PublishedFetchIdentity, artifact_identity_from_path,
     fetch_identity_from_cached_result_with_aliases,
@@ -46,9 +47,17 @@ use crate::shared_context::{
     static_supersample_factor, static_supersample_sharpen, static_title_with_suffix,
 };
 use crate::source::direct_route_for_recipe_slug;
-use crate::spec::direct_product_specs;
 
+mod planning;
 mod types;
+pub use planning::{FetchGroup, supported_direct_recipe_slugs};
+use planning::{
+    PlannedDirectRecipe, build_direct_execution_plan, canonical_fetch_product_for_selectors,
+    group_direct_fetches, partition_recipes_by_selector_availability, plan_direct_recipes,
+    recipe_block_reason, recipe_slugs_depending_on_group,
+};
+#[cfg(test)]
+use planning::{canonical_fetch_product, should_attach_direct_idx_patterns};
 pub(crate) use types::PreparedDirectBatch;
 use types::{
     CLOUD_LEVEL_COMPONENT_SLUGS, DirectRequestBuildTiming, DirectSampledComponentField,
@@ -70,28 +79,6 @@ fn direct_data_layer_draw_ms(image_timing: &RenderImageTiming) -> u128 {
 
 fn direct_overlay_draw_ms(image_timing: &RenderImageTiming) -> u128 {
     image_timing.linework_ms + image_timing.contour_ms + image_timing.barb_ms
-}
-
-#[derive(Debug, Clone)]
-struct PlannedDirectRecipe {
-    recipe: &'static PlotRecipe,
-    plan: PlotRecipeFetchPlan,
-}
-
-#[derive(Debug, Clone)]
-pub struct FetchGroup {
-    pub product: String,
-    pub fetch_mode: PlotRecipeFetchMode,
-    // Retained for recipe-level coverage/debugging; the direct/native batch
-    // path intentionally pulls full family GRIB bytes and extracts grouped
-    // selectors from the parsed full file.
-    pub variable_patterns: Vec<String>,
-    pub selectors: Vec<FieldSelector>,
-    /// Sorted set of logical planned-family names (as requested by the
-    /// recipes' fetch plans) that collapsed into this canonical fetch. For
-    /// HRRR this is how we preserve the "nat" logical identity even when
-    /// it reroutes to the physical "sfc" file.
-    pub planned_family_aliases: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -941,288 +928,6 @@ fn run_direct_batch_with_context(
         blockers,
         total_ms: total_start.elapsed().as_millis(),
     })
-}
-
-pub fn supported_direct_recipe_slugs(model: ModelId) -> Vec<String> {
-    direct_product_specs()
-        .into_iter()
-        .filter(|spec| !direct_recipe_requires_explicit_opt_in(&spec.slug))
-        .filter(|spec| plot_recipe_fetch_plan(&spec.slug, model).is_ok())
-        .map(|spec| spec.slug)
-        .collect()
-}
-
-fn direct_recipe_requires_explicit_opt_in(slug: &str) -> bool {
-    slug.starts_with("nbm_qmd_")
-        || slug.starts_with("sref_prob_")
-        || slug.starts_with("gefs_avg_")
-        || slug.starts_with("gefs_spr_")
-        || slug.starts_with("aigefs_spr_")
-        || slug.starts_with("hgefs_spr_")
-        || slug.starts_with("href_sprd_")
-        || slug.starts_with("href_prob_")
-        || slug.starts_with("href_mean_")
-        || slug.starts_with("refs_sprd_")
-        || slug.starts_with("refs_prob_")
-}
-
-fn plan_direct_recipes(
-    model: ModelId,
-    recipe_slugs: &[String],
-) -> Result<Vec<PlannedDirectRecipe>, Box<dyn std::error::Error>> {
-    let mut planned = Vec::new();
-    let mut seen = HashSet::<String>::new();
-    for slug in recipe_slugs {
-        let recipe = plot_recipe(slug).ok_or_else(|| format!("unknown recipe '{slug}'"))?;
-        if !seen.insert(recipe.slug.to_string()) {
-            continue;
-        }
-        let plan = match plot_recipe_fetch_plan(recipe.slug, model) {
-            Ok(plan) => plan,
-            Err(ModelError::UnsupportedPlotRecipeModel { reason, .. }) => {
-                return Err(format!(
-                    "plot recipe '{}' is not supported for {}: {}",
-                    recipe.slug, model, reason
-                )
-                .into());
-            }
-            Err(err) => return Err(err.into()),
-        };
-        planned.push(PlannedDirectRecipe { recipe, plan });
-    }
-    Ok(planned)
-}
-
-/// Which planned recipe slugs route their fetches through this group?
-/// Used when the group's underlying fetch failed upstream so every
-/// dependent recipe becomes a blocker with the fetch's error reason.
-fn recipe_slugs_depending_on_group(
-    planned: &[PlannedDirectRecipe],
-    group: &FetchGroup,
-) -> Vec<String> {
-    planned
-        .iter()
-        .filter(|item| {
-            // A recipe routes through this group iff the group's
-            // selectors contain any of the recipe's plan selectors.
-            item.plan
-                .selectors()
-                .into_iter()
-                .any(|sel| group.selectors.contains(&sel))
-        })
-        .map(|item| item.recipe.slug.to_string())
-        .collect()
-}
-
-/// Split the planned list into (renderable, blockers) based on which
-/// selectors the extraction pass could actually produce. A recipe is
-/// blocked when its filled selector (or, for composite panels, any
-/// component recipe's filled selector) is missing from the GRIB file.
-/// Everything else passes through to the render pipeline unchanged.
-fn partition_recipes_by_selector_availability(
-    planned: &[PlannedDirectRecipe],
-    missing: &HashSet<FieldSelector>,
-) -> (Vec<PlannedDirectRecipe>, Vec<DirectRecipeBlocker>) {
-    let mut renderable = Vec::with_capacity(planned.len());
-    let mut blockers = Vec::new();
-    for item in planned {
-        let reason = recipe_block_reason(item.recipe, missing);
-        match reason {
-            Some(reason) => blockers.push(DirectRecipeBlocker {
-                recipe_slug: item.recipe.slug.to_string(),
-                reason,
-            }),
-            None => renderable.push(item.clone()),
-        }
-    }
-    (renderable, blockers)
-}
-
-/// If any selector required to render `recipe` is missing, return a
-/// human-readable blocker reason. Otherwise `None`.
-fn recipe_block_reason(recipe: &PlotRecipe, missing: &HashSet<FieldSelector>) -> Option<String> {
-    if let Some(spec) = composite_panel_spec(recipe.slug) {
-        for component_slug in spec.component_slugs {
-            let Some(component) = plot_recipe(component_slug) else {
-                continue;
-            };
-            if let Some(selector) = component.filled.selector {
-                if missing.contains(&selector) {
-                    return Some(format!(
-                        "composite component '{}' missing selector {}",
-                        component_slug,
-                        selector.key()
-                    ));
-                }
-            }
-        }
-        return None;
-    }
-    if let Some(selector) = recipe.filled.selector {
-        if missing.contains(&selector) {
-            return Some(format!(
-                "missing GRIB message for filled selector {}",
-                selector.key()
-            ));
-        }
-    }
-    None
-}
-
-fn group_direct_fetches(
-    request: &DirectBatchRequest,
-    recipes: &[PlannedDirectRecipe],
-) -> Vec<FetchGroup> {
-    let mut grouped = HashMap::<String, FetchGroup>::new();
-    for item in recipes {
-        let planned_family = item.plan.product.to_string();
-        let selectors = item.plan.selectors();
-        let key =
-            canonical_fetch_product_for_selectors(request, planned_family.as_str(), &selectors);
-        let entry = grouped.entry(key.clone()).or_insert_with(|| FetchGroup {
-            product: key.clone(),
-            fetch_mode: PlotRecipeFetchMode::WholeFileStructuredExtract,
-            variable_patterns: Vec::new(),
-            selectors: Vec::new(),
-            planned_family_aliases: std::collections::BTreeSet::new(),
-        });
-        entry.planned_family_aliases.insert(planned_family);
-        for pattern in item.plan.variable_patterns() {
-            if !entry.variable_patterns.iter().any(|value| value == pattern) {
-                entry.variable_patterns.push(pattern.to_string());
-            }
-        }
-        for selector in selectors {
-            if !entry.selectors.contains(&selector) {
-                entry.selectors.push(selector);
-            }
-        }
-        for (product, selector) in
-            extra_direct_selectors(request, item.plan.product.as_ref(), item.recipe)
-        {
-            let extra_key = canonical_fetch_product_for_selectors(request, &product, &[selector]);
-            let extra_entry = grouped
-                .entry(extra_key.clone())
-                .or_insert_with(|| FetchGroup {
-                    product: extra_key.clone(),
-                    fetch_mode: PlotRecipeFetchMode::WholeFileStructuredExtract,
-                    variable_patterns: Vec::new(),
-                    selectors: Vec::new(),
-                    planned_family_aliases: std::collections::BTreeSet::new(),
-                });
-            extra_entry.planned_family_aliases.insert(product);
-            if !extra_entry.selectors.contains(&selector) {
-                extra_entry.selectors.push(selector);
-            }
-        }
-    }
-    let mut groups = grouped.into_values().collect::<Vec<_>>();
-    groups.sort_by(|left, right| left.product.cmp(&right.product));
-    groups
-}
-
-fn extra_direct_selectors(
-    request: &DirectBatchRequest,
-    planned_product: &str,
-    recipe: &PlotRecipe,
-) -> Vec<(String, FieldSelector)> {
-    if request.model == ModelId::WrfGdex {
-        if let Some(FieldSelector {
-            vertical: VerticalSelector::IsobaricHpa(_),
-            ..
-        }) = recipe.filled.selector
-        {
-            return vec![(
-                wrf_gdex_surface_pressure_product(request, planned_product),
-                FieldSelector::surface(CanonicalField::Pressure),
-            )];
-        }
-    }
-    Vec::new()
-}
-
-fn canonical_fetch_product(request: &DirectBatchRequest, planned_product: &str) -> String {
-    canonical_fetch_product_for_selectors(request, planned_product, &[])
-}
-
-fn wrf_gdex_surface_pressure_product(
-    request: &DirectBatchRequest,
-    planned_product: &str,
-) -> String {
-    let product = canonical_fetch_product(request, planned_product);
-    let normalized = product.replace('_', "-").to_ascii_lowercase();
-    let Some((dataset, suffix)) = normalized.split_once('-') else {
-        return product;
-    };
-    if !is_gdex_dataset_token(dataset) {
-        return product;
-    }
-    match suffix {
-        "hist3d" => format!("{dataset}-hist2d"),
-        "future3d" => format!("{dataset}-future2d"),
-        _ => product,
-    }
-}
-
-fn canonical_fetch_product_for_selectors(
-    request: &DirectBatchRequest,
-    planned_product: &str,
-    selectors: &[FieldSelector],
-) -> String {
-    if let Some(overridden) = request.product_overrides.get(planned_product) {
-        return overridden.clone();
-    }
-
-    match (request.model, planned_product) {
-        (ModelId::Hrrr, "nat") if hrrr_native_selectors_require_wrfnat(selectors) => {
-            "nat".to_string()
-        }
-        (ModelId::Hrrr, "nat") => "sfc".to_string(),
-        _ => planned_product.to_string(),
-    }
-}
-
-fn hrrr_native_selectors_require_wrfnat(selectors: &[FieldSelector]) -> bool {
-    selectors.iter().any(|selector| {
-        matches!(
-            selector.field,
-            CanonicalField::SmokeMassDensity | CanonicalField::ColumnIntegratedSmoke
-        )
-    })
-}
-
-fn build_direct_execution_plan(
-    latest: &LatestRun,
-    forecast_hour: u16,
-    groups: &[FetchGroup],
-) -> ExecutionPlan {
-    let mut builder = ExecutionPlanBuilder::new(latest, forecast_hour);
-    for group in groups {
-        // Each direct fetch group corresponds to one unique physical
-        // GRIB file. Express it as a NativeAnalysis bundle with the
-        // canonical fetched product as native_override; record every
-        // logical planned family (e.g. "nat", "sfc") so manifests can
-        // surface the aliases.
-        let requirement =
-            BundleRequirement::new(CanonicalBundleDescriptor::NativeAnalysis, forecast_hour)
-                .with_native_override(group.product.clone());
-        for alias in &group.planned_family_aliases {
-            if should_attach_direct_idx_patterns(latest.source) {
-                builder.require_with_logical_family_and_patterns(
-                    &requirement,
-                    Some(alias),
-                    group.variable_patterns.clone(),
-                );
-            } else {
-                builder.require_with_logical_family(&requirement, Some(alias));
-            }
-        }
-    }
-    builder.build()
-}
-
-fn should_attach_direct_idx_patterns(source: SourceId) -> bool {
-    matches!(source, SourceId::Aws | SourceId::Google)
 }
 
 fn dataset_token_from_product(product: &str) -> Option<&str> {

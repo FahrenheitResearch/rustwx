@@ -179,6 +179,11 @@ sounding extraction/data separate from PNG presentation if the file grows.
      request/report/runtime timing structs, output defaults, and internal
      sampled/prepared batch structs. The parent `direct` module re-exports the
      existing public type names, so external paths remain unchanged.
+     `crates/rustwx-products/src/direct/planning.rs` owns recipe slug support,
+     fetch grouping, selector availability partitioning, canonical fetch-family
+     routing, and direct-lane execution-plan construction while preserving
+     `rustwx_products::direct::FetchGroup` and
+     `rustwx_products::direct::supported_direct_recipe_slugs`.
 
 5. **Mechanical `derived.rs` split**
    - Split recipe inventory, compute paths, contour mode, request/report, and

@@ -13,7 +13,7 @@ use crate::publication::{ArtifactContentIdentity, PublishedFetchIdentity};
 use crate::shared_context::DomainSpec;
 use crate::source::ProductSourceRoute;
 
-use super::PlannedDirectRecipe;
+use super::planning::PlannedDirectRecipe;
 
 pub(super) const OUTPUT_WIDTH: u32 = 1600;
 pub(super) const OUTPUT_HEIGHT: u32 = 900;
