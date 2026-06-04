@@ -62,7 +62,7 @@ future Codex edits because unrelated concerns are close together.
 | 10 | 2351 | `crates/rustwx-cli/src/bin/rustwx_tools_site.rs` | Local tools website serving WXA plots, cross sections, soundings, and store views. | Extract reusable server/job helpers only after Studio/Python boundaries are stable. |
 | 11 | 2344 | `crates/rustwx-products/src/non_ecape.rs` | Multi-model non-ECAPE orchestration across direct, derived, windowed, and WxStore lanes. | Continue splitting hour preparation and domain runner now that schema, summary, and manifest helpers are separated. |
 | 12 | 2299 | `crates/rustwx-products/src/windowed.rs` | Windowed product families such as QPF, UH, wind swaths, and temperature extrema. | Continue splitting by product family with catalog snapshot. |
-| 13 | 2280 | `crates/rustwx-products/src/wxstore_wxa.rs` | WxStore WXA dense2d import/export/static plotting support. | Split format/read-write/plot modules after WXA manifest snapshots. |
+| 13 | 2189 | `crates/rustwx-products/src/wxstore_wxa.rs` | WxStore WXA dense2d import/export/static plotting support. | Continue splitting format/read-write/plot modules after WXA manifest snapshots. |
 | 14 | 2137 | `crates/rustwx-radar/src/dealias.rs` | Velocity dealiasing algorithms, quality masks, and diagnostics. | Keep semantic changes separate from any module split. |
 | 15 | 2126 | `crates/rustwx-products/src/gridded.rs` | Model timestep loading, field decode, pressure/surface field containers, and decode-cache helpers. | Continue splitting load/decode helpers with no behavior changes; crop/domain and fetch helpers are now extracted. |
 | 16 | 2117 | `crates/rustwx-products/src/dataset_export.rs` | Native dataset export and training-bundle shaping. | Split plan/materialize/report helpers after manifest snapshots. |
@@ -409,7 +409,16 @@ sounding extraction/data separate from PNG presentation if the file grows.
       and projected-crop regression tests while retaining parent-private access
       through the `#[cfg(test)] mod tests;` child module.
 
-15. **Mechanical `non_ecape.rs` split**
+15. **Mechanical `wxstore_wxa.rs` split**
+    - Split WXA dense2d format, geometry, plot-style, read/write, and static
+      plotting helpers while preserving WXA metadata, index, and PNG behavior.
+    - Validation: WXA tests, product characterization tests, workspace check.
+    - Current split: `crates/rustwx-products/src/wxstore_wxa/tests.rs` owns
+      WXA regular-latlon geometry, run subtitle, product style, and component
+      filtering regression tests while retaining parent-private access through
+      the `#[cfg(test)] mod tests;` child module.
+
+16. **Mechanical `non_ecape.rs` split**
     - Split request/report schemas, hour preparation, domain runner, summary,
       publication manifest, and WxStore build reporting while preserving
       `rustwx_products::non_ecape::*` public paths and JSON shapes.
