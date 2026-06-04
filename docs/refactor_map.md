@@ -53,7 +53,7 @@ future Codex edits because unrelated concerns are close together.
 | 1 | 10906 | `crates/rustwx-models/src/lib.rs` | Model/source catalog, forecast-hour support, URL plans, latest-run lookup, and plot recipes. | Split catalog/source/recipe/run-discovery modules after snapshotting model catalog output. |
 | 2 | 5307 | `crates/rustwx-render/src/render.rs` | Main map renderer, canvas layout, fills, overlays, barbs, labels, and PNG-facing render path. | Split rendering internals only after render-request fixtures exist. |
 | 3 | 4841 | `crates/rustwx-products/src/mesoanalysis.rs` | Surface objective analysis, observation filtering/QC, background fields, reports, and WxStore export hooks. | Mechanical split with report-schema and default-config tests. |
-| 4 | 4483 | `crates/rustwx-products/src/derived.rs` | Derived product requests, shared loads, native contour mode, compute paths, and batch publication. | Continue mechanical split with render-assembly helpers. |
+| 4 | 3630 | `crates/rustwx-products/src/derived.rs` | Derived product requests, shared loads, native contour mode, compute paths, and batch publication. | Continue mechanical split with render-assembly helpers. |
 | 5 | 3446 | `crates/rustwx-python/src/lib.rs` | Python binding surface and Rust/Python request translation. | Split bindings by feature surface only after Rust APIs stabilize. |
 | 6 | 3373 | `crates/rustwx-io/src/lib.rs` | Fetch requests/results, probing, extraction, selector handling, and cache-facing IO helpers. | Split fetch/probe/grib modules after product characterization tests. |
 | 7 | 2574 | `crates/rustwx-cross-section/src/render.rs` | Cross-section raster rendering, terrain, colorbars, wind overlays, and labels. | Split draw primitives after product fixtures exist. |
@@ -267,6 +267,9 @@ sounding extraction/data separate from PNG presentation if the file grows.
      `rustwx_products::derived::load_derived_sampled_fields_from_loaded`,
      `rustwx_products::derived::build_derived_sampled_execution_plan`, and
      `rustwx_products::derived::required_derived_fetch_products`.
+     `crates/rustwx-products/src/derived/tests.rs` owns the derived module
+     regression tests while retaining parent-private access through the
+     `#[cfg(test)] mod tests;` child module.
 
 6. **Mechanical `mesoanalysis_calibration.rs` split**
    - Split schema types, gate evaluation, innovation history/index export,
