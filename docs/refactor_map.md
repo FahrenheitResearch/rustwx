@@ -72,9 +72,9 @@ future Codex edits because unrelated concerns are close together.
 | 20 | 1779 | `crates/rustwx-radar/src/dealias.rs` | Velocity dealiasing algorithms, quality masks, and diagnostics. | Keep semantic changes separate from future module splits. |
 | 21 | 1740 | `crates/rustwx-sounding/src/native_table.rs` | Native sounding table extraction, derived columns, and SHARPpy-style handoff. | Split extraction/table-format helpers only after sounding fixtures are stable. |
 | 22 | 1734 | `crates/rustwx-calc/src/mesoanalysis.rs` | Numeric mesoanalysis kernels and supporting calculations. | Continue splitting science helpers only with parity tests. |
-| 23 | 1721 | `crates/rustwx-products/src/places.rs` | Place registry, geographic aliases, and product-location lookup helpers. | Split registry data/helpers only after place aliases are snapshotted. |
-| 24 | 1719 | `crates/rustwx-products/src/mesoanalysis_calibration/tests.rs` | Calibration report and gate regression fixtures. | Split fixture builders only if future calibration test edits become hard to localize. |
-| 25 | 1696 | `crates/rustwx-cli/src/bin/production_runner.rs` | Production batch runner and operational product lane orchestration. | Candidate for CLI subcommand/module split after bin taxonomy settles. |
+| 23 | 1719 | `crates/rustwx-products/src/mesoanalysis_calibration/tests.rs` | Calibration report and gate regression fixtures. | Split fixture builders only if future calibration test edits become hard to localize. |
+| 24 | 1696 | `crates/rustwx-cli/src/bin/production_runner.rs` | Production batch runner and operational product lane orchestration. | Candidate for CLI subcommand/module split after bin taxonomy settles. |
+| 25 | 1618 | `crates/rustwx-products/src/wxstore_export.rs` | WxStore grid-bundle export and manifest/report plumbing. | Split export/report helpers only after WxStore manifest snapshots are locked. |
 
 ## Public Surface Snapshot
 
@@ -117,6 +117,10 @@ NaN shard emission, Level2 time-window lookup, MRMS sentinel sanitization,
 validity-mask generation, derived GOES channel dependency expansion, stacked
 GOES field assembly, and reflectivity threshold target regression tests with the
 same parent-private test-module pattern.
+`crates/rustwx-products/src/places/tests.rs` owns place catalog uniqueness,
+domain bounds/aspect-ratio, place selection/declutter/containment, label overlay
+projection, density tiers, compact labels, and split-region place-label plan
+regression tests with the same parent-private test-module pattern.
 
 Refactor implication: do not convert `pub mod` to `pub(crate) mod` until the
 workspace and Python bindings are checked for each path. The first visibility PR
