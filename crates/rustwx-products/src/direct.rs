@@ -4,10 +4,6 @@ use rustwx_core::CanonicalField;
 use rustwx_core::{CycleSpec, FieldSelector, ModelId, SelectedField2D, SourceId};
 #[cfg(test)]
 use rustwx_io::earth2_archive::{Earth2EnsembleSelector, Earth2EnsembleStat};
-use rustwx_io::{
-    extract_fields_partial_from_model_bytes_with_earth2_selector_at_forecast_hour,
-    load_cached_selected_field, store_cached_selected_field,
-};
 use rustwx_models::{LatestRun, PlotRecipe, latest_available_run_at_forecast_hour, plot_recipe};
 #[cfg(test)]
 use rustwx_models::{PlotRecipeFetchMode, plot_recipe_fetch_plan};
@@ -30,12 +26,8 @@ use std::thread;
 use std::time::Instant;
 
 use crate::custom_poi::apply_custom_poi_overlay;
-use crate::publication::{
-    artifact_identity_from_path, fetch_identity_from_cached_result_with_aliases,
-};
-use crate::runtime::{
-    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
-};
+use crate::publication::artifact_identity_from_path;
+use crate::runtime::{BundleLoaderConfig, LoadedBundleSet, load_execution_plan};
 use crate::shared_context::{
     DomainSpec, ProjectedMapProvider, model_time_subtitle, source_subtitle,
 };
@@ -43,6 +35,7 @@ use crate::source::direct_route_for_recipe_slug;
 
 mod composite;
 mod domain;
+mod fetch;
 mod planning;
 mod projection;
 mod query;
@@ -59,6 +52,7 @@ use domain::{
 use domain::{
     crop_bounds_for_direct_request, crop_direct_fields_for_domain, render_bounds_for_direct_field,
 };
+use fetch::{extract_direct_fetch_group_from_loaded, find_loaded_bytes_for_group};
 pub use planning::{FetchGroup, supported_direct_recipe_slugs};
 use planning::{
     PlannedDirectRecipe, build_direct_execution_plan, canonical_fetch_product_for_selectors,
@@ -592,141 +586,6 @@ fn run_direct_batch_with_context(
         blockers,
         total_ms: total_start.elapsed().as_millis(),
     })
-}
-
-fn find_loaded_bytes_for_group<'a>(
-    loaded: &'a LoadedBundleSet,
-    group: &FetchGroup,
-) -> Result<&'a FetchedBundleBytes, Box<dyn std::error::Error>> {
-    if let Some(bundle) = loaded
-        .fetched
-        .values()
-        .find(|bundle| bundle.key.native_product == group.product)
-    {
-        return Ok(bundle);
-    }
-    if let Some((key, reason)) = loaded
-        .fetch_failures
-        .iter()
-        .find(|(key, _)| key.native_product == group.product)
-    {
-        return Err(format!(
-            "direct fetch failed for canonical family '{}' from {:?}: {}",
-            group.product, key.source, reason
-        )
-        .into());
-    }
-    Err(format!(
-        "direct planner missed fetch for canonical family '{}'",
-        group.product
-    )
-    .into())
-}
-
-fn extract_direct_fetch_group_from_loaded(
-    request: &DirectBatchRequest,
-    group: &FetchGroup,
-    fetched: &FetchedBundleBytes,
-    use_cache: bool,
-) -> Result<(Vec<SelectedField2D>, Vec<FieldSelector>, DirectFetchTiming), Box<dyn std::error::Error>>
-{
-    let total_start = Instant::now();
-    let fetch_request = &fetched.file.request;
-    let cached_result = &fetched.file.fetched;
-    let fetch_ms = fetched.fetch_ms;
-
-    let extract_start = Instant::now();
-    let mut extracted = Vec::<SelectedField2D>::new();
-    let mut missing = Vec::<FieldSelector>::new();
-    let mut extract_cache_hits = 0usize;
-    if use_cache {
-        for selector in &group.selectors {
-            if let Some(cached) =
-                load_cached_selected_field(&request.cache_root, fetch_request, *selector)?
-            {
-                extracted.push(cached.field);
-                extract_cache_hits += 1;
-            } else {
-                missing.push(*selector);
-            }
-        }
-    } else {
-        missing.extend(group.selectors.iter().copied());
-    }
-
-    // Selectors whose GRIB message wasn't present in the file go here;
-    // the caller uses them to mark dependent recipes as blockers
-    // instead of the whole batch tripping on the first missing message.
-    let mut unmatched = Vec::<FieldSelector>::new();
-    let parse_start = Instant::now();
-    if !missing.is_empty() {
-        let partial =
-            extract_fields_partial_from_model_bytes_with_earth2_selector_at_forecast_hour(
-                fetch_request.request.model,
-                &fetched.file.bytes,
-                Some(cached_result.bytes_path.as_path()),
-                &missing,
-                fetch_request.earth2_ensemble,
-                Some(fetch_request.request.forecast_hour),
-            )?;
-        if use_cache {
-            for field in &partial.extracted {
-                store_cached_selected_field(&request.cache_root, fetch_request, field)?;
-            }
-        }
-        let fetched_count = partial.extracted.len();
-        extracted.extend(partial.extracted);
-        unmatched = partial.missing;
-        // extract_cache_misses was previously "count of selectors we
-        // had to decode from GRIB"; keep that meaning by subtracting
-        // truly-unmatched selectors from the count we actually pulled.
-        let _ = fetched_count;
-    }
-    let parse_ms = parse_start.elapsed().as_millis();
-    let extract_ms = extract_start.elapsed().as_millis();
-
-    let extract_cache_misses = missing.len().saturating_sub(unmatched.len());
-
-    Ok((
-        extracted,
-        unmatched,
-        DirectFetchTiming {
-            product: group.product.clone(),
-            fetch_mode: group.fetch_mode,
-            fetch_ms,
-            parse_ms,
-            extract_ms,
-            total_ms: total_start.elapsed().as_millis(),
-            fetch_cache_hit: cached_result.cache_hit,
-            extract_cache_hits,
-            extract_cache_misses,
-            runtime_fetch: DirectFetchRuntimeInfo {
-                fetch_key: crate::publication::fetch_key(
-                    group.product.as_str(),
-                    &fetch_request.request,
-                ),
-                planned_product: group.product.clone(),
-                fetched_product: fetch_request.request.product.clone(),
-                planned_family_aliases: group.planned_family_aliases.iter().cloned().collect(),
-                requested_source: fetch_request
-                    .source_override
-                    .unwrap_or(cached_result.result.source),
-                resolved_source: cached_result.result.source,
-                resolved_url: cached_result.result.url.clone(),
-                earth2_ensemble: fetch_request.earth2_ensemble,
-            },
-            input_fetch: fetch_identity_from_cached_result_with_aliases(
-                group.product.as_str(),
-                group
-                    .planned_family_aliases
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>(),
-                fetch_request,
-                cached_result,
-            ),
-        },
-    ))
 }
 
 fn render_direct_recipes(
