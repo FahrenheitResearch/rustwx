@@ -121,6 +121,10 @@ NaN shard emission, Level2 time-window lookup, MRMS sentinel sanitization,
 validity-mask generation, derived GOES channel dependency expansion, stacked
 GOES field assembly, and reflectivity threshold target regression tests with the
 same parent-private test-module pattern.
+`crates/rustwx-products/src/native_dataset/tests.rs` owns native dataset
+frame-time, sample-window, shard-subset, source-family, GOES family, hour-job,
+dry-run progress, retry, and abort-on-failure regression tests with the same
+parent-private test-module pattern.
 `crates/rustwx-products/src/places/tests.rs` owns place catalog uniqueness,
 domain bounds/aspect-ratio, place selection/declutter/containment, label overlay
 projection, density tiers, compact labels, and split-region place-label plan
