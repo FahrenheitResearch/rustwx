@@ -165,6 +165,11 @@ sounding extraction/data separate from PNG presentation if the file grows.
    - Snapshot product catalog keys, representative direct/derived request JSON,
      mesoanalysis report schema, WXA manifest shape, and stable CLI help.
    - Validation: package-level tests that compare snapshots intentionally.
+   - Current fixtures: `crates/rustwx-products/tests/fixtures/product_catalog_inventory_v1.json`
+     covers product catalog lane slugs, summary counts, and representative
+     direct/derived/heavy/windowed sentinel entries. `rustwx-cli` has a
+     `bin_inventory` guardrail that keeps `src/bin/README.md` in sync with
+     actual `src/bin/*.rs` entrypoints.
 
 4. **Mechanical `direct.rs` split**
    - Create `direct/` modules for catalog, selectors, request, batch, rendering
@@ -232,4 +237,6 @@ For smaller module-split PRs, at minimum run:
 cargo fmt --all -- --check
 cargo check --workspace --all-targets
 cargo test -p rustwx-products --lib
+cargo test -p rustwx-products --test product_catalog_inventory
+cargo test -p rustwx-cli --test bin_inventory
 ```

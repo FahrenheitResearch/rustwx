@@ -55,4 +55,7 @@ for package in "${packages[@]}"; do
   run cargo test -p "$package" --lib
 done
 
+run cargo test -p rustwx-products --test product_catalog_inventory
+run cargo test -p rustwx-cli --test bin_inventory
+
 printf '\nWorkspace checks passed.\n'

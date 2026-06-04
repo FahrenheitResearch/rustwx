@@ -57,5 +57,13 @@ foreach ($package in $packages) {
     }
 }
 
+Invoke-Check "cargo test -p rustwx-products --test product_catalog_inventory" {
+    cargo test -p rustwx-products --test product_catalog_inventory
+}
+
+Invoke-Check "cargo test -p rustwx-cli --test bin_inventory" {
+    cargo test -p rustwx-cli --test bin_inventory
+}
+
 Write-Host ""
 Write-Host "Workspace checks passed."
