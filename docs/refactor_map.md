@@ -56,10 +56,10 @@ future Codex edits because unrelated concerns are close together.
 | 4 | 3630 | `crates/rustwx-products/src/derived.rs` | Derived product requests, shared loads, native contour mode, compute paths, and batch publication. | Continue mechanical split with render-assembly helpers. |
 | 5 | 3446 | `crates/rustwx-python/src/lib.rs` | Python binding surface and Rust/Python request translation. | Split bindings by feature surface only after Rust APIs stabilize. |
 | 6 | 2983 | `crates/rustwx-models/src/tests.rs` | Model catalog, recipe, source-policy, URL, blocker, and latest-run regression tests. | Split test helpers by model/source family only if future test edits become hard to localize. |
-| 7 | 2574 | `crates/rustwx-cross-section/src/render.rs` | Cross-section raster rendering, terrain, colorbars, wind overlays, and labels. | Split draw primitives after product fixtures exist. |
-| 8 | 2463 | `crates/rustwx-cli/src/bin/wrf_ops.rs` | WRF operational planning, namelist generation, launch/bootstrap helpers, and HTML output. | Consider a WRF CLI subcommand module after bin taxonomy settles. |
-| 9 | 2351 | `crates/rustwx-cli/src/bin/rustwx_tools_site.rs` | Local tools website serving WXA plots, cross sections, soundings, and store views. | Extract reusable server/job helpers only after Studio/Python boundaries are stable. |
-| 10 | 2299 | `crates/rustwx-products/src/windowed.rs` | Windowed product families such as QPF, UH, wind swaths, and temperature extrema. | Continue splitting by product family with catalog snapshot. |
+| 7 | 2463 | `crates/rustwx-cli/src/bin/wrf_ops.rs` | WRF operational planning, namelist generation, launch/bootstrap helpers, and HTML output. | Consider a WRF CLI subcommand module after bin taxonomy settles. |
+| 8 | 2351 | `crates/rustwx-cli/src/bin/rustwx_tools_site.rs` | Local tools website serving WXA plots, cross sections, soundings, and store views. | Extract reusable server/job helpers only after Studio/Python boundaries are stable. |
+| 9 | 2299 | `crates/rustwx-products/src/windowed.rs` | Windowed product families such as QPF, UH, wind swaths, and temperature extrema. | Continue splitting by product family with catalog snapshot. |
+| 10 | 2270 | `crates/rustwx-cross-section/src/render.rs` | Cross-section raster rendering, terrain, colorbars, wind overlays, and labels. | Split draw primitives after product fixtures exist. |
 | 11 | 2189 | `crates/rustwx-products/src/wxstore_wxa.rs` | WxStore WXA dense2d import/export/static plotting support. | Continue splitting format/read-write/plot modules after WXA manifest snapshots. |
 | 12 | 2126 | `crates/rustwx-products/src/gridded.rs` | Model timestep loading, field decode, pressure/surface field containers, and decode-cache helpers. | Continue splitting load/decode helpers with no behavior changes; crop/domain and fetch helpers are now extracted. |
 | 13 | 2057 | `crates/rustwx-cli/src/bin/forecast_now.rs` | One-shot operational orchestrator across products and lanes. | Candidate for main CLI subcommand once shared args are extracted. |
@@ -132,6 +132,18 @@ and `colormap`.
 
 Refactor implication: this crate already has a healthier facade pattern. Future
 work should split `render.rs` internally while preserving crate-root exports.
+
+### `rustwx-cross-section`
+
+`rustwx-cross-section` owns cross-section paths, section sampling, vertical axes,
+terrain masking, palette/style metadata, and lightweight cross-section rendering.
+Keep product-specific field construction in `rustwx-products::cross_section` and
+preserve the renderer facade while splitting drawing helpers.
+`crates/rustwx-cross-section/src/render/tests.rs` owns cross-section render
+regression tests for header/legend/terrain output, isotherm overlays, request
+builder overrides, section-relative wind vectors, wind-barb point selection,
+canvas text rendering, and badge sizing with parent-private access through the
+`#[cfg(test)] mod tests;` child module.
 
 ### `rustwx-io`
 
