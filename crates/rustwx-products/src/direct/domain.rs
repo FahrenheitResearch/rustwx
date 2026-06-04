@@ -8,10 +8,13 @@ use crate::gridded::{GridCrop, crop_latlon_grid, crop_values_f32};
 use super::planning::PlannedDirectRecipe;
 use super::types::DirectBatchRequest;
 use super::{
-    PIVOTAL_GEOGRAPHIC_CROP_PAD_DEG, ProjectionPresentationVariant, center_longitude_for_bounds,
-    direct_map_frame_aspect_ratio, inverse_raster_projection_for_grid,
-    presentation_frame_bounds_for_grid, projection_presentation_variant,
-    rectilinear_latlon_mesh_for_inverse, should_render_overlay_only, visual_mode_for_direct_recipe,
+    projection::{
+        PIVOTAL_GEOGRAPHIC_CROP_PAD_DEG, ProjectionPresentationVariant,
+        center_longitude_for_bounds, direct_map_frame_aspect_ratio,
+        inverse_raster_projection_for_grid, presentation_frame_bounds_for_grid,
+        projection_presentation_variant, rectilinear_latlon_mesh_for_inverse,
+    },
+    should_render_overlay_only, visual_mode_for_direct_recipe,
 };
 
 pub(super) fn crop_bounds_for_direct_request(

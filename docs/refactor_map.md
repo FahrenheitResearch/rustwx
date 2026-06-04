@@ -55,7 +55,7 @@ future Codex edits because unrelated concerns are close together.
 | 3 | 6896 | `crates/rustwx-products/src/derived.rs` | Derived product requests, recipe inventory, shared loads, native contour mode, and batch publication. | Snapshot product keys/selectors, then split catalog/request/batch/render-assembly. |
 | 4 | 5307 | `crates/rustwx-render/src/render.rs` | Main map renderer, canvas layout, fills, overlays, barbs, labels, and PNG-facing render path. | Split rendering internals only after render-request fixtures exist. |
 | 5 | 4841 | `crates/rustwx-products/src/mesoanalysis.rs` | Surface objective analysis, observation filtering/QC, background fields, reports, and WxStore export hooks. | Mechanical split with report-schema and default-config tests. |
-| 6 | 4354 | `crates/rustwx-products/src/direct.rs` | Direct product recipe inventory, fetch/extract planning, projected map assembly, and batch reports. | Continue mechanical split preserving `rustwx_products::direct::*`. |
+| 6 | 3803 | `crates/rustwx-products/src/direct.rs` | Direct product recipe inventory, fetch/extract planning, projected map assembly, and batch reports. | Continue mechanical split preserving `rustwx_products::direct::*`. |
 | 7 | 3451 | `crates/rustwx-python/src/lib.rs` | Python binding surface and Rust/Python request translation. | Split bindings by feature surface only after Rust APIs stabilize. |
 | 8 | 3373 | `crates/rustwx-io/src/lib.rs` | Fetch requests/results, probing, extraction, selector handling, and cache-facing IO helpers. | Split fetch/probe/grib modules after product characterization tests. |
 | 9 | 3194 | `crates/rustwx-products/src/non_ecape.rs` | Multi-model non-ECAPE orchestration across direct, derived, windowed, and WxStore lanes. | Split request/report/hour runner/publication once direct/derived are clearer. |
@@ -191,6 +191,12 @@ sounding extraction/data separate from PNG presentation if the file grows.
      bounds, crop padding, periodic longitude crops, and visible-grid span
      helpers while preserving the crate-visible
      `rustwx_products::direct::is_global_scale_domain` path.
+     `crates/rustwx-products/src/direct/projection.rs` owns projected-map
+     construction, inverse-raster projection selection, presentation projection
+     variants, model-data domain frames, and projection frame/aspect helpers
+     while preserving the public `rustwx_products::direct::build_projected_map`,
+     `rustwx_products::direct::build_projected_map_with_projection`, and
+     `rustwx_products::direct::model_data_domain_frame_for_projection` paths.
 
 5. **Mechanical `derived.rs` split**
    - Split recipe inventory, compute paths, contour mode, request/report, and
