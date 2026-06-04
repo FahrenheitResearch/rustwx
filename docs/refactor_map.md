@@ -129,6 +129,9 @@ tests with the same parent-private test-module pattern.
 slug parsing, required-channel dedupe/sorting, S3 list XML parsing, GOES bucket
 and sector aliases, full-disk defaults, and high-resolution visible-channel
 opt-in regression tests with the same parent-private test-module pattern.
+`crates/rustwx-products/src/windowed_decoder/tests.rs` owns windowed decoder
+QPF direct/fallback/missing-hour, UH/wind run-max, and surface snapshot extrema
+regression tests with the same parent-private test-module pattern.
 
 Refactor implication: do not convert `pub mod` to `pub(crate) mod` until the
 workspace and Python bindings are checked for each path. The first visibility PR
