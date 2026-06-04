@@ -96,6 +96,12 @@ future Codex edits because unrelated concerns are close together.
 It also re-exports domain/shared context types from `named_geometry` and
 `shared_context`.
 
+The advisory ownership map for this broad surface now lives in
+`docs/rustwx_products_public_surface.md`. That map classifies each module as
+stable public, operational public, compatibility public, proof/research public,
+internal-candidate public, legacy public, or crate-private. A crate-root
+guardrail test checks that every declared module appears in the map and the doc.
+
 Refactor implication: do not convert `pub mod` to `pub(crate) mod` until the
 workspace and Python bindings are checked for each path. The first visibility PR
 should classify modules, not aggressively hide them.

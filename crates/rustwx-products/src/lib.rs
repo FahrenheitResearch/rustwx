@@ -1,3 +1,10 @@
+//! Product orchestration APIs.
+//!
+//! This crate currently keeps a broad public module surface for compatibility.
+//! Before changing any module visibility, update the product-surface map in
+//! `docs/rustwx_products_public_surface.md` and the guardrail tests below so
+//! consumers, Python bindings, and CLI tools get audited intentionally.
+
 pub mod artifact_bundle;
 pub mod cache;
 pub mod catalog;
@@ -140,7 +147,96 @@ mod tests {
     use super::*;
     use crate::places::{PlaceLabelDensityTier, PlaceLabelOverlay};
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ProductModuleSurfaceKind {
+        StablePublic,
+        OperationalPublic,
+        CompatibilityPublic,
+        ProofResearchPublic,
+        InternalCandidatePublic,
+        LegacyPublic,
+        CratePrivate,
+    }
+
+    use ProductModuleSurfaceKind::*;
+
+    const PRODUCT_MODULE_SURFACE: &[(&str, ProductModuleSurfaceKind)] = &[
+        ("artifact_bundle", CompatibilityPublic),
+        ("cache", CompatibilityPublic),
+        ("catalog", StablePublic),
+        ("comparison", OperationalPublic),
+        ("cross_section", StablePublic),
+        ("custom_poi", InternalCandidatePublic),
+        ("dataset_export", OperationalPublic),
+        ("derived", StablePublic),
+        ("direct", StablePublic),
+        ("ecape", OperationalPublic),
+        ("gallery", ProofResearchPublic),
+        ("grib_ensemble", OperationalPublic),
+        ("gridded", CompatibilityPublic),
+        ("heavy", OperationalPublic),
+        ("hrrr", LegacyPublic),
+        ("intelligence", ProofResearchPublic),
+        ("lightning", ProofResearchPublic),
+        ("mesoanalysis", ProofResearchPublic),
+        ("mesoanalysis_calibration", ProofResearchPublic),
+        ("named_geometry", StablePublic),
+        ("native_dataset", OperationalPublic),
+        ("native_dataset_hrrr", InternalCandidatePublic),
+        ("native_dataset_materializer", InternalCandidatePublic),
+        ("native_dataset_obs", OperationalPublic),
+        ("native_dataset_shard_store", OperationalPublic),
+        ("non_ecape", OperationalPublic),
+        ("orchestrator", OperationalPublic),
+        ("places", CompatibilityPublic),
+        ("planner", CompatibilityPublic),
+        ("plot_design", InternalCandidatePublic),
+        ("point_timeseries", OperationalPublic),
+        ("publication", OperationalPublic),
+        ("publication_provenance", CompatibilityPublic),
+        ("qpf", CratePrivate),
+        ("runtime", CompatibilityPublic),
+        ("sampling", StablePublic),
+        ("satellite", OperationalPublic),
+        ("severe", OperationalPublic),
+        ("shared_context", StablePublic),
+        ("source", CompatibilityPublic),
+        ("spec", CompatibilityPublic),
+        ("thermo_native", ProofResearchPublic),
+        ("volume_store", StablePublic),
+        ("windowed", OperationalPublic),
+        ("windowed_decoder", InternalCandidatePublic),
+        ("wxstore_export", OperationalPublic),
+        ("wxstore_profile", OperationalPublic),
+        ("wxstore_wxa", OperationalPublic),
+    ];
+
+    const PRODUCT_SURFACE_DOC: &str =
+        include_str!("../../../docs/rustwx_products_public_surface.md");
+
     const CALIFORNIA_SQUARE: (f64, f64, f64, f64) = (-124.9, -113.7, 31.8, 42.7);
+
+    fn declared_product_modules() -> Vec<(&'static str, bool)> {
+        include_str!("lib.rs")
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if let Some(rest) = trimmed.strip_prefix("pub mod ") {
+                    Some((rest.split(';').next()?.trim(), true))
+                } else if let Some(rest) = trimmed.strip_prefix("pub(crate) mod ") {
+                    Some((rest.split(';').next()?.trim(), false))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn assert_no_duplicate_names(sorted_names: &[&str], label: &str) {
+        for pair in sorted_names.windows(2) {
+            assert_ne!(pair[0], pair[1], "duplicate {label}: {}", pair[0]);
+        }
+    }
 
     fn sample_place_label_request() -> rustwx_render::MapRenderRequest {
         let grid = rustwx_render::LatLonGrid::new(
@@ -168,6 +264,51 @@ mod tests {
             },
         });
         request
+    }
+
+    #[test]
+    fn public_surface_classification_covers_declared_modules() {
+        let mut declared = declared_product_modules()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+        let mut classified = PRODUCT_MODULE_SURFACE
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>();
+
+        declared.sort_unstable();
+        classified.sort_unstable();
+
+        assert_no_duplicate_names(&declared, "declared module");
+        assert_no_duplicate_names(&classified, "classified module");
+        assert_eq!(classified, declared);
+    }
+
+    #[test]
+    fn public_surface_classification_marks_crate_private_modules() {
+        for (module_name, is_public) in declared_product_modules() {
+            let kind = PRODUCT_MODULE_SURFACE
+                .iter()
+                .find(|(name, _)| *name == module_name)
+                .map(|(_, kind)| *kind)
+                .unwrap_or_else(|| panic!("{module_name} missing from product surface map"));
+            assert_eq!(
+                matches!(kind, CratePrivate),
+                !is_public,
+                "{module_name} classification should match crate-root visibility"
+            );
+        }
+    }
+
+    #[test]
+    fn public_surface_doc_mentions_classified_modules() {
+        for (module_name, _) in PRODUCT_MODULE_SURFACE {
+            assert!(
+                PRODUCT_SURFACE_DOC.contains(&format!("`{module_name}`")),
+                "{module_name} missing from public-surface documentation"
+            );
+        }
     }
 
     #[test]
