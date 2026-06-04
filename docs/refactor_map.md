@@ -161,6 +161,10 @@ The only public module is `weather`; public facade items come from
 `contour_fill`, `error`, `rasterize`, `features`, `panel`, `presentation`,
 `projected_map`, `projection`, `render`, `request`, `rustwx_core`, `weather`,
 and `colormap`.
+`crates/rustwx-render/src/panel/tests.rs` owns panel layout/composition,
+size-mismatch, unused-slot background, projected multi-panel rendering,
+mixed filled/overlay-only rendering, and legacy PNG roundtrip regression tests
+with parent-private access through the `#[cfg(test)] mod tests;` child module.
 
 Refactor implication: this crate already has a healthier facade pattern. Future
 work should split `render.rs` internally while preserving crate-root exports.
