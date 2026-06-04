@@ -66,15 +66,15 @@ future Codex edits because unrelated concerns are close together.
 | 14 | 1994 | `crates/rustwx-io/src/lib.rs` | Fetch requests/results, probing, extraction, selector handling, and cache-facing IO helpers. | Continue splitting fetch/probe/grib modules after product characterization tests. |
 | 15 | 1964 | `crates/rustwx-products/src/dataset_export.rs` | Native dataset export and training-bundle shaping. | Split plan/materialize/report helpers after manifest snapshots. |
 | 16 | 1907 | `crates/rustwx-io/src/earth2_archive.rs` | AIFS/Earth2 archive member/stat selection, archive paths, and validation. | Keep with IO split but preserve archive path behavior exactly. |
-| 17 | 1906 | `crates/rustwx-radar/src/tile.rs` | Radar tile generation and related render/report helpers. | Defer until radar export/tile CLI lanes are classified. |
-| 18 | 1874 | `crates/rustwx-core/src/lib.rs` | Shared core types for grids, products, selectors, models, fields, and bundles. | Continue splitting only if public compatibility is protected by re-exports. |
-| 19 | 1841 | `crates/rustwx-products/src/comparison.rs` | Product manifest/report comparison and publication deltas. | Split loader/comparison/report serialization if tests cover JSON shape. |
-| 20 | 1818 | `crates/rustwx-products/src/cross_section.rs` | Product-side pressure cross-section construction from decoded model data. | Continue splitting request/support/sampling/render-bridge pieces with fixtures. |
-| 21 | 1793 | `crates/rustwx-products/src/native_dataset_materializer.rs` | Native dataset materialization and local bundle/report plumbing. | Split materialize/report helpers only after dataset manifest fixtures are locked. |
-| 22 | 1779 | `crates/rustwx-radar/src/dealias.rs` | Velocity dealiasing algorithms, quality masks, and diagnostics. | Keep semantic changes separate from future module splits. |
-| 23 | 1740 | `crates/rustwx-sounding/src/native_table.rs` | Native sounding table extraction, derived columns, and SHARPpy-style handoff. | Split extraction/table-format helpers only after sounding fixtures are stable. |
-| 24 | 1734 | `crates/rustwx-calc/src/mesoanalysis.rs` | Numeric mesoanalysis kernels and supporting calculations. | Continue splitting science helpers only with parity tests. |
-| 25 | 1721 | `crates/rustwx-products/src/places.rs` | Place registry, geographic aliases, and product-location lookup helpers. | Split registry data/helpers only after place aliases are snapshotted. |
+| 17 | 1874 | `crates/rustwx-core/src/lib.rs` | Shared core types for grids, products, selectors, models, fields, and bundles. | Continue splitting only if public compatibility is protected by re-exports. |
+| 18 | 1841 | `crates/rustwx-products/src/comparison.rs` | Product manifest/report comparison and publication deltas. | Split loader/comparison/report serialization if tests cover JSON shape. |
+| 19 | 1818 | `crates/rustwx-products/src/cross_section.rs` | Product-side pressure cross-section construction from decoded model data. | Continue splitting request/support/sampling/render-bridge pieces with fixtures. |
+| 20 | 1793 | `crates/rustwx-products/src/native_dataset_materializer.rs` | Native dataset materialization and local bundle/report plumbing. | Split materialize/report helpers only after dataset manifest fixtures are locked. |
+| 21 | 1779 | `crates/rustwx-radar/src/dealias.rs` | Velocity dealiasing algorithms, quality masks, and diagnostics. | Keep semantic changes separate from future module splits. |
+| 22 | 1740 | `crates/rustwx-sounding/src/native_table.rs` | Native sounding table extraction, derived columns, and SHARPpy-style handoff. | Split extraction/table-format helpers only after sounding fixtures are stable. |
+| 23 | 1734 | `crates/rustwx-calc/src/mesoanalysis.rs` | Numeric mesoanalysis kernels and supporting calculations. | Continue splitting science helpers only with parity tests. |
+| 24 | 1721 | `crates/rustwx-products/src/places.rs` | Place registry, geographic aliases, and product-location lookup helpers. | Split registry data/helpers only after place aliases are snapshotted. |
+| 25 | 1719 | `crates/rustwx-products/src/mesoanalysis_calibration/tests.rs` | Calibration report and gate regression fixtures. | Split fixture builders only if future calibration test edits become hard to localize. |
 
 ## Public Surface Snapshot
 
@@ -164,6 +164,11 @@ products, tile generation, and sidecar/report helpers. Keep algorithm changes in
 continuity, staged continuity, low-alias burden, candidate acceptance, velocity
 quality masking, and dealiased-sweep report regression tests while retaining
 parent-private access through the `#[cfg(test)] mod tests;` child module.
+`crates/rustwx-radar/src/tile/tests.rs` owns Web Mercator tile math, radar
+coverage bounds, prepared-sweep metadata, tile option validation, velocity and
+generic-product QC summaries, product provenance, native/derived KDP/HCA
+resolution, and reflectivity despeckle regression tests with the same
+parent-private test-module pattern.
 
 ## Dependency-Direction Notes
 
