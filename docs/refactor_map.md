@@ -165,6 +165,10 @@ and `colormap`.
 size-mismatch, unused-slot background, projected multi-panel rendering,
 mixed filled/overlay-only rendering, and legacy PNG roundtrip regression tests
 with parent-private access through the `#[cfg(test)] mod tests;` child module.
+`crates/rustwx-render/src/weather/tests.rs` owns weather product title,
+ECAPE/severe panel default, product-name resolution, palette threshold, derived
+style, reference scale-bin, tick-step, and semantic-flag regression tests with
+the same parent-private test-module pattern.
 
 Refactor implication: this crate already has a healthier facade pattern. Future
 work should split `render.rs` internally while preserving crate-root exports.
