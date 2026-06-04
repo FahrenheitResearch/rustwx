@@ -63,11 +63,11 @@ future Codex edits because unrelated concerns are close together.
 | 11 | 2189 | `crates/rustwx-products/src/wxstore_wxa.rs` | WxStore WXA dense2d import/export/static plotting support. | Continue splitting format/read-write/plot modules after WXA manifest snapshots. |
 | 12 | 2137 | `crates/rustwx-radar/src/dealias.rs` | Velocity dealiasing algorithms, quality masks, and diagnostics. | Keep semantic changes separate from any module split. |
 | 13 | 2126 | `crates/rustwx-products/src/gridded.rs` | Model timestep loading, field decode, pressure/surface field containers, and decode-cache helpers. | Continue splitting load/decode helpers with no behavior changes; crop/domain and fetch helpers are now extracted. |
-| 14 | 2080 | `crates/rustwx-io/src/earth2_archive.rs` | AIFS/Earth2 archive member/stat selection, archive paths, and validation. | Keep with IO split but preserve archive path behavior exactly. |
-| 15 | 2057 | `crates/rustwx-cli/src/bin/forecast_now.rs` | One-shot operational orchestrator across products and lanes. | Candidate for main CLI subcommand once shared args are extracted. |
-| 16 | 2043 | `crates/rustwx-products/src/comparison.rs` | Product manifest/report comparison and publication deltas. | Split loader/comparison/report serialization if tests cover JSON shape. |
-| 17 | 1994 | `crates/rustwx-io/src/lib.rs` | Fetch requests/results, probing, extraction, selector handling, and cache-facing IO helpers. | Continue splitting fetch/probe/grib modules after product characterization tests. |
-| 18 | 1964 | `crates/rustwx-products/src/dataset_export.rs` | Native dataset export and training-bundle shaping. | Split plan/materialize/report helpers after manifest snapshots. |
+| 14 | 2057 | `crates/rustwx-cli/src/bin/forecast_now.rs` | One-shot operational orchestrator across products and lanes. | Candidate for main CLI subcommand once shared args are extracted. |
+| 15 | 2043 | `crates/rustwx-products/src/comparison.rs` | Product manifest/report comparison and publication deltas. | Split loader/comparison/report serialization if tests cover JSON shape. |
+| 16 | 1994 | `crates/rustwx-io/src/lib.rs` | Fetch requests/results, probing, extraction, selector handling, and cache-facing IO helpers. | Continue splitting fetch/probe/grib modules after product characterization tests. |
+| 17 | 1964 | `crates/rustwx-products/src/dataset_export.rs` | Native dataset export and training-bundle shaping. | Split plan/materialize/report helpers after manifest snapshots. |
+| 18 | 1907 | `crates/rustwx-io/src/earth2_archive.rs` | AIFS/Earth2 archive member/stat selection, archive paths, and validation. | Keep with IO split but preserve archive path behavior exactly. |
 | 19 | 1906 | `crates/rustwx-radar/src/tile.rs` | Radar tile generation and related render/report helpers. | Defer until radar export/tile CLI lanes are classified. |
 | 20 | 1874 | `crates/rustwx-core/src/lib.rs` | Shared core types for grids, products, selectors, models, fields, and bundles. | Continue splitting only if public compatibility is protected by re-exports. |
 | 21 | 1825 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Calibration report orchestration, gate history, summaries, and remaining contract glue. | Continue small mechanical splits after contract snapshots stay green. |
@@ -125,6 +125,10 @@ work should split `render.rs` internally while preserving crate-root exports.
 
 `rustwx-io` has private `cache`, public `earth2_archive`, and many crate-root
 public types/functions in `lib.rs`.
+`crates/rustwx-io/src/earth2_archive/tests.rs` owns archive path, flat member
+file, lead discovery, dewpoint, precipitation-unit, and ensemble-stat
+regression tests while retaining parent-private access through the
+`#[cfg(test)] mod tests;` child module.
 
 Refactor implication: split `lib.rs` into `fetch`, `probe`, and `grib/*` only
 after product fixtures prove selectors, cache paths, projection metadata, and
@@ -366,8 +370,8 @@ sounding extraction/data separate from PNG presentation if the file grows.
       preserving crate-root public exports.
     - Validation: IO lib tests, product characterization tests, workspace check.
     - Current split: `crates/rustwx-io/src/tests.rs` owns the IO
-      fetch/cache/GRIB/archive regression tests while retaining parent-private
-      access through the `#[cfg(test)] mod tests;` child module.
+      fetch/cache/GRIB regression tests while retaining parent-private access
+      through the `#[cfg(test)] mod tests;` child module.
 
 11. **`rustwx-core/src/lib.rs` split**
     - Split shared type families only when public compatibility is protected by
