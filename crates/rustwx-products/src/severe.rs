@@ -1,24 +1,24 @@
 use crate::direct::build_projected_map_with_projection;
 use crate::gridded::{
-    prepare_heavy_volume, prepare_heavy_volume_timed, resolve_thermo_pair_run, PreparedHeavyVolume,
-    PressureFields, SharedTiming, SurfaceFields,
+    PreparedHeavyVolume, PressureFields, SharedTiming, SurfaceFields, prepare_heavy_volume,
+    prepare_heavy_volume_timed, resolve_thermo_pair_run,
 };
 use crate::heavy::{
-    crop_and_guard_heavy_domain, heavy_map_target_aspect_ratio, render_heavy_map_group,
-    HeavyComputeTiming, HeavyRenderedArtifact,
+    HeavyComputeTiming, HeavyRenderedArtifact, crop_and_guard_heavy_domain,
+    heavy_map_target_aspect_ratio, render_heavy_map_group,
 };
 use crate::planner::{BundleFetchKey, ExecutionPlan, ExecutionPlanBuilder, PlannedBundle};
-use crate::publication::{fetch_identity_from_cached_result_with_aliases, PublishedFetchIdentity};
+use crate::publication::{PublishedFetchIdentity, fetch_identity_from_cached_result_with_aliases};
 use crate::runtime::{
-    load_execution_plan, BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet,
+    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
 };
-use crate::shared_context::{model_time_subtitle, source_subtitle, DomainSpec, WeatherPanelField};
+use crate::shared_context::{DomainSpec, WeatherPanelField, model_time_subtitle, source_subtitle};
 use rustwx_calc::{
-    compute_supported_severe_fields_hemispheric, EcapeVolumeInputs, SupportedSevereFields,
-    SurfaceInputs,
+    EcapeVolumeInputs, SupportedSevereFields, SurfaceInputs,
+    compute_supported_severe_fields_hemispheric,
 };
 use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
-use rustwx_models::{default_bundle_product, LatestRun};
+use rustwx_models::{LatestRun, default_bundle_product};
 use rustwx_render::WeatherProduct;
 use serde::{Deserialize, Serialize};
 use std::fs;

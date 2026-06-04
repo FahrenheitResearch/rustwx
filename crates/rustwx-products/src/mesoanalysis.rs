@@ -1,8 +1,9 @@
 use crate::gridded::SurfaceFields;
 use chrono::{DateTime, Utc};
 use rustwx_calc::{
-    compute_dewpoint_from_pressure_and_mixing_ratio, compute_surface_mesoanalysis, MesoObservation,
-    MesoanalysisConfig, MesoanalysisFields, MesoanalysisVariableDiagnostics, SurfaceMesoBackground,
+    MesoObservation, MesoanalysisConfig, MesoanalysisFields, MesoanalysisVariableDiagnostics,
+    SurfaceMesoBackground, compute_dewpoint_from_pressure_and_mixing_ratio,
+    compute_surface_mesoanalysis,
 };
 use rustwx_core::GridShape;
 use serde::{Deserialize, Serialize};
@@ -4493,10 +4494,12 @@ mod tests {
         let background_surface = sample_surface();
         let mut reference_surface = sample_surface();
         reference_surface.t2_k = vec![294.65; 3];
-        let observations = vec![MesoObservation::new("OKC", 35.0, -98.0)
-            .with_source("unit")
-            .with_timestamp("2026-05-13T01:00:00Z")
-            .with_temperature_c(22.0)];
+        let observations = vec![
+            MesoObservation::new("OKC", 35.0, -98.0)
+                .with_source("unit")
+                .with_timestamp("2026-05-13T01:00:00Z")
+                .with_temperature_c(22.0),
+        ];
         let candidate_fields = MesoanalysisFields {
             temperature_2m_c: vec![21.0; 3],
             dewpoint_2m_c: vec![15.0; 3],
@@ -4757,10 +4760,11 @@ mod tests {
             },
         );
         assert!(!fail.passed);
-        assert!(fail
-            .checks
-            .iter()
-            .any(|check| check.name == "temperature_c_mean_abs_analysis_error" && !check.passed));
+        assert!(
+            fail.checks.iter().any(
+                |check| check.name == "temperature_c_mean_abs_analysis_error" && !check.passed
+            )
+        );
     }
 
     #[test]
@@ -5024,11 +5028,13 @@ mod tests {
     #[test]
     fn grid_export_writes_wxstore_compatible_manifest() {
         let surface = sample_surface();
-        let observations = vec![MesoObservation::new("OKC", 35.0, -98.0)
-            .with_source("unit")
-            .with_temperature_c(25.0)
-            .with_dewpoint_c(18.0)
-            .with_wind(270.0, 10.0)];
+        let observations = vec![
+            MesoObservation::new("OKC", 35.0, -98.0)
+                .with_source("unit")
+                .with_temperature_c(25.0)
+                .with_dewpoint_c(18.0)
+                .with_wind(270.0, 10.0),
+        ];
         let fields = compute_surface_mesoanalysis_from_fields(
             &surface,
             &observations,

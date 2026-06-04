@@ -4,8 +4,8 @@ pub mod earth2_archive;
 pub use cache::{
     CachedFetchMetadata, CachedFetchResult, CachedFieldResult, artifact_cache_dir,
     fetch_cache_paths, field_cache_path, load_cached_fetch, load_cached_raw_fetch,
-    load_cached_selected_field, raw_fetch_cache_paths, store_cached_fetch,
-    store_cached_raw_fetch, store_cached_selected_field,
+    load_cached_selected_field, raw_fetch_cache_paths, store_cached_fetch, store_cached_raw_fetch,
+    store_cached_selected_field,
 };
 
 use grib_core::grib2::{

@@ -52,8 +52,8 @@ pub use named_geometry::{
     NamedGeometryKind, NamedGeometrySelector,
 };
 pub use shared_context::{
-    layout_key, render_two_by_four_weather_panel, DomainSpec, PreparedProjectedContext,
-    ProjectedMap, ProjectedMapProvider, WeatherPanelField, WeatherPanelHeader, WeatherPanelLayout,
+    DomainSpec, PreparedProjectedContext, ProjectedMap, ProjectedMapProvider, WeatherPanelField,
+    WeatherPanelHeader, WeatherPanelLayout, layout_key, render_two_by_four_weather_panel,
 };
 
 pub(crate) fn apply_place_label_overlay_with_density_styling(
@@ -183,9 +183,11 @@ mod tests {
         let domain = DomainSpec::new("california_square", CALIFORNIA_SQUARE);
         let selected = overlay.selected_places_for_domain(&domain);
 
-        assert!(selected
-            .iter()
-            .any(|place| !is_major_catalog_place(place.slug.as_str())));
+        assert!(
+            selected
+                .iter()
+                .any(|place| !is_major_catalog_place(place.slug.as_str()))
+        );
 
         let mut request = sample_place_label_request();
         let grid_lat_deg = request.field.grid.lat_deg.clone();
@@ -258,12 +260,14 @@ mod tests {
         assert!(request.projected_place_labels.iter().any(|label| {
             label.priority == rustwx_render::ProjectedPlaceLabelPriority::Auxiliary
         }));
-        assert!(selected
-            .iter()
-            .zip(request.projected_place_labels.iter())
-            .filter(|(place, _)| is_major_catalog_place(place.slug.as_str()))
-            .all(|(_, label)| {
-                label.priority == rustwx_render::ProjectedPlaceLabelPriority::Primary
-            }));
+        assert!(
+            selected
+                .iter()
+                .zip(request.projected_place_labels.iter())
+                .filter(|(place, _)| is_major_catalog_place(place.slug.as_str()))
+                .all(|(_, label)| {
+                    label.priority == rustwx_render::ProjectedPlaceLabelPriority::Primary
+                })
+        );
     }
 }

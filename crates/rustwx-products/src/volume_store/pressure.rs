@@ -1,8 +1,8 @@
 use super::codec::ChunkCodec;
 use super::grid::GridSpec;
-use super::index::{read_index_records, write_index_records, ChunkIndex};
+use super::index::{ChunkIndex, read_index_records, write_index_records};
 use super::manifest::{ChunkShape, VolumeManifest, VolumeVariable};
-use super::writer::{write_volume_store, BuildStats, VolumeFieldProvider};
+use super::writer::{BuildStats, VolumeFieldProvider, write_volume_store};
 use super::{VolumeResult, VolumeStoreError};
 use crate::gridded::PressureFields;
 use std::collections::BTreeMap;
@@ -546,10 +546,12 @@ mod tests {
             .sample_point_3d(34.5, -121.6, &["TMP", "UGRD"], &[1], &[850])
             .expect("sample pressure volume");
         assert_eq!(profile.samples.len(), 2);
-        assert!(profile
-            .samples
-            .iter()
-            .all(|sample| sample.value.is_finite()));
+        assert!(
+            profile
+                .samples
+                .iter()
+                .all(|sample| sample.value.is_finite())
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

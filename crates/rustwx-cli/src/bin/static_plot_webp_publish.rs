@@ -312,9 +312,10 @@ fn update_manifest_with_webp_artifacts(task: &ManifestTask) -> Result<bool> {
             .with_state(ArtifactPublicationState::Complete)
             .with_detail("WebP companion generated from PNG static plot")
             .with_input_fetch_keys(png.input_fetch_keys.clone());
-        record.content_identity = Some(artifact_identity_from_path(&webp_path).map_err(|err| {
-            anyhow::anyhow!("hash {}: {}", webp_path.display(), err)
-        })?);
+        record.content_identity = Some(
+            artifact_identity_from_path(&webp_path)
+                .map_err(|err| anyhow::anyhow!("hash {}: {}", webp_path.display(), err))?,
+        );
         manifest.artifacts.push(record);
         changed = true;
     }

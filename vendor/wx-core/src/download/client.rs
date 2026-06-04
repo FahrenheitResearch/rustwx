@@ -1,8 +1,8 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rayon::prelude::*;
@@ -249,9 +249,7 @@ fn nomads_lock_is_stale(lock_path: &Path) -> bool {
     {
         if let Ok(text) = fs::read_to_string(lock_path) {
             if let Some(pid) = text.split_whitespace().next() {
-                if pid.parse::<u32>().is_ok()
-                    && !Path::new("/proc").join(pid).exists()
-                {
+                if pid.parse::<u32>().is_ok() && !Path::new("/proc").join(pid).exists() {
                     return true;
                 }
             }
@@ -314,10 +312,7 @@ fn mark_nomads_rate_limited(url: &str, reason: &str) {
     if !is_nomads_url(url) {
         return;
     }
-    let cooldown = env_duration_ms(
-        "RUSTWX_NOMADS_COOLDOWN_MS",
-        NOMADS_DEFAULT_COOLDOWN,
-    );
+    let cooldown = env_duration_ms("RUSTWX_NOMADS_COOLDOWN_MS", NOMADS_DEFAULT_COOLDOWN);
     let state_path = nomads_state_path();
     let _lock = acquire_nomads_rate_lock(&state_path);
     let (last_request_ms, existing_cooldown_until_ms) = read_nomads_state(&state_path);
@@ -349,8 +344,8 @@ fn pace_request(url: &str) {
 
         let (last_request_ms, cooldown_until_ms) = read_nomads_state(&state_path);
         let now = now_millis();
-        let sleep_until = cooldown_until_ms
-            .max(last_request_ms.saturating_add(min_gap.as_millis()));
+        let sleep_until =
+            cooldown_until_ms.max(last_request_ms.saturating_add(min_gap.as_millis()));
         if sleep_until > now {
             drop(_lock);
             std::thread::sleep(Duration::from_millis(
@@ -401,13 +396,21 @@ impl DownloadClient {
             match &result {
                 Ok(response) => log_nomads_event(
                     url,
-                    if range_header.is_some() { "get_range" } else { "get" },
+                    if range_header.is_some() {
+                        "get_range"
+                    } else {
+                        "get"
+                    },
                     response.status().as_str(),
                     Some(elapsed),
                 ),
                 Err(err) => log_nomads_event(
                     url,
-                    if range_header.is_some() { "get_range" } else { "get" },
+                    if range_header.is_some() {
+                        "get_range"
+                    } else {
+                        "get"
+                    },
                     &format!("error:{err}"),
                     Some(elapsed),
                 ),
@@ -451,10 +454,7 @@ impl DownloadClient {
                         mark_nomads_rate_limited(&request_url, "redirect_missing_location");
                         eprintln!(
                             "  NOMADS cooldown {}/{} for {} (probable over-rate-limit redirect {})",
-                            malformed_redirect_retries,
-                            self.max_retries,
-                            request_url,
-                            status
+                            malformed_redirect_retries, self.max_retries, request_url, status
                         );
                         continue;
                     }
@@ -517,13 +517,13 @@ impl DownloadClient {
                     Err(ureq::Error::StatusCode(code)) if code == 404 || code == 403 => {
                         return false;
                     }
-                Err(err) => {
-                    if is_probable_nomads_rate_limit(&current_url, &err) {
-                        mark_nomads_rate_limited(&current_url, "range_probe_rate_limit_error");
+                    Err(err) => {
+                        if is_probable_nomads_rate_limit(&current_url, &err) {
+                            mark_nomads_rate_limited(&current_url, "range_probe_rate_limit_error");
+                        }
+                        retry = attempt == 0 && is_retryable(&err);
+                        break;
                     }
-                    retry = attempt == 0 && is_retryable(&err);
-                    break;
-                }
                 }
             }
 

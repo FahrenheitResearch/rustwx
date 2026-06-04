@@ -1,9 +1,9 @@
 use rustwx_render::{
-    build_projected_map_with_options, map_frame_aspect_ratio_for_mode_with_domain_frame,
     ChromeScale, Color, ColorScale, DiscreteColorScale, DomainFrame, ExtendMode, Field2D,
     GridShape, LambertConformal, LatLonGrid, LegendControls, LegendMode, LevelDensity,
     MapRenderRequest, ProductKey, ProductVisualMode, ProjectedMapBuildOptions, ProjectionSpec,
-    RenderDensity, RgbaGridField,
+    RenderDensity, RgbaGridField, build_projected_map_with_options,
+    map_frame_aspect_ratio_for_mode_with_domain_frame,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use crate::lightning::{collect_glm_lightning_flashes, glm_lightning_point_overlays};
 
-use super::abi::{read_goes_abi_field, GoesAbiField, GoesAbiScene};
+use super::abi::{GoesAbiField, GoesAbiScene, read_goes_abi_field};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

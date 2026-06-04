@@ -26,8 +26,8 @@ use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, CanonicalBundleId, CycleSpec, ModelId, SourceId,
 };
 use rustwx_models::{
-    resolve_canonical_bundle_id, resolve_canonical_bundle_product, LatestRun,
-    ResolvedCanonicalBundleProduct,
+    LatestRun, ResolvedCanonicalBundleProduct, resolve_canonical_bundle_id,
+    resolve_canonical_bundle_product,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -322,14 +322,16 @@ mod tests {
         assert_eq!(plan.bundles.len(), 1);
         let only = &plan.bundles[0];
         assert_eq!(only.resolved.native_product, "sfc");
-        assert!(only
-            .aliases
-            .iter()
-            .any(|alias| alias.logical_family.as_deref() == Some("nat")));
-        assert!(only
-            .aliases
-            .iter()
-            .any(|alias| alias.logical_family.as_deref() == Some("sfc")));
+        assert!(
+            only.aliases
+                .iter()
+                .any(|alias| alias.logical_family.as_deref() == Some("nat"))
+        );
+        assert!(
+            only.aliases
+                .iter()
+                .any(|alias| alias.logical_family.as_deref() == Some("sfc"))
+        );
     }
 
     #[test]

@@ -3,15 +3,14 @@ use crate::derived::compute_derived_query_field;
 use crate::direct::load_single_direct_sampled_field_from_latest;
 use crate::ecape::compute_ecape_map_fields_with_prepared_volume;
 use crate::gridded::{
-    load_model_timestep_from_parts, load_model_timestep_from_parts_cropped, prepare_heavy_volume,
-    LoadedModelTimestep,
+    LoadedModelTimestep, load_model_timestep_from_parts, load_model_timestep_from_parts_cropped,
+    prepare_heavy_volume,
 };
 use crate::publication::{atomic_write_bytes, atomic_write_json, fetch_key};
 use chrono::{Duration, NaiveDate, Utc};
 use rustwx_calc::{
-    compute_2m_relative_humidity,
+    GridShape as CalcGridShape, SurfaceInputs, compute_2m_relative_humidity,
     compute_relative_humidity_from_pressure_temperature_and_mixing_ratio, compute_surface_thermo,
-    GridShape as CalcGridShape, SurfaceInputs,
 };
 use rustwx_core::{GridProjection, ModelId, SourceId};
 use rustwx_render::WeatherProduct;
@@ -2191,9 +2190,11 @@ mod tests {
                 .is_empty()
                 == false
         );
-        assert!(!MlChannelPreset::HybridColumnV1
-            .channels_for_model(ModelId::RrfsA)
-            .is_empty());
+        assert!(
+            !MlChannelPreset::HybridColumnV1
+                .channels_for_model(ModelId::RrfsA)
+                .is_empty()
+        );
     }
 
     #[test]

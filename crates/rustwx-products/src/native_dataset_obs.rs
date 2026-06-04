@@ -6,7 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use flate2::read::GzDecoder;
-use grib_core::grib2::{unpack_message_normalized, Grib2File, GridDefinition, ProductDefinition};
+use grib_core::grib2::{Grib2File, GridDefinition, ProductDefinition, unpack_message_normalized};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs::File;
@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 
 use crate::native_dataset::NativeDatasetBounds;
 use crate::satellite::{
-    lat_lon_to_scan_angles_fast, open_goes_netcdf_lossy, read_goes_abi_scene, read_scaled_f32,
-    GoesAbiScene,
+    GoesAbiScene, lat_lon_to_scan_angles_fast, open_goes_netcdf_lossy, read_goes_abi_scene,
+    read_scaled_f32,
 };
 
 pub const GOES_MCMIPC_CHANNELS: &[GoesAbiChannelSpec] = &[
@@ -658,15 +658,21 @@ mod tests {
                 "C13", "C14", "C15", "C16"
             ]
         );
-        assert!(MRMS_NATIVE_PRODUCTS
-            .iter()
-            .any(|product| product.family == "reflectivity"));
-        assert!(MRMS_NATIVE_PRODUCTS
-            .iter()
-            .any(|product| product.family == "mesh"));
-        assert!(MRMS_NATIVE_PRODUCTS
-            .iter()
-            .any(|product| product.family == "rotation"));
+        assert!(
+            MRMS_NATIVE_PRODUCTS
+                .iter()
+                .any(|product| product.family == "reflectivity")
+        );
+        assert!(
+            MRMS_NATIVE_PRODUCTS
+                .iter()
+                .any(|product| product.family == "mesh")
+        );
+        assert!(
+            MRMS_NATIVE_PRODUCTS
+                .iter()
+                .any(|product| product.family == "rotation")
+        );
     }
 
     #[test]

@@ -9512,7 +9512,10 @@ mod tests {
             rrfs_a_surface.fetch_policy,
             PlotRecipeFetchPolicy::PreferIndexedSubset
         );
-        assert_eq!(rrfs_a_surface.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
+        assert_eq!(
+            rrfs_a_surface.fetch_mode,
+            PlotRecipeFetchMode::IndexedSubset
+        );
 
         let rrfs_a_pressure = plot_recipe_fetch_plan("500mb_height_winds", ModelId::RrfsA).unwrap();
         assert_eq!(rrfs_a_pressure.product, "prs-conus");
@@ -9520,7 +9523,10 @@ mod tests {
             rrfs_a_pressure.fetch_policy,
             PlotRecipeFetchPolicy::PreferIndexedSubset
         );
-        assert_eq!(rrfs_a_pressure.fetch_mode, PlotRecipeFetchMode::IndexedSubset);
+        assert_eq!(
+            rrfs_a_pressure.fetch_mode,
+            PlotRecipeFetchMode::IndexedSubset
+        );
 
         let cases = [
             (ModelId::RrfsPublic, "2dfld-conus", "prs-conus"),

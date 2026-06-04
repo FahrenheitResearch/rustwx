@@ -12,7 +12,7 @@ use rustwx_core::{
 use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
 
-use crate::thermo_native::{extract_native_thermo_field, NativeThermoRecipe};
+use crate::thermo_native::{NativeThermoRecipe, extract_native_thermo_field};
 
 const REGULAR_GRID_EPS: f64 = 1.0e-5;
 
@@ -811,30 +811,32 @@ mod tests {
         let ids = plan.fields.iter().map(|field| field.id).collect::<Vec<_>>();
         assert_eq!(
             ids,
-            vec!["t2m", "d2m", "u10", "v10", "refc", "mslp", "terrain", "pwat", "cape", "cin"]
+            vec![
+                "t2m", "d2m", "u10", "v10", "refc", "mslp", "terrain", "pwat", "cape", "cin"
+            ]
         );
         assert_eq!(plan.selectors.len(), 8);
         assert!(plan.unsupported_field_ids.is_empty());
-        assert!(plan
-            .selectors
-            .iter()
-            .any(|(_, selector)| *selector
-                == FieldSelector::surface(CanonicalField::GeopotentialHeight)));
-        assert!(plan
-            .selectors
-            .iter()
-            .any(|(_, selector)| *selector
-                == FieldSelector::height_agl(CanonicalField::Temperature, 2)));
+        assert!(
+            plan.selectors.iter().any(|(_, selector)| *selector
+                == FieldSelector::surface(CanonicalField::GeopotentialHeight))
+        );
+        assert!(
+            plan.selectors.iter().any(|(_, selector)| *selector
+                == FieldSelector::height_agl(CanonicalField::Temperature, 2))
+        );
         assert!(plan.selectors.iter().any(|(_, selector)| *selector
             == FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater)));
-        assert!(plan
-            .native_thermo
-            .iter()
-            .any(|(_, recipe)| *recipe == NativeThermoRecipe::Sbcape));
-        assert!(plan
-            .native_thermo
-            .iter()
-            .any(|(_, recipe)| *recipe == NativeThermoRecipe::Sbcin));
+        assert!(
+            plan.native_thermo
+                .iter()
+                .any(|(_, recipe)| *recipe == NativeThermoRecipe::Sbcape)
+        );
+        assert!(
+            plan.native_thermo
+                .iter()
+                .any(|(_, recipe)| *recipe == NativeThermoRecipe::Sbcin)
+        );
     }
 
     #[test]

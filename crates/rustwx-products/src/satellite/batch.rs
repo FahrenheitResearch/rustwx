@@ -1,10 +1,10 @@
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
-use image::codecs::gif::{GifEncoder, Repeat};
 use image::RgbaImage;
+use image::codecs::gif::{GifEncoder, Repeat};
 use image::{Delay, Frame, ImageReader};
 use rustwx_render::{
-    save_png_profile_with_options, save_rgba_png_profile_with_options, PngCompressionMode,
-    PngWriteOptions,
+    PngCompressionMode, PngWriteOptions, save_png_profile_with_options,
+    save_rgba_png_profile_with_options,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,11 +19,11 @@ use std::time::Instant;
 use crate::publication::atomic_write_json;
 
 use super::abi::{read_goes_abi_field, read_goes_abi_scene};
-use super::goes::{parse_goes_abi_filename, GoesSatellite};
-use super::render::{build_goes_abi_band_render_request, GoesAbiBandMapRequest};
+use super::goes::{GoesSatellite, parse_goes_abi_filename};
+use super::render::{GoesAbiBandMapRequest, build_goes_abi_band_render_request};
 use super::rgb::{
-    build_goes_abi_rgb_composite_render_request, GoesAbiRgbCompositeRequest,
-    GoesAbiRgbCompositeStyle,
+    GoesAbiRgbCompositeRequest, GoesAbiRgbCompositeStyle,
+    build_goes_abi_rgb_composite_render_request,
 };
 
 const DEFAULT_ABI_PRODUCT: &str = "ABI-L2-CMIPC";
@@ -1665,9 +1665,10 @@ mod tests {
     fn full_disk_rejects_high_resolution_visible_channels_without_opt_in() {
         let err =
             validate_requested_channels_for_product("ABI-L2-CMIPF", &[2, 13], false).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("full-disk GOES channels C02 are high-resolution"));
+        assert!(
+            err.to_string()
+                .contains("full-disk GOES channels C02 are high-resolution")
+        );
         validate_requested_channels_for_product("ABI-L2-CMIPF", &[2, 13], true).unwrap();
     }
 }

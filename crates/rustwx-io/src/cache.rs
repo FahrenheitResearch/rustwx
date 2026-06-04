@@ -294,12 +294,14 @@ pub fn load_cached_raw_fetch(
     let metadata_bytes = match fs::read(&metadata_path) {
         Ok(bytes) => bytes,
         Err(_) => {
-            quarantine_cache_paths(&[&bytes_path, &metadata_path], "raw_fetch_metadata_read_error");
+            quarantine_cache_paths(
+                &[&bytes_path, &metadata_path],
+                "raw_fetch_metadata_read_error",
+            );
             return Ok(None);
         }
     };
-    let Some(metadata) =
-        load_cached_fetch_metadata(&metadata_bytes, &bytes, "<raw-fetch-cache>")
+    let Some(metadata) = load_cached_fetch_metadata(&metadata_bytes, &bytes, "<raw-fetch-cache>")
     else {
         quarantine_cache_paths(
             &[&bytes_path, &metadata_path],
@@ -312,7 +314,10 @@ pub fn load_cached_raw_fetch(
         || metadata.resolved_url != resolved_url
         || metadata.bytes_sha256 != sha256_hex(&bytes)
     {
-        quarantine_cache_paths(&[&bytes_path, &metadata_path], "raw_fetch_metadata_mismatch");
+        quarantine_cache_paths(
+            &[&bytes_path, &metadata_path],
+            "raw_fetch_metadata_mismatch",
+        );
         return Ok(None);
     }
     Ok(Some(CachedFetchResult {
@@ -1077,8 +1082,9 @@ mod tests {
 
         let stored = store_cached_raw_fetch(&cache_root, &first, &result).unwrap();
         assert!(!stored.cache_hit);
-        let loaded =
-            load_cached_raw_fetch(&cache_root, SourceId::Aws, &result.url).unwrap().unwrap();
+        let loaded = load_cached_raw_fetch(&cache_root, SourceId::Aws, &result.url)
+            .unwrap()
+            .unwrap();
         assert!(loaded.cache_hit);
         assert_eq!(loaded.result, result);
         let (raw_bytes_path, _) = raw_fetch_cache_paths(&cache_root, SourceId::Aws, &result.url);

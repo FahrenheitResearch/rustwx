@@ -9,10 +9,10 @@ use rustwx_calc::{
 };
 use rustwx_core::{CycleSpec, ModelId, SourceId};
 use rustwx_cross_section::{
-    decompose_wind, decompose_wind_grid, CrossSectionProduct, CrossSectionStyle,
-    DecomposedWindGrid, GeoPoint, HorizontalInterpolation, ScalarSection, SectionLayout,
-    SectionMetadata, TerrainProfile, VerticalAxis, VerticalKind, VerticalScale, VerticalUnits,
-    WindOverlayBundle, WindOverlayStyle, ALL_CROSS_SECTION_PRODUCTS,
+    ALL_CROSS_SECTION_PRODUCTS, CrossSectionProduct, CrossSectionStyle, DecomposedWindGrid,
+    GeoPoint, HorizontalInterpolation, ScalarSection, SectionLayout, SectionMetadata,
+    TerrainProfile, VerticalAxis, VerticalKind, VerticalScale, VerticalUnits, WindOverlayBundle,
+    WindOverlayStyle, decompose_wind, decompose_wind_grid,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1946,9 +1946,8 @@ fn normalized_longitude_delta(delta_deg: f64) -> f64 {
 mod tests {
     use super::*;
     use rustwx_cross_section::{
-        decompose_wind_grid, CrossSectionRequest, CrossSectionStyle, SamplingStrategy,
-        ScalarSection, SectionPath, TerrainProfile, VerticalAxis, WindOverlayBundle,
-        WindOverlayStyle,
+        CrossSectionRequest, CrossSectionStyle, SamplingStrategy, ScalarSection, SectionPath,
+        TerrainProfile, VerticalAxis, WindOverlayBundle, WindOverlayStyle, decompose_wind_grid,
     };
 
     fn sample_surface_fields() -> SurfaceFields {
@@ -2169,11 +2168,13 @@ mod tests {
         assert_eq!(artifact.style.product(), CrossSectionProduct::ThetaE);
         assert_eq!(artifact.section.n_points(), 3);
         assert_eq!(artifact.section.n_levels(), 2);
-        assert!(artifact
-            .section
-            .values()
-            .iter()
-            .all(|value| value.is_finite()));
+        assert!(
+            artifact
+                .section
+                .values()
+                .iter()
+                .all(|value| value.is_finite())
+        );
         assert_eq!(
             artifact.section.metadata().attribute("product_key"),
             Some("theta_e")
@@ -2213,11 +2214,13 @@ mod tests {
             artifact.section.metadata().field_units.as_deref(),
             Some("g*m/kg/s")
         );
-        assert!(artifact
-            .section
-            .values()
-            .iter()
-            .all(|value| value.is_finite() && *value > 0.0));
+        assert!(
+            artifact
+                .section
+                .values()
+                .iter()
+                .all(|value| value.is_finite() && *value > 0.0)
+        );
         assert_eq!(artifact.wind_overlay.grid.n_levels(), 2);
         assert_eq!(artifact.wind_overlay.grid.n_points(), 3);
     }
@@ -2358,11 +2361,10 @@ mod tests {
         ));
 
         let current_vars = ["TMP", "SPFH", "UGRD", "VGRD", "HGT"];
-        assert!(missing_pressure_volume_requirements(
-            CrossSectionProduct::Frontogenesis,
-            &current_vars
-        )
-        .is_empty());
+        assert!(
+            missing_pressure_volume_requirements(CrossSectionProduct::Frontogenesis, &current_vars)
+                .is_empty()
+        );
         assert!(
             missing_pressure_volume_requirements(CrossSectionProduct::Shear, &current_vars)
                 .is_empty()
@@ -2374,9 +2376,11 @@ mod tests {
 
         let smoke_missing =
             missing_pressure_volume_requirements(CrossSectionProduct::Smoke, &current_vars);
-        assert!(smoke_missing
-            .iter()
-            .any(|item| item.contains("hybrid:MASSDEN")));
+        assert!(
+            smoke_missing
+                .iter()
+                .any(|item| item.contains("hybrid:MASSDEN"))
+        );
     }
 
     #[test]
@@ -2445,12 +2449,16 @@ mod tests {
             build_pressure_cross_section_product_values(CrossSectionProduct::Smoke, inputs)
                 .unwrap_err();
 
-        assert!(omega_err
-            .to_string()
-            .contains("requires sampled omega input"));
-        assert!(smoke_err
-            .to_string()
-            .contains("requires sampled smoke input"));
+        assert!(
+            omega_err
+                .to_string()
+                .contains("requires sampled omega input")
+        );
+        assert!(
+            smoke_err
+                .to_string()
+                .contains("requires sampled smoke input")
+        );
 
         let optional_inputs = PressureCrossSectionProductInputs {
             optional: PressureCrossSectionOptionalProductFields {
@@ -2505,9 +2513,11 @@ mod tests {
 
         assert_eq!(stencil.len, 4);
         assert_eq!(stencil.indices[0], 1);
-        assert!(stencil.weights[..stencil.len as usize]
-            .iter()
-            .all(|weight| weight.is_finite() && *weight > 0.0));
+        assert!(
+            stencil.weights[..stencil.len as usize]
+                .iter()
+                .all(|weight| weight.is_finite() && *weight > 0.0)
+        );
         let weight_sum = stencil.weights[..stencil.len as usize].iter().sum::<f64>();
         assert!((weight_sum - 1.0).abs() < 1.0e-9);
     }

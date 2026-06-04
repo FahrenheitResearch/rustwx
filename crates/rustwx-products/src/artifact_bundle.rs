@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::publication::{artifact_identity_from_path, atomic_write_json, ArtifactContentIdentity};
-use crate::publication_provenance::{new_attempt_id, BuildProvenance};
+use crate::publication::{ArtifactContentIdentity, artifact_identity_from_path, atomic_write_json};
+use crate::publication_provenance::{BuildProvenance, new_attempt_id};
 
 pub const ARTIFACT_BUNDLE_SCHEMA_VERSION: u32 = 1;
 

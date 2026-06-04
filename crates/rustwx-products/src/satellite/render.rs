@@ -3,10 +3,10 @@ use std::error::Error;
 use std::path::PathBuf;
 
 use rustwx_render::{
-    build_projected_map_with_options, map_frame_aspect_ratio_for_mode_with_domain_frame,
     ChromeScale, Color, ColorScale, DiscreteColorScale, DomainFrame, ExtendMode, Field2D,
     GridShape, LatLonGrid, LegendControls, LegendMode, LevelDensity, MapRenderRequest, ProductKey,
     ProductVisualMode, ProjectedMapBuildOptions, ProjectionSpec, RenderDensity,
+    build_projected_map_with_options, map_frame_aspect_ratio_for_mode_with_domain_frame,
 };
 
 use super::abi::read_goes_abi_field;

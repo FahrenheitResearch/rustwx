@@ -1,23 +1,23 @@
 use crate::direct::{build_projected_map_with_projection, direct_component_slug};
-use crate::plot_design::{is_global_scale_domain, longitude_bounds_span_deg, StaticPlotDesign};
+use crate::plot_design::{StaticPlotDesign, is_global_scale_domain, longitude_bounds_span_deg};
 use crate::shared_context::{
-    static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
-    static_title_with_suffix, DomainSpec,
+    DomainSpec, static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
+    static_title_with_suffix,
 };
 use rustwx_core::{Field2D, GridProjection, GridShape, LatLonGrid, ModelId, ProductKey};
-use rustwx_models::{plot_recipe, PlotRecipe, RenderStyle};
+use rustwx_models::{PlotRecipe, RenderStyle, plot_recipe};
 use rustwx_render::weather::{
     dewpoint_palette_celsius_for_levels, dewpoint_palette_fahrenheit_for_levels,
 };
 use rustwx_render::{
-    palette_scale, save_png_profile_with_options_and_style, Color, ColorScale, DiscreteColorScale,
-    ExtendMode, LegendMode, LineworkRole, MapRenderRequest, PngCompressionMode, PngWriteOptions,
-    ProductVisualMode, StaticPlotStyle, WeatherPalette, WeatherPreset, WeatherProduct,
-    WindBarbLayer, WindStreamlineLayer,
+    Color, ColorScale, DiscreteColorScale, ExtendMode, LegendMode, LineworkRole, MapRenderRequest,
+    PngCompressionMode, PngWriteOptions, ProductVisualMode, StaticPlotStyle, WeatherPalette,
+    WeatherPreset, WeatherProduct, WindBarbLayer, WindStreamlineLayer, palette_scale,
+    save_png_profile_with_options_and_style,
 };
 use rustwx_render::{DerivedProductStyle, ProjectedDomain};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -2278,11 +2278,7 @@ impl HrrrLambert {
     }
 
     fn normalize_lon_east(lon: f64) -> f64 {
-        if lon < 0.0 {
-            lon + 360.0
-        } else {
-            lon
-        }
+        if lon < 0.0 { lon + 360.0 } else { lon }
     }
 
     fn n(&self) -> f64 {

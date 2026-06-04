@@ -150,12 +150,7 @@ fn latest_run_json(
     let source = parse_optional_source(source)?;
     let latest = match forecast_hour {
         Some(forecast_hour) => {
-            rustwx_models::latest_available_run_at_forecast_hour(
-                model,
-                source,
-                date,
-                forecast_hour,
-            )
+            rustwx_models::latest_available_run_at_forecast_hour(model, source, date, forecast_hour)
         }
         None => rustwx_models::latest_available_run(model, source, date),
     }

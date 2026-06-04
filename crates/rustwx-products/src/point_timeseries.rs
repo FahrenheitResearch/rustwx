@@ -1,16 +1,16 @@
 use chrono::{Duration, NaiveDate};
-use rustwx_calc::{compute_surface_thermo, GridShape as CalcGridShape, SurfaceInputs};
+use rustwx_calc::{GridShape as CalcGridShape, SurfaceInputs, compute_surface_thermo};
 use rustwx_core::{
     CanonicalBundleDescriptor, CanonicalField, FieldPointSampleMethod, FieldSelector, GeoBounds,
     GeoPoint, GridShape, LatLonGrid, ModelId, ModelRunRequest, SelectedField2D, SourceId,
     VerticalSelector,
 };
 use rustwx_io::{
-    extract_fields_partial_from_model_bytes, fetch_bytes_with_cache, load_cached_selected_field,
-    store_cached_selected_field, FetchRequest,
+    FetchRequest, extract_fields_partial_from_model_bytes, fetch_bytes_with_cache,
+    load_cached_selected_field, store_cached_selected_field,
 };
 use rustwx_models::{
-    latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product, LatestRun,
+    LatestRun, latest_available_run_for_products_at_forecast_hour, resolve_canonical_bundle_product,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};

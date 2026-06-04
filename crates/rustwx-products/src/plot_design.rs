@@ -1,13 +1,14 @@
 use rustwx_core::{CanonicalField, FieldSelector, VerticalSelector};
 use rustwx_models::{PlotRecipe, RenderStyle};
 use rustwx_render::{
-    weather::{
-        dewpoint_palette_celsius_for_levels, dewpoint_palette_fahrenheit_for_levels,
-        temperature_palette_cropped_f, weather_palette, winds_palette_segments, WeatherPalette,
-    },
     Color, ColorScale, ContourLayer, ContourLinePattern, DiscreteColorScale, DomainFrame,
     ExtendMode, LegendControls, LegendMode, LevelDensity, MapRenderRequest, ProductVisualMode,
     RenderDensity, WindStreamlineStyle,
+    weather::{
+        WeatherPalette, dewpoint_palette_celsius_for_levels,
+        dewpoint_palette_fahrenheit_for_levels, temperature_palette_cropped_f, weather_palette,
+        winds_palette_segments,
+    },
 };
 
 #[derive(Debug, Clone, Copy)]

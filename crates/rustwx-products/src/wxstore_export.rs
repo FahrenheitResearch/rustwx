@@ -1,30 +1,30 @@
 use crate::catalog::{
-    build_supported_products_catalog, ProductCatalogEntry, ProductCatalogKind, ProductTargetStatus,
+    ProductCatalogEntry, ProductCatalogKind, ProductTargetStatus, build_supported_products_catalog,
 };
 use crate::derived::{
-    build_derived_sampled_execution_plan, is_heavy_derived_recipe_slug,
-    load_derived_sampled_fields_from_loaded, DerivedRecipeBlocker,
+    DerivedRecipeBlocker, build_derived_sampled_execution_plan, is_heavy_derived_recipe_slug,
+    load_derived_sampled_fields_from_loaded,
 };
 use crate::direct::{
-    build_direct_sampled_execution_plan, load_direct_sampled_fields_from_loaded,
-    DirectRecipeBlocker,
+    DirectRecipeBlocker, build_direct_sampled_execution_plan,
+    load_direct_sampled_fields_from_loaded,
 };
 use crate::gridded::resolve_model_run;
 use crate::planner::{ExecutionPlan, ExecutionPlanBuilder};
-use crate::publication::atomic_write_json;
 use crate::publication::PublishedFetchIdentity;
-use crate::runtime::{load_execution_plan, BundleLoaderConfig, LoadedBundleSet};
+use crate::publication::atomic_write_json;
+use crate::runtime::{BundleLoaderConfig, LoadedBundleSet, load_execution_plan};
 use crate::shared_context::DomainSpec;
 use crate::windowed::{
-    load_windowed_sampled_fields_for_hours_from_latest, HrrrWindowedBlocker, HrrrWindowedProduct,
+    HrrrWindowedBlocker, HrrrWindowedProduct, load_windowed_sampled_fields_for_hours_from_latest,
 };
 use crate::wxstore_wxa::{
-    write_wxa_dense2d_grids, write_wxa_spatial_run_manifest, wxa_grid_meta_from_latlon,
-    WxaDense2dWriteGrid, WxaGridCrop,
+    WxaDense2dWriteGrid, WxaGridCrop, write_wxa_dense2d_grids, write_wxa_spatial_run_manifest,
+    wxa_grid_meta_from_latlon,
 };
 use chrono::{Duration, NaiveDate, Utc};
 use rustwx_core::{BundleRequirement, Field2D, ModelId, SourceId};
-use rustwx_models::{plot_recipe, plot_recipe_fetch_blockers, plot_recipe_fetch_plan, LatestRun};
+use rustwx_models::{LatestRun, plot_recipe, plot_recipe_fetch_blockers, plot_recipe_fetch_plan};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1696,10 +1696,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["qpf_1h"]
         );
-        assert!(products
-            .blockers
-            .iter()
-            .any(|blocker| blocker.product_slug == "sbecape"));
+        assert!(
+            products
+                .blockers
+                .iter()
+                .any(|blocker| blocker.product_slug == "sbecape")
+        );
     }
 
     #[test]

@@ -4,18 +4,18 @@ use crate::orchestrator::PreparedRunMetadata;
 use crate::publication::PublishedFetchIdentity;
 use crate::source::ProductSourceRoute;
 use crate::spec::{
-    direct_product_specs, supported_derived_product_specs, windowed_product_specs, ProductSpec,
+    ProductSpec, direct_product_specs, supported_derived_product_specs, windowed_product_specs,
 };
 use crate::windowed::{
-    load_windowed_sampled_fields_from_latest, required_windowed_fetch_products,
-    HrrrWindowedBlocker, HrrrWindowedProduct,
+    HrrrWindowedBlocker, HrrrWindowedProduct, load_windowed_sampled_fields_from_latest,
+    required_windowed_fetch_products,
 };
 use rustwx_core::{
     CycleSpec, FieldAreaSummary, FieldAreaSummaryMethod, FieldPointSample, FieldPointSampleMethod,
     FieldSelector, GeoPoint, GeoPolygon, ModelId, ProductId, ProductKey, ProductKeyMetadata,
     ProductKind, SourceId,
 };
-use rustwx_models::{latest_available_run_for_products_at_forecast_hour, model_summary, LatestRun};
+use rustwx_models::{LatestRun, latest_available_run_for_products_at_forecast_hour, model_summary};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
