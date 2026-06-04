@@ -54,7 +54,7 @@ future Codex edits because unrelated concerns are close together.
 | 2 | 4104 | `crates/rustwx-render/src/render.rs` | Main map renderer, canvas layout, fills, overlays, barbs, labels, and PNG-facing render path. | Continue splitting rendering internals behind the crate-root facade. |
 | 3 | 3681 | `crates/rustwx-products/src/mesoanalysis.rs` | Surface objective analysis, observation filtering/QC, background fields, reports, and WxStore export hooks. | Continue mechanical split with observation/report/export helpers behind existing tests. |
 | 4 | 3630 | `crates/rustwx-products/src/derived.rs` | Derived product requests, shared loads, native contour mode, compute paths, and batch publication. | Continue mechanical split with render-assembly helpers. |
-| 5 | 3446 | `crates/rustwx-python/src/lib.rs` | Python binding surface and Rust/Python request translation. | Split bindings by feature surface only after Rust APIs stabilize. |
+| 5 | 3274 | `crates/rustwx-python/src/lib.rs` | Python binding surface and Rust/Python request translation. | Split bindings by feature surface only after Rust APIs stabilize. |
 | 6 | 2983 | `crates/rustwx-models/src/tests.rs` | Model catalog, recipe, source-policy, URL, blocker, and latest-run regression tests. | Split test helpers by model/source family only if future test edits become hard to localize. |
 | 7 | 2351 | `crates/rustwx-cli/src/bin/rustwx_tools_site.rs` | Local tools website serving WXA plots, cross sections, soundings, and store views. | Extract reusable server/job helpers only after Studio/Python boundaries are stable. |
 | 8 | 2299 | `crates/rustwx-products/src/windowed.rs` | Windowed product families such as QPF, UH, wind swaths, and temperature extrema. | Continue splitting by product family with catalog snapshot. |
@@ -125,6 +125,15 @@ regression tests with the same parent-private test-module pattern.
 Refactor implication: do not convert `pub mod` to `pub(crate) mod` until the
 workspace and Python bindings are checked for each path. The first visibility PR
 should classify modules, not aggressively hide them.
+
+### `rustwx-python`
+
+`rustwx-python` should stay thin and expose Rust engine/product behavior without
+moving weather science back into Python. `crates/rustwx-python/src/tests.rs`
+owns render-maps route splitting, windowed product aliases, cross-model total
+QPF support, prepare-data fetch-spec routing, cache-directory handling, and
+heavy-only render plan regression tests while retaining the parent
+`#[cfg(all(test, feature = "python"))]` gate.
 
 ### `rustwx-render`
 
