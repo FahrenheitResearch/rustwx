@@ -175,6 +175,10 @@ sounding extraction/data separate from PNG presentation if the file grows.
    - Create `direct/` modules for catalog, selectors, request, batch, rendering
      assembly, and tests while preserving `rustwx_products::direct::*`.
    - Validation: `cargo test -p rustwx-products --lib`, `cargo check --workspace --all-targets`.
+   - Current split: `crates/rustwx-products/src/direct/types.rs` owns
+     request/report/runtime timing structs, output defaults, and internal
+     sampled/prepared batch structs. The parent `direct` module re-exports the
+     existing public type names, so external paths remain unchanged.
 
 5. **Mechanical `derived.rs` split**
    - Split recipe inventory, compute paths, contour mode, request/report, and
