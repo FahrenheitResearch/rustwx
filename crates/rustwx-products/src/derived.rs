@@ -1,4 +1,4 @@
-use crate::custom_poi::{CustomPoiOverlay, apply_custom_poi_overlay};
+use crate::custom_poi::apply_custom_poi_overlay;
 use crate::direct::{
     build_projected_map, build_projected_map_with_projection, inverse_raster_projection_for_grid,
 };
@@ -15,19 +15,23 @@ use rustwx_core::{
     BundleRequirement, CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId,
 };
 use rustwx_io::earth2_archive::Earth2EnsembleSelector;
+#[cfg(test)]
+use rustwx_render::PngCompressionMode;
 use rustwx_render::{
     Color, ColorScale, DerivedProductStyle, DiscreteColorScale, DomainFrame, ExtendMode,
-    LevelDensity, MapRenderRequest, PngCompressionMode, PngWriteOptions, ProductVisualMode,
-    ProjectedContourLineStyle, ProjectedDomain, ProjectedExtent, ProjectedMap, RasterSampleMode,
-    RenderImageTiming, RenderStateTiming, WeatherPalette, WeatherProduct, WindBarbLayer,
-    build_projected_contour_geometry_profile, densify_discrete_scale, map_frame_aspect_ratio,
-    save_png_profile_with_options, weather::temperature_palette_cropped_f,
+    LevelDensity, MapRenderRequest, PngWriteOptions, ProductVisualMode, ProjectedContourLineStyle,
+    ProjectedDomain, ProjectedExtent, ProjectedMap, RasterSampleMode, RenderImageTiming,
+    WeatherPalette, WeatherProduct, WindBarbLayer, build_projected_contour_geometry_profile,
+    densify_discrete_scale, map_frame_aspect_ratio, save_png_profile_with_options,
+    weather::temperature_palette_cropped_f,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+#[cfg(feature = "wrf")]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -45,11 +49,8 @@ use crate::gridded::{
     prepare_heavy_volume_timed, resolve_thermo_pair_run,
 };
 use crate::heavy::{HeavyComputeTiming, crop_and_guard_heavy_domain};
-use crate::places::PlaceLabelOverlay;
 use crate::planner::{ExecutionPlanBuilder, PlannedBundle};
-use crate::publication::{
-    ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
-};
+use crate::publication::{PublishedFetchIdentity, artifact_identity_from_path};
 use crate::runtime::{
     BundleLoaderConfig, CroppedDecodeProfile, FetchedBundleBytes, LoadedBundleSet,
     LoadedBundleTiming, load_execution_plan,
@@ -57,8 +58,10 @@ use crate::runtime::{
 use crate::severe::{
     build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
 };
+#[cfg(test)]
+use crate::shared_context::DomainSpec;
 use crate::shared_context::{
-    DomainSpec, WeatherPanelField, build_weather_map_request, model_time_subtitle, source_subtitle,
+    WeatherPanelField, build_weather_map_request, model_time_subtitle, source_subtitle,
     static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
     static_title_with_suffix,
 };
@@ -73,35 +76,22 @@ use rustwx_models::{
 #[cfg(feature = "wrf")]
 use rustwx_wrf::{WrfFile, looks_like_wrf};
 
-const OUTPUT_WIDTH: u32 = 1200;
-const OUTPUT_HEIGHT: u32 = 900;
+mod inventory;
+mod types;
+
+pub use inventory::{
+    BlockedDerivedRecipeInventoryEntry, DerivedRecipeInventoryEntry,
+    blocked_derived_recipe_inventory, supported_derived_recipe_inventory,
+};
+pub use types::{
+    DerivedBatchReport, DerivedBatchRequest, DerivedMemoryProfile, DerivedRecipeBlocker,
+    DerivedRecipeTiming, DerivedRenderedRecipe, DerivedSharedTiming, HrrrDerivedBatchReport,
+    HrrrDerivedBatchRequest, HrrrDerivedRecipeTiming, HrrrDerivedRenderedRecipe,
+    HrrrDerivedSharedTiming, NativeContourRenderMode, NativeThermoArtifactReport,
+};
+use types::{OUTPUT_HEIGHT, OUTPUT_WIDTH};
+
 const KNOTS_PER_MS: f64 = 1.943_844_5;
-
-fn default_output_width() -> u32 {
-    OUTPUT_WIDTH
-}
-
-fn default_output_height() -> u32 {
-    OUTPUT_HEIGHT
-}
-
-fn default_png_compression() -> PngCompressionMode {
-    PngCompressionMode::Default
-}
-
-fn default_native_fill_level_multiplier() -> usize {
-    1
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NativeContourRenderMode {
-    #[default]
-    Automatic,
-    Signature,
-    LegacyRaster,
-    ExperimentalAllProjected,
-}
 
 trait SurfaceFieldSet {
     fn lat(&self) -> &[f64];
@@ -213,522 +203,11 @@ impl PressureFieldSet for EmptyPressureFields {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DerivedRecipeInventoryEntry {
-    pub slug: &'static str,
-    pub title: &'static str,
-    pub experimental: bool,
-    pub heavy: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BlockedDerivedRecipeInventoryEntry {
-    pub slug: &'static str,
-    pub title: &'static str,
-    pub reason: &'static str,
-}
-
-const SUPPORTED_DERIVED_RECIPE_INVENTORY: &[DerivedRecipeInventoryEntry] = &[
-    DerivedRecipeInventoryEntry {
-        slug: "sbcape",
-        title: "SBCAPE",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "sbcin",
-        title: "SBCIN",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "sblcl",
-        title: "SBLCL",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "mlcape",
-        title: "MLCAPE",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "mlcin",
-        title: "MLCIN",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "mucape",
-        title: "MUCAPE",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "mucin",
-        title: "MUCIN",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "dcape",
-        title: "DCAPE",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "sbecape",
-        title: "SBECAPE",
-        experimental: false,
-        heavy: true,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "mlecape",
-        title: "MLECAPE",
-        experimental: false,
-        heavy: true,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "muecape",
-        title: "MUECAPE",
-        experimental: false,
-        heavy: true,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "sb_ecape_derived_cape_ratio",
-        title: "SB ECAPE / Derived CAPE Ratio (EXP)",
-        experimental: true,
-        heavy: true,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "ml_ecape_derived_cape_ratio",
-        title: "ML ECAPE / Derived CAPE Ratio (EXP)",
-        experimental: true,
-        heavy: true,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "mu_ecape_derived_cape_ratio",
-        title: "MU ECAPE / Derived CAPE Ratio (EXP)",
-        experimental: true,
-        heavy: true,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "sb_ecape_native_cape_ratio",
-        title: "SB ECAPE / Native CAPE Ratio (EXP)",
-        experimental: true,
-        heavy: true,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "ml_ecape_native_cape_ratio",
-        title: "ML ECAPE / Native CAPE Ratio (EXP)",
-        experimental: true,
-        heavy: true,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "mu_ecape_native_cape_ratio",
-        title: "MU ECAPE / Native CAPE Ratio (EXP)",
-        experimental: true,
-        heavy: true,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "sbncape",
-        title: "SBNCAPE",
-        experimental: false,
-        heavy: true,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "sbecin",
-        title: "SBECIN",
-        experimental: false,
-        heavy: true,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "mlecin",
-        title: "MLECIN",
-        experimental: false,
-        heavy: true,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "ecape_scp",
-        title: "ECAPE SCP (EXP)",
-        experimental: true,
-        heavy: true,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "ecape_ehi_0_1km",
-        title: "ECAPE EHI 0-1 km (EXP)",
-        experimental: true,
-        heavy: true,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "ecape_ehi_0_3km",
-        title: "ECAPE EHI 0-3 km (EXP)",
-        experimental: true,
-        heavy: true,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "ecape_stp",
-        title: "ECAPE STP (EXP)",
-        experimental: true,
-        heavy: true,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "theta_e_2m_10m_winds",
-        title: "2 m Theta-e, 10 m Wind Barbs",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "vpd_2m",
-        title: "2 m Vapor Pressure Deficit",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "dewpoint_depression_2m",
-        title: "2 m Dewpoint Depression",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "wetbulb_2m",
-        title: "2 m Wet-Bulb Temperature",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "fire_weather_composite",
-        title: "Fire Weather Composite",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "apparent_temperature_2m",
-        title: "2 m Apparent Temperature",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "heat_index_2m",
-        title: "2 m Heat Index",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "wind_chill_2m",
-        title: "2 m Wind Chill",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "lifted_index",
-        title: "Surface-Based Lifted Index",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "lapse_rate_700_500",
-        title: "700-500 mb Virtual Temperature Lapse Rate",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "lapse_rate_0_3km",
-        title: "0-3 km Lapse Rate",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "bulk_shear_0_1km",
-        title: "0-1 km Bulk Shear",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "bulk_shear_0_6km",
-        title: "0-6 km Bulk Shear",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "srh_0_1km",
-        title: "0-1 km SRH",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "srh_0_3km",
-        title: "0-3 km SRH",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "ehi_0_1km",
-        title: "EHI 0-1 km",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "ehi_0_3km",
-        title: "EHI 0-3 km",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "stp_fixed",
-        title: "STP (FIXED)",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "scp_mu_0_3km_0_6km_proxy",
-        title: "SCP (MU / 0-3 km / 0-6 km PROXY)",
-        experimental: true,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "temperature_advection_700mb",
-        title: "700 mb Temperature Advection",
-        experimental: false,
-        heavy: false,
-    },
-    DerivedRecipeInventoryEntry {
-        slug: "temperature_advection_850mb",
-        title: "850 mb Temperature Advection",
-        experimental: false,
-        heavy: false,
-    },
-];
-
-const BLOCKED_DERIVED_RECIPE_INVENTORY: &[BlockedDerivedRecipeInventoryEntry] = &[
-    BlockedDerivedRecipeInventoryEntry {
-        slug: "stp_effective",
-        title: "STP (EFFECTIVE)",
-        reason: "requires mixed-layer CAPE/CIN/LCL plus effective SRH and effective bulk wind difference; rustwx-products does not yet derive effective SRH or EBWD from HRRR profiles",
-    },
-    BlockedDerivedRecipeInventoryEntry {
-        slug: "scp",
-        title: "SCP",
-        reason: "requires effective SRH and effective bulk wind difference; rustwx-products does not yet derive those effective-layer kinematics from HRRR profiles",
-    },
-    BlockedDerivedRecipeInventoryEntry {
-        slug: "scp_effective",
-        title: "SCP (EFFECTIVE)",
-        reason: "requires effective SRH and effective bulk wind difference; rustwx-products does not yet derive those effective-layer kinematics from HRRR profiles",
-    },
-];
-
-pub fn supported_derived_recipe_inventory() -> &'static [DerivedRecipeInventoryEntry] {
-    SUPPORTED_DERIVED_RECIPE_INVENTORY
-}
-
-pub fn blocked_derived_recipe_inventory() -> &'static [BlockedDerivedRecipeInventoryEntry] {
-    BLOCKED_DERIVED_RECIPE_INVENTORY
-}
-
 pub fn is_heavy_derived_recipe_slug(slug: &str) -> bool {
     DerivedRecipe::parse(slug)
         .map(|recipe| recipe.is_heavy())
         .unwrap_or(false)
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DerivedBatchRequest {
-    pub model: ModelId,
-    pub date_yyyymmdd: String,
-    pub cycle_override_utc: Option<u8>,
-    pub forecast_hour: u16,
-    pub source: SourceId,
-    pub domain: DomainSpec,
-    pub out_dir: PathBuf,
-    pub cache_root: PathBuf,
-    pub use_cache: bool,
-    pub recipe_slugs: Vec<String>,
-    pub surface_product_override: Option<String>,
-    pub pressure_product_override: Option<String>,
-    #[serde(default)]
-    pub source_mode: ProductSourceMode,
-    #[serde(default)]
-    pub allow_large_heavy_domain: bool,
-    #[serde(default)]
-    pub contour_mode: NativeContourRenderMode,
-    #[serde(default = "default_native_fill_level_multiplier")]
-    pub native_fill_level_multiplier: usize,
-    #[serde(default = "default_output_width")]
-    pub output_width: u32,
-    #[serde(default = "default_output_height")]
-    pub output_height: u32,
-    #[serde(default = "default_png_compression")]
-    pub png_compression: PngCompressionMode,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub custom_poi_overlay: Option<CustomPoiOverlay>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub place_label_overlay: Option<PlaceLabelOverlay>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub earth2_ensemble: Option<Earth2EnsembleSelector>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HrrrDerivedBatchRequest {
-    pub date_yyyymmdd: String,
-    pub cycle_override_utc: Option<u8>,
-    pub forecast_hour: u16,
-    pub source: SourceId,
-    pub domain: DomainSpec,
-    pub out_dir: PathBuf,
-    pub cache_root: PathBuf,
-    pub use_cache: bool,
-    pub recipe_slugs: Vec<String>,
-    #[serde(default)]
-    pub source_mode: ProductSourceMode,
-    #[serde(default)]
-    pub allow_large_heavy_domain: bool,
-    #[serde(default)]
-    pub contour_mode: NativeContourRenderMode,
-    #[serde(default = "default_native_fill_level_multiplier")]
-    pub native_fill_level_multiplier: usize,
-    #[serde(default = "default_output_width")]
-    pub output_width: u32,
-    #[serde(default = "default_output_height")]
-    pub output_height: u32,
-    #[serde(default = "default_png_compression")]
-    pub png_compression: PngCompressionMode,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub custom_poi_overlay: Option<CustomPoiOverlay>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub place_label_overlay: Option<PlaceLabelOverlay>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DerivedSharedTiming {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fetch_decode: Option<GenericSharedTiming>,
-    pub compute_ms: u128,
-    pub project_ms: u128,
-    #[serde(default)]
-    pub native_extract_ms: u128,
-    #[serde(default)]
-    pub native_compare_ms: u128,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub memory_profile: Option<DerivedMemoryProfile>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub heavy_timing: Option<HeavyComputeTiming>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DerivedMemoryProfile {
-    pub source_grid_nx: usize,
-    pub source_grid_ny: usize,
-    pub cropped_grid_nx: usize,
-    pub cropped_grid_ny: usize,
-    pub crop_x_start: usize,
-    pub crop_x_end: usize,
-    pub crop_y_start: usize,
-    pub crop_y_end: usize,
-    pub surface_fetch_bytes_len: usize,
-    pub pressure_fetch_bytes_len: usize,
-    pub cropped_surface_decoded_bytes_estimate: usize,
-    pub cropped_pressure_decoded_bytes_estimate: usize,
-    pub cropped_decoded_total_bytes_estimate: usize,
-    pub pressure_level_count: usize,
-    pub thermo_volume_points: usize,
-    pub compute_recipe_count: usize,
-    pub needs_volume: bool,
-    pub needs_height_agl: bool,
-    pub canonical_pressure_3d_pa_bytes_estimate: usize,
-    pub canonical_height_agl_3d_bytes_estimate: usize,
-    pub canonical_shared_volume_work_bytes_estimate: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DerivedRecipeTiming {
-    #[serde(default)]
-    pub render_to_image_ms: u128,
-    #[serde(default)]
-    pub data_layer_draw_ms: u128,
-    #[serde(default)]
-    pub overlay_draw_ms: u128,
-    pub render_state_prep_ms: u128,
-    pub png_encode_ms: u128,
-    pub file_write_ms: u128,
-    pub render_ms: u128,
-    pub total_ms: u128,
-    pub state_timing: RenderStateTiming,
-    pub image_timing: RenderImageTiming,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DerivedRenderedRecipe {
-    pub recipe_slug: String,
-    pub title: String,
-    pub source_route: ProductSourceRoute,
-    pub output_path: PathBuf,
-    pub content_identity: ArtifactContentIdentity,
-    pub input_fetch_keys: Vec<String>,
-    pub timing: DerivedRecipeTiming,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DerivedRecipeBlocker {
-    pub recipe_slug: String,
-    pub source_route: ProductSourceRoute,
-    pub reason: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NativeThermoArtifactReport {
-    pub recipe_slug: String,
-    pub source_route: ProductSourceRoute,
-    pub semantics: NativeSemantics,
-    pub auto_eligible: bool,
-    pub native_label: String,
-    pub native_detail: String,
-    pub native_fetch_product: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DerivedBatchReport {
-    pub model: ModelId,
-    pub date_yyyymmdd: String,
-    pub cycle_utc: u8,
-    pub forecast_hour: u16,
-    pub source: SourceId,
-    pub domain: DomainSpec,
-    pub input_fetches: Vec<PublishedFetchIdentity>,
-    pub shared_timing: DerivedSharedTiming,
-    pub recipes: Vec<DerivedRenderedRecipe>,
-    #[serde(default)]
-    pub source_mode: ProductSourceMode,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blockers: Vec<DerivedRecipeBlocker>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub native_thermo_artifacts: Vec<NativeThermoArtifactReport>,
-    pub total_ms: u128,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HrrrDerivedBatchReport {
-    pub date_yyyymmdd: String,
-    pub cycle_utc: u8,
-    pub forecast_hour: u16,
-    pub source: SourceId,
-    pub domain: DomainSpec,
-    pub input_fetches: Vec<PublishedFetchIdentity>,
-    pub shared_timing: DerivedSharedTiming,
-    pub recipes: Vec<DerivedRenderedRecipe>,
-    #[serde(default)]
-    pub source_mode: ProductSourceMode,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blockers: Vec<DerivedRecipeBlocker>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub native_thermo_artifacts: Vec<NativeThermoArtifactReport>,
-    pub total_ms: u128,
-}
-
-pub type HrrrDerivedSharedTiming = DerivedSharedTiming;
-pub type HrrrDerivedRecipeTiming = DerivedRecipeTiming;
-pub type HrrrDerivedRenderedRecipe = DerivedRenderedRecipe;
 
 fn derived_data_layer_draw_ms(image_timing: &RenderImageTiming) -> u128 {
     image_timing.polygon_fill_ms
