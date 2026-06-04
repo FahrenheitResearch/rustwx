@@ -54,8 +54,8 @@ future Codex edits because unrelated concerns are close together.
 | 2 | 5712 | `crates/rustwx-render/src/render.rs` | Main map renderer, canvas layout, fills, overlays, barbs, labels, and PNG-facing render path. | Split rendering internals only after render-request fixtures exist. |
 | 3 | 5099 | `crates/rustwx-products/src/mesoanalysis.rs` | Surface objective analysis, observation filtering/QC, background fields, reports, and WxStore export hooks. | Mechanical split with report-schema and default-config tests. |
 | 4 | 4697 | `crates/rustwx-products/src/derived.rs` | Derived product requests, shared loads, native contour mode, compute paths, and batch publication. | Continue mechanical split with render-assembly helpers. |
-| 5 | 4696 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Surface mesoanalysis calibration parsing, aggregation, confidence reliability, and facade exports for schema, gates, and history. | Continue the mechanical module split around parsing and aggregation using the contract snapshot. |
-| 6 | 3649 | `crates/rustwx-io/src/lib.rs` | Fetch requests/results, probing, extraction, selector handling, and cache-facing IO helpers. | Split fetch/probe/grib modules after product characterization tests. |
+| 5 | 3649 | `crates/rustwx-io/src/lib.rs` | Fetch requests/results, probing, extraction, selector handling, and cache-facing IO helpers. | Split fetch/probe/grib modules after product characterization tests. |
+| 6 | 3612 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Surface mesoanalysis calibration aggregation, confidence reliability, value helpers, and facade exports for schema, gates, history, and parsing. | Continue the mechanical module split around aggregation and confidence reliability using the contract snapshot. |
 | 7 | 3608 | `crates/rustwx-python/src/lib.rs` | Python binding surface and Rust/Python request translation. | Split bindings by feature surface only after Rust APIs stabilize. |
 | 8 | 3342 | `crates/rustwx-products/src/non_ecape.rs` | Multi-model non-ECAPE orchestration across direct, derived, windowed, and WxStore lanes. | Split request/report/hour runner/publication once direct/derived are clearer. |
 | 9 | 3197 | `crates/rustwx-products/src/gridded.rs` | Model timestep loading, field decode, cropping, and pressure/surface field containers. | Extract loading/cropping/pressure containers with no behavior changes. |
@@ -269,6 +269,13 @@ sounding extraction/data separate from PNG presentation if the file grows.
      history case key/sort helpers while preserving the public
      `rustwx_products::mesoanalysis_calibration::*` history, query, and WxStore
      index paths.
+     `crates/rustwx-products/src/mesoanalysis_calibration/parsing.rs` owns
+     calibration report construction from run-report JSON values, run schema
+     selection, benchmark/external-reference/covariance-ablation parsing,
+     validation sample/source/stratum extraction, and parsing-only station and
+     stratum key helpers while preserving the public
+     `rustwx_products::mesoanalysis_calibration::build_surface_mesoanalysis_calibration_report`
+     path and test helper coverage through the parent module.
 
 7. **Mechanical `mesoanalysis.rs` split**
    - Split config, observations, background, objective analysis, validation,
