@@ -169,6 +169,9 @@ with parent-private access through the `#[cfg(test)] mod tests;` child module.
 ECAPE/severe panel default, product-name resolution, palette threshold, derived
 style, reference scale-bin, tick-step, and semantic-flag regression tests with
 the same parent-private test-module pattern.
+`crates/rustwx-render/src/tests.rs` owns crate-root facade tests for weather
+alias mapping, PNG/image output, save helpers, render-state projected-label
+handoff, experimental titles, derived builders, and overlay-only rendering.
 
 Refactor implication: this crate already has a healthier facade pattern. Future
 work should split `render.rs` internally while preserving crate-root exports.
