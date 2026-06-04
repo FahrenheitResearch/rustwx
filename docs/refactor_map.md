@@ -59,15 +59,15 @@ future Codex edits because unrelated concerns are close together.
 | 7 | 3342 | `crates/rustwx-products/src/non_ecape.rs` | Multi-model non-ECAPE orchestration across direct, derived, windowed, and WxStore lanes. | Split request/report/hour runner/publication once direct/derived are clearer. |
 | 8 | 3197 | `crates/rustwx-products/src/gridded.rs` | Model timestep loading, field decode, cropping, and pressure/surface field containers. | Extract loading/cropping/pressure containers with no behavior changes. |
 | 9 | 3163 | `crates/rustwx-products/src/direct.rs` | Direct product recipe inventory, fetch/extract orchestration, projected map assembly, and batch reports. | Continue mechanical split preserving `rustwx_products::direct::*`. |
-| 10 | 3037 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Surface mesoanalysis calibration aggregation, value helpers, and facade exports for schema, gates, history, parsing, and confidence. | Continue the mechanical module split around aggregation using the contract snapshot. |
-| 11 | 2839 | `crates/rustwx-core/src/lib.rs` | Shared core types for grids, products, selectors, models, fields, and bundles. | Split only if public compatibility is protected by re-exports. |
-| 12 | 2815 | `crates/rustwx-cross-section/src/render.rs` | Cross-section raster rendering, terrain, colorbars, wind overlays, and labels. | Split draw primitives after product fixtures exist. |
-| 13 | 2714 | `crates/rustwx-products/src/windowed.rs` | Windowed product families such as QPF, UH, wind swaths, and temperature extrema. | Split by product family with catalog snapshot. |
-| 14 | 2630 | `crates/rustwx-cli/src/bin/wrf_ops.rs` | WRF operational planning, namelist generation, launch/bootstrap helpers, and HTML output. | Consider a WRF CLI subcommand module after bin taxonomy settles. |
-| 15 | 2614 | `crates/rustwx-calc/src/mesoanalysis.rs` | Numeric mesoanalysis kernels and supporting calculations. | Defer until product-side mesoanalysis is split and tested. |
-| 16 | 2524 | `crates/rustwx-products/src/cross_section.rs` | Product-side pressure cross-section construction from decoded model data. | Split request/support/sampling/render-bridge pieces with fixtures. |
-| 17 | 2445 | `crates/rustwx-cli/src/bin/rustwx_tools_site.rs` | Local tools website serving WXA plots, cross sections, soundings, and store views. | Extract reusable server/job helpers only after Studio/Python boundaries are stable. |
-| 18 | 2415 | `crates/rustwx-products/src/wxstore_wxa.rs` | WxStore WXA dense2d import/export/static plotting support. | Split format/read-write/plot modules after WXA manifest snapshots. |
+| 10 | 2839 | `crates/rustwx-core/src/lib.rs` | Shared core types for grids, products, selectors, models, fields, and bundles. | Split only if public compatibility is protected by re-exports. |
+| 11 | 2815 | `crates/rustwx-cross-section/src/render.rs` | Cross-section raster rendering, terrain, colorbars, wind overlays, and labels. | Split draw primitives after product fixtures exist. |
+| 12 | 2714 | `crates/rustwx-products/src/windowed.rs` | Windowed product families such as QPF, UH, wind swaths, and temperature extrema. | Split by product family with catalog snapshot. |
+| 13 | 2630 | `crates/rustwx-cli/src/bin/wrf_ops.rs` | WRF operational planning, namelist generation, launch/bootstrap helpers, and HTML output. | Consider a WRF CLI subcommand module after bin taxonomy settles. |
+| 14 | 2614 | `crates/rustwx-calc/src/mesoanalysis.rs` | Numeric mesoanalysis kernels and supporting calculations. | Defer until product-side mesoanalysis is split and tested. |
+| 15 | 2524 | `crates/rustwx-products/src/cross_section.rs` | Product-side pressure cross-section construction from decoded model data. | Split request/support/sampling/render-bridge pieces with fixtures. |
+| 16 | 2445 | `crates/rustwx-cli/src/bin/rustwx_tools_site.rs` | Local tools website serving WXA plots, cross sections, soundings, and store views. | Extract reusable server/job helpers only after Studio/Python boundaries are stable. |
+| 17 | 2415 | `crates/rustwx-products/src/wxstore_wxa.rs` | WxStore WXA dense2d import/export/static plotting support. | Split format/read-write/plot modules after WXA manifest snapshots. |
+| 18 | 2369 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Surface mesoanalysis calibration value helpers, validation-summary accumulators, and facade exports for schema, gates, history, parsing, confidence, and aggregation. | Finish splitting validation-summary helpers using the calibration contract snapshot. |
 | 19 | 2336 | `crates/rustwx-radar/src/dealias.rs` | Velocity dealiasing algorithms, quality masks, and diagnostics. | Keep semantic changes separate from any module split. |
 | 20 | 2225 | `crates/rustwx-io/src/earth2_archive.rs` | AIFS/Earth2 archive member/stat selection, archive paths, and validation. | Keep with IO split but preserve archive path behavior exactly. |
 | 21 | 2219 | `crates/rustwx-products/src/dataset_export.rs` | Native dataset export and training-bundle shaping. | Split plan/materialize/report helpers after manifest snapshots. |
@@ -281,6 +281,12 @@ sounding extraction/data separate from PNG presentation if the file grows.
      reliability status construction, confidence aggregate accumulation, and
      reliability aggregate construction while preserving all confidence and
      calibration gate JSON schema strings.
+     `crates/rustwx-products/src/mesoanalysis_calibration/aggregation.rs` owns
+     calibration matrix aggregate construction, quality flag derivation,
+     diagnostic/source/stratum/station/reference/ablation/domain variable
+     aggregate accumulators, and exposes only the small source/station
+     aggregate helpers needed by innovation history while preserving
+     calibration aggregate JSON shapes.
 
 7. **Mechanical `mesoanalysis.rs` split**
    - Split config, observations, background, objective analysis, validation,
