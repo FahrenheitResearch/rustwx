@@ -20,6 +20,7 @@ flags in this directory during mechanical cleanup.
 
 | Binary | Lane | Notes |
 | --- | --- | --- |
+| `agent_preflight` | Stable user command | Emits product capability, support/blocker, execution-lane, and cost-hint JSON for agent apps. |
 | `cache_warm` | Candidate subcommand | Warms planner/runtime fetch and decode caches without rendering. |
 | `cross_section_proof` | Proof / research | Generates projected cross-section proof artifacts. |
 | `debug_selector_grid` | Diagnostic / debug | Selector/grid inspection helper. |

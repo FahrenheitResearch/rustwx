@@ -28,6 +28,7 @@ the branch.
 
 | Module | Kind | Notes |
 | --- | --- | --- |
+| `agent_backend` | Stable public | Agent-facing preflight/orchestration contract for product capability, status, lane, and cost hints. |
 | `artifact_bundle` | Compatibility public | Bundle helper surface kept public for current artifact workflows. |
 | `cache` | Compatibility public | Cache plumbing is exported broadly; future work should prefer narrower facades. |
 | `catalog` | Stable public | Product catalog facade. |
@@ -79,9 +80,9 @@ the branch.
 
 ## Refactor Implications
 
-Treat `direct`, `derived`, `cross_section`, `catalog`, `sampling`,
-`named_geometry`, `shared_context`, and `volume_store` as the first crate-root
-paths to preserve during mechanical splits.
+Treat `agent_backend`, `direct`, `derived`, `cross_section`, `catalog`,
+`sampling`, `named_geometry`, `shared_context`, and `volume_store` as the first
+crate-root paths to preserve during mechanical splits.
 
 Treat `wxstore_export`, `wxstore_profile`, and `wxstore_wxa` as operational
 lanes, not replacements for `volume_store`. They can use or publish store-shaped

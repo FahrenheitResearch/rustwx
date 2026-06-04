@@ -15,6 +15,7 @@ enum ProductModuleSurfaceKind {
 use ProductModuleSurfaceKind::*;
 
 const PRODUCT_MODULE_SURFACE: &[(&str, ProductModuleSurfaceKind)] = &[
+    ("agent_backend", StablePublic),
     ("artifact_bundle", CompatibilityPublic),
     ("cache", CompatibilityPublic),
     ("catalog", StablePublic),

@@ -82,7 +82,7 @@ future Codex edits because unrelated concerns are close together.
 
 `rustwx-products/src/lib.rs` currently exports many modules publicly:
 
-`artifact_bundle`, `cache`, `catalog`, `comparison`, `cross_section`,
+`agent_backend`, `artifact_bundle`, `cache`, `catalog`, `comparison`, `cross_section`,
 `custom_poi`, `dataset_export`, `derived`, `direct`, `ecape`, `gallery`,
 `grib_ensemble`, `gridded`, `heavy`, `hrrr`, `intelligence`, `lightning`,
 `mesoanalysis`, `mesoanalysis_calibration`, `named_geometry`, `native_dataset`,
@@ -105,6 +105,10 @@ guardrail test checks that every declared module appears in the map and the doc.
 classification/doc guardrails and place-label density glue regression tests
 while retaining parent-private access through the `#[cfg(test)] mod tests;`
 child module.
+`crates/rustwx-products/src/agent_backend.rs` owns the agent-facing preflight
+contract that classifies catalog products into complete/partial/blocked status,
+basic/intermediate/advanced complexity tiers, execution lanes, callable
+surfaces, and rough cost hints before expensive product work starts.
 `crates/rustwx-products/src/catalog/tests.rs` owns product catalog support
 matrix, route, metadata, legacy-alias, windowed coverage, proxy/proof, and
 summary-count regression tests while retaining parent-private access through

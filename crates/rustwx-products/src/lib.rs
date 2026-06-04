@@ -6,6 +6,7 @@
 //! `src/tests.rs` so consumers, Python bindings, and CLI tools get audited
 //! intentionally.
 
+pub mod agent_backend;
 pub mod artifact_bundle;
 pub mod cache;
 pub mod catalog;
