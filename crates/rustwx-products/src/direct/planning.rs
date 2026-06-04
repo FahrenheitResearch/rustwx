@@ -12,7 +12,10 @@ use rustwx_models::{
 use crate::planner::{ExecutionPlan, ExecutionPlanBuilder};
 use crate::spec::direct_product_specs;
 
-use super::{DirectBatchRequest, DirectRecipeBlocker, composite_panel_spec};
+use super::{
+    DirectBatchRequest, DirectRecipeBlocker, composite::composite_panel_spec,
+    titles::is_gdex_dataset_token,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct PlannedDirectRecipe {
@@ -305,8 +308,4 @@ pub(super) fn build_direct_execution_plan(
 
 pub(super) fn should_attach_direct_idx_patterns(source: SourceId) -> bool {
     matches!(source, SourceId::Aws | SourceId::Google)
-}
-
-fn is_gdex_dataset_token(token: &str) -> bool {
-    token.len() > 1 && token.starts_with('d') && token[1..].chars().all(|ch| ch.is_ascii_digit())
 }

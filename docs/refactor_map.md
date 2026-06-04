@@ -53,9 +53,9 @@ future Codex edits because unrelated concerns are close together.
 | 1 | 10900 | `crates/rustwx-models/src/lib.rs` | Model/source catalog, forecast-hour support, URL plans, latest-run lookup, and plot recipes. | Split catalog/source/recipe/run-discovery modules after snapshotting model catalog output. |
 | 2 | 7056 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Surface mesoanalysis calibration aggregation, gates, confidence reliability, innovation history, and watchlists. | Mechanical module directory split with schema snapshots first. |
 | 3 | 6896 | `crates/rustwx-products/src/derived.rs` | Derived product requests, recipe inventory, shared loads, native contour mode, and batch publication. | Snapshot product keys/selectors, then split catalog/request/batch/render-assembly. |
-| 4 | 5500 | `crates/rustwx-products/src/direct.rs` | Direct product recipe inventory, fetch/extract planning, projected map assembly, and batch reports. | Mechanical split preserving `rustwx_products::direct::*`. |
-| 5 | 5285 | `crates/rustwx-render/src/render.rs` | Main map renderer, canvas layout, fills, overlays, barbs, labels, and PNG-facing render path. | Split rendering internals only after render-request fixtures exist. |
-| 6 | 4835 | `crates/rustwx-products/src/mesoanalysis.rs` | Surface objective analysis, observation filtering/QC, background fields, reports, and WxStore export hooks. | Mechanical split with report-schema and default-config tests. |
+| 4 | 5307 | `crates/rustwx-render/src/render.rs` | Main map renderer, canvas layout, fills, overlays, barbs, labels, and PNG-facing render path. | Split rendering internals only after render-request fixtures exist. |
+| 5 | 4841 | `crates/rustwx-products/src/mesoanalysis.rs` | Surface objective analysis, observation filtering/QC, background fields, reports, and WxStore export hooks. | Mechanical split with report-schema and default-config tests. |
+| 6 | 4354 | `crates/rustwx-products/src/direct.rs` | Direct product recipe inventory, fetch/extract planning, projected map assembly, and batch reports. | Continue mechanical split preserving `rustwx_products::direct::*`. |
 | 7 | 3451 | `crates/rustwx-python/src/lib.rs` | Python binding surface and Rust/Python request translation. | Split bindings by feature surface only after Rust APIs stabilize. |
 | 8 | 3373 | `crates/rustwx-io/src/lib.rs` | Fetch requests/results, probing, extraction, selector handling, and cache-facing IO helpers. | Split fetch/probe/grib modules after product characterization tests. |
 | 9 | 3194 | `crates/rustwx-products/src/non_ecape.rs` | Multi-model non-ECAPE orchestration across direct, derived, windowed, and WxStore lanes. | Split request/report/hour runner/publication once direct/derived are clearer. |
@@ -184,6 +184,13 @@ sounding extraction/data separate from PNG presentation if the file grows.
      routing, and direct-lane execution-plan construction while preserving
      `rustwx_products::direct::FetchGroup` and
      `rustwx_products::direct::supported_direct_recipe_slugs`.
+     `crates/rustwx-products/src/direct/composite.rs` owns direct composite
+     panel specs, `crates/rustwx-products/src/direct/titles.rs` owns dataset
+     tokens, ensemble/stat title prefixes, and GDEX title suffixing, and
+     `crates/rustwx-products/src/direct/domain.rs` owns direct geographic
+     bounds, crop padding, periodic longitude crops, and visible-grid span
+     helpers while preserving the crate-visible
+     `rustwx_products::direct::is_global_scale_domain` path.
 
 5. **Mechanical `derived.rs` split**
    - Split recipe inventory, compute paths, contour mode, request/report, and
