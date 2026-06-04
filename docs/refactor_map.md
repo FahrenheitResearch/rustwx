@@ -60,11 +60,11 @@ future Codex edits because unrelated concerns are close together.
 | 8 | 2463 | `crates/rustwx-cli/src/bin/wrf_ops.rs` | WRF operational planning, namelist generation, launch/bootstrap helpers, and HTML output. | Consider a WRF CLI subcommand module after bin taxonomy settles. |
 | 9 | 2460 | `crates/rustwx-calc/src/mesoanalysis.rs` | Numeric mesoanalysis kernels and supporting calculations. | Defer until product-side mesoanalysis is split and tested. |
 | 10 | 2351 | `crates/rustwx-cli/src/bin/rustwx_tools_site.rs` | Local tools website serving WXA plots, cross sections, soundings, and store views. | Extract reusable server/job helpers only after Studio/Python boundaries are stable. |
-| 11 | 2346 | `crates/rustwx-products/src/gridded.rs` | Model timestep loading, field decode, pressure/surface field containers, and decode-cache helpers. | Continue splitting load/decode helpers with no behavior changes; crop/domain and fetch helpers are now extracted. |
-| 12 | 2344 | `crates/rustwx-products/src/non_ecape.rs` | Multi-model non-ECAPE orchestration across direct, derived, windowed, and WxStore lanes. | Continue splitting hour preparation and domain runner now that schema, summary, and manifest helpers are separated. |
-| 13 | 2299 | `crates/rustwx-products/src/windowed.rs` | Windowed product families such as QPF, UH, wind swaths, and temperature extrema. | Continue splitting by product family with catalog snapshot. |
-| 14 | 2280 | `crates/rustwx-products/src/wxstore_wxa.rs` | WxStore WXA dense2d import/export/static plotting support. | Split format/read-write/plot modules after WXA manifest snapshots. |
-| 15 | 2137 | `crates/rustwx-radar/src/dealias.rs` | Velocity dealiasing algorithms, quality masks, and diagnostics. | Keep semantic changes separate from any module split. |
+| 11 | 2344 | `crates/rustwx-products/src/non_ecape.rs` | Multi-model non-ECAPE orchestration across direct, derived, windowed, and WxStore lanes. | Continue splitting hour preparation and domain runner now that schema, summary, and manifest helpers are separated. |
+| 12 | 2299 | `crates/rustwx-products/src/windowed.rs` | Windowed product families such as QPF, UH, wind swaths, and temperature extrema. | Continue splitting by product family with catalog snapshot. |
+| 13 | 2280 | `crates/rustwx-products/src/wxstore_wxa.rs` | WxStore WXA dense2d import/export/static plotting support. | Split format/read-write/plot modules after WXA manifest snapshots. |
+| 14 | 2137 | `crates/rustwx-radar/src/dealias.rs` | Velocity dealiasing algorithms, quality masks, and diagnostics. | Keep semantic changes separate from any module split. |
+| 15 | 2126 | `crates/rustwx-products/src/gridded.rs` | Model timestep loading, field decode, pressure/surface field containers, and decode-cache helpers. | Continue splitting load/decode helpers with no behavior changes; crop/domain and fetch helpers are now extracted. |
 | 16 | 2117 | `crates/rustwx-products/src/dataset_export.rs` | Native dataset export and training-bundle shaping. | Split plan/materialize/report helpers after manifest snapshots. |
 | 17 | 2080 | `crates/rustwx-io/src/earth2_archive.rs` | AIFS/Earth2 archive member/stat selection, archive paths, and validation. | Keep with IO split but preserve archive path behavior exactly. |
 | 18 | 2057 | `crates/rustwx-cli/src/bin/forecast_now.rs` | One-shot operational orchestrator across products and lanes. | Candidate for main CLI subcommand once shared args are extracted. |
@@ -404,6 +404,10 @@ sounding extraction/data separate from PNG presentation if the file grows.
       selection while preserving crate-visible
       `rustwx_products::gridded::*` fetch helpers used by derived, runtime,
       and windowed lanes.
+      `crates/rustwx-products/src/gridded/tests.rs` owns gridded bundle
+      routing, fetch-pattern, optional pressure-field policy, decode-cache-name,
+      and projected-crop regression tests while retaining parent-private access
+      through the `#[cfg(test)] mod tests;` child module.
 
 15. **Mechanical `non_ecape.rs` split**
     - Split request/report schemas, hour preparation, domain runner, summary,
