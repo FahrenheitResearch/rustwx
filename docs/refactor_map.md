@@ -67,13 +67,13 @@ future Codex edits because unrelated concerns are close together.
 | 15 | 2524 | `crates/rustwx-products/src/cross_section.rs` | Product-side pressure cross-section construction from decoded model data. | Split request/support/sampling/render-bridge pieces with fixtures. |
 | 16 | 2445 | `crates/rustwx-cli/src/bin/rustwx_tools_site.rs` | Local tools website serving WXA plots, cross sections, soundings, and store views. | Extract reusable server/job helpers only after Studio/Python boundaries are stable. |
 | 17 | 2415 | `crates/rustwx-products/src/wxstore_wxa.rs` | WxStore WXA dense2d import/export/static plotting support. | Split format/read-write/plot modules after WXA manifest snapshots. |
-| 18 | 2369 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Surface mesoanalysis calibration value helpers, validation-summary accumulators, and facade exports for schema, gates, history, parsing, confidence, and aggregation. | Finish splitting validation-summary helpers using the calibration contract snapshot. |
-| 19 | 2336 | `crates/rustwx-radar/src/dealias.rs` | Velocity dealiasing algorithms, quality masks, and diagnostics. | Keep semantic changes separate from any module split. |
-| 20 | 2225 | `crates/rustwx-io/src/earth2_archive.rs` | AIFS/Earth2 archive member/stat selection, archive paths, and validation. | Keep with IO split but preserve archive path behavior exactly. |
-| 21 | 2219 | `crates/rustwx-products/src/dataset_export.rs` | Native dataset export and training-bundle shaping. | Split plan/materialize/report helpers after manifest snapshots. |
-| 22 | 2178 | `crates/rustwx-cli/src/bin/forecast_now.rs` | One-shot operational orchestrator across products and lanes. | Candidate for main CLI subcommand once shared args are extracted. |
-| 23 | 2154 | `crates/rustwx-products/src/comparison.rs` | Product manifest/report comparison and publication deltas. | Split loader/comparison/report serialization if tests cover JSON shape. |
-| 24 | 2043 | `crates/rustwx-radar/src/tile.rs` | Radar tile generation and related render/report helpers. | Defer until radar export/tile CLI lanes are classified. |
+| 18 | 2336 | `crates/rustwx-radar/src/dealias.rs` | Velocity dealiasing algorithms, quality masks, and diagnostics. | Keep semantic changes separate from any module split. |
+| 19 | 2225 | `crates/rustwx-io/src/earth2_archive.rs` | AIFS/Earth2 archive member/stat selection, archive paths, and validation. | Keep with IO split but preserve archive path behavior exactly. |
+| 20 | 2219 | `crates/rustwx-products/src/dataset_export.rs` | Native dataset export and training-bundle shaping. | Split plan/materialize/report helpers after manifest snapshots. |
+| 21 | 2178 | `crates/rustwx-cli/src/bin/forecast_now.rs` | One-shot operational orchestrator across products and lanes. | Candidate for main CLI subcommand once shared args are extracted. |
+| 22 | 2154 | `crates/rustwx-products/src/comparison.rs` | Product manifest/report comparison and publication deltas. | Split loader/comparison/report serialization if tests cover JSON shape. |
+| 23 | 2043 | `crates/rustwx-radar/src/tile.rs` | Radar tile generation and related render/report helpers. | Defer until radar export/tile CLI lanes are classified. |
+| 24 | 2032 | `crates/rustwx-products/src/mesoanalysis_calibration.rs` | Surface mesoanalysis calibration file discovery/write facade, shared JSON/value/numeric helpers, tests, and facade exports for split modules. | Split shared helpers only after confirming sibling visibility stays private. |
 | 25 | 2016 | `crates/rustwx-calc/src/severe.rs` | Severe-weather diagnostic calculations. | Defer; science kernels should move only with parity tests. |
 
 ## Public Surface Snapshot
@@ -287,6 +287,10 @@ sounding extraction/data separate from PNG presentation if the file grows.
      aggregate accumulators, and exposes only the small source/station
      aggregate helpers needed by innovation history while preserving
      calibration aggregate JSON shapes.
+     `crates/rustwx-products/src/mesoanalysis_calibration/summaries.rs` owns
+     validation source/stratum/station summary accumulators, source variable
+     summary rollups, and station variable stats accumulation while exposing
+     only sibling-visible helper types needed by parsing and aggregation.
 
 7. **Mechanical `mesoanalysis.rs` split**
    - Split config, observations, background, objective analysis, validation,

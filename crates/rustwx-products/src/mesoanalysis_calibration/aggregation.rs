@@ -1,4 +1,5 @@
 use super::confidence::ConfidenceAggregateAccumulator;
+use super::summaries::StationVariableStatsAccumulator;
 use super::*;
 use std::collections::BTreeMap;
 
