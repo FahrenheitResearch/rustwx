@@ -51,7 +51,7 @@ future Codex edits because unrelated concerns are close together.
 | Rank | LOC | File | Responsibility summary | First safe move |
 | --- | ---: | --- | --- | --- |
 | 1 | 7904 | `crates/rustwx-models/src/lib.rs` | Model/source catalog, forecast-hour support, URL plans, latest-run lookup, and plot recipes. | Split catalog/source/recipe/run-discovery modules after snapshotting model catalog output. |
-| 2 | 5307 | `crates/rustwx-render/src/render.rs` | Main map renderer, canvas layout, fills, overlays, barbs, labels, and PNG-facing render path. | Split rendering internals only after render-request fixtures exist. |
+| 2 | 4104 | `crates/rustwx-render/src/render.rs` | Main map renderer, canvas layout, fills, overlays, barbs, labels, and PNG-facing render path. | Continue splitting rendering internals behind the crate-root facade. |
 | 3 | 3681 | `crates/rustwx-products/src/mesoanalysis.rs` | Surface objective analysis, observation filtering/QC, background fields, reports, and WxStore export hooks. | Continue mechanical split with observation/report/export helpers behind existing tests. |
 | 4 | 3630 | `crates/rustwx-products/src/derived.rs` | Derived product requests, shared loads, native contour mode, compute paths, and batch publication. | Continue mechanical split with render-assembly helpers. |
 | 5 | 3446 | `crates/rustwx-python/src/lib.rs` | Python binding surface and Rust/Python request translation. | Split bindings by feature surface only after Rust APIs stabilize. |
@@ -344,6 +344,9 @@ sounding extraction/data separate from PNG presentation if the file grows.
      helpers behind the existing facade.
    - Validation: canonical render request fixtures and image/manifest checks
      once fixtures are stable.
+   - Current split: `crates/rustwx-render/src/render/tests.rs` owns the
+     render regression tests while retaining parent-private access through the
+     `#[cfg(test)] mod tests;` child module.
 
 10. **`rustwx-io/src/lib.rs` split**
     - Split fetch/probe/grib selector/extraction/projection/batch modules while
