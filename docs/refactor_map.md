@@ -226,6 +226,10 @@ coverage bounds, prepared-sweep metadata, tile option validation, velocity and
 generic-product QC summaries, product provenance, native/derived KDP/HCA
 resolution, and reflectivity despeckle regression tests with the same
 parent-private test-module pattern.
+`crates/rustwx-radar/src/sidecar/tests.rs` owns polar sidecar value/mask
+round-trip, categorical HCA labeling, radar-relative coordinate, antimeridian,
+and invalid-manifest/path-escape regression tests with the same parent-private
+test-module pattern.
 
 ## Dependency-Direction Notes
 
