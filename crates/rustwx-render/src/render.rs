@@ -5439,9 +5439,32 @@ mod tests {
 
     #[test]
     fn map_frame_aspect_ratio_matches_wide_render_layout() {
-        let ratio = map_frame_aspect_ratio(1200, 900, true, true);
+        let default_layout = compute_layout(
+            1200,
+            900,
+            true,
+            true,
+            RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology),
+            ChromeScale::default(),
+        );
+        let ratio = default_layout.map_w as f64 / default_layout.map_h as f64;
         assert!(ratio > 1.35);
         assert!(ratio < 1.7);
+
+        let operational_layout = compute_layout(
+            1200,
+            900,
+            true,
+            true,
+            RenderPresentation::for_mode_with_style(
+                ProductVisualMode::FilledMeteorology,
+                crate::presentation::StaticPlotStyle::OperationalFast,
+            ),
+            ChromeScale::default(),
+        );
+        let operational_ratio = operational_layout.map_w as f64 / operational_layout.map_h as f64;
+        assert!(operational_ratio > 1.2);
+        assert!(operational_ratio < ratio);
     }
 
     #[test]

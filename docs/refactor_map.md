@@ -208,20 +208,9 @@ Use the scripts added in this guardrail pass for the strict target state:
 ./scripts/check_workspace.sh
 ```
 
-During this guardrail pass, the strict script intentionally exposed current
-validation debt:
-
-- `cargo fmt --all -- --check` fails on pre-existing rustfmt drift in tracked
-  Rust files, including vendored `wx-core` and several workspace crates.
-- `cargo test -p rustwx-products --lib` fails
-  `windowed::tests::windowed_render_request_uses_modern_map_chrome`
-  (`SmoothRamp` vs `Stepped`).
-- `cargo test -p rustwx-render --lib` fails
-  `render::tests::map_frame_aspect_ratio_matches_wide_render_layout` and
-  `panel::tests::render_panel_grid_supports_mixed_filled_and_overlay_only_requests`.
-
-For a current-baseline check that still proves the workspace builds and the
-currently passing package tests remain healthy:
+The strict script is the desired default. The skip flags are kept only for
+temporary diagnosis if a future branch needs to separate build failures from
+format drift or package-specific regressions:
 
 ```powershell
 .\scripts\check_workspace.ps1 -SkipFmt -SkipKnownFailingPackageTests

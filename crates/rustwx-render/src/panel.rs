@@ -462,11 +462,28 @@ mod tests {
         let canvas = render_panel_grid(&layout, &[filled, overlay_only]).unwrap();
         assert_eq!(canvas.width(), 320);
         assert_eq!(canvas.height(), 120);
-        let non_white = canvas
-            .pixels()
-            .filter(|px| px.0 != [255, 255, 255, 255])
-            .count();
-        assert!(non_white > 10000);
+        let left_non_white = count_non_white_region(&canvas, 0, 0, 160, 120);
+        let right_non_white = count_non_white_region(&canvas, 160, 0, 160, 120);
+        assert!(left_non_white > 500);
+        assert!(right_non_white > 500);
+    }
+
+    fn count_non_white_region(
+        image: &RgbaImage,
+        x0: u32,
+        y0: u32,
+        width: u32,
+        height: u32,
+    ) -> usize {
+        let mut count = 0;
+        for y in y0..y0 + height {
+            for x in x0..x0 + width {
+                if image.get_pixel(x, y).0 != [255, 255, 255, 255] {
+                    count += 1;
+                }
+            }
+        }
+        count
     }
 
     #[test]

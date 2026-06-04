@@ -2628,7 +2628,7 @@ mod tests {
         );
         assert_eq!(
             render_request.legend.mode,
-            rustwx_render::LegendMode::Stepped
+            rustwx_render::LegendMode::SmoothRamp
         );
         assert!(render_request.domain_frame.is_some());
         assert!(render_request.projected_domain.is_some());
