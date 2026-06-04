@@ -199,6 +199,9 @@ tests with the same explicit bin-local child-module pattern.
 `crates/rustwx-cli/src/bin/production_runner/tests.rs` owns production runner
 ECAPE recipe filtering and unified non-HRRR lane regression tests with the same
 explicit bin-local child-module pattern.
+`crates/rustwx-cli/src/bin/radar_quality_gate/tests.rs` owns radar quality gate
+manifest threshold, numeric sidecar, unclipped bounds, and product provenance
+regression tests with the same explicit bin-local child-module pattern.
 
 ### `rustwx-calc`
 
