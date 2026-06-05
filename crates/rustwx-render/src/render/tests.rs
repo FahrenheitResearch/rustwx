@@ -140,6 +140,7 @@ fn sample_domain_frame(outline_color: crate::request::Color) -> DomainFrame {
         clear_outside: true,
         legend_follows_frame: true,
         chrome_follows_frame: true,
+        source: crate::request::DomainFrameSource::ProjectedGrid,
     }
 }
 
@@ -196,7 +197,10 @@ fn supersample_scaling_expands_overlay_dimensions() {
         nx: 2,
         stride_x: 1,
         stride_y: 1,
+        spacing_px: 24.0,
         color: Rgba::BLACK,
+        halo_color: Rgba::WHITE,
+        halo_width: 2,
         width: 1,
         length_px: 18.0,
     }];
@@ -228,6 +232,8 @@ fn supersample_scaling_expands_overlay_dimensions() {
     assert_eq!(scaled.contours[0].width, 2);
     assert_eq!(scaled.contours[0].major_width, Some(6));
     assert_eq!(scaled.barbs[0].width, 2);
+    assert_eq!(scaled.barbs[0].halo_width, 4);
+    assert_eq!(scaled.barbs[0].spacing_px, 48.0);
     assert_eq!(scaled.barbs[0].length_px, 36.0);
     assert_eq!(scaled.streamlines[0].width, 2);
     assert_eq!(scaled.domain_frame.unwrap().outline_width, 4);
@@ -489,6 +495,7 @@ fn bucketed_contours_match_legacy_for_sorted_levels() {
         None,
         None,
         &mut legacy_labels,
+        1,
     );
     draw_contours_bucketed(
         &mut bucketed,
@@ -497,6 +504,7 @@ fn bucketed_contours_match_legacy_for_sorted_levels() {
         None,
         None,
         &mut bucketed_labels,
+        1,
     );
 
     assert_eq!(legacy, bucketed);
@@ -530,6 +538,7 @@ fn bucketed_contours_match_legacy_with_nan_corner() {
         None,
         None,
         &mut legacy_labels,
+        1,
     );
     draw_contours_bucketed(
         &mut bucketed,
@@ -538,6 +547,7 @@ fn bucketed_contours_match_legacy_with_nan_corner() {
         None,
         None,
         &mut bucketed_labels,
+        1,
     );
 
     assert_eq!(legacy, bucketed);
@@ -687,9 +697,9 @@ fn domain_frame_uses_viewport_when_fill_is_fully_masked() {
         timing.domain_clip_rect,
         Some([
             5,
-            timing.map_w.saturating_sub(6),
+            timing.map_w.saturating_sub(7),
             5,
-            timing.map_h.saturating_sub(6)
+            timing.map_h.saturating_sub(7)
         ]),
         "domain frame should follow the map viewport, not the data coverage"
     );
@@ -915,6 +925,7 @@ fn bucketed_contours_match_legacy_when_projected_corner_is_missing() {
         Some(&pixel_points),
         None,
         &mut legacy_labels,
+        1,
     );
     draw_contours_bucketed(
         &mut bucketed,
@@ -923,6 +934,7 @@ fn bucketed_contours_match_legacy_when_projected_corner_is_missing() {
         Some(&pixel_points),
         None,
         &mut bucketed_labels,
+        1,
     );
 
     assert_eq!(legacy, bucketed);
@@ -951,7 +963,7 @@ fn contour_cells_reject_projected_seam_jumps() {
         Some((1000.0, 64.0)),
     ];
 
-    assert!(contour_cell_corners(&layout, &overlay, Some(&pixel_points), 0).is_none());
+    assert!(contour_cell_corners(&layout, &overlay, Some(&pixel_points), 0, 1).is_none());
 }
 
 #[test]
@@ -1027,6 +1039,7 @@ fn static_base_cache_key_changes_with_plot_style() {
         None,
         opts.presentation.canvas_background,
         opts.presentation.map_background,
+        true,
     );
     let mut clean_opts = opts.clone();
     clean_opts.presentation = RenderPresentation::for_mode_with_style(
@@ -1040,6 +1053,7 @@ fn static_base_cache_key_changes_with_plot_style() {
         None,
         clean_opts.presentation.canvas_background,
         clean_opts.presentation.map_background,
+        true,
     );
 
     assert_ne!(baseline_key, clean_key);
@@ -1171,6 +1185,20 @@ fn contour_labels_scale_up_on_operational_sized_maps() {
 }
 
 #[test]
+fn extrema_analysis_grid_keeps_full_resolution_by_default() {
+    assert_eq!(extrema_analysis_stride(100, 100), 1);
+    assert_eq!(extrema_analysis_stride(1800, 1059), 1);
+
+    let data = (0..36).map(|value| value as f64).collect::<Vec<_>>();
+    let (analysis, nx, ny) = extrema_analysis_grid(&data, 6, 6, 2);
+
+    assert_eq!((nx, ny), (3, 3));
+    assert_eq!(analysis.len(), 9);
+    assert!((analysis[0] - 3.5).abs() < 1.0e-9);
+    assert!((analysis[8] - 31.5).abs() < 1.0e-9);
+}
+
+#[test]
 fn chrome_scale_grows_layout_for_larger_outputs() {
     let base = compute_layout(
         1200,
@@ -1220,13 +1248,16 @@ fn render_to_png_suppresses_barbs_when_overlay_data_is_nan() {
     let mut opts = sample_projected_opts();
     opts.title = None;
     opts.barbs = vec![BarbOverlay {
-        u: vec![f64::NAN; 4],
-        v: vec![f64::NAN; 4],
+        u: vec![f32::NAN; 4],
+        v: vec![f32::NAN; 4],
         ny: 2,
         nx: 2,
         stride_x: 1,
         stride_y: 1,
+        spacing_px: 24.0,
         color: Rgba::BLACK,
+        halo_color: Rgba::WHITE,
+        halo_width: 2,
         width: 1,
         length_px: 12.0,
     }];

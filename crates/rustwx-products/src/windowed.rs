@@ -286,6 +286,63 @@ impl HrrrWindowedProduct {
     }
 }
 
+pub fn minimum_forecast_hour_for_windowed_product(product: HrrrWindowedProduct) -> u16 {
+    use HrrrWindowedProduct::*;
+    match product {
+        Qpf1h | QpfTotal | Uh25km1h | Uh25kmRunMax | Wind10m1hMax | Wind10mRunMax => 1,
+        Uh25km3h => 3,
+        Qpf6h => 6,
+        Qpf12h => 12,
+        Qpf24h
+        | Wind10m0to24hMax
+        | Temp2m0to24hMax
+        | Temp2m0to24hMin
+        | Temp2m0to24hRange
+        | Rh2m0to24hMax
+        | Rh2m0to24hMin
+        | Rh2m0to24hRange
+        | Dewpoint2m0to24hMax
+        | Dewpoint2m0to24hMin
+        | Dewpoint2m0to24hRange
+        | Vpd2m0to24hMax
+        | Vpd2m0to24hMin
+        | Vpd2m0to24hRange => 24,
+        Wind10m24to48hMax
+        | Wind10m0to48hMax
+        | Temp2m24to48hMax
+        | Temp2m24to48hMin
+        | Temp2m24to48hRange
+        | Temp2m0to48hMax
+        | Temp2m0to48hMin
+        | Temp2m0to48hRange
+        | Rh2m24to48hMax
+        | Rh2m24to48hMin
+        | Rh2m24to48hRange
+        | Rh2m0to48hMax
+        | Rh2m0to48hMin
+        | Rh2m0to48hRange
+        | Dewpoint2m24to48hMax
+        | Dewpoint2m24to48hMin
+        | Dewpoint2m24to48hRange
+        | Dewpoint2m0to48hMax
+        | Dewpoint2m0to48hMin
+        | Dewpoint2m0to48hRange
+        | Vpd2m24to48hMax
+        | Vpd2m24to48hMin
+        | Vpd2m24to48hRange
+        | Vpd2m0to48hMax
+        | Vpd2m0to48hMin
+        | Vpd2m0to48hRange => 48,
+    }
+}
+
+pub fn windowed_product_available_at_forecast_hour(
+    product: HrrrWindowedProduct,
+    forecast_hour: u16,
+) -> bool {
+    forecast_hour >= minimum_forecast_hour_for_windowed_product(product)
+}
+
 pub static SUPPORTED_HRRR_WINDOWED_PRODUCTS: &[HrrrWindowedProduct] = &[
     HrrrWindowedProduct::Qpf1h,
     HrrrWindowedProduct::Qpf6h,

@@ -66,6 +66,10 @@ fn sample_projected_map() -> ProjectedMap {
     }
 }
 
+fn sample_domain_bounds() -> (f64, f64, f64, f64) {
+    (-99.0, -97.0, 35.0, 37.0)
+}
+
 fn sample_fire_weather_computed_fields() -> DerivedComputedFields {
     DerivedComputedFields {
         vpd_2m_hpa: Some(vec![0.5, 1.5, 3.0, 2.0, 4.0, 6.0, 5.0, 8.0, 10.0]),
@@ -288,6 +292,33 @@ fn native_contour_config_covers_multiple_real_products() {
 }
 
 #[test]
+fn native_projected_contour_scale_uses_operational_tick_density() {
+    let config = native_contour_product_config(DerivedRecipe::Sbcape)
+        .expect("SBCAPE should have native contour config");
+    let ColorScale::Discrete(coarse) =
+        native_projected_contour_scale(config.scale, config.tick_step, 1)
+    else {
+        panic!("expected discrete contour scale");
+    };
+
+    assert!(coarse.levels.contains(&250.0));
+    assert!(coarse.levels.contains(&500.0));
+    assert!(!coarse.levels.contains(&100.0));
+    assert!(coarse.levels.len() < 25);
+
+    let config = native_contour_product_config(DerivedRecipe::Sbcape)
+        .expect("SBCAPE should have native contour config");
+    let ColorScale::Discrete(finer) =
+        native_projected_contour_scale(config.scale, config.tick_step, 5)
+    else {
+        panic!("expected discrete contour scale");
+    };
+
+    assert!(finer.levels.len() > coarse.levels.len());
+    assert!(finer.levels.contains(&100.0));
+}
+
+#[test]
 fn wetbulb_uses_raster_temperature_scale_without_contour_promotion() {
     assert!(native_contour_product_config(DerivedRecipe::Wetbulb2m).is_none());
 
@@ -298,6 +329,7 @@ fn wetbulb_uses_raster_temperature_scale_without_contour_promotion() {
         DerivedRecipe::Wetbulb2m,
         &grid,
         &projected,
+        sample_domain_bounds(),
         "20260414",
         23,
         0,
@@ -332,7 +364,7 @@ fn wetbulb_uses_raster_temperature_scale_without_contour_promotion() {
 }
 
 #[test]
-fn automatic_contour_mode_promotes_configured_native_products() {
+fn automatic_contour_mode_keeps_configured_native_products_rasterized() {
     let grid = sample_native_contour_grid();
     let projected = sample_projected_map();
     let values = vec![
@@ -343,6 +375,7 @@ fn automatic_contour_mode_promotes_configured_native_products() {
         DerivedRecipe::Sbcape,
         &grid,
         &projected,
+        sample_domain_bounds(),
         "20260414",
         23,
         0,
@@ -355,21 +388,21 @@ fn automatic_contour_mode_promotes_configured_native_products() {
         1,
     )
     .unwrap();
-    assert!(!automatic.request.projected_data_polygons.is_empty());
-    assert!(!automatic.request.projected_lines.is_empty());
+    assert!(automatic.request.projected_data_polygons.is_empty());
     assert!(
         automatic
             .request
             .field
             .values
             .iter()
-            .all(|value| value.is_nan())
+            .any(|value| value.is_finite())
     );
 
     let legacy = build_native_render_artifact(
         DerivedRecipe::Sbcape,
         &grid,
         &projected,
+        sample_domain_bounds(),
         "20260414",
         23,
         0,
@@ -405,6 +438,7 @@ fn aifs_inference_derived_policy_uses_interpolated_raster_sampling() {
         DerivedRecipe::Sbcape,
         &grid,
         &projected,
+        sample_domain_bounds(),
         "20260414",
         23,
         0,
@@ -422,7 +456,7 @@ fn aifs_inference_derived_policy_uses_interpolated_raster_sampling() {
         artifact.request.raster_sample_mode,
         RasterSampleMode::Linear
     );
-    assert!(!artifact.request.projected_data_polygons.is_empty());
+    assert!(artifact.request.projected_data_polygons.is_empty());
 }
 
 #[test]
@@ -435,6 +469,7 @@ fn experimental_contour_mode_can_promote_nonconfigured_derived_products() {
         DerivedRecipe::LiftedIndex,
         &grid,
         &projected,
+        sample_domain_bounds(),
         "20260414",
         23,
         0,
@@ -453,6 +488,7 @@ fn experimental_contour_mode_can_promote_nonconfigured_derived_products() {
         DerivedRecipe::LiftedIndex,
         &grid,
         &projected,
+        sample_domain_bounds(),
         "20260414",
         23,
         0,
@@ -486,6 +522,7 @@ fn signature_contour_mode_keeps_selected_products_rasterized() {
         DerivedRecipe::LiftedIndex,
         &grid,
         &projected,
+        sample_domain_bounds(),
         "20260414",
         23,
         0,
@@ -519,6 +556,7 @@ fn signature_contour_mode_keeps_non_signature_products_rasterized() {
         DerivedRecipe::Mucin,
         &grid,
         &projected,
+        sample_domain_bounds(),
         "20260414",
         23,
         0,
@@ -558,6 +596,7 @@ fn fire_weather_family_render_artifacts_build_and_stay_rasterized() {
             recipe,
             &grid,
             &projected,
+            sample_domain_bounds(),
             "20260414",
             23,
             0,
@@ -579,6 +618,7 @@ fn fire_weather_family_render_artifacts_build_and_stay_rasterized() {
         DerivedRecipe::FireWeatherComposite,
         &grid,
         &projected,
+        sample_domain_bounds(),
         "20260414",
         23,
         0,

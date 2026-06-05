@@ -65,7 +65,7 @@ fn direct_domain_crop_pad_cells_override() -> Option<usize> {
 fn direct_domain_crop_pad_cells_for_field(field: &SelectedField2D) -> usize {
     let base = direct_domain_crop_pad_cells_override().unwrap_or(6);
     if !matches!(field.projection.as_ref(), Some(GridProjection::Geographic)) {
-        return base;
+        return base.max(128);
     }
 
     let variant = projection_presentation_variant();

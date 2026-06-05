@@ -12,7 +12,7 @@ use crate::presentation::{
 };
 use crate::rasterize;
 use crate::request::{
-    ChromeScale, DomainFrame, ProjectedLabelPlacement, ProjectedMarkerShape,
+    ChromeScale, DomainFrame, DomainFrameSource, ProjectedLabelPlacement, ProjectedMarkerShape,
     ProjectedPlaceLabelPriority, RasterSampleMode,
 };
 use crate::text;
@@ -23,7 +23,7 @@ use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncode
 use image::imageops::{FilterType, crop_imm, filter3x3, resize};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, VecDeque, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Instant;
@@ -80,6 +80,14 @@ pub struct RenderImageTiming {
     pub raster_blit_ms: u128,
     pub linework_ms: u128,
     pub contour_ms: u128,
+    #[serde(default)]
+    pub contour_bucket_ms: u128,
+    #[serde(default)]
+    pub contour_extrema_ms: u128,
+    #[serde(default)]
+    pub contour_label_draw_ms: u128,
+    #[serde(default)]
+    pub contour_segment_count: u64,
     pub barb_ms: u128,
     #[serde(default)]
     pub outside_frame_clear_ms: u128,
@@ -220,6 +228,25 @@ impl LocalRect {
     fn width(self) -> u32 {
         self.max_x.saturating_sub(self.min_x).saturating_add(1)
     }
+
+    fn height(self) -> u32 {
+        self.max_y.saturating_sub(self.min_y).saturating_add(1)
+    }
+
+    fn expanded_within(self, padding: u32, max_w: u32, max_h: u32) -> Self {
+        Self {
+            min_x: self.min_x.saturating_sub(padding),
+            max_x: self
+                .max_x
+                .saturating_add(padding)
+                .min(max_w.saturating_sub(1)),
+            min_y: self.min_y.saturating_sub(padding),
+            max_y: self
+                .max_y
+                .saturating_add(padding)
+                .min(max_h.saturating_sub(1)),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -275,10 +302,29 @@ struct VariableLayerTiming {
     raster_blit_ms: u128,
     linework_ms: u128,
     contour_ms: u128,
+    contour_profile: ContourDrawTiming,
     barb_ms: u128,
     outside_frame_clear_ms: u128,
+    domain_frame_rect: Option<LocalRect>,
     domain_clip_rect: Option<LocalRect>,
     projection_clip_mask_present: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ContourDrawTiming {
+    bucket_ms: u128,
+    extrema_ms: u128,
+    label_draw_ms: u128,
+    segment_count: u64,
+}
+
+impl ContourDrawTiming {
+    fn add(&mut self, other: Self) {
+        self.bucket_ms = self.bucket_ms.saturating_add(other.bucket_ms);
+        self.extrema_ms = self.extrema_ms.saturating_add(other.extrema_ms);
+        self.label_draw_ms = self.label_draw_ms.saturating_add(other.label_draw_ms);
+        self.segment_count = self.segment_count.saturating_add(other.segment_count);
+    }
 }
 
 thread_local! {
@@ -1463,6 +1509,7 @@ fn static_base_cache_key(
     domain_frame_rect: Option<LocalRect>,
     canvas_background: Rgba,
     map_background: Rgba,
+    draw_static_polygons: bool,
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
     opts.width.hash(&mut hasher);
@@ -1475,6 +1522,7 @@ fn static_base_cache_key(
     layout.map_h.hash(&mut hasher);
     hash_rgba(&mut hasher, canvas_background);
     hash_rgba(&mut hasher, map_background);
+    draw_static_polygons.hash(&mut hasher);
     opts.domain_frame.is_some().hash(&mut hasher);
     if let Some(frame) = opts.domain_frame {
         frame.clear_outside.hash(&mut hasher);
@@ -1498,6 +1546,7 @@ fn build_static_base_image(
     canvas_background: Rgba,
     map_background: Rgba,
     polygon_clip_rect: (i32, i32, i32, i32),
+    draw_static_polygons: bool,
 ) -> (RgbaImage, u128, u128) {
     let background_start = Instant::now();
     let mut img = RgbaImage::from_pixel(opts.width, opts.height, canvas_background.to_image_rgba());
@@ -1526,15 +1575,17 @@ fn build_static_base_image(
     let background_ms = background_start.elapsed().as_millis();
 
     let polygon_start = Instant::now();
-    if let Some(extent) = extent {
-        draw_projected_polygons(
-            &mut img,
-            layout,
-            extent,
-            &opts.projected_polygons,
-            opts.presentation,
-            Some(polygon_clip_rect),
-        );
+    if draw_static_polygons {
+        if let Some(extent) = extent {
+            draw_projected_polygons(
+                &mut img,
+                layout,
+                extent,
+                &opts.projected_polygons,
+                opts.presentation,
+                Some(polygon_clip_rect),
+            );
+        }
     }
     let polygon_fill_ms = polygon_start.elapsed().as_millis();
     (img, background_ms, polygon_fill_ms)
@@ -1548,6 +1599,7 @@ fn cached_static_base_image(
     canvas_background: Rgba,
     map_background: Rgba,
     polygon_clip_rect: (i32, i32, i32, i32),
+    draw_static_polygons: bool,
 ) -> (RgbaImage, u128, u128) {
     let static_base_key = static_base_cache_key(
         opts,
@@ -1556,6 +1608,7 @@ fn cached_static_base_image(
         domain_frame_rect,
         canvas_background,
         map_background,
+        draw_static_polygons,
     );
     STATIC_BASE_CACHE.with(|cache_cell| {
         let mut cache = cache_cell.borrow_mut();
@@ -1573,6 +1626,7 @@ fn cached_static_base_image(
             canvas_background,
             map_background,
             polygon_clip_rect,
+            draw_static_polygons,
         );
         *cache = Some(CachedStaticBase {
             key: static_base_key,
@@ -1580,6 +1634,27 @@ fn cached_static_base_image(
         });
         (image, background_ms, polygon_fill_ms)
     })
+}
+
+fn field_and_colormap_are_opaque(data: &[f64], opts: &RenderOpts) -> bool {
+    if opts.cmap.mask_below.is_some() || opts.cmap.colors.is_empty() || opts.cmap.levels.len() < 2 {
+        return false;
+    }
+    let opaque_color = |color: Rgba| color.a == 255;
+    if !opts.cmap.colors.iter().copied().all(opaque_color) {
+        return false;
+    }
+    if !opts.cmap.under_color.is_some_and(opaque_color) {
+        return false;
+    }
+    if !opts.cmap.over_color.is_some_and(opaque_color) {
+        return false;
+    }
+    data.iter().all(|value| value.is_finite())
+}
+
+fn draw_static_polygons_for_render(data: &[f64], opts: &RenderOpts) -> bool {
+    !field_and_colormap_are_opaque(data, opts)
 }
 
 fn draw_projected_grid_boundary(
@@ -1812,6 +1887,127 @@ fn draw_local_rect_outline(
     );
 }
 
+fn covered(mask: &RgbaImage, x: u32, y: u32) -> bool {
+    mask.get_pixel(x, y).0[3] > 0
+}
+
+fn row_coverage_count(mask: &RgbaImage, y: u32, x0: u32, x1: u32) -> u32 {
+    (x0..=x1).filter(|&x| covered(mask, x, y)).count() as u32
+}
+
+fn col_coverage_count(mask: &RgbaImage, x: u32, y0: u32, y1: u32) -> u32 {
+    (y0..=y1).filter(|&y| covered(mask, x, y)).count() as u32
+}
+
+fn inner_rect_from_coverage(mask: &RgbaImage, inset: u32) -> Option<LocalRect> {
+    let (bx0, bx1, by0, by1) = raster_alpha_bounds(mask)?;
+    let mut rect = LocalRect::from_bounds((bx0, bx1, by0, by1));
+    const EDGE_COVERAGE_NUM: u32 = 9;
+    const EDGE_COVERAGE_DEN: u32 = 10;
+
+    for _ in 0..3 {
+        let width = rect.width();
+        let min_row_coverage = ((width * EDGE_COVERAGE_NUM) / EDGE_COVERAGE_DEN).max(1);
+        let top = (rect.min_y..=rect.max_y)
+            .find(|&y| row_coverage_count(mask, y, rect.min_x, rect.max_x) >= min_row_coverage)?;
+        let bottom = (rect.min_y..=rect.max_y)
+            .rev()
+            .find(|&y| row_coverage_count(mask, y, rect.min_x, rect.max_x) >= min_row_coverage)?;
+        rect.min_y = top;
+        rect.max_y = bottom;
+        if rect.min_y >= rect.max_y {
+            return None;
+        }
+
+        let height = rect.height();
+        let min_col_coverage = ((height * EDGE_COVERAGE_NUM) / EDGE_COVERAGE_DEN).max(1);
+        let left = (rect.min_x..=rect.max_x)
+            .find(|&x| col_coverage_count(mask, x, rect.min_y, rect.max_y) >= min_col_coverage)?;
+        let right = (rect.min_x..=rect.max_x)
+            .rev()
+            .find(|&x| col_coverage_count(mask, x, rect.min_y, rect.max_y) >= min_col_coverage)?;
+        rect.min_x = left;
+        rect.max_x = right;
+        if rect.min_x >= rect.max_x {
+            return None;
+        }
+    }
+
+    inset_rect(rect, inset)
+}
+
+fn compute_projected_domain_frame_rect(
+    frame: DomainFrame,
+    grid: &ProjectedGrid,
+    pixel_points: &[Option<(f64, f64)>],
+    map_w: u32,
+    map_h: u32,
+    _overlay_padding_px: u32,
+) -> Option<LocalRect> {
+    let mask =
+        rasterize::rasterize_projected_coverage_mask(grid.ny, grid.nx, pixel_points, map_w, map_h);
+    inner_rect_from_coverage(&mask, frame.inset_px)
+}
+
+fn overlay_frame_padding_px(opts: &RenderOpts, layout: &Layout) -> u32 {
+    let mut padding = 0u32;
+    for barb in &opts.barbs {
+        let width = barb.width.saturating_add(barb.halo_width.saturating_mul(2));
+        padding = padding.max(barb_glyph_margin_px(barb.length_px, width).ceil() as u32);
+    }
+    for contour in &opts.contours {
+        let line_width = contour
+            .width
+            .max(contour.major_width.unwrap_or(contour.width));
+        let label_padding = if contour.labels {
+            text::regular_line_height(1).saturating_add(8)
+        } else {
+            0
+        };
+        padding = padding.max(line_width.saturating_add(label_padding));
+    }
+    for point in &opts.projected_points {
+        padding = padding.max(
+            point
+                .radius_px
+                .saturating_add(point.width_px)
+                .saturating_add(2),
+        );
+    }
+    for line in &opts.projected_lines {
+        padding = padding.max(line.width.saturating_add(2));
+    }
+    for label in &opts.projected_place_labels {
+        let style = &label.style;
+        let marker_padding = style
+            .marker_radius_px
+            .saturating_add(style.marker_outline_width)
+            .saturating_add(2);
+        let label_width = label
+            .label
+            .as_deref()
+            .map(|text| {
+                measure_text_width_with_factor(
+                    text,
+                    style.label_scale.max(1),
+                    1.0,
+                    style.label_bold,
+                )
+            })
+            .unwrap_or(0);
+        let label_padding = style
+            .label_halo_width_px
+            .saturating_mul(2)
+            .saturating_add(label_width)
+            .saturating_add(style.label_offset_x_px.unsigned_abs())
+            .saturating_add(style.label_offset_y_px.unsigned_abs());
+        padding = padding.max(marker_padding.saturating_add(label_padding));
+    }
+
+    let cap = layout.map_w.min(layout.map_h) / 3;
+    padding.min(cap)
+}
+
 fn compute_domain_frame_rect(frame: DomainFrame, map_w: u32, map_h: u32) -> Option<LocalRect> {
     if map_w == 0 || map_h == 0 {
         return None;
@@ -1872,6 +2068,8 @@ fn scale_render_opts_for_supersample(opts: &RenderOpts, factor: u32) -> RenderOp
     }
     for barb in &mut scaled.barbs {
         barb.width = barb.width.max(1).saturating_mul(factor);
+        barb.halo_width = barb.halo_width.saturating_mul(factor);
+        barb.spacing_px *= factor as f64;
         barb.length_px *= factor as f64;
     }
     for streamline in &mut scaled.streamlines {
@@ -2161,13 +2359,15 @@ fn contour_cell_corners(
     overlay: &ContourOverlay,
     pixel_points: Option<&[Option<(f64, f64)>]>,
     base: usize,
+    cell_step: usize,
 ) -> Option<((f64, f64), (f64, f64), (f64, f64), (f64, f64))> {
+    let cell_step = cell_step.max(1);
     if let Some(points) = pixel_points {
         match (
             points[base],
-            points[base + 1],
-            points[base + overlay.nx + 1],
-            points[base + overlay.nx],
+            points[base + cell_step],
+            points[base + cell_step * overlay.nx + cell_step],
+            points[base + cell_step * overlay.nx],
         ) {
             (Some(a), Some(b), Some(c), Some(d)) if projected_quad_is_continuous(a, b, c, d) => {
                 Some((a, b, c, d))
@@ -2179,15 +2379,27 @@ fn contour_cell_corners(
         let j = base / overlay.nx;
         Some((
             grid_to_pixel(i as f64, j as f64, overlay.nx, overlay.ny, layout),
-            grid_to_pixel((i + 1) as f64, j as f64, overlay.nx, overlay.ny, layout),
             grid_to_pixel(
-                (i + 1) as f64,
-                (j + 1) as f64,
+                (i + cell_step) as f64,
+                j as f64,
                 overlay.nx,
                 overlay.ny,
                 layout,
             ),
-            grid_to_pixel(i as f64, (j + 1) as f64, overlay.nx, overlay.ny, layout),
+            grid_to_pixel(
+                (i + cell_step) as f64,
+                (j + cell_step) as f64,
+                overlay.nx,
+                overlay.ny,
+                layout,
+            ),
+            grid_to_pixel(
+                i as f64,
+                (j + cell_step) as f64,
+                overlay.nx,
+                overlay.ny,
+                layout,
+            ),
         ))
     }
 }
@@ -2238,13 +2450,19 @@ fn contour_cell_intersections(
     overlay: &ContourOverlay,
     pixel_points: Option<&[Option<(f64, f64)>]>,
     base: usize,
+    cell_step: usize,
     level: f64,
 ) -> Option<([(f64, f64); 4], usize)> {
-    let (c0, c1, c2, c3) = contour_cell_corners(layout, overlay, pixel_points, base)?;
+    let cell_step = cell_step.max(1);
+    let (c0, c1, c2, c3) = contour_cell_corners(layout, overlay, pixel_points, base, cell_step)?;
     let p0 = (c0.0, c0.1, overlay.data[base]);
-    let p1 = (c1.0, c1.1, overlay.data[base + 1]);
-    let p2 = (c2.0, c2.1, overlay.data[base + overlay.nx + 1]);
-    let p3 = (c3.0, c3.1, overlay.data[base + overlay.nx]);
+    let p1 = (c1.0, c1.1, overlay.data[base + cell_step]);
+    let p2 = (
+        c2.0,
+        c2.1,
+        overlay.data[base + cell_step * overlay.nx + cell_step],
+    );
+    let p3 = (c3.0, c3.1, overlay.data[base + cell_step * overlay.nx]);
 
     let mut pts = [(0.0, 0.0); 4];
     let mut count = 0usize;
@@ -2637,23 +2855,25 @@ fn draw_contour_segments_masked(
 fn build_contour_buckets(
     overlay: &ContourOverlay,
     pixel_points: Option<&[Option<(f64, f64)>]>,
+    cell_step: usize,
 ) -> Vec<Vec<u32>> {
     let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); overlay.levels.len()];
     if overlay.levels.is_empty() {
         return buckets;
     }
+    let cell_step = cell_step.max(1);
 
-    for j in 0..(overlay.ny - 1) {
+    for j in (0..overlay.ny.saturating_sub(cell_step)).step_by(cell_step) {
         let row_base = j * overlay.nx;
-        for i in 0..(overlay.nx - 1) {
+        for i in (0..overlay.nx.saturating_sub(cell_step)).step_by(cell_step) {
             let base = row_base + i;
             if let Some(points) = pixel_points {
                 if !matches!(
                     (
                         points[base],
-                        points[base + 1],
-                        points[base + overlay.nx + 1],
-                        points[base + overlay.nx]
+                        points[base + cell_step],
+                        points[base + cell_step * overlay.nx + cell_step],
+                        points[base + cell_step * overlay.nx]
                     ),
                     (Some(_), Some(_), Some(_), Some(_))
                 ) {
@@ -2663,9 +2883,9 @@ fn build_contour_buckets(
 
             let Some((min_v, max_v)) = finite_minmax_4(
                 overlay.data[base],
-                overlay.data[base + 1],
-                overlay.data[base + overlay.nx + 1],
-                overlay.data[base + overlay.nx],
+                overlay.data[base + cell_step],
+                overlay.data[base + cell_step * overlay.nx + cell_step],
+                overlay.data[base + cell_step * overlay.nx],
             ) else {
                 continue;
             };
@@ -2693,18 +2913,31 @@ fn draw_contours_bucketed(
     pixel_points: Option<&[Option<(f64, f64)>]>,
     clip_mask: Option<&RgbaImage>,
     label_placer: &mut ContourLabelPlacer,
-) {
-    let buckets = build_contour_buckets(overlay, pixel_points);
+    cell_step: usize,
+) -> ContourDrawTiming {
+    let mut timing = ContourDrawTiming::default();
+    let bucket_start = Instant::now();
+    let buckets = build_contour_buckets(overlay, pixel_points, cell_step);
+    timing.bucket_ms = bucket_start.elapsed().as_millis();
 
     if let Some(mask) = clip_mask {
         for (level_index, &level) in overlay.levels.iter().enumerate() {
             let mut label_state = ContourLevelLabelState::new(overlay.labels, layout);
             for &base in &buckets[level_index] {
-                let Some((pts, count)) =
-                    contour_cell_intersections(layout, overlay, pixel_points, base as usize, level)
-                else {
+                let Some((pts, count)) = contour_cell_intersections(
+                    layout,
+                    overlay,
+                    pixel_points,
+                    base as usize,
+                    cell_step,
+                    level,
+                ) else {
                     continue;
                 };
+                timing.segment_count =
+                    timing
+                        .segment_count
+                        .saturating_add(if count == 4 { 2 } else { 1 });
                 draw_contour_segments_masked(
                     img,
                     layout,
@@ -2723,11 +2956,20 @@ fn draw_contours_bucketed(
         for (level_index, &level) in overlay.levels.iter().enumerate() {
             let mut label_state = ContourLevelLabelState::new(overlay.labels, layout);
             for &base in &buckets[level_index] {
-                let Some((pts, count)) =
-                    contour_cell_intersections(layout, overlay, pixel_points, base as usize, level)
-                else {
+                let Some((pts, count)) = contour_cell_intersections(
+                    layout,
+                    overlay,
+                    pixel_points,
+                    base as usize,
+                    cell_step,
+                    level,
+                ) else {
                     continue;
                 };
+                timing.segment_count =
+                    timing
+                        .segment_count
+                        .saturating_add(if count == 4 { 2 } else { 1 });
                 draw_contour_segments_unmasked(
                     img,
                     layout,
@@ -2742,6 +2984,7 @@ fn draw_contours_bucketed(
             }
         }
     }
+    timing
 }
 
 fn draw_contours_legacy(
@@ -2751,18 +2994,30 @@ fn draw_contours_legacy(
     pixel_points: Option<&[Option<(f64, f64)>]>,
     clip_mask: Option<&RgbaImage>,
     label_placer: &mut ContourLabelPlacer,
-) {
+    cell_step: usize,
+) -> ContourDrawTiming {
+    let mut timing = ContourDrawTiming::default();
+    let cell_step = cell_step.max(1);
     for (level_index, &level) in overlay.levels.iter().enumerate() {
         let mut label_state = ContourLevelLabelState::new(overlay.labels, layout);
-        for j in 0..(overlay.ny - 1) {
+        for j in (0..overlay.ny.saturating_sub(cell_step)).step_by(cell_step) {
             let row_base = j * overlay.nx;
-            for i in 0..(overlay.nx - 1) {
+            for i in (0..overlay.nx.saturating_sub(cell_step)).step_by(cell_step) {
                 let base = row_base + i;
-                let Some((pts, count)) =
-                    contour_cell_intersections(layout, overlay, pixel_points, base, level)
-                else {
+                let Some((pts, count)) = contour_cell_intersections(
+                    layout,
+                    overlay,
+                    pixel_points,
+                    base,
+                    cell_step,
+                    level,
+                ) else {
                     continue;
                 };
+                timing.segment_count =
+                    timing
+                        .segment_count
+                        .saturating_add(if count == 4 { 2 } else { 1 });
 
                 if let Some(mask) = clip_mask {
                     draw_contour_segments_masked(
@@ -2793,6 +3048,7 @@ fn draw_contours_legacy(
             }
         }
     }
+    timing
 }
 
 fn draw_contours(
@@ -2802,16 +3058,269 @@ fn draw_contours(
     pixel_points: Option<&[Option<(f64, f64)>]>,
     clip_mask: Option<&RgbaImage>,
     label_placer: &mut ContourLabelPlacer,
-) {
+) -> ContourDrawTiming {
     if overlay.nx < 2 || overlay.ny < 2 {
+        return ContourDrawTiming::default();
+    }
+
+    let cell_step = contour_render_cell_step(overlay, layout);
+    if levels_are_sorted_finite(&overlay.levels) && overlay.data.len() <= u32::MAX as usize {
+        draw_contours_bucketed(
+            img,
+            layout,
+            overlay,
+            pixel_points,
+            clip_mask,
+            label_placer,
+            cell_step,
+        )
+    } else {
+        draw_contours_legacy(
+            img,
+            layout,
+            overlay,
+            pixel_points,
+            clip_mask,
+            label_placer,
+            cell_step,
+        )
+    }
+}
+
+fn contour_render_cell_step(overlay: &ContourOverlay, layout: &Layout) -> usize {
+    let _ = (overlay, layout);
+    std::env::var("RUSTWX_CONTOUR_CELL_STEP")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, 8)
+}
+
+fn extrema_analysis_stride(nx: usize, ny: usize) -> usize {
+    let _ = (nx, ny);
+    std::env::var("RUSTWX_EXTREMA_ANALYSIS_STRIDE")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, 16)
+}
+
+fn extrema_analysis_grid(
+    data: &[f64],
+    nx: usize,
+    ny: usize,
+    stride: usize,
+) -> (Vec<f64>, usize, usize) {
+    if stride <= 1 {
+        return (data.to_vec(), nx, ny);
+    }
+
+    let analysis_nx = nx.div_ceil(stride);
+    let analysis_ny = ny.div_ceil(stride);
+    let mut analysis = Vec::with_capacity(analysis_nx.saturating_mul(analysis_ny));
+    for aj in 0..analysis_ny {
+        let j0 = aj.saturating_mul(stride);
+        let j1 = (j0 + stride).min(ny);
+        for ai in 0..analysis_nx {
+            let i0 = ai.saturating_mul(stride);
+            let i1 = (i0 + stride).min(nx);
+            let mut sum = 0.0;
+            let mut count = 0usize;
+            for j in j0..j1 {
+                let row = j * nx;
+                for i in i0..i1 {
+                    let value = data[row + i];
+                    if value.is_finite() {
+                        sum += value;
+                        count += 1;
+                    }
+                }
+            }
+            analysis.push(if count > 0 {
+                sum / count as f64
+            } else {
+                f64::NAN
+            });
+        }
+    }
+    (analysis, analysis_nx, analysis_ny)
+}
+
+fn finite_box_blur(src: &[f64], nx: usize, ny: usize, radius: usize) -> Vec<f64> {
+    if radius == 0 || src.len() != nx.saturating_mul(ny) {
+        return src.to_vec();
+    }
+
+    let mut horizontal = vec![f64::NAN; src.len()];
+    for j in 0..ny {
+        let row = j * nx;
+        let mut sum = 0.0;
+        let mut count = 0usize;
+        for i in 0..nx {
+            if i == 0 {
+                let right = radius.min(nx.saturating_sub(1));
+                for ii in 0..=right {
+                    let value = src[row + ii];
+                    if value.is_finite() {
+                        sum += value;
+                        count += 1;
+                    }
+                }
+            } else {
+                if i > radius {
+                    let value = src[row + i - radius - 1];
+                    if value.is_finite() {
+                        sum -= value;
+                        count = count.saturating_sub(1);
+                    }
+                }
+                let add = i + radius;
+                if add < nx {
+                    let value = src[row + add];
+                    if value.is_finite() {
+                        sum += value;
+                        count += 1;
+                    }
+                }
+            }
+            if count > 0 {
+                horizontal[row + i] = sum / count as f64;
+            }
+        }
+    }
+
+    let mut blurred = vec![f64::NAN; src.len()];
+    for i in 0..nx {
+        let mut sum = 0.0;
+        let mut count = 0usize;
+        for j in 0..ny {
+            if j == 0 {
+                let bottom = radius.min(ny.saturating_sub(1));
+                for jj in 0..=bottom {
+                    let value = horizontal[jj * nx + i];
+                    if value.is_finite() {
+                        sum += value;
+                        count += 1;
+                    }
+                }
+            } else {
+                if j > radius {
+                    let value = horizontal[(j - radius - 1) * nx + i];
+                    if value.is_finite() {
+                        sum -= value;
+                        count = count.saturating_sub(1);
+                    }
+                }
+                let add = j + radius;
+                if add < ny {
+                    let value = horizontal[add * nx + i];
+                    if value.is_finite() {
+                        sum += value;
+                        count += 1;
+                    }
+                }
+            }
+            if count > 0 {
+                blurred[j * nx + i] = sum / count as f64;
+            }
+        }
+    }
+
+    blurred
+}
+
+fn sliding_extrema_line(input: &[f64], radius: usize, output: &mut [f64], want_max: bool) {
+    debug_assert_eq!(input.len(), output.len());
+    if input.is_empty() {
         return;
     }
 
-    if levels_are_sorted_finite(&overlay.levels) && overlay.data.len() <= u32::MAX as usize {
-        draw_contours_bucketed(img, layout, overlay, pixel_points, clip_mask, label_placer);
-    } else {
-        draw_contours_legacy(img, layout, overlay, pixel_points, clip_mask, label_placer);
+    let mut deque: VecDeque<usize> = VecDeque::new();
+    let mut next_right = 0usize;
+    for center in 0..input.len() {
+        let right = center.saturating_add(radius).min(input.len() - 1);
+        while next_right <= right {
+            let value = input[next_right];
+            if value.is_finite() {
+                while let Some(&back) = deque.back() {
+                    let back_value = input[back];
+                    let discard_back = if want_max {
+                        back_value <= value
+                    } else {
+                        back_value >= value
+                    };
+                    if discard_back {
+                        deque.pop_back();
+                    } else {
+                        break;
+                    }
+                }
+                deque.push_back(next_right);
+            }
+            next_right += 1;
+        }
+
+        let left = center.saturating_sub(radius);
+        while deque.front().is_some_and(|&front| front < left) {
+            deque.pop_front();
+        }
+
+        output[center] = deque.front().map(|&front| input[front]).unwrap_or(f64::NAN);
     }
+}
+
+fn sliding_window_extrema(
+    src: &[f64],
+    nx: usize,
+    ny: usize,
+    radius: usize,
+    want_max: bool,
+) -> Vec<f64> {
+    if radius == 0 || src.len() != nx.saturating_mul(ny) {
+        return src.to_vec();
+    }
+
+    let mut horizontal = vec![f64::NAN; src.len()];
+    for j in 0..ny {
+        let row = j * nx;
+        sliding_extrema_line(
+            &src[row..row + nx],
+            radius,
+            &mut horizontal[row..row + nx],
+            want_max,
+        );
+    }
+
+    let mut output = vec![f64::NAN; src.len()];
+    let mut column = vec![f64::NAN; ny];
+    let mut filtered = vec![f64::NAN; ny];
+    for i in 0..nx {
+        for j in 0..ny {
+            column[j] = horizontal[j * nx + i];
+        }
+        sliding_extrema_line(&column, radius, &mut filtered, want_max);
+        for j in 0..ny {
+            output[j * nx + i] = filtered[j];
+        }
+    }
+
+    output
+}
+
+fn percentile_pair(values: &[f64], low_percent: usize, high_percent: usize) -> Option<(f64, f64)> {
+    let mut finite: Vec<f64> = values.iter().filter(|v| v.is_finite()).copied().collect();
+    if finite.is_empty() {
+        return None;
+    }
+
+    let low_idx = finite.len().saturating_mul(low_percent) / 100;
+    finite.select_nth_unstable_by(low_idx, |left, right| left.total_cmp(right));
+    let low = finite[low_idx];
+
+    let high_idx = finite.len().saturating_mul(high_percent) / 100;
+    finite.select_nth_unstable_by(high_idx, |left, right| left.total_cmp(right));
+    let high = finite[high_idx];
+    Some((low, high))
 }
 
 fn draw_extrema_labels(
@@ -2821,95 +3330,68 @@ fn draw_extrema_labels(
     pixel_points: Option<&[Option<(f64, f64)>]>,
     clip_mask: Option<&RgbaImage>,
 ) {
-    let ny = overlay.ny;
-    let nx = overlay.nx;
-    let data = &overlay.data;
+    let source_ny = overlay.ny;
+    let source_nx = overlay.nx;
+    let source_data = &overlay.data;
+    let analysis_stride = extrema_analysis_stride(source_nx, source_ny);
+    let (analysis_data, nx, ny) =
+        extrema_analysis_grid(source_data, source_nx, source_ny, analysis_stride);
+    if nx < 3 || ny < 3 {
+        return;
+    }
+    let data = &analysis_data;
 
     // Box-blur smoothing (3 passes ≈ Gaussian sigma~3)
     let mut smoothed = data.clone();
+    let r = 5usize.min(ny / 4).min(nx / 4).max(1);
     for _ in 0..3 {
-        let mut tmp = smoothed.clone();
-        let r = 5usize.min(ny / 4).min(nx / 4).max(1);
-        for j in r..(ny - r) {
-            for i in r..(nx - r) {
-                let mut sum = 0.0;
-                let mut cnt = 0.0;
-                for dj in 0..=(2 * r) {
-                    for di in 0..=(2 * r) {
-                        let v = smoothed[(j - r + dj) * nx + (i - r + di)];
-                        if v.is_finite() {
-                            sum += v;
-                            cnt += 1.0;
-                        }
-                    }
-                }
-                if cnt > 0.0 {
-                    tmp[j * nx + i] = sum / cnt;
-                }
-            }
-        }
-        smoothed = tmp;
+        smoothed = finite_box_blur(&smoothed, nx, ny, r);
     }
 
     // Find local extrema
-    let window = (ny / 10).max(10).min(30);
-    let edge = (ny / 15).max(8);
+    let source_window = (source_ny / 10).max(10).min(30);
+    let window = source_window.div_ceil(analysis_stride).max(2).min(30);
+    let edge = ((source_ny / 15).max(8)).div_ceil(analysis_stride).max(1);
+    if nx <= edge.saturating_mul(2) || ny <= edge.saturating_mul(2) {
+        return;
+    }
+    let local_max = sliding_window_extrema(&smoothed, nx, ny, window, true);
+    let local_min = sliding_window_extrema(&smoothed, nx, ny, window, false);
+    let Some((p20, p90)) = percentile_pair(data, 20, 90) else {
+        return;
+    };
     let mut highs: Vec<(usize, usize, f64, f64)> = Vec::new();
     let mut lows: Vec<(usize, usize, f64, f64)> = Vec::new();
 
     for j in edge..(ny - edge) {
         for i in edge..(nx - edge) {
+            let idx = j * nx + i;
             let val = smoothed[j * nx + i];
             if !val.is_finite() {
                 continue;
             }
-            let mut is_max = true;
-            let mut is_min = true;
-            let j0 = j.saturating_sub(window);
-            let j1 = (j + window).min(ny - 1);
-            let i0 = i.saturating_sub(window);
-            let i1 = (i + window).min(nx - 1);
-            'scan: for jj in j0..=j1 {
-                for ii in i0..=i1 {
-                    if jj == j && ii == i {
-                        continue;
-                    }
-                    let v2 = smoothed[jj * nx + ii];
-                    if v2 > val {
-                        is_max = false;
-                    }
-                    if v2 < val {
-                        is_min = false;
-                    }
-                    if !is_max && !is_min {
-                        break 'scan;
-                    }
-                }
+            let raw_value = data[idx];
+            if raw_value > p90 && val == local_max[idx] {
+                highs.push((j, i, raw_value, val));
             }
-            if is_max {
-                highs.push((j, i, data[j * nx + i], val));
-            }
-            if is_min {
-                lows.push((j, i, data[j * nx + i], val));
+            if raw_value < p20 && val == local_min[idx] {
+                lows.push((j, i, raw_value, val));
             }
         }
     }
 
-    // Filter by percentile
-    let mut sorted: Vec<f64> = data.iter().filter(|v| v.is_finite()).copied().collect();
-    if sorted.is_empty() {
-        return;
-    }
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let p20 = sorted[sorted.len() * 20 / 100];
-    let p90 = sorted[sorted.len() * 90 / 100];
-    lows.retain(|&(_, _, v, _)| v < p20);
-    highs.retain(|&(_, _, v, _)| v > p90);
-
     // Convert grid (j,i) to pixel coordinates
     let to_px = |j: usize, i: usize| -> Option<(i32, i32)> {
+        let source_j = j
+            .saturating_mul(analysis_stride)
+            .saturating_add(analysis_stride / 2)
+            .min(source_ny.saturating_sub(1));
+        let source_i = i
+            .saturating_mul(analysis_stride)
+            .saturating_add(analysis_stride / 2)
+            .min(source_nx.saturating_sub(1));
         if let Some(points) = pixel_points {
-            let idx = j * nx + i;
+            let idx = source_j * source_nx + source_i;
             points.get(idx)?.map(|(px, py)| {
                 (
                     layout.map_x as i32 + px as i32,
@@ -2917,7 +3399,13 @@ fn draw_extrema_labels(
                 )
             })
         } else {
-            let (px, py) = grid_to_pixel(i as f64, j as f64, nx, ny, layout);
+            let (px, py) = grid_to_pixel(
+                source_i as f64,
+                source_j as f64,
+                source_nx,
+                source_ny,
+                layout,
+            );
             Some((px as i32, py as i32))
         }
     };
@@ -3334,6 +3822,9 @@ fn draw_barbs(
     }
     let sx = overlay.stride_x.max(1);
     let sy = overlay.stride_y.max(1);
+    let spacing_px = overlay.spacing_px;
+    let use_pixel_spacing = spacing_px.is_finite() && spacing_px > 0.0;
+    let mut occupied_cells: HashMap<(i32, i32), (f64, f64)> = HashMap::new();
 
     for j in (0..overlay.ny).step_by(sy) {
         for i in (0..overlay.nx).step_by(sx) {
@@ -3364,28 +3855,95 @@ fn draw_barbs(
                     continue;
                 }
             }
+            let local_x = x - layout.map_x as f64;
+            let local_y = y - layout.map_y as f64;
             if !barb_glyph_fits_map_rect(
-                x - layout.map_x as f64,
-                y - layout.map_y as f64,
+                local_x,
+                local_y,
                 layout.map_w,
                 layout.map_h,
                 overlay.length_px,
-                overlay.width,
+                overlay
+                    .width
+                    .saturating_add(overlay.halo_width.saturating_mul(2)),
             ) {
                 continue;
             }
-            draw::draw_wind_barb(
+            if use_pixel_spacing
+                && !accept_pixel_spaced_barb(&mut occupied_cells, local_x, local_y, spacing_px)
+            {
+                continue;
+            }
+            draw_wind_barb_with_halo(
                 img,
+                overlay,
                 x,
                 y,
-                overlay.u[idx],
-                overlay.v[idx],
-                overlay.color,
-                overlay.length_px,
-                overlay.width,
+                overlay.u[idx] as f64,
+                overlay.v[idx] as f64,
             );
         }
     }
+}
+
+fn accept_pixel_spaced_barb(
+    occupied_cells: &mut HashMap<(i32, i32), (f64, f64)>,
+    local_x: f64,
+    local_y: f64,
+    spacing_px: f64,
+) -> bool {
+    if spacing_px <= 0.0 || !local_x.is_finite() || !local_y.is_finite() {
+        return false;
+    }
+    let cell_x = (local_x / spacing_px).floor() as i32;
+    let cell_y = (local_y / spacing_px).floor() as i32;
+    let min_distance_sq = spacing_px * spacing_px;
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            if let Some((other_x, other_y)) = occupied_cells.get(&(cell_x + dx, cell_y + dy)) {
+                let dist_sq = (local_x - other_x).powi(2) + (local_y - other_y).powi(2);
+                if dist_sq < min_distance_sq {
+                    return false;
+                }
+            }
+        }
+    }
+    occupied_cells.insert((cell_x, cell_y), (local_x, local_y));
+    true
+}
+
+fn draw_wind_barb_with_halo(
+    img: &mut RgbaImage,
+    overlay: &BarbOverlay,
+    x: f64,
+    y: f64,
+    u: f64,
+    v: f64,
+) {
+    if overlay.halo_color.a > 0 && overlay.halo_width > 0 {
+        draw::draw_wind_barb(
+            img,
+            x,
+            y,
+            u,
+            v,
+            overlay.halo_color,
+            overlay.length_px,
+            overlay
+                .width
+                .saturating_add(overlay.halo_width.saturating_mul(2)),
+        );
+    }
+    draw::draw_wind_barb(
+        img,
+        x,
+        y,
+        u,
+        v,
+        overlay.color,
+        overlay.length_px,
+        overlay.width,
+    );
 }
 
 fn barb_glyph_fits_map_rect(
@@ -3399,11 +3957,34 @@ fn barb_glyph_fits_map_rect(
     if map_w == 0 || map_h == 0 {
         return false;
     }
-    let margin = length_px.max(0.0) + (width.max(1) as f64 * 4.0) + 2.0;
+    let margin = barb_glyph_margin_px(length_px, width);
     local_x >= margin
         && local_y >= margin
         && local_x <= map_w.saturating_sub(1) as f64 - margin
         && local_y <= map_h.saturating_sub(1) as f64 - margin
+}
+
+fn barb_glyph_margin_px(length_px: f64, width: u32) -> f64 {
+    length_px.max(0.0) + (width.max(1) as f64 * 4.0) + 2.0
+}
+
+fn effective_domain_frame_rect(
+    opts: &RenderOpts,
+    map_img: &RgbaImage,
+    projected_domain_frame_rect: Option<LocalRect>,
+    overlay_padding_px: u32,
+) -> Option<LocalRect> {
+    match opts.domain_frame {
+        Some(frame) if matches!(frame.source, DomainFrameSource::RasterAlpha) => {
+            raster_alpha_bounds(map_img)
+                .map(LocalRect::from_bounds)
+                .and_then(|rect| inset_rect(rect, frame.inset_px))
+                .map(|rect| {
+                    rect.expanded_within(overlay_padding_px, map_img.width(), map_img.height())
+                })
+        }
+        _ => projected_domain_frame_rect,
+    }
 }
 
 fn draw_variable_layers(
@@ -3415,6 +3996,7 @@ fn draw_variable_layers(
     layout: &Layout,
     projected_pixels: Option<&[Option<(f64, f64)>]>,
     domain_frame_rect: Option<LocalRect>,
+    overlay_padding_px: u32,
     polygon_clip_rect: (i32, i32, i32, i32),
     canvas_background: Rgba,
 ) -> VariableLayerTiming {
@@ -3487,9 +4069,11 @@ fn draw_variable_layers(
         } else {
             None
         };
+    let effective_domain_frame_rect =
+        effective_domain_frame_rect(opts, &map_img, domain_frame_rect, overlay_padding_px);
 
     let frame_clip_rect = match opts.domain_frame {
-        Some(frame) if frame.clear_outside => domain_frame_rect,
+        Some(frame) if frame.clear_outside => effective_domain_frame_rect,
         _ => None,
     };
     let domain_clip_rect = frame_clip_rect.or_else(|| {
@@ -3570,34 +4154,46 @@ fn draw_variable_layers(
     }
     let point_ms = point_start.elapsed().as_millis();
 
-    let barb_start = Instant::now();
+    let streamline_start = Instant::now();
     for streamline in &opts.streamlines {
         draw_streamlines(img, layout, streamline, projected_pixels, draw_clip_mask);
     }
-    for barb in &opts.barbs {
-        draw_barbs(img, layout, barb, projected_pixels, draw_clip_mask);
-    }
-    let barb_ms = barb_start.elapsed().as_millis();
+    let streamline_ms = streamline_start.elapsed().as_millis();
 
     let contour_start = Instant::now();
+    let mut contour_profile = ContourDrawTiming::default();
     let mut contour_label_placer = ContourLabelPlacer::default();
     for contour in &opts.contours {
-        draw_contours(
+        contour_profile.add(draw_contours(
             img,
             layout,
             contour,
             projected_pixels,
             draw_clip_mask,
             &mut contour_label_placer,
-        );
+        ));
     }
+    let label_draw_start = Instant::now();
     contour_label_placer.draw(img);
+    contour_profile.label_draw_ms = contour_profile
+        .label_draw_ms
+        .saturating_add(label_draw_start.elapsed().as_millis());
     for contour in &opts.contours {
         if contour.show_extrema && contour.nx >= 20 && contour.ny >= 20 {
+            let extrema_start = Instant::now();
             draw_extrema_labels(img, layout, contour, projected_pixels, draw_clip_mask);
+            contour_profile.extrema_ms = contour_profile
+                .extrema_ms
+                .saturating_add(extrema_start.elapsed().as_millis());
         }
     }
     let contour_ms = contour_start.elapsed().as_millis();
+
+    let barb_start = Instant::now();
+    for barb in &opts.barbs {
+        draw_barbs(img, layout, barb, projected_pixels, draw_clip_mask);
+    }
+    let barb_ms = streamline_ms.saturating_add(barb_start.elapsed().as_millis());
 
     let label_start = Instant::now();
     if let Some(ref extent) = opts.map_extent {
@@ -3618,7 +4214,7 @@ fn draw_variable_layers(
         if let Some(frame) = opts.presentation.chrome.frame_color {
             draw_local_mask_outline(img, layout, mask, frame, 1);
         }
-    } else if let (Some(frame), Some(rect)) = (opts.domain_frame, domain_frame_rect) {
+    } else if let (Some(frame), Some(rect)) = (opts.domain_frame, effective_domain_frame_rect) {
         if frame.clear_outside {
             clear_map_outside_local_rect(img, layout, rect, canvas_background);
         }
@@ -3637,8 +4233,10 @@ fn draw_variable_layers(
             .saturating_add(point_ms)
             .saturating_add(label_ms),
         contour_ms,
+        contour_profile,
         barb_ms,
         outside_frame_clear_ms,
+        domain_frame_rect: effective_domain_frame_rect,
         domain_clip_rect,
         projection_clip_mask_present: projection_clip_mask.is_some(),
     }
@@ -3779,7 +4377,7 @@ fn draw_chrome_and_colorbar(
         }
     }
     if let Some(frame) = opts.presentation.chrome.frame_color {
-        let draw_rectangular_frame = !projection_clip_mask_present || opts.domain_frame.is_some();
+        let draw_rectangular_frame = opts.domain_frame.is_none() && !projection_clip_mask_present;
         if draw_rectangular_frame {
             let map_right = layout.map_x + layout.map_w.saturating_sub(1);
             let map_bottom = layout.map_y + layout.map_h.saturating_sub(1);
@@ -4012,9 +4610,28 @@ fn render_to_image_profile_inner(
         _ => None,
     };
     let projected_pixel_ms = projected_pixel_start.elapsed().as_millis();
-    let domain_frame_rect = opts
-        .domain_frame
-        .and_then(|frame| compute_domain_frame_rect(frame, layout.map_w, layout.map_h));
+    let overlay_padding_px = overlay_frame_padding_px(opts, &layout);
+    let domain_frame_rect = match (
+        opts.domain_frame,
+        opts.projected_grid.as_ref(),
+        projected_pixels.as_deref(),
+    ) {
+        (Some(frame), Some(grid), Some(pixel_points))
+            if matches!(frame.source, DomainFrameSource::ProjectedGrid) =>
+        {
+            compute_projected_domain_frame_rect(
+                frame,
+                grid,
+                pixel_points,
+                layout.map_w,
+                layout.map_h,
+                overlay_padding_px,
+            )
+        }
+        (Some(frame), _, _) if matches!(frame.source, DomainFrameSource::RasterAlpha) => None,
+        (Some(frame), _, _) => compute_domain_frame_rect(frame, layout.map_w, layout.map_h),
+        _ => None,
+    };
     let polygon_clip_rect = domain_frame_rect
         .filter(|_| matches!(opts.domain_frame, Some(frame) if frame.clear_outside))
         .map(|rect| {
@@ -4046,6 +4663,7 @@ fn render_to_image_profile_inner(
     } else {
         opts.background
     };
+    let draw_static_polygons = draw_static_polygons_for_render(data, opts);
     let (mut img, background_ms, polygon_fill_ms) = cached_static_base_image(
         opts,
         &layout,
@@ -4054,6 +4672,7 @@ fn render_to_image_profile_inner(
         canvas_background,
         map_background,
         polygon_clip_rect,
+        draw_static_polygons,
     );
     let variable_timing = draw_variable_layers(
         &mut img,
@@ -4064,15 +4683,20 @@ fn render_to_image_profile_inner(
         &layout,
         projected_pixels.as_deref(),
         domain_frame_rect,
+        overlay_padding_px,
         polygon_clip_rect,
         canvas_background,
     );
+    let effective_domain_frame_rect = variable_timing.domain_frame_rect.or(domain_frame_rect);
+    let effective_domain_clip_rect = variable_timing
+        .domain_clip_rect
+        .or(effective_domain_frame_rect);
     let (chrome_ms, colorbar_ms) = draw_chrome_and_colorbar(
         &mut img,
         &layout,
         opts,
         projected_pixels.as_deref(),
-        domain_frame_rect,
+        effective_domain_frame_rect,
         variable_timing.domain_clip_rect,
         variable_timing.projection_clip_mask_present,
         has_title,
@@ -4087,6 +4711,10 @@ fn render_to_image_profile_inner(
         raster_blit_ms: variable_timing.raster_blit_ms,
         linework_ms: variable_timing.linework_ms,
         contour_ms: variable_timing.contour_ms,
+        contour_bucket_ms: variable_timing.contour_profile.bucket_ms,
+        contour_extrema_ms: variable_timing.contour_profile.extrema_ms,
+        contour_label_draw_ms: variable_timing.contour_profile.label_draw_ms,
+        contour_segment_count: variable_timing.contour_profile.segment_count,
         barb_ms: variable_timing.barb_ms,
         outside_frame_clear_ms: variable_timing.outside_frame_clear_ms,
         chrome_ms,
@@ -4099,8 +4727,7 @@ fn render_to_image_profile_inner(
         has_projected_grid: opts.projected_grid.is_some(),
         has_inverse_raster: opts.inverse_projected_grid.is_some(),
         projection_clip_mask_present: variable_timing.projection_clip_mask_present,
-        domain_clip_rect: variable_timing
-            .domain_clip_rect
+        domain_clip_rect: effective_domain_clip_rect
             .map(|rect| [rect.min_x, rect.max_x, rect.min_y, rect.max_y]),
     };
 

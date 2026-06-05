@@ -120,13 +120,16 @@ pub struct ContourOverlay {
 
 #[derive(Clone, Debug)]
 pub struct BarbOverlay {
-    pub u: Vec<f64>,
-    pub v: Vec<f64>,
+    pub u: Vec<f32>,
+    pub v: Vec<f32>,
     pub ny: usize,
     pub nx: usize,
     pub stride_x: usize,
     pub stride_y: usize,
+    pub spacing_px: f64,
     pub color: Rgba,
+    pub halo_color: Rgba,
+    pub halo_width: u32,
     pub width: u32,
     pub length_px: f64,
 }

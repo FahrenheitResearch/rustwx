@@ -562,6 +562,9 @@ fn build_fetch_request(
                 }) {
                     return Vec::new();
                 }
+                if let Some(patterns) = explicit_subset_patterns_for_bundle(bundle) {
+                    return patterns;
+                }
                 let mut patterns = crate::gridded::bundle_fetch_variable_patterns(
                     bundle.id.model,
                     bundle.id.bundle,
@@ -604,6 +607,27 @@ fn build_fetch_request(
         variable_patterns,
         earth2_ensemble,
     })
+}
+
+fn explicit_subset_patterns_for_bundle(bundle: &PlannedBundle) -> Option<Vec<String>> {
+    if bundle.aliases.is_empty()
+        || !bundle
+            .aliases
+            .iter()
+            .all(|alias| !alias.variable_patterns.is_empty())
+    {
+        return None;
+    }
+
+    let mut patterns = Vec::new();
+    for alias in &bundle.aliases {
+        for pattern in &alias.variable_patterns {
+            if !patterns.contains(pattern) {
+                patterns.push(pattern.clone());
+            }
+        }
+    }
+    (!patterns.is_empty()).then_some(patterns)
 }
 
 /// Worker used by `load_execution_plan` to fetch a single bundle's

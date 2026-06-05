@@ -171,11 +171,42 @@ impl LevelBins {
         &self.bins
     }
 
+    pub fn bin(&self, index: usize) -> Option<&LevelBin> {
+        self.bins.get(index)
+    }
+
     pub fn bin_index(&self, value: f64) -> Option<usize> {
-        self.bins
-            .iter()
-            .find(|bin| bin.contains(value))
-            .map(|bin| bin.index)
+        if !value.is_finite() {
+            return None;
+        }
+
+        let first = *self.thresholds.first()?;
+        let last = *self.thresholds.last()?;
+        let finite_offset = usize::from(self.extend.includes_below());
+
+        if value < first {
+            return self.extend.includes_below().then_some(0);
+        }
+
+        if value > last {
+            return self
+                .extend
+                .includes_above()
+                .then_some(self.bins.len().saturating_sub(1));
+        }
+
+        if value == last {
+            return if self.extend.includes_above() {
+                Some(self.bins.len().saturating_sub(1))
+            } else {
+                Some(finite_offset + self.thresholds.len().saturating_sub(2))
+            };
+        }
+
+        let upper_threshold_index = self
+            .thresholds
+            .partition_point(|threshold| *threshold <= value);
+        Some(finite_offset + upper_threshold_index.saturating_sub(1))
     }
 }
 

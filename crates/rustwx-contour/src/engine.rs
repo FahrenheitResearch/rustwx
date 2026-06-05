@@ -73,24 +73,7 @@ impl ContourEngine {
             };
 
             let (min_value, max_value) = sample.value_range_including_center();
-            let mut sole_active_bin = None;
-            let mut active_bin_count = 0usize;
-            for &bin in bins.bins() {
-                if !bin_overlaps_value_range(bin, min_value, max_value) {
-                    continue;
-                }
-                active_bin_count += 1;
-                if sole_active_bin.is_none() {
-                    sole_active_bin = Some(bin);
-                }
-                if active_bin_count > 1 {
-                    break;
-                }
-            }
-
-            if let Some(bin) = sole_active_bin
-                .filter(|bin| active_bin_count == 1 && sample.all_values_in_bin(*bin))
-            {
+            if let Some(bin) = sample.single_bin(bins) {
                 if let Some(polygon) = sample.full_cell_polygon() {
                     polygons.push(BandPolygon {
                         bin_index: bin.index,
@@ -292,6 +275,11 @@ impl CellSample {
     fn all_values_in_bin(&self, bin: LevelBin) -> bool {
         bin.contains(self.center.value)
             && self.corners.iter().all(|corner| bin.contains(corner.value))
+    }
+
+    fn single_bin(&self, bins: &LevelBins) -> Option<LevelBin> {
+        let bin = *bins.bin(bins.bin_index(self.center.value)?)?;
+        self.all_values_in_bin(bin).then_some(bin)
     }
 
     fn full_cell_polygon(&self) -> Option<Polygon> {

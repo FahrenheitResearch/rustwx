@@ -4,12 +4,11 @@ use crate::direct::{
 };
 use rustwx_core::{CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId};
 use rustwx_render::{
-    Color, ColorScale, DerivedProductStyle, DiscreteColorScale, DomainFrame, ExtendMode,
-    LevelDensity, MapRenderRequest, PngWriteOptions, ProjectedContourLineStyle, ProjectedDomain,
-    ProjectedExtent, ProjectedMap, RasterSampleMode, RenderImageTiming, WeatherPalette,
-    WeatherProduct, WindBarbLayer, build_projected_contour_geometry_profile,
-    densify_discrete_scale, map_frame_aspect_ratio, save_png_profile_with_options,
-    weather::temperature_palette_cropped_f,
+    Color, ColorScale, DerivedProductStyle, DiscreteColorScale, ExtendMode, LevelDensity,
+    MapRenderRequest, PngWriteOptions, ProjectedContourLineStyle, ProjectedDomain, ProjectedExtent,
+    ProjectedMap, RasterSampleMode, RenderImageTiming, WeatherPalette, WeatherProduct,
+    WindBarbLayer, build_projected_contour_geometry_profile, densify_discrete_scale,
+    map_frame_aspect_ratio, save_png_profile_with_options, weather::temperature_palette_cropped_f,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -874,6 +873,7 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
             route.recipe,
             &native_field.grid,
             &native_projected,
+            request.domain.bounds,
             date_yyyymmdd,
             cycle_utc,
             forecast_hour,
@@ -1770,6 +1770,7 @@ fn build_native_render_artifact(
     recipe: DerivedRecipe,
     grid: &rustwx_core::LatLonGrid,
     projected: &ProjectedMap,
+    domain_bounds: (f64, f64, f64, f64),
     date_yyyymmdd: &str,
     cycle_utc: u8,
     forecast_hour: u16,
@@ -1786,6 +1787,7 @@ fn build_native_render_artifact(
         recipe,
         grid,
         projected,
+        domain_bounds,
         date_yyyymmdd,
         cycle_utc,
         forecast_hour,
@@ -1891,6 +1893,7 @@ pub fn build_hrrr_live_derived_artifact_with_render_mode(
                 recipe,
                 grid,
                 projected,
+                domain_bounds,
                 date_yyyymmdd,
                 cycle_utc,
                 forecast_hour,
@@ -1938,6 +1941,7 @@ pub fn build_hrrr_live_derived_artifact_profiled(
                 recipe,
                 grid,
                 projected,
+                domain_bounds,
                 date_yyyymmdd,
                 cycle_utc,
                 forecast_hour,
@@ -2002,6 +2006,7 @@ fn build_render_artifact(
     recipe: DerivedRecipe,
     grid: &rustwx_core::LatLonGrid,
     projected: &ProjectedMap,
+    domain_bounds: (f64, f64, f64, f64),
     date_yyyymmdd: &str,
     cycle_utc: u8,
     forecast_hour: u16,
@@ -2017,6 +2022,7 @@ fn build_render_artifact(
         recipe,
         grid,
         projected,
+        domain_bounds,
         date_yyyymmdd,
         cycle_utc,
         forecast_hour,
@@ -2034,6 +2040,7 @@ fn build_render_artifact_with_contour_mode(
     recipe: DerivedRecipe,
     grid: &rustwx_core::LatLonGrid,
     projected: &ProjectedMap,
+    domain_bounds: (f64, f64, f64, f64),
     date_yyyymmdd: &str,
     cycle_utc: u8,
     forecast_hour: u16,
@@ -2351,7 +2358,8 @@ fn build_render_artifact_with_contour_mode(
     request.chrome_scale = static_chrome_scale();
     request.supersample_factor = static_supersample_factor();
     request.supersample_sharpen = static_supersample_sharpen();
-    request.domain_frame = Some(DomainFrame::map_viewport_default());
+    crate::plot_design::StaticPlotDesign::new(domain_bounds, recipe.visual_mode())
+        .apply_to_request(&mut request);
     request.title = Some(derived_title_for_model(model, recipe.title()));
     request.subtitle_left = Some(model_time_subtitle(
         model,
@@ -2398,6 +2406,7 @@ fn build_render_artifact_with_contour_mode_profiled(
     recipe: DerivedRecipe,
     grid: &rustwx_core::LatLonGrid,
     projected: &ProjectedMap,
+    domain_bounds: (f64, f64, f64, f64),
     date_yyyymmdd: &str,
     cycle_utc: u8,
     forecast_hour: u16,
@@ -2717,7 +2726,8 @@ fn build_render_artifact_with_contour_mode_profiled(
     request.chrome_scale = static_chrome_scale();
     request.supersample_factor = static_supersample_factor();
     request.supersample_sharpen = static_supersample_sharpen();
-    request.domain_frame = Some(DomainFrame::map_viewport_default());
+    crate::plot_design::StaticPlotDesign::new(domain_bounds, recipe.visual_mode())
+        .apply_to_request(&mut request);
     request.title = Some(derived_title_for_model(model, recipe.title()));
     request.subtitle_left = Some(model_time_subtitle(
         model,
@@ -2901,14 +2911,17 @@ fn maybe_apply_native_contour_fill_for_mode_profiled(
     native_fill_level_multiplier: usize,
 ) -> Result<NativeContourBuildTiming, Box<dyn std::error::Error>> {
     let total_start = Instant::now();
-    if matches!(contour_mode, NativeContourRenderMode::LegacyRaster) {
+    if matches!(
+        contour_mode,
+        NativeContourRenderMode::Automatic | NativeContourRenderMode::LegacyRaster
+    ) {
         return Ok(NativeContourBuildTiming::default());
     }
     let Some(projected_domain) = request.projected_domain.as_ref() else {
         return Ok(NativeContourBuildTiming::default());
     };
     let config = match contour_mode {
-        NativeContourRenderMode::Automatic | NativeContourRenderMode::Signature => {
+        NativeContourRenderMode::Signature => {
             let Some(config) = native_contour_product_config(recipe) else {
                 return Ok(NativeContourBuildTiming::default());
             };
@@ -2921,9 +2934,15 @@ fn maybe_apply_native_contour_fill_for_mode_profiled(
                 line_style: ProjectedContourLineStyle::default(),
                 tick_step: request.cbar_tick_step,
             }),
-        NativeContourRenderMode::LegacyRaster => unreachable!(),
+        NativeContourRenderMode::Automatic | NativeContourRenderMode::LegacyRaster => {
+            unreachable!()
+        }
     };
-    request.scale = densify_native_contour_scale(config.scale, native_fill_level_multiplier);
+    request.scale = native_projected_contour_scale(
+        config.scale,
+        config.tick_step,
+        native_fill_level_multiplier,
+    );
     if config.tick_step.is_some() {
         request.cbar_tick_step = config.tick_step;
     }
@@ -2948,10 +2967,22 @@ fn maybe_apply_native_contour_fill_for_mode_profiled(
     })
 }
 
-fn densify_native_contour_scale(
+fn native_projected_contour_scale(
     scale: rustwx_render::ColorScale,
+    tick_step: Option<f64>,
     native_fill_level_multiplier: usize,
 ) -> rustwx_render::ColorScale {
+    if let Some(tick_step) = tick_step.filter(|value| value.is_finite() && *value > 0.0) {
+        let mut discrete = scale.resolved_discrete();
+        let multiplier = native_fill_level_multiplier.max(1) as f64;
+        discrete.levels = coarsen_native_contour_levels(
+            &discrete.levels,
+            tick_step / multiplier,
+            discrete.mask_below,
+        );
+        return rustwx_render::ColorScale::Discrete(discrete);
+    }
+
     if native_fill_level_multiplier <= 1 {
         return scale;
     }
@@ -2963,6 +2994,50 @@ fn densify_native_contour_scale(
             min_source_level_count: 2,
         },
     ))
+}
+
+fn coarsen_native_contour_levels(
+    levels: &[f64],
+    min_step: f64,
+    mask_below: Option<f64>,
+) -> Vec<f64> {
+    if levels.len() <= 2 || !min_step.is_finite() || min_step <= 0.0 {
+        return levels.to_vec();
+    }
+
+    let mut coarsened = Vec::new();
+    let push_level = |levels_out: &mut Vec<f64>, level: f64| {
+        if level.is_finite()
+            && levels_out
+                .last()
+                .is_none_or(|last| (level - *last).abs() > 1.0e-9)
+        {
+            levels_out.push(level);
+        }
+    };
+
+    let mut last_kept = levels[0];
+    push_level(&mut coarsened, last_kept);
+    for &level in levels.iter().skip(1) {
+        if level - last_kept >= min_step - 1.0e-9 {
+            push_level(&mut coarsened, level);
+            last_kept = level;
+        }
+    }
+    if let Some(&last) = levels.last() {
+        push_level(&mut coarsened, last);
+    }
+    if let Some(mask) = mask_below.filter(|value| value.is_finite()) {
+        if let (Some(&first), Some(&last)) = (levels.first(), levels.last()) {
+            if mask > first && mask < last {
+                push_level(&mut coarsened, mask);
+            }
+        }
+    }
+
+    coarsened.sort_by(|left, right| left.total_cmp(right));
+    coarsened.dedup_by(|left, right| (*left - *right).abs() <= 1.0e-9);
+    coarsened
 }
 
 fn heavy_ecape_subtitle_right(recipe: DerivedRecipe, source: SourceId) -> String {
@@ -3325,7 +3400,10 @@ fn surface_wind_barb_layer(
         v: v_kt.to_vec(),
         stride_x,
         stride_y,
+        spacing_px: 56.0,
         color: Color::BLACK,
+        halo_color: Color::WHITE,
+        halo_width: 2,
         width: 1,
         length_px: 20.0,
     }
@@ -3653,6 +3731,7 @@ fn render_derived_output_recipe(
         recipe,
         grid_ref,
         projected_ref,
+        request.domain.bounds,
         date_yyyymmdd,
         cycle_utc,
         forecast_hour,

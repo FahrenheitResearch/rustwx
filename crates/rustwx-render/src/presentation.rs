@@ -45,7 +45,7 @@ impl StaticPlotStyle {
         let normalized = value.trim().to_ascii_lowercase().replace('-', "_");
         match normalized.as_str() {
             "" | "default" | "classic" | "baseline" | "standard" => Some(Self::Default),
-            "clean" | "atlas" | "clean_atlas" => Some(Self::CleanAtlas),
+            "clean" | "atlas" | "clean_atlas" | "pivotal" => Some(Self::CleanAtlas),
             "fast" | "clean_fast" | "atlas_fast" | "clean_atlas_fast" | "production" => {
                 Some(Self::CleanAtlasFast)
             }
@@ -63,9 +63,7 @@ impl StaticPlotStyle {
             | "clean_atlas_combined"
             | "presentation"
             | "best" => Some(Self::CleanAtlasCombined),
-            "operational" | "ops" | "weathermodels" | "pivotal" | "reference" => {
-                Some(Self::Operational)
-            }
+            "operational" | "ops" | "weathermodels" | "reference" => Some(Self::Operational),
             "operational_fast" | "ops_fast" | "weathermodels_fast" | "pivotal_fast" => {
                 Some(Self::OperationalFast)
             }
@@ -260,11 +258,13 @@ impl RenderPresentation {
         if !self.plot_style.uses_clean_atlas_presentation() {
             return;
         }
+        self.apply_clean_atlas_plot_style();
         if self.plot_style.uses_operational_presentation() {
             self.apply_operational_plot_style();
-            return;
         }
+    }
 
+    fn apply_clean_atlas_plot_style(&mut self) {
         self.canvas_background = Rgba::new(246, 248, 250);
         self.chrome = clean_atlas_chrome(self.chrome.title_anchor);
         self.colorbar = clean_atlas_colorbar();
@@ -296,18 +296,7 @@ impl RenderPresentation {
     }
 
     fn apply_operational_plot_style(&mut self) {
-        self.canvas_background = Rgba::WHITE;
-        self.map_background = Rgba::WHITE;
-        self.chrome = operational_chrome();
         self.colorbar = operational_colorbar();
-        self.layout = if matches!(
-            self.mode,
-            ProductVisualMode::PanelMember | ProductVisualMode::ComparisonPanel
-        ) {
-            operational_compact_layout()
-        } else {
-            operational_layout()
-        };
         if matches!(
             self.mode,
             ProductVisualMode::PanelMember | ProductVisualMode::ComparisonPanel
@@ -317,9 +306,6 @@ impl RenderPresentation {
     }
 
     pub fn polygon_style(self, role: PolygonRole, fallback: Rgba) -> PolygonStyle {
-        if self.plot_style.uses_operational_presentation() {
-            return operational_polygon_style(role, fallback);
-        }
         if self.plot_style.uses_clean_atlas_presentation() {
             return clean_atlas_polygon_style(self.mode, role, fallback);
         }
@@ -428,9 +414,6 @@ impl RenderPresentation {
         fallback: Rgba,
         fallback_width: u32,
     ) -> LineworkStyle {
-        if self.plot_style.uses_operational_presentation() {
-            return operational_linework_style(self.mode, role, fallback, fallback_width);
-        }
         if self.plot_style.uses_clean_atlas_presentation() {
             return clean_atlas_linework_style(self.mode, role, fallback, fallback_width);
         }
@@ -492,14 +475,6 @@ impl RenderPresentation {
                 width: requested_width.max(1),
             };
         }
-        if self.plot_style.uses_operational_presentation() {
-            return LineworkStyle {
-                visible: true,
-                color: Rgba::BLACK,
-                width: requested_width.max(1).min(2),
-            };
-        }
-
         let width = if requested_width <= 4 {
             requested_width.max(1).min(2)
         } else {
@@ -559,7 +534,7 @@ mod tests {
         );
         assert_eq!(
             StaticPlotStyle::parse("pivotal"),
-            Some(StaticPlotStyle::Operational)
+            Some(StaticPlotStyle::CleanAtlas)
         );
         assert_eq!(
             StaticPlotStyle::parse("operational_fast"),
@@ -636,7 +611,7 @@ mod tests {
         .linework_style(LineworkRole::Coast, Rgba::BLACK, 1);
 
         assert!(style.visible);
-        assert_eq!(style.width, 1);
+        assert_eq!(style.width, 2);
     }
 
     #[test]
@@ -648,21 +623,24 @@ mod tests {
         let coast = presentation.linework_style(LineworkRole::Coast, Rgba::BLACK, 1);
         let land = presentation.polygon_style(PolygonRole::Land, Rgba::new(250, 250, 246));
 
-        assert_eq!(presentation.canvas_background, Rgba::WHITE);
-        assert_eq!(presentation.chrome.frame_color, Some(Rgba::BLACK));
+        assert_eq!(presentation.canvas_background, Rgba::new(246, 248, 250));
+        assert_eq!(
+            presentation.chrome.frame_color,
+            Some(Rgba::with_alpha(46, 56, 68, 118))
+        );
         assert_eq!(
             presentation.colorbar.orientation,
             ColorbarOrientation::VerticalRight
         );
         assert_eq!(presentation.colorbar.frame_color, Rgba::BLACK);
-        assert_eq!(coast.width, 1);
-        assert_eq!(coast.color, Rgba::with_alpha(0, 0, 0, 230));
+        assert_eq!(coast.width, 2);
+        assert_eq!(coast.color, Rgba::with_alpha(18, 22, 28, 190));
         assert!(land.visible);
-        assert_eq!(land.color, Rgba::WHITE);
+        assert_eq!(land.color, Rgba::new(250, 250, 246));
     }
 
     #[test]
-    fn operational_filled_political_linework_is_hairline_high_contrast() {
+    fn operational_filled_political_linework_uses_wrf_hardened_clean_atlas_values() {
         let presentation = RenderPresentation::for_mode_with_style(
             ProductVisualMode::FilledMeteorology,
             StaticPlotStyle::OperationalFast,
@@ -671,14 +649,14 @@ mod tests {
             presentation.linework_style(LineworkRole::International, Rgba::BLACK, 1);
         let state = presentation.linework_style(LineworkRole::State, Rgba::BLACK, 1);
 
-        assert_eq!(international.width, 1);
-        assert_eq!(international.color, Rgba::with_alpha(0, 0, 0, 225));
-        assert_eq!(state.width, 1);
-        assert_eq!(state.color, Rgba::with_alpha(0, 0, 0, 185));
+        assert_eq!(international.width, 2);
+        assert_eq!(international.color, Rgba::with_alpha(20, 24, 30, 184));
+        assert_eq!(state.width, 2);
+        assert_eq!(state.color, Rgba::with_alpha(12, 14, 18, 210));
     }
 
     #[test]
-    fn operational_upper_air_hides_counties_and_keeps_admin1_visible() {
+    fn operational_upper_air_uses_wrf_hardened_clean_atlas_admin_linework() {
         let presentation = RenderPresentation::for_mode_with_style(
             ProductVisualMode::UpperAirAnalysis,
             StaticPlotStyle::OperationalFast,
@@ -687,8 +665,9 @@ mod tests {
         let state = presentation.linework_style(LineworkRole::State, Rgba::BLACK, 2);
 
         assert!(!county.visible);
+        assert_eq!(county.color, Rgba::with_alpha(46, 52, 62, 76));
         assert_eq!(state.width, 2);
-        assert_eq!(state.color, Rgba::with_alpha(0, 0, 0, 210));
+        assert_eq!(state.color, Rgba::with_alpha(12, 14, 18, 210));
     }
 
     #[test]
@@ -730,7 +709,7 @@ mod tests {
         .linework_style(LineworkRole::Lake, Rgba::BLACK, 1);
 
         assert!(style.visible);
-        assert_eq!(style.color, Rgba::with_alpha(70, 86, 102, 92));
+        assert_eq!(style.color, Rgba::with_alpha(54, 60, 68, 132));
     }
 }
 
@@ -913,15 +892,15 @@ fn clean_atlas_polygon_style(
 }
 
 fn clean_atlas_linework_style(
-    mode: ProductVisualMode,
+    _mode: ProductVisualMode,
     role: LineworkRole,
     fallback: Rgba,
     fallback_width: u32,
 ) -> LineworkStyle {
     let fallback_width = fallback_width.max(1);
-    let major_width = fallback_width.clamp(1, 2);
-    let minor_width = fallback_width.clamp(1, 2);
-    let county_visible = !matches!(mode, ProductVisualMode::FilledMeteorology);
+    let major_width = fallback_width.clamp(1, 3);
+    let minor_width = fallback_width.clamp(1, 3);
+    let county_visible = false;
     let width_boost = static_linework_width_boost();
     let alpha_scale = static_linework_alpha_scale();
     let boost_width = |width: u32| width.saturating_add(width_boost).clamp(1, 8);
@@ -931,27 +910,27 @@ fn clean_atlas_linework_style(
     };
     let (color, width, visible) = match role {
         LineworkRole::Coast => (
-            Rgba::with_alpha(34, 42, 52, alpha(148)),
-            boost_width(major_width),
+            Rgba::with_alpha(18, 22, 28, alpha(190)),
+            boost_width(major_width.max(2)),
             true,
         ),
         LineworkRole::Lake => (
-            Rgba::with_alpha(70, 86, 102, alpha(92)),
+            Rgba::with_alpha(54, 60, 68, alpha(132)),
             boost_width(minor_width),
             true,
         ),
         LineworkRole::International => (
-            Rgba::with_alpha(44, 52, 64, alpha(124)),
-            boost_width(minor_width),
+            Rgba::with_alpha(20, 24, 30, alpha(184)),
+            boost_width(minor_width.max(2)),
             true,
         ),
         LineworkRole::State => (
-            Rgba::with_alpha(38, 44, 54, alpha(118)),
-            boost_width(minor_width),
+            Rgba::with_alpha(12, 14, 18, alpha(210)),
+            boost_width(minor_width.max(2)),
             true,
         ),
         LineworkRole::County => (
-            Rgba::with_alpha(74, 82, 94, alpha(46)),
+            Rgba::with_alpha(46, 52, 62, alpha(76)),
             boost_width(1),
             county_visible,
         ),
@@ -963,97 +942,6 @@ fn clean_atlas_linework_style(
         color,
         width,
     }
-}
-
-fn operational_polygon_style(role: PolygonRole, fallback: Rgba) -> PolygonStyle {
-    match role {
-        PolygonRole::Ocean | PolygonRole::Land => PolygonStyle {
-            visible: true,
-            color: Rgba::WHITE,
-        },
-        PolygonRole::Lake => PolygonStyle {
-            visible: true,
-            color: Rgba::new(232, 244, 253),
-        },
-        PolygonRole::Generic => PolygonStyle {
-            visible: true,
-            color: fallback,
-        },
-    }
-}
-
-fn operational_linework_style(
-    mode: ProductVisualMode,
-    role: LineworkRole,
-    fallback: Rgba,
-    fallback_width: u32,
-) -> LineworkStyle {
-    let fallback_width = fallback_width.max(1);
-    let minor_width = fallback_width.clamp(1, 2);
-    let upper_air = matches!(mode, ProductVisualMode::UpperAirAnalysis);
-    let major_width = if upper_air {
-        fallback_width.clamp(1, 2)
-    } else {
-        1
-    };
-    let county_visible = operational_counties_visible(mode);
-    let width_boost = static_linework_width_boost();
-    let alpha_scale = static_linework_alpha_scale();
-    let boost_width = |width: u32| width.saturating_add(width_boost).clamp(1, 4);
-    let scaled_alpha = |cap: u8| {
-        let base = fallback.a.min(cap) as f32;
-        (base * alpha_scale).round().clamp(0.0, 255.0) as u8
-    };
-    let (color, width, visible) = match role {
-        LineworkRole::Coast => (
-            Rgba::with_alpha(0, 0, 0, scaled_alpha(230)),
-            boost_width(major_width),
-            true,
-        ),
-        LineworkRole::Lake => (
-            Rgba::with_alpha(72, 142, 196, scaled_alpha(125)),
-            boost_width(minor_width),
-            true,
-        ),
-        LineworkRole::International => (
-            Rgba::with_alpha(0, 0, 0, scaled_alpha(225)),
-            boost_width(major_width),
-            true,
-        ),
-        LineworkRole::State => (
-            Rgba::with_alpha(0, 0, 0, scaled_alpha(if upper_air { 210 } else { 185 })),
-            boost_width(if upper_air { minor_width } else { 1 }),
-            true,
-        ),
-        LineworkRole::County => (
-            Rgba::with_alpha(0, 0, 0, scaled_alpha(64)),
-            boost_width(1),
-            county_visible,
-        ),
-        LineworkRole::Generic => (
-            Rgba::with_alpha(fallback.r, fallback.g, fallback.b, scaled_alpha(150)),
-            boost_width(fallback_width),
-            true,
-        ),
-    };
-
-    LineworkStyle {
-        visible,
-        color,
-        width,
-    }
-}
-
-fn operational_counties_visible(mode: ProductVisualMode) -> bool {
-    std::env::var("RUSTWX_SHOW_COUNTIES")
-        .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(matches!(mode, ProductVisualMode::SevereDiagnostic))
 }
 
 fn static_linework_width_boost() -> u32 {
@@ -1082,22 +970,13 @@ fn clean_atlas_chrome(title_anchor: TitleAnchor) -> ChromeStyle {
     }
 }
 
-fn operational_chrome() -> ChromeStyle {
-    ChromeStyle {
-        title_anchor: TitleAnchor::Left,
-        title_color: Rgba::BLACK,
-        subtitle_color: Rgba::BLACK,
-        frame_color: Some(Rgba::BLACK),
-    }
-}
-
 fn clean_atlas_colorbar() -> ColorbarPresentation {
     ColorbarPresentation {
         orientation: ColorbarOrientation::HorizontalBottom,
-        frame_color: Rgba::new(76, 86, 100),
-        divider_color: Rgba::with_alpha(255, 255, 255, 82),
-        tick_color: Rgba::new(76, 86, 100),
-        label_color: Rgba::new(44, 52, 64),
+        frame_color: Rgba::BLACK,
+        divider_color: Rgba::with_alpha(0, 0, 0, 185),
+        tick_color: Rgba::BLACK,
+        label_color: Rgba::BLACK,
     }
 }
 
@@ -1105,7 +984,7 @@ fn operational_colorbar() -> ColorbarPresentation {
     ColorbarPresentation {
         orientation: ColorbarOrientation::VerticalRight,
         frame_color: Rgba::BLACK,
-        divider_color: Rgba::with_alpha(255, 255, 255, 115),
+        divider_color: Rgba::with_alpha(0, 0, 0, 185),
         tick_color: Rgba::BLACK,
         label_color: Rgba::BLACK,
     }
@@ -1122,17 +1001,6 @@ fn clean_atlas_layout() -> LayoutMetrics {
     }
 }
 
-fn operational_layout() -> LayoutMetrics {
-    LayoutMetrics {
-        margin_x: 20,
-        title_h: 52,
-        footer_h: 8,
-        colorbar_h: 16,
-        colorbar_gap: 8,
-        colorbar_margin_x: 54,
-    }
-}
-
 fn clean_atlas_compact_layout() -> LayoutMetrics {
     LayoutMetrics {
         margin_x: 10,
@@ -1141,16 +1009,5 @@ fn clean_atlas_compact_layout() -> LayoutMetrics {
         colorbar_h: 11,
         colorbar_gap: 9,
         colorbar_margin_x: 50,
-    }
-}
-
-fn operational_compact_layout() -> LayoutMetrics {
-    LayoutMetrics {
-        margin_x: 8,
-        title_h: 38,
-        footer_h: 24,
-        colorbar_h: 10,
-        colorbar_gap: 7,
-        colorbar_margin_x: 42,
     }
 }

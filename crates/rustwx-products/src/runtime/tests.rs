@@ -248,6 +248,54 @@ fn direct_native_requirement_patterns_reach_fetch_request() {
 }
 
 #[test]
+fn hrrr_direct_native_sfc_patterns_do_not_expand_to_surface_mini_bundle() {
+    use rustwx_core::BundleRequirement;
+
+    let latest = LatestRun {
+        model: rustwx_core::ModelId::Hrrr,
+        cycle: CycleSpec::new("20260415", 18).unwrap(),
+        source: SourceId::Aws,
+    };
+    let mut builder = crate::planner::ExecutionPlanBuilder::new(&latest, 0);
+    let requirement = BundleRequirement::new(CanonicalBundleDescriptor::NativeAnalysis, 0)
+        .with_native_override("sfc");
+    builder.require_with_logical_family_and_patterns(
+        &requirement,
+        Some("sfc"),
+        [
+            "TMP:2 m above ground",
+            "MSLMA:mean sea level",
+            "UGRD:10 m above ground",
+            "VGRD:10 m above ground",
+        ],
+    );
+    let plan = builder.build();
+    let key = plan
+        .fetch_keys()
+        .into_iter()
+        .find(|key| key.native_product == "sfc")
+        .expect("direct plan includes HRRR sfc");
+
+    let request = build_fetch_request(&plan, &key, None).expect("request builds");
+
+    assert_eq!(
+        request.variable_patterns,
+        vec![
+            "MSLMA:mean sea level".to_string(),
+            "TMP:2 m above ground".to_string(),
+            "UGRD:10 m above ground".to_string(),
+            "VGRD:10 m above ground".to_string(),
+        ]
+    );
+    assert!(
+        !request
+            .variable_patterns
+            .contains(&"APCP:surface".to_string()),
+        "direct recipe subsets should not inherit the generic HRRR surface mini-bundle"
+    );
+}
+
+#[test]
 fn gfs_shared_direct_and_unsubsetted_derived_alias_uses_whole_file() {
     use rustwx_core::BundleRequirement;
 

@@ -911,7 +911,10 @@ fn add_wxa_companion_overlays(
         v: v_kt,
         stride_x,
         stride_y,
+        spacing_px: wxa_static_barb_spacing_px(),
         color: Color::BLACK,
+        halo_color: Color::WHITE,
+        halo_width: wxa_static_barb_halo_width(),
         width: wxa_static_barb_width(),
         length_px: wxa_static_barb_length_px(),
     });
@@ -1011,13 +1014,30 @@ fn wxa_static_barb_width() -> u32 {
         .clamp(1, 8)
 }
 
+fn wxa_static_barb_halo_width() -> u32 {
+    std::env::var("RUSTWX_BARB_HALO_WIDTH")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .unwrap_or(2)
+        .clamp(0, 8)
+}
+
 fn wxa_static_barb_length_px() -> f64 {
     std::env::var("RUSTWX_BARB_LENGTH_PX")
         .ok()
         .and_then(|value| value.trim().parse::<f64>().ok())
         .filter(|value| value.is_finite() && *value > 0.0)
-        .unwrap_or(17.0)
+        .unwrap_or(20.0)
         .clamp(6.0, 48.0)
+}
+
+fn wxa_static_barb_spacing_px() -> f64 {
+    std::env::var("RUSTWX_BARB_SPACING_PX")
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or(56.0)
+        .clamp(0.0, 160.0)
 }
 
 fn wxa_static_barb_density_scale() -> f64 {

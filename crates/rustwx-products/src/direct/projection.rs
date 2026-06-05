@@ -1,7 +1,7 @@
 use rustwx_core::GridProjection;
 use rustwx_render::{
-    BasemapDetail, DomainFrame, GeographicClipBounds, InverseRasterProjection, ProductVisualMode,
-    ProjectedMap, ProjectedMapBuildOptions,
+    BasemapDetail, DomainFrame, DomainFrameSource, GeographicClipBounds, InverseRasterProjection,
+    ProductVisualMode, ProjectedMap, ProjectedMapBuildOptions,
 };
 
 use crate::shared_context::static_chrome_scale;
@@ -26,7 +26,7 @@ pub fn build_projected_map_with_projection(
     bounds: (f64, f64, f64, f64),
     target_ratio: f64,
 ) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
-    if full_domain_projected_frame_enabled(projection) {
+    if full_domain_projected_frame_enabled(projection, bounds) {
         return build_full_domain_projected_map_with_projection(
             lat_deg,
             lon_deg,
@@ -82,8 +82,11 @@ fn build_full_domain_projected_map_with_projection(
     Ok(projected)
 }
 
-fn full_domain_projected_frame_enabled(projection: Option<&GridProjection>) -> bool {
-    let auto = full_domain_projected_frame_default(projection);
+fn full_domain_projected_frame_enabled(
+    projection: Option<&GridProjection>,
+    bounds: (f64, f64, f64, f64),
+) -> bool {
+    let auto = full_domain_projected_frame_default(projection, bounds);
     std::env::var("RUSTWX_PROJECTED_FRAME_SOURCE")
         .ok()
         .map(|value| match value.trim().to_ascii_lowercase().as_str() {
@@ -95,10 +98,14 @@ fn full_domain_projected_frame_enabled(projection: Option<&GridProjection>) -> b
         .unwrap_or(auto)
 }
 
-pub(super) fn full_domain_projected_frame_default(projection: Option<&GridProjection>) -> bool {
-    projection
-        .map(GridProjection::is_projected)
-        .unwrap_or(false)
+pub(super) fn full_domain_projected_frame_default(
+    projection: Option<&GridProjection>,
+    bounds: (f64, f64, f64, f64),
+) -> bool {
+    let lat_span = (bounds.3 - bounds.2).abs();
+    let lon_span = longitude_bounds_span_deg(bounds);
+    !matches!(projection, Some(GridProjection::Geographic) | None)
+        && (lat_span >= 25.0 || lon_span >= 45.0)
 }
 
 fn full_domain_projected_frame_pad_fraction() -> f64 {
@@ -257,7 +264,12 @@ fn longitude_delta_abs_deg(a: f32, b: f32) -> f32 {
 pub fn model_data_domain_frame_for_projection(
     _projection: Option<&GridProjection>,
 ) -> Option<DomainFrame> {
-    Some(DomainFrame::map_viewport_default())
+    Some(DomainFrame {
+        inset_px: 2,
+        outline_width: 2,
+        source: DomainFrameSource::ProjectedGrid,
+        ..DomainFrame::map_viewport_default()
+    })
 }
 
 pub(super) fn direct_map_frame_aspect_ratio(

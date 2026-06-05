@@ -97,6 +97,40 @@ fn empty_renderable_batch_returns_without_projected_map_failure() {
     assert!(rendered.is_empty());
 }
 
+#[test]
+fn prepared_projected_maps_use_composite_components_as_projection_sample() {
+    let request = sample_direct_request(ModelId::Hrrr);
+    let recipe = plot_recipe("cloud_cover_levels").expect("cloud-cover panel recipe should exist");
+    let plan = plot_recipe_fetch_plan(recipe.slug, ModelId::Hrrr)
+        .expect("cloud-cover panel should have a direct fetch plan");
+    let planned = vec![PlannedDirectRecipe { recipe, plan }];
+    let mut extracted = HashMap::new();
+    for selector in planned[0].plan.selectors() {
+        extracted.insert(
+            selector,
+            sample_selected_field(selector, "%", vec![10.0, 20.0, 30.0, 40.0]),
+        );
+    }
+
+    let prepared = build_prepared_projected_maps(&request, &planned, &extracted)
+        .expect("composite-only batches should prepare panel projections");
+    let spec = composite_panel_spec(recipe.slug)
+        .expect("cloud-cover recipe should be a composite panel")
+        .scaled_for_request(&request);
+    let sample_selector =
+        projected_sample_selector(&planned[0]).expect("composite panel should expose a selector");
+    let sample_field = extracted
+        .get(&sample_selector)
+        .expect("sample selector should have an extracted field");
+
+    assert!(prepared.contains_key(&projected_map_cache_key(
+        spec.panel_width,
+        spec.panel_height,
+        visual_mode_cache_key(ProductVisualMode::PanelMember),
+        sample_field,
+    )));
+}
+
 fn sample_direct_request(model: ModelId) -> DirectBatchRequest {
     DirectBatchRequest {
         model,
@@ -295,18 +329,28 @@ fn inverse_raster_does_not_geo_clip_projected_conus_frames() {
 }
 
 #[test]
-fn native_projected_grids_use_full_domain_frame_by_default() {
+fn broad_native_projected_grids_use_full_domain_frame_by_default() {
     let lambert = GridProjection::LambertConformal {
         standard_parallel_1_deg: 33.0,
         standard_parallel_2_deg: 45.0,
         central_meridian_deg: -96.0,
     };
+    let conus_bounds = (-127.0, -66.0, 23.0, 51.5);
+    let local_bounds = (-124.0, -122.0, 44.5, 46.0);
 
-    assert!(full_domain_projected_frame_default(Some(&lambert)));
-    assert!(!full_domain_projected_frame_default(Some(
-        &GridProjection::Geographic
-    )));
-    assert!(!full_domain_projected_frame_default(None));
+    assert!(full_domain_projected_frame_default(
+        Some(&lambert),
+        conus_bounds
+    ));
+    assert!(!full_domain_projected_frame_default(
+        Some(&lambert),
+        local_bounds
+    ));
+    assert!(!full_domain_projected_frame_default(
+        Some(&GridProjection::Geographic),
+        conus_bounds,
+    ));
+    assert!(!full_domain_projected_frame_default(None, conus_bounds));
 }
 
 #[test]

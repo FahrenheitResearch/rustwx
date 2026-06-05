@@ -548,6 +548,13 @@ pub fn rasterize_projected_grid(
     img_w: u32,
     img_h: u32,
 ) -> RgbaImage {
+    if let Some(mut img) =
+        rasterize_rectilinear_projected_grid(data, ny, nx, pixel_points, cmap, img_w, img_h)
+    {
+        feather_projected_raster_edges(&mut img);
+        return img;
+    }
+
     #[cfg(feature = "cuda")]
     {
         use std::sync::atomic::Ordering;
@@ -597,6 +604,147 @@ pub fn rasterize_projected_grid(
 
     feather_projected_raster_edges(&mut img);
     img
+}
+
+#[derive(Clone, Copy)]
+struct RectilinearPixelAxes {
+    x0: f64,
+    y0: f64,
+    dx: f64,
+    dy: f64,
+}
+
+fn rectilinear_pixel_axes(
+    ny: usize,
+    nx: usize,
+    pixel_points: &[Option<(f64, f64)>],
+) -> Option<RectilinearPixelAxes> {
+    if ny < 2 || nx < 2 || pixel_points.len() != ny * nx {
+        return None;
+    }
+    let first = pixel_points[0]?;
+    let east = pixel_points[nx - 1]?;
+    let south = pixel_points[(ny - 1) * nx]?;
+    let dx = (east.0 - first.0) / (nx - 1) as f64;
+    let dy = (south.1 - first.1) / (ny - 1) as f64;
+    if !dx.is_finite() || !dy.is_finite() || dx.abs() < 1.0e-9 || dy.abs() < 1.0e-9 {
+        return None;
+    }
+
+    let tolerance = 0.08_f64;
+    let sample_rows = [0, ny / 2, ny - 1];
+    let sample_cols = [0, nx / 2, nx - 1];
+    for &row in &sample_rows {
+        for &col in &sample_cols {
+            let point = pixel_points[row * nx + col]?;
+            let expected_x = first.0 + dx * col as f64;
+            let expected_y = first.1 + dy * row as f64;
+            if (point.0 - expected_x).abs() > tolerance || (point.1 - expected_y).abs() > tolerance
+            {
+                return None;
+            }
+        }
+    }
+
+    Some(RectilinearPixelAxes {
+        x0: first.0,
+        y0: first.1,
+        dx,
+        dy,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct AxisSample {
+    lower: usize,
+    upper: usize,
+    fraction: f64,
+}
+
+fn axis_samples(
+    origin: f64,
+    delta: f64,
+    count: usize,
+    pixel_count: u32,
+) -> Vec<Option<AxisSample>> {
+    let mut samples = Vec::with_capacity(pixel_count as usize);
+    let max_grid = count.saturating_sub(1) as f64;
+    for pixel in 0..pixel_count {
+        let grid = (pixel as f64 - origin) / delta;
+        if !grid.is_finite() || grid < 0.0 || grid > max_grid {
+            samples.push(None);
+            continue;
+        }
+        let lower = grid.floor().min(max_grid) as usize;
+        let upper = (lower + 1).min(count - 1);
+        let fraction = if lower == upper {
+            0.0
+        } else {
+            grid - lower as f64
+        };
+        samples.push(Some(AxisSample {
+            lower,
+            upper,
+            fraction,
+        }));
+    }
+    samples
+}
+
+fn rasterize_rectilinear_projected_grid(
+    data: &[f64],
+    ny: usize,
+    nx: usize,
+    pixel_points: &[Option<(f64, f64)>],
+    cmap: &LeveledColormap,
+    img_w: u32,
+    img_h: u32,
+) -> Option<RgbaImage> {
+    if data.len() != ny * nx {
+        return None;
+    }
+    let axes = rectilinear_pixel_axes(ny, nx, pixel_points)?;
+    let x_samples = axis_samples(axes.x0, axes.dx, nx, img_w);
+    let y_samples = axis_samples(axes.y0, axes.dy, ny, img_h);
+    let mut img = RgbaImage::new(img_w, img_h);
+
+    for (py, y_sample) in y_samples.iter().enumerate() {
+        let Some(y_sample) = y_sample else {
+            continue;
+        };
+        let j0 = y_sample.lower;
+        let j1 = y_sample.upper;
+        let fy = y_sample.fraction;
+        for (px, x_sample) in x_samples.iter().enumerate() {
+            let Some(x_sample) = x_sample else {
+                continue;
+            };
+            let i0 = x_sample.lower;
+            let i1 = x_sample.upper;
+            let fx = x_sample.fraction;
+            let idx = |j: usize, i: usize| j * nx + i;
+            let cell_j0 = j0.min(ny - 2);
+            let cell_i0 = i0.min(nx - 2);
+            if !data[idx(cell_j0, cell_i0)].is_finite()
+                || !data[idx(cell_j0, cell_i0 + 1)].is_finite()
+                || !data[idx(cell_j0 + 1, cell_i0)].is_finite()
+                || !data[idx(cell_j0 + 1, cell_i0 + 1)].is_finite()
+            {
+                continue;
+            }
+            let v00 = data[idx(j0, i0)];
+            let v10 = data[idx(j0, i1)];
+            let v01 = data[idx(j1, i0)];
+            let v11 = data[idx(j1, i1)];
+            let value = bilinear(v00, v10, v01, v11, fx, fy);
+            let color = cmap.map(value).to_image_rgba();
+            if color.0[3] > 0 {
+                img.put_pixel(px as u32, py as u32, color);
+            }
+        }
+    }
+
+    Some(img)
 }
 
 pub(crate) fn rasterize_inverse_projected_grid(
@@ -909,6 +1057,43 @@ pub fn rasterize_projected_rgba_grid(
     img
 }
 
+/// Rasterize projected grid coverage independent of fill values or colormap
+/// alpha so frame calculations track the valid mesh footprint, not the weather
+/// values currently painted into it.
+pub fn rasterize_projected_coverage_mask(
+    ny: usize,
+    nx: usize,
+    pixel_points: &[Option<(f64, f64)>],
+    img_w: u32,
+    img_h: u32,
+) -> RgbaImage {
+    let mut img = RgbaImage::new(img_w, img_h);
+
+    if ny < 2 || nx < 2 || pixel_points.len() != ny * nx {
+        return img;
+    }
+
+    for j in 0..(ny - 1) {
+        for i in 0..(nx - 1) {
+            let idx = |jj: usize, ii: usize| jj * nx + ii;
+            let p00 = pixel_points[idx(j, i)];
+            let p10 = pixel_points[idx(j, i + 1)];
+            let p01 = pixel_points[idx(j + 1, i)];
+            let p11 = pixel_points[idx(j + 1, i + 1)];
+
+            let (p00, p10, p01, p11) = match (p00, p10, p01, p11) {
+                (Some(a), Some(b), Some(c), Some(d)) => (a, b, c, d),
+                _ => continue,
+            };
+
+            rasterize_mask_triangle(&mut img, p00, p10, p11);
+            rasterize_mask_triangle(&mut img, p00, p11, p01);
+        }
+    }
+
+    img
+}
+
 fn bilinear(v00: f64, v10: f64, v01: f64, v11: f64, fx: f64, fy: f64) -> f64 {
     if v00.is_finite() && v10.is_finite() && v01.is_finite() && v11.is_finite() {
         let south = v00 * (1.0 - fx) + v10 * fx;
@@ -1076,6 +1261,48 @@ fn weighted_u8(v0: u8, w0: f64, v1: u8, w1: f64, v2: u8, w2: f64) -> u8 {
     (v0 as f64 * w0 + v1 as f64 * w1 + v2 as f64 * w2)
         .round()
         .clamp(0.0, 255.0) as u8
+}
+
+fn rasterize_mask_triangle(img: &mut RgbaImage, p0: (f64, f64), p1: (f64, f64), p2: (f64, f64)) {
+    let min_x = p0.0.min(p1.0).min(p2.0).floor().max(0.0) as i32;
+    let max_x =
+        p0.0.max(p1.0)
+            .max(p2.0)
+            .ceil()
+            .min(img.width() as f64 - 1.0) as i32;
+    let min_y = p0.1.min(p1.1).min(p2.1).floor().max(0.0) as i32;
+    let max_y =
+        p0.1.max(p1.1)
+            .max(p2.1)
+            .ceil()
+            .min(img.height() as f64 - 1.0) as i32;
+
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
+
+    let area = edge_fn(p0, p1, p2);
+    if area.abs() < 1e-9 {
+        return;
+    }
+
+    let inv_area = 1.0 / area;
+    let opaque = image::Rgba([255, 255, 255, 255]);
+
+    for py in min_y..=max_y {
+        for px in min_x..=max_x {
+            let p = (px as f64 + 0.5, py as f64 + 0.5);
+            let w0 = edge_fn(p1, p2, p) * inv_area;
+            let w1 = edge_fn(p2, p0, p) * inv_area;
+            let w2 = edge_fn(p0, p1, p) * inv_area;
+
+            if w0 < -1e-6 || w1 < -1e-6 || w2 < -1e-6 {
+                continue;
+            }
+
+            img.put_pixel(px as u32, py as u32, opaque);
+        }
+    }
 }
 
 fn edge_fn(a: (f64, f64), b: (f64, f64), p: (f64, f64)) -> f64 {

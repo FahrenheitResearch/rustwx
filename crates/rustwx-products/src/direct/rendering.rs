@@ -29,9 +29,27 @@ use super::{
     SharedStreamlineLayerCache,
 };
 
-fn apply_direct_recipe_render_controls(recipe: &PlotRecipe, request: &mut MapRenderRequest) {
+fn apply_direct_recipe_render_controls(
+    recipe: &PlotRecipe,
+    filled_selector: FieldSelector,
+    request: &mut MapRenderRequest,
+) {
     if matches!(recipe.style, RenderStyle::WeatherDewpoint) {
         request.legend.mode = LegendMode::Stepped;
+        if matches!(
+            filled_selector.vertical,
+            VerticalSelector::HeightAboveGroundMeters(2)
+        ) {
+            request.cbar_tick_step = Some(10.0);
+        }
+    } else if matches!(recipe.style, RenderStyle::WeatherRh)
+        && matches!(
+            filled_selector.vertical,
+            VerticalSelector::HeightAboveGroundMeters(2)
+        )
+    {
+        request.legend.mode = LegendMode::Stepped;
+        request.cbar_tick_step = Some(25.0);
     }
 }
 
@@ -63,9 +81,13 @@ pub(super) fn build_render_request(
     let mut request = if overlay_only {
         let mut request = MapRenderRequest::contour_only(filled_field.clone().into());
         let contour_prepare_start = Instant::now();
-        if let Some(layer) =
-            cached_contour_layer(filled.selector, &filled.values, contour_layer_cache)
-        {
+        if let Some(layer) = cached_contour_layer(
+            filled.selector,
+            &filled.values,
+            filled.grid.shape.nx,
+            filled.grid.shape.ny,
+            contour_layer_cache,
+        ) {
             request.contours.push(layer);
         }
         timing.contour_prepare_ms += contour_prepare_start.elapsed().as_millis();
@@ -84,7 +106,7 @@ pub(super) fn build_render_request(
     crate::plot_design::StaticPlotDesign::new(bounds, visual_mode)
         .overlay_only(overlay_only)
         .apply_to_request(&mut request);
-    apply_direct_recipe_render_controls(recipe, &mut request);
+    apply_direct_recipe_render_controls(recipe, filled.selector, &mut request);
     request.title = Some(static_title_with_suffix(recipe.title));
     request.width = output_width;
     request.height = output_height;
@@ -660,33 +682,99 @@ fn build_contour_layers(
         return Vec::new();
     };
 
-    cached_contour_layer(selector, &field.values, contour_layer_cache)
-        .into_iter()
-        .collect()
+    cached_contour_layer(
+        selector,
+        &field.values,
+        field.grid.shape.nx,
+        field.grid.shape.ny,
+        contour_layer_cache,
+    )
+    .into_iter()
+    .collect()
 }
 
 fn cached_contour_layer(
     selector: FieldSelector,
     values: &[f32],
+    nx: usize,
+    ny: usize,
     contour_layer_cache: &SharedContourLayerCache,
 ) -> Option<ContourLayer> {
+    let key = (selector, nx, ny);
     {
         let cache = contour_layer_cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(layer) = cache.get(&selector) {
+        if let Some(layer) = cache.get(&key) {
             return layer.clone();
         }
     }
 
-    let layer = crate::plot_design::operational_contour_layer_for_values(selector, values);
+    let contour_values = contour_values_for_render(selector, values, nx, ny);
+    let layer = crate::plot_design::operational_contour_layer_for_values(selector, &contour_values);
     let mut cache = contour_layer_cache
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    cache
-        .entry(selector)
-        .or_insert_with(|| layer.clone())
-        .clone()
+    cache.entry(key).or_insert_with(|| layer.clone()).clone()
+}
+
+fn contour_values_for_render(
+    selector: FieldSelector,
+    values: &[f32],
+    nx: usize,
+    ny: usize,
+) -> Vec<f32> {
+    if selector.field == CanonicalField::PressureReducedToMeanSeaLevel {
+        smooth_contour_values(values, nx, ny, pressure_contour_smoothing_passes())
+    } else {
+        values.to_vec()
+    }
+}
+
+fn pressure_contour_smoothing_passes() -> usize {
+    std::env::var("RUSTWX_PRESSURE_CONTOUR_SMOOTH_PASSES")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+        .clamp(0, 12)
+}
+
+fn smooth_contour_values(values: &[f32], nx: usize, ny: usize, passes: usize) -> Vec<f32> {
+    if passes == 0 || nx < 3 || ny < 3 || values.len() != nx.saturating_mul(ny) {
+        return values.to_vec();
+    }
+
+    let mut current = values.to_vec();
+    let mut next = current.clone();
+    for _ in 0..passes {
+        for j in 0..ny {
+            let y0 = j.saturating_sub(2);
+            let y1 = (j + 2).min(ny - 1);
+            for i in 0..nx {
+                let x0 = i.saturating_sub(2);
+                let x1 = (i + 2).min(nx - 1);
+                let mut sum = 0.0_f32;
+                let mut count = 0usize;
+                for yy in y0..=y1 {
+                    let row = yy * nx;
+                    for xx in x0..=x1 {
+                        let value = current[row + xx];
+                        if value.is_finite() {
+                            sum += value;
+                            count += 1;
+                        }
+                    }
+                }
+                next[j * nx + i] = if count > 0 {
+                    sum / count as f32
+                } else {
+                    f32::NAN
+                };
+            }
+        }
+        std::mem::swap(&mut current, &mut next);
+    }
+    current
 }
 
 fn build_streamline_layers(
@@ -789,7 +877,10 @@ fn build_barb_layers(
         v: v.values.iter().map(|value| value * 1.943_844_5).collect(),
         stride_x,
         stride_y,
+        spacing_px: static_barb_spacing_px(),
         color: Color::BLACK,
+        halo_color: Color::WHITE,
+        halo_width: static_barb_halo_width(),
         width: static_barb_width(),
         length_px: static_barb_length_px(),
     }];
@@ -878,13 +969,30 @@ fn static_barb_width() -> u32 {
         .clamp(1, 8)
 }
 
+fn static_barb_halo_width() -> u32 {
+    std::env::var("RUSTWX_BARB_HALO_WIDTH")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .unwrap_or(1)
+        .clamp(0, 8)
+}
+
 fn static_barb_length_px() -> f64 {
     std::env::var("RUSTWX_BARB_LENGTH_PX")
         .ok()
         .and_then(|value| value.trim().parse::<f64>().ok())
         .filter(|value| value.is_finite() && *value > 0.0)
-        .unwrap_or(17.0)
+        .unwrap_or(20.0)
         .clamp(6.0, 48.0)
+}
+
+fn static_barb_spacing_px() -> f64 {
+    std::env::var("RUSTWX_BARB_SPACING_PX")
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or(0.0)
+        .clamp(0.0, 160.0)
 }
 
 fn static_barb_density_scale() -> f64 {

@@ -37,10 +37,6 @@ const RELVORT: &[&str] = &[
 ];
 
 const SIM_IR_COOL: &[&str] = &["#7f017f", "#e36fbe"];
-const SIM_IR_WARM: &[&str] = &[
-    "#FFFFFF", "#000000", "#fd0100", "#fcff05", "#03fd03", "#010077", "#0ff6ef",
-];
-const SIM_IR_GRAY: &[&str] = &["#ffffff", "#000000"];
 
 // Composite base segments (shared by CAPE, SRH, STP, EHI, LR, UH, ML)
 const COMP_SEG0: &[&str] = &["#ffffff", "#696969"];
@@ -158,11 +154,20 @@ pub fn relvort(n: usize) -> Vec<Rgba> {
     lerp_hex(RELVORT, n)
 }
 
-/// Simulated IR palette (10 + 60 + 60 = 130 segments).
+/// Simulated IR palette keyed to -90..50 C one-degree bins.
 pub fn sim_ir() -> Vec<Rgba> {
-    let mut c = lerp_hex(SIM_IR_COOL, 10);
-    c.extend(lerp_hex(SIM_IR_WARM, 60));
-    c.extend(lerp_hex(SIM_IR_GRAY, 60));
+    let mut c = lerp_hex(SIM_IR_COOL, 10); // -90..-80
+    c.extend(lerp_hex(&["#ffffff", "#d8d8d8", "#8a8a8a", "#000000"], 10)); // -80..-70
+    c.extend(lerp_hex(
+        &[
+            "#000000", "#5b0000", "#fd0100", "#ff7f00", "#fcff05", "#03fd03", "#00651f", "#010077",
+            "#0ff6ef",
+        ],
+        50,
+    )); // -70..-20
+    c.extend(lerp_hex(&["#ffffff", "#d5d5d5", "#a4a4a4"], 20)); // -20..0
+    c.extend(lerp_hex(&["#9a9a9a", "#606060", "#242424", "#000000"], 40)); // 0..40
+    c.extend(lerp_hex(&["#000000", "#000000"], 10)); // 40..50
     c
 }
 
@@ -178,17 +183,43 @@ pub fn three_cape() -> Vec<Rgba> {
 
 /// EHI composite palette.
 pub fn ehi() -> Vec<Rgba> {
-    build_composite(&[10, 10, 20, 20, 20, 40, 40])
+    let mut c = build_composite(&[10, 10, 20, 20, 20, 30, 20]);
+    c.extend(lerp_hex(
+        &[
+            "#806a70", "#535057", "#20242a", "#31535a", "#55a3aa", "#83edf2",
+        ],
+        50,
+    ));
+    c
 }
 
 /// SRH composite palette.
 pub fn srh() -> Vec<Rgba> {
-    build_composite(&[10, 10, 10, 10, 10, 10, 40])
+    let mut c = build_composite(&[10, 10, 10, 10, 10, 25, 20]);
+    c.extend(lerp_hex(
+        &[
+            "#806a70", "#535057", "#20242a", "#31535a", "#55a3aa", "#83edf2",
+        ],
+        45,
+    ));
+    c
 }
 
 /// STP composite palette.
 pub fn stp() -> Vec<Rgba> {
-    build_composite(&[10, 10, 10, 10, 10, 10, 40])
+    let mut c = lerp_hex(COMP_SEG0, 5); // 0-1
+    c.extend(lerp_hex(COMP_SEG1, 5)); // 1-2
+    c.extend(lerp_hex(COMP_SEG2, 5)); // 2-3
+    c.extend(lerp_hex(COMP_SEG3, 5)); // 3-4
+    c.extend(lerp_hex(&["#73088a", "#9e3fba", "#d992df", "#e9bec3"], 5)); // 4-5
+    c.extend(lerp_hex(&["#e9bec3", "#cf8f99", "#a95d69"], 5)); // 5-6
+    c.extend(lerp_hex(&["#a95d69", "#93606b", "#806a70"], 10)); // 6-8
+    c.extend(lerp_hex(&["#806a70", "#6a6066", "#535057"], 10)); // 8-10
+    c.extend(lerp_hex(&["#535057", "#403f46", "#2d3034"], 10)); // 10-12
+    c.extend(lerp_hex(&["#2d3034", "#20242a", "#15191d", "#20252a"], 10)); // 12-14
+    c.extend(lerp_hex(&["#20252a", "#263941", "#31535a"], 10)); // 14-16
+    c.extend(lerp_hex(&["#31535a", "#426f76", "#55a3aa", "#83edf2"], 20)); // 16-20
+    c
 }
 
 /// Lapse rate composite palette.

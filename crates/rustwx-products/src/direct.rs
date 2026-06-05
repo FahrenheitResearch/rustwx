@@ -123,12 +123,14 @@ struct BarbStrideCacheKey {
     bounds_bits: [u64; 4],
 }
 
-type SharedContourLayerCache = Arc<Mutex<HashMap<FieldSelector, Option<ContourLayer>>>>;
+type SharedContourLayerCache =
+    Arc<Mutex<HashMap<(FieldSelector, usize, usize), Option<ContourLayer>>>>;
 type SharedBarbStrideCache = Arc<Mutex<HashMap<BarbStrideCacheKey, (usize, usize)>>>;
 type SharedBarbLayerCache = Arc<Mutex<HashMap<BarbStrideCacheKey, Vec<WindBarbLayer>>>>;
 type SharedStreamlineLayerCache = Arc<Mutex<HashMap<BarbStrideCacheKey, Vec<WindStreamlineLayer>>>>;
-type SharedProjectedMapCache = Arc<Mutex<HashMap<(u32, u32, u8), ProjectedMap>>>;
-type PreparedProjectedMaps = Arc<HashMap<(u32, u32, u8), ProjectedMap>>;
+type ProjectedMapCacheKey = (u32, u32, u8, usize, usize, String);
+type SharedProjectedMapCache = Arc<Mutex<HashMap<ProjectedMapCacheKey, ProjectedMap>>>;
+type PreparedProjectedMaps = Arc<HashMap<ProjectedMapCacheKey, ProjectedMap>>;
 
 impl DirectBatchRequest {
     fn from_hrrr(request: &HrrrDirectBatchRequest) -> Self {
@@ -448,67 +450,110 @@ fn standard_projected_key(
     ))
 }
 
+fn projected_map_cache_key(
+    width: u32,
+    height: u32,
+    mode_key: u8,
+    field: &SelectedField2D,
+) -> ProjectedMapCacheKey {
+    (
+        width,
+        height,
+        mode_key,
+        field.grid.shape.nx,
+        field.grid.shape.ny,
+        format!("{:?}", field.projection),
+    )
+}
+
+fn visual_mode_for_key(mode_key: u8) -> ProductVisualMode {
+    match mode_key {
+        0 => ProductVisualMode::FilledMeteorology,
+        1 => ProductVisualMode::UpperAirAnalysis,
+        2 => ProductVisualMode::OverlayAnalysis,
+        3 => ProductVisualMode::SevereDiagnostic,
+        4 => ProductVisualMode::PanelMember,
+        5 => ProductVisualMode::ComparisonPanel,
+        _ => ProductVisualMode::FilledMeteorology,
+    }
+}
+
+fn projected_sample_selector(item: &PlannedDirectRecipe) -> Option<FieldSelector> {
+    if let Some(selector) = item.recipe.filled.selector {
+        return Some(selector);
+    }
+    composite_panel_spec(item.recipe.slug).and_then(|spec| {
+        spec.component_slugs.iter().find_map(|component_slug| {
+            plot_recipe(component_slug).and_then(|component| component.filled.selector)
+        })
+    })
+}
+
 fn build_prepared_projected_maps(
     request: &DirectBatchRequest,
     planned: &[PlannedDirectRecipe],
     extracted: &HashMap<FieldSelector, SelectedField2D>,
 ) -> Result<PreparedProjectedMaps, Box<dyn std::error::Error>> {
-    let Some(sample_field) = planned.iter().find_map(|item| {
-        item.recipe
-            .filled
-            .selector
-            .and_then(|selector| extracted.get(&selector))
-    }) else {
-        return Ok(Arc::new(HashMap::new()));
-    };
-
-    let mut keys = std::collections::BTreeSet::<(u32, u32, u8)>::new();
+    let mut requested = Vec::<(ProjectedMapCacheKey, ProductVisualMode, &SelectedField2D)>::new();
     for item in planned {
         if let Some(spec) = composite_panel_spec(item.recipe.slug) {
             let spec = spec.scaled_for_request(request);
-            keys.insert((
-                spec.panel_width,
-                spec.panel_height,
-                visual_mode_cache_key(ProductVisualMode::PanelMember),
+            let Some(first_field) =
+                projected_sample_selector(item).and_then(|selector| extracted.get(&selector))
+            else {
+                continue;
+            };
+            requested.push((
+                projected_map_cache_key(
+                    spec.panel_width,
+                    spec.panel_height,
+                    visual_mode_cache_key(ProductVisualMode::PanelMember),
+                    first_field,
+                ),
+                ProductVisualMode::PanelMember,
+                first_field,
             ));
-        } else if let Some(key) = standard_projected_key(request, item.recipe) {
-            keys.insert(key);
+        } else if let Some((width, height, mode_key)) = standard_projected_key(request, item.recipe)
+        {
+            let Some(filled) = item
+                .recipe
+                .filled
+                .selector
+                .and_then(|selector| extracted.get(&selector))
+            else {
+                continue;
+            };
+            requested.push((
+                projected_map_cache_key(width, height, mode_key, filled),
+                visual_mode_for_key(mode_key),
+                filled,
+            ));
         }
+    }
+    if requested.is_empty() {
+        return Ok(Arc::new(HashMap::new()));
     }
 
     let mut prepared = HashMap::new();
-    let mut by_geometry = HashMap::<(u32, u32, u64), ProjectedMap>::new();
-    for (width, height, mode_key) in keys {
-        let visual_mode = match mode_key {
-            0 => ProductVisualMode::FilledMeteorology,
-            1 => ProductVisualMode::UpperAirAnalysis,
-            2 => ProductVisualMode::OverlayAnalysis,
-            3 => ProductVisualMode::SevereDiagnostic,
-            4 => ProductVisualMode::PanelMember,
-            5 => ProductVisualMode::ComparisonPanel,
-            _ => ProductVisualMode::FilledMeteorology,
-        };
+    for (cache_key, visual_mode, sample_field) in requested {
+        if prepared.contains_key(&cache_key) {
+            continue;
+        }
+        let (width, height, _, _, _, _) = cache_key.clone();
         let target_ratio = direct_map_frame_aspect_ratio(
             visual_mode,
             width,
             height,
             sample_field.projection.as_ref(),
         );
-        let geometry_key = (width, height, target_ratio.to_bits());
-        let projected = if let Some(projected) = by_geometry.get(&geometry_key) {
-            projected.clone()
-        } else {
-            let projected = build_projected_map_with_projection(
-                &sample_field.grid.lat_deg,
-                &sample_field.grid.lon_deg,
-                sample_field.projection.as_ref(),
-                request.domain.bounds,
-                target_ratio,
-            )?;
-            by_geometry.insert(geometry_key, projected.clone());
-            projected
-        };
-        prepared.insert((width, height, mode_key), projected);
+        let projected = build_projected_map_with_projection(
+            &sample_field.grid.lat_deg,
+            &sample_field.grid.lon_deg,
+            sample_field.projection.as_ref(),
+            request.domain.bounds,
+            target_ratio,
+        )?;
+        prepared.insert(cache_key, projected);
     }
     Ok(Arc::new(prepared))
 }
@@ -612,10 +657,11 @@ fn render_direct_recipe(
             request.output_width,
             request.output_height,
         );
-        let cache_key = (
+        let cache_key = projected_map_cache_key(
             request.output_width,
             request.output_height,
             visual_mode_cache_key(visual_mode),
+            filled,
         );
         let projected = if let Some(projected) = shared_context.and_then(|ctx| {
             ctx.projected_map(request.output_width, request.output_height)
@@ -809,10 +855,11 @@ fn render_direct_composite_panel(
         .ok_or_else(|| format!("missing component selector {:?}", first_selector))?;
 
     let project_start = Instant::now();
-    let cache_key = (
+    let cache_key = projected_map_cache_key(
         spec.panel_width,
         spec.panel_height,
         visual_mode_cache_key(ProductVisualMode::PanelMember),
+        first_field,
     );
     let panel_target_ratio = direct_map_frame_aspect_ratio(
         ProductVisualMode::PanelMember,

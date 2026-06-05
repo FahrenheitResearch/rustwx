@@ -150,6 +150,15 @@ impl Color {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DomainFrameSource {
+    #[default]
+    ProjectedGrid,
+    RasterAlpha,
+    MapViewport,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainFrame {
     pub inset_px: u32,
@@ -158,6 +167,8 @@ pub struct DomainFrame {
     pub clear_outside: bool,
     pub legend_follows_frame: bool,
     pub chrome_follows_frame: bool,
+    #[serde(default)]
+    pub source: DomainFrameSource,
 }
 
 impl DomainFrame {
@@ -169,11 +180,15 @@ impl DomainFrame {
             clear_outside: true,
             legend_follows_frame: true,
             chrome_follows_frame: true,
+            source: DomainFrameSource::MapViewport,
         }
     }
 
     pub fn model_data_default() -> Self {
-        Self::map_viewport_default()
+        Self {
+            source: DomainFrameSource::ProjectedGrid,
+            ..Self::map_viewport_default()
+        }
     }
 }
 
@@ -673,7 +688,10 @@ pub struct WindBarbLayer {
     pub v: Vec<f32>,
     pub stride_x: usize,
     pub stride_y: usize,
+    pub spacing_px: f64,
     pub color: Color,
+    pub halo_color: Color,
+    pub halo_width: u32,
     pub width: u32,
     pub length_px: f64,
 }
@@ -682,7 +700,10 @@ pub struct WindBarbLayer {
 pub struct WindBarbStyle {
     pub stride_x: usize,
     pub stride_y: usize,
+    pub spacing_px: f64,
     pub color: Color,
+    pub halo_color: Color,
+    pub halo_width: u32,
     pub width: u32,
     pub length_px: f64,
 }
@@ -692,7 +713,10 @@ impl Default for WindBarbStyle {
         Self {
             stride_x: 8,
             stride_y: 8,
+            spacing_px: 0.0,
             color: Color::BLACK,
+            halo_color: Color::WHITE,
+            halo_width: 0,
             width: 1,
             length_px: 20.0,
         }
@@ -706,7 +730,10 @@ impl WindBarbLayer {
             v: v.values.clone(),
             stride_x: style.stride_x.max(1),
             stride_y: style.stride_y.max(1),
+            spacing_px: style.spacing_px.max(0.0),
             color: style.color,
+            halo_color: style.halo_color,
+            halo_width: style.halo_width,
             width: style.width,
             length_px: style.length_px,
         }
@@ -1274,7 +1301,7 @@ mod tests {
 
         assert!(matches!(
             request.scale,
-            ColorScale::Weather(crate::weather::WeatherPreset::Cape)
+            ColorScale::Weather(crate::weather::WeatherPreset::Ecape)
         ));
         assert_eq!(request.title.as_deref(), Some("MLECAPE"));
         assert_eq!(request.cbar_tick_step, Some(500.0));

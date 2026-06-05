@@ -24,7 +24,7 @@ use rustwx_products::publication::{
 };
 use rustwx_products::shared_context::DomainSpec;
 use rustwx_products::source::ProductSourceMode;
-use rustwx_products::windowed::HrrrWindowedProduct;
+use rustwx_products::windowed::{HrrrWindowedProduct, windowed_product_available_at_forecast_hour};
 use rustwx_products::wxstore_export::{
     WxStoreGridExportRequest, default_wxstore_export_product_slugs,
 };
@@ -336,9 +336,9 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     }
     let png_compression: PngCompressionMode = args.png_compression.into();
     let (default_direct, default_derived, default_windowed) = if args.all_supported {
-        all_supported_non_ecape_product_sets(args.model)
+        all_supported_non_ecape_product_sets(args.model, args.forecast_hour)
     } else {
-        default_non_ecape_product_sets(args.model)
+        default_non_ecape_product_sets(args.model, args.forecast_hour)
     };
     let direct_recipe_slugs = if args.direct_recipes.is_empty() {
         default_direct
@@ -774,6 +774,7 @@ fn domains_for_request(
 
 fn default_non_ecape_product_sets(
     model: ModelId,
+    forecast_hour: u16,
 ) -> (Vec<String>, Vec<String>, Vec<HrrrWindowedProduct>) {
     let catalog = build_supported_products_catalog();
     let supported_for_model = |entry: &rustwx_products::catalog::ProductCatalogEntry| {
@@ -804,12 +805,14 @@ fn default_non_ecape_product_sets(
         .iter()
         .filter(|entry| supported_for_model(entry))
         .filter_map(|entry| windowed_product_from_slug(&entry.slug))
+        .filter(|product| windowed_product_available_at_forecast_hour(*product, forecast_hour))
         .collect::<Vec<_>>();
     (direct, derived, windowed)
 }
 
 fn all_supported_non_ecape_product_sets(
     model: ModelId,
+    forecast_hour: u16,
 ) -> (Vec<String>, Vec<String>, Vec<HrrrWindowedProduct>) {
     let catalog = build_supported_products_catalog();
     let supported_for_model = |entry: &rustwx_products::catalog::ProductCatalogEntry| {
@@ -839,6 +842,7 @@ fn all_supported_non_ecape_product_sets(
         .iter()
         .filter(|entry| supported_for_model(entry))
         .filter_map(|entry| windowed_product_from_slug(&entry.slug))
+        .filter(|product| windowed_product_available_at_forecast_hour(*product, forecast_hour))
         .collect::<Vec<_>>();
     (direct, derived, windowed)
 }
@@ -972,5 +976,24 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["conus", "europe"]
         );
+    }
+
+    #[test]
+    fn all_supported_hrrr_f000_has_no_auto_windowed_products() {
+        let (_, _, windowed) = all_supported_non_ecape_product_sets(ModelId::Hrrr, 0);
+        assert!(windowed.is_empty());
+    }
+
+    #[test]
+    fn all_supported_hrrr_f006_keeps_only_available_windowed_products() {
+        let (_, _, windowed) = all_supported_non_ecape_product_sets(ModelId::Hrrr, 6);
+        assert!(windowed.contains(&HrrrWindowedProduct::Qpf1h));
+        assert!(windowed.contains(&HrrrWindowedProduct::Qpf6h));
+        assert!(windowed.contains(&HrrrWindowedProduct::QpfTotal));
+        assert!(windowed.contains(&HrrrWindowedProduct::Uh25km3h));
+        assert!(windowed.contains(&HrrrWindowedProduct::Wind10mRunMax));
+        assert!(!windowed.contains(&HrrrWindowedProduct::Qpf12h));
+        assert!(!windowed.contains(&HrrrWindowedProduct::Wind10m0to24hMax));
+        assert!(!windowed.contains(&HrrrWindowedProduct::Temp2m0to24hMax));
     }
 }

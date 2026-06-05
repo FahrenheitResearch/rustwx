@@ -61,8 +61,8 @@ pub use render::{
 };
 pub use request::{
     ChromeScale, Color, ColorScale, ContourLayer, ContourLinePattern, ContourStyle,
-    DiscreteColorScale, DomainFrame, ExtendMode, Field2D, GeographicClipBounds, GridShape,
-    InverseRasterProjection, LatLonGrid, MapRenderRequest, ProductKey, ProductMaturity,
+    DiscreteColorScale, DomainFrame, DomainFrameSource, ExtendMode, Field2D, GeographicClipBounds,
+    GridShape, InverseRasterProjection, LatLonGrid, MapRenderRequest, ProductKey, ProductMaturity,
     ProductSemanticFlag, ProductSemantics, ProjectedDomain, ProjectedExtent,
     ProjectedLabelPlacement, ProjectedLineOverlay, ProjectedMarkerShape, ProjectedPlaceLabel,
     ProjectedPlaceLabelPriority, ProjectedPlaceLabelStyle, ProjectedPointOverlay,
@@ -226,10 +226,7 @@ impl RenderScratch {
             self.reclaim_f64_buffer(contour.levels);
         }
 
-        for barb in opts.barbs.drain(..) {
-            self.reclaim_f64_buffer(barb.u);
-            self.reclaim_f64_buffer(barb.v);
-        }
+        opts.barbs.clear();
 
         for streamline in opts.streamlines.drain(..) {
             self.reclaim_f64_buffer(streamline.u);
@@ -644,13 +641,16 @@ fn with_render_state_profile_with_style<T>(
         let mut barbs = Vec::with_capacity(request.wind_barbs.len());
         for layer in &request.wind_barbs {
             barbs.push(BarbOverlay {
-                u: scratch.fill_f64_from_f32(&layer.u),
-                v: scratch.fill_f64_from_f32(&layer.v),
+                u: layer.u.clone(),
+                v: layer.v.clone(),
                 ny: shape.ny,
                 nx: shape.nx,
                 stride_x: layer.stride_x,
                 stride_y: layer.stride_y,
+                spacing_px: layer.spacing_px,
                 color: presentation.barb_color(layer.color.into()),
+                halo_color: layer.halo_color.into(),
+                halo_width: layer.halo_width,
                 width: layer.width,
                 length_px: layer.length_px,
             });

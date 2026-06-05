@@ -2,12 +2,11 @@ use rustwx_core::{CanonicalField, FieldSelector, VerticalSelector};
 use rustwx_models::{PlotRecipe, RenderStyle};
 use rustwx_render::{
     Color, ColorScale, ContourLayer, ContourLinePattern, DiscreteColorScale, DomainFrame,
-    ExtendMode, LegendControls, LegendMode, LevelDensity, MapRenderRequest, ProductVisualMode,
-    RenderDensity, WindStreamlineStyle,
+    DomainFrameSource, ExtendMode, LegendControls, LegendMode, LevelDensity, MapRenderRequest,
+    ProductVisualMode, RenderDensity, WindStreamlineStyle,
     weather::{
-        WeatherPalette, dewpoint_palette_celsius_for_levels,
-        dewpoint_palette_fahrenheit_for_levels, temperature_palette_cropped_f, weather_palette,
-        winds_palette_segments,
+        WeatherPalette, dewpoint_palette_celsius_for_levels, temperature_palette_cropped_f,
+        weather_palette, winds_palette_segments,
     },
 };
 
@@ -61,7 +60,16 @@ pub fn static_domain_frame_for_bounds(bounds: (f64, f64, f64, f64)) -> Option<Do
     if is_global_scale_domain(bounds) {
         None
     } else {
-        Some(DomainFrame::map_viewport_default())
+        Some(static_model_data_domain_frame())
+    }
+}
+
+fn static_model_data_domain_frame() -> DomainFrame {
+    DomainFrame {
+        inset_px: 2,
+        outline_width: 2,
+        source: DomainFrameSource::ProjectedGrid,
+        ..DomainFrame::map_viewport_default()
     }
 }
 
@@ -149,7 +157,8 @@ pub fn operational_fill_scale_for_recipe(
         RenderStyle::WeatherReflectivity | RenderStyle::WeatherRadarReflectivity => {
             reflectivity_dbz_scale()
         }
-        RenderStyle::WeatherRh | RenderStyle::WeatherProbability => DiscreteColorScale {
+        RenderStyle::WeatherRh => relative_humidity_scale_for_selector(filled_selector),
+        RenderStyle::WeatherProbability => DiscreteColorScale {
             levels: range_step(0.0, 101.0, 1.0),
             colors: weather_palette(WeatherPalette::Rh),
             extend: ExtendMode::Both,
@@ -431,9 +440,9 @@ fn ten_meter_wind_speed_scale() -> DiscreteColorScale {
 fn dewpoint_scale_for_selector(selector: FieldSelector) -> DiscreteColorScale {
     match selector.vertical {
         VerticalSelector::HeightAboveGroundMeters(2) => {
-            let levels = range_step(-40.0, 91.0, 1.0);
+            let levels = range_step(-40.0, 90.0, 1.0);
             DiscreteColorScale {
-                colors: dewpoint_palette_fahrenheit_for_levels(&levels),
+                colors: surface_dewpoint_colors(),
                 levels,
                 extend: ExtendMode::Both,
                 mask_below: None,
@@ -449,15 +458,60 @@ fn dewpoint_scale_for_selector(selector: FieldSelector) -> DiscreteColorScale {
             }
         }
         _ => {
-            let levels = range_step(-40.0, 91.0, 1.0);
+            let levels = range_step(-40.0, 90.0, 1.0);
             DiscreteColorScale {
-                colors: dewpoint_palette_fahrenheit_for_levels(&levels),
+                colors: surface_dewpoint_colors(),
                 levels,
                 extend: ExtendMode::Both,
                 mask_below: None,
             }
         }
     }
+}
+
+fn relative_humidity_scale_for_selector(selector: FieldSelector) -> DiscreteColorScale {
+    match selector.vertical {
+        VerticalSelector::HeightAboveGroundMeters(2) => DiscreteColorScale {
+            levels: range_step(0.0, 100.0, 5.0),
+            colors: surface_relative_humidity_colors(),
+            extend: ExtendMode::Max,
+            mask_below: None,
+        },
+        _ => DiscreteColorScale {
+            levels: range_step(0.0, 101.0, 1.0),
+            colors: weather_palette(WeatherPalette::Rh),
+            extend: ExtendMode::Both,
+            mask_below: None,
+        },
+    }
+}
+
+fn surface_dewpoint_colors() -> Vec<Color> {
+    let mut colors = weather_palette(WeatherPalette::Dewpoint);
+    if colors.len() <= 1 {
+        return colors;
+    }
+
+    colors.remove(0);
+    if let Some(last) = colors.last().copied() {
+        colors.push(last);
+    }
+    colors
+}
+
+fn surface_relative_humidity_colors() -> Vec<Color> {
+    vec![
+        Color::rgba(140, 45, 4, 255),
+        Color::rgba(204, 76, 2, 255),
+        Color::rgba(236, 112, 20, 255),
+        Color::rgba(254, 153, 41, 255),
+        Color::rgba(254, 196, 79, 255),
+        Color::rgba(255, 247, 188, 255),
+        Color::rgba(224, 243, 219, 255),
+        Color::rgba(168, 221, 181, 255),
+        Color::rgba(67, 162, 202, 255),
+        Color::rgba(8, 104, 172, 255),
+    ]
 }
 
 fn cloud_cover_scale() -> DiscreteColorScale {
