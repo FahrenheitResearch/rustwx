@@ -105,6 +105,11 @@ pub use types::{
     HrrrDirectRecipeBlocker, HrrrDirectRecipeTiming, HrrrDirectRenderedRecipe,
 };
 use types::{DirectRequestBuildTiming, OUTPUT_HEIGHT, OUTPUT_WIDTH};
+
+pub(crate) fn direct_composite_component_slugs(slug: &str) -> Option<&'static [&'static str]> {
+    composite_panel_spec(slug).map(|spec| spec.component_slugs)
+}
+
 fn direct_data_layer_draw_ms(image_timing: &RenderImageTiming) -> u128 {
     image_timing.polygon_fill_ms
         + image_timing.projected_pixel_ms

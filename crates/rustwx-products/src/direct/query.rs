@@ -17,7 +17,7 @@ use super::planning::{
 use super::rendering::render_filled_field;
 use super::types::{
     DirectBatchRequest, DirectRecipeBlocker, DirectSampledComponentField,
-    DirectSampledProductField, DirectSampledProductSet,
+    DirectSampledCompositeProduct, DirectSampledProductField, DirectSampledProductSet,
 };
 use super::{
     extract_direct_fetch_group_from_loaded, find_loaded_bytes_for_group, sampling_direct_request,
@@ -55,6 +55,7 @@ pub(crate) fn load_direct_sampled_fields_from_latest(
         return Ok(DirectSampledProductSet {
             latest: latest.clone(),
             fields: Vec::new(),
+            composites: Vec::new(),
             blockers: Vec::new(),
         });
     }
@@ -116,6 +117,7 @@ fn load_direct_sampled_fields_from_loaded_request(
         return Ok(DirectSampledProductSet {
             latest: loaded.latest.clone(),
             fields: Vec::new(),
+            composites: Vec::new(),
             blockers: Vec::new(),
         });
     }
@@ -158,13 +160,27 @@ fn load_direct_sampled_fields_from_loaded_request(
     blockers.extend(selector_blockers);
 
     let mut fields = Vec::new();
+    let mut composites = Vec::new();
     for item in renderable {
-        if composite_panel_spec(item.recipe.slug).is_some() {
-            blockers.push(DirectRecipeBlocker {
-                recipe_slug: item.recipe.slug.to_string(),
-                reason: "composite direct recipe does not expose a single sampled filled field"
-                    .to_string(),
-            });
+        let canonical_product = canonical_fetch_product_for_selectors(
+            request,
+            item.plan.product.as_ref(),
+            &item.plan.selectors(),
+        );
+        let input_fetches: Vec<PublishedFetchIdentity> = fetches_by_product
+            .get(&canonical_product)
+            .cloned()
+            .into_iter()
+            .collect();
+        if let Some(spec) = composite_panel_spec(item.recipe.slug) {
+            composites.push(direct_sampled_composite(
+                item.recipe,
+                spec.rows,
+                spec.columns,
+                spec.component_slugs,
+                &extracted,
+                &input_fetches,
+            )?);
             continue;
         }
         let Some(filled_selector) = item.recipe.filled.selector else {
@@ -186,16 +202,6 @@ fn load_direct_sampled_fields_from_loaded_request(
             continue;
         };
         let field = render_filled_field(item.recipe, filled, &extracted)?;
-        let canonical_product = canonical_fetch_product_for_selectors(
-            &request,
-            item.plan.product.as_ref(),
-            &item.plan.selectors(),
-        );
-        let input_fetches: Vec<PublishedFetchIdentity> = fetches_by_product
-            .get(&canonical_product)
-            .cloned()
-            .into_iter()
-            .collect();
         let components = direct_sampled_components(item.recipe, &extracted, &input_fetches)?;
         fields.push(DirectSampledProductField {
             recipe_slug: item.recipe.slug.to_string(),
@@ -211,6 +217,7 @@ fn load_direct_sampled_fields_from_loaded_request(
     Ok(DirectSampledProductSet {
         latest: loaded.latest.clone(),
         fields,
+        composites,
         blockers,
     })
 }
@@ -366,6 +373,41 @@ fn direct_sampled_components(
     }
 
     Ok(components)
+}
+
+fn direct_sampled_composite(
+    recipe: &PlotRecipe,
+    rows: u32,
+    columns: u32,
+    component_slugs: &[&str],
+    extracted: &HashMap<FieldSelector, SelectedField2D>,
+    input_fetches: &[PublishedFetchIdentity],
+) -> Result<DirectSampledCompositeProduct, Box<dyn std::error::Error>> {
+    let mut components = Vec::with_capacity(component_slugs.len());
+    for component_slug in component_slugs {
+        let component = rustwx_models::plot_recipe(component_slug)
+            .ok_or_else(|| format!("missing composite component recipe '{component_slug}'"))?;
+        let selector = component.filled.selector.ok_or_else(|| {
+            format!("composite component recipe '{component_slug}' is missing a filled selector")
+        })?;
+        let field = extracted
+            .get(&selector)
+            .ok_or_else(|| format!("missing composite component selector {}", selector.key()))?;
+        components.push(DirectSampledComponentField {
+            product_slug: direct_component_slug(recipe.slug, component_slug),
+            title: component.title.to_string(),
+            field: field.clone().into_field2d(),
+            input_fetches: input_fetches.to_vec(),
+        });
+    }
+
+    Ok(DirectSampledCompositeProduct {
+        recipe_slug: recipe.slug.to_string(),
+        title: recipe.title.to_string(),
+        rows,
+        columns,
+        components,
+    })
 }
 
 pub(crate) fn direct_component_slug(recipe_slug: &str, role: &str) -> String {

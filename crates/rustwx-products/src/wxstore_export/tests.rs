@@ -57,9 +57,10 @@ fn default_products_include_all_supported_non_ecape_grid_lanes() {
     assert!(products.contains(&"qpf_1h".to_string()));
     assert!(products.contains(&"total_qpf".to_string()));
     assert!(products.contains(&"scp_mu_0_3km_0_6km_proxy".to_string()));
+    assert!(products.contains(&"cloud_cover_levels".to_string()));
+    assert!(products.contains(&"precipitation_type".to_string()));
     assert!(!products.contains(&"sbecape".to_string()));
     assert!(!products.contains(&"severe_proof_panel".to_string()));
-    assert!(!products.contains(&"cloud_cover_levels".to_string()));
     assert!(products.iter().all(|slug| !slug.contains("ecape")));
 }
 

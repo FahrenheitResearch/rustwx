@@ -246,7 +246,17 @@ pub(crate) struct DirectSampledComponentField {
 pub(crate) struct DirectSampledProductSet {
     pub latest: LatestRun,
     pub fields: Vec<DirectSampledProductField>,
+    pub composites: Vec<DirectSampledCompositeProduct>,
     pub blockers: Vec<DirectRecipeBlocker>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DirectSampledCompositeProduct {
+    pub recipe_slug: String,
+    pub title: String,
+    pub rows: u32,
+    pub columns: u32,
+    pub components: Vec<DirectSampledComponentField>,
 }
 
 #[derive(Debug, Clone)]

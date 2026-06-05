@@ -316,9 +316,16 @@ fn combine_parallel_reports(
     let manifest_path = combined_dir.join("manifest.json");
 
     let mut fields = Vec::new();
+    let mut compositions = Vec::new();
     let mut blockers = Vec::new();
     let mut load_ms = 0u128;
     let mut write_ms = 0u128;
+    let mut load_bundle_ms = 0u128;
+    let mut load_direct_ms = 0u128;
+    let mut load_derived_ms = 0u128;
+    let mut load_windowed_ms = 0u128;
+    let mut write_fields_ms = 0u128;
+    let mut write_wxa_ms = 0u128;
     for report in reports {
         let chunk_dir = report
             .manifest_path
@@ -327,7 +334,14 @@ fn combine_parallel_reports(
             .unwrap_or_else(|| PathBuf::from("."));
         load_ms += report.timing.load_ms;
         write_ms += report.timing.write_ms;
+        load_bundle_ms += report.timing.load_bundle_ms;
+        load_direct_ms += report.timing.load_direct_ms;
+        load_derived_ms += report.timing.load_derived_ms;
+        load_windowed_ms += report.timing.load_windowed_ms;
+        write_fields_ms += report.timing.write_fields_ms;
+        write_wxa_ms += report.timing.write_wxa_ms;
         blockers.extend(report.blockers);
+        compositions.extend(report.compositions);
         fields.extend(report.fields.into_iter().map(|mut field| {
             absolutize_record_paths(&chunk_dir, &mut field);
             field
@@ -344,6 +358,11 @@ fn combine_parallel_reports(
             .then(a.forecast_hour.cmp(&b.forecast_hour))
             .then(a.reason.cmp(&b.reason))
     });
+    compositions.sort_by(|a, b| {
+        a.product_slug
+            .cmp(&b.product_slug)
+            .then(a.forecast_hour.cmp(&b.forecast_hour))
+    });
 
     let report = WxStoreGridExportReport {
         schema: "rustwx.wxstore_grid_export.v1".to_string(),
@@ -358,11 +377,18 @@ fn combine_parallel_reports(
         generated_at,
         manifest_path: manifest_path.clone(),
         fields,
+        compositions,
         blockers,
         timing: WxStoreGridExportTiming {
             total_ms: wall_ms,
             load_ms,
             write_ms,
+            load_bundle_ms,
+            load_direct_ms,
+            load_derived_ms,
+            load_windowed_ms,
+            write_fields_ms,
+            write_wxa_ms,
         },
     };
     fs::write(&manifest_path, serde_json::to_vec_pretty(&report)?)

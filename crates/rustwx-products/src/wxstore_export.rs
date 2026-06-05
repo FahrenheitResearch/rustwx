@@ -6,7 +6,7 @@ use crate::derived::{
     load_derived_sampled_fields_from_loaded,
 };
 use crate::direct::{
-    DirectRecipeBlocker, build_direct_sampled_execution_plan,
+    DirectRecipeBlocker, build_direct_sampled_execution_plan, direct_composite_component_slugs,
     load_direct_sampled_fields_from_loaded,
 };
 use crate::gridded::resolve_model_run;
@@ -65,8 +65,27 @@ pub struct WxStoreGridExportReport {
     pub generated_at: String,
     pub manifest_path: PathBuf,
     pub fields: Vec<WxStoreGridExportRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compositions: Vec<WxStoreGridExportComposition>,
     pub blockers: Vec<WxStoreGridExportBlocker>,
     pub timing: WxStoreGridExportTiming,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WxStoreGridExportComposition {
+    pub product_slug: String,
+    pub title: String,
+    pub kind: String,
+    pub forecast_hour: u16,
+    pub rows: u32,
+    pub columns: u32,
+    pub components: Vec<WxStoreGridExportCompositionComponent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WxStoreGridExportCompositionComponent {
+    pub product_slug: String,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +150,42 @@ pub struct WxStoreGridExportTiming {
     pub total_ms: u128,
     pub load_ms: u128,
     pub write_ms: u128,
+    #[serde(default)]
+    pub load_bundle_ms: u128,
+    #[serde(default)]
+    pub load_direct_ms: u128,
+    #[serde(default)]
+    pub load_derived_ms: u128,
+    #[serde(default)]
+    pub load_windowed_ms: u128,
+    #[serde(default)]
+    pub write_fields_ms: u128,
+    #[serde(default)]
+    pub write_wxa_ms: u128,
+}
+
+impl WxStoreGridExportTiming {
+    fn from_splits(
+        total_ms: u128,
+        load_bundle_ms: u128,
+        load_direct_ms: u128,
+        load_derived_ms: u128,
+        load_windowed_ms: u128,
+        write_fields_ms: u128,
+        write_wxa_ms: u128,
+    ) -> Self {
+        Self {
+            total_ms,
+            load_ms: load_bundle_ms + load_direct_ms + load_derived_ms + load_windowed_ms,
+            write_ms: write_fields_ms + write_wxa_ms,
+            load_bundle_ms,
+            load_direct_ms,
+            load_derived_ms,
+            load_windowed_ms,
+            write_fields_ms,
+            write_wxa_ms,
+        }
+    }
 }
 
 struct CroppedField {
@@ -234,8 +289,13 @@ pub fn export_wxstore_grid_bundle(
         classify_wxstore_export_products(request.model, &request.product_slugs);
     let mut blockers = classified_products.blockers.clone();
     let mut fields = Vec::new();
-    let mut load_ms = 0u128;
-    let mut write_ms = 0u128;
+    let mut compositions = Vec::new();
+    let mut load_bundle_ms = 0u128;
+    let mut load_direct_ms = 0u128;
+    let mut load_derived_ms = 0u128;
+    let mut load_windowed_ms = 0u128;
+    let mut write_fields_ms = 0u128;
+    let mut write_wxa_ms = 0u128;
     let mut geometry_cache = GeometryLatLonCache::default();
     let mut direct_wxa_grids = BTreeMap::<String, Vec<WxaDense2dWriteGrid>>::new();
 
@@ -251,11 +311,11 @@ pub fn export_wxstore_grid_bundle(
                 &classified_products,
             ) {
                 Ok(loaded) => {
-                    load_ms += load_start.elapsed().as_millis();
+                    load_bundle_ms += load_start.elapsed().as_millis();
                     Some(loaded)
                 }
                 Err(err) => {
-                    load_ms += load_start.elapsed().as_millis();
+                    load_bundle_ms += load_start.elapsed().as_millis();
                     if !classified_products.direct_slugs.is_empty() {
                         blockers.extend(lane_failure_blockers(
                             "direct",
@@ -291,7 +351,7 @@ pub fn export_wxstore_grid_bundle(
                     loaded,
                 ) {
                     Ok(sampled) => {
-                        load_ms += load_start.elapsed().as_millis();
+                        load_direct_ms += load_start.elapsed().as_millis();
 
                         blockers.extend(
                             sampled
@@ -299,6 +359,45 @@ pub fn export_wxstore_grid_bundle(
                                 .into_iter()
                                 .map(|blocker| export_blocker_from_direct(blocker, forecast_hour)),
                         );
+
+                        for composite in sampled.composites {
+                            let mut component_records =
+                                Vec::with_capacity(composite.components.len());
+                            for component in composite.components {
+                                let component_slug = component.product_slug.clone();
+                                let component_title = component.title.clone();
+                                let (record, elapsed_ms) = write_export_field(
+                                    &manifest_dir,
+                                    &latest,
+                                    request,
+                                    &run_id,
+                                    forecast_hour,
+                                    &mut geometry_cache,
+                                    &mut direct_wxa_grids,
+                                    ExportableSampledField {
+                                        product_slug: component.product_slug,
+                                        title: component.title,
+                                        field: component.field,
+                                        input_fetches: component.input_fetches,
+                                    },
+                                )?;
+                                write_fields_ms += elapsed_ms;
+                                fields.push(record);
+                                component_records.push(WxStoreGridExportCompositionComponent {
+                                    product_slug: component_slug,
+                                    title: component_title,
+                                });
+                            }
+                            compositions.push(WxStoreGridExportComposition {
+                                product_slug: composite.recipe_slug,
+                                title: composite.title,
+                                kind: "direct_composite_panel".to_string(),
+                                forecast_hour,
+                                rows: composite.rows,
+                                columns: composite.columns,
+                                components: component_records,
+                            });
+                        }
 
                         for sampled_field in sampled.fields {
                             let components = sampled_field.components;
@@ -317,7 +416,7 @@ pub fn export_wxstore_grid_bundle(
                                     input_fetches: sampled_field.input_fetches,
                                 },
                             )?;
-                            write_ms += elapsed_ms;
+                            write_fields_ms += elapsed_ms;
                             fields.push(record);
                             for component in components {
                                 let (record, elapsed_ms) = write_export_field(
@@ -335,13 +434,13 @@ pub fn export_wxstore_grid_bundle(
                                         input_fetches: component.input_fetches,
                                     },
                                 )?;
-                                write_ms += elapsed_ms;
+                                write_fields_ms += elapsed_ms;
                                 fields.push(record);
                             }
                         }
                     }
                     Err(err) => {
-                        load_ms += load_start.elapsed().as_millis();
+                        load_direct_ms += load_start.elapsed().as_millis();
                         blockers.extend(lane_failure_blockers(
                             "direct",
                             &classified_products.direct_slugs,
@@ -361,7 +460,7 @@ pub fn export_wxstore_grid_bundle(
                     loaded,
                 ) {
                     Ok(sampled) => {
-                        load_ms += load_start.elapsed().as_millis();
+                        load_derived_ms += load_start.elapsed().as_millis();
 
                         blockers.extend(
                             sampled
@@ -391,12 +490,12 @@ pub fn export_wxstore_grid_bundle(
                                     input_fetches: sampled_field.input_fetches,
                                 },
                             )?;
-                            write_ms += elapsed_ms;
+                            write_fields_ms += elapsed_ms;
                             fields.push(record);
                         }
                     }
                     Err(err) => {
-                        load_ms += load_start.elapsed().as_millis();
+                        load_derived_ms += load_start.elapsed().as_millis();
                         blockers.extend(lane_failure_blockers(
                             "derived",
                             &classified_products.derived_slugs,
@@ -419,7 +518,7 @@ pub fn export_wxstore_grid_bundle(
             &classified_products.windowed_products,
         ) {
             Ok(sampled) => {
-                load_ms += load_start.elapsed().as_millis();
+                load_windowed_ms += load_start.elapsed().as_millis();
 
                 blockers.extend(
                     sampled.blockers.into_iter().map(|entry| {
@@ -443,12 +542,12 @@ pub fn export_wxstore_grid_bundle(
                             input_fetches: sampled_field.input_fetches,
                         },
                     )?;
-                    write_ms += elapsed_ms;
+                    write_fields_ms += elapsed_ms;
                     fields.push(record);
                 }
             }
             Err(err) => {
-                load_ms += load_start.elapsed().as_millis();
+                load_windowed_ms += load_start.elapsed().as_millis();
                 let product_slugs = classified_products
                     .windowed_products
                     .iter()
@@ -477,8 +576,13 @@ pub fn export_wxstore_grid_bundle(
             .then(a.forecast_hour.cmp(&b.forecast_hour))
             .then(a.reason.cmp(&b.reason))
     });
+    compositions.sort_by(|a, b| {
+        a.product_slug
+            .cmp(&b.product_slug)
+            .then(a.forecast_hour.cmp(&b.forecast_hour))
+    });
 
-    write_ms += write_direct_wxa_products(request, &run_id, direct_wxa_grids)?;
+    write_wxa_ms += write_direct_wxa_products(request, &run_id, direct_wxa_grids)?;
 
     let manifest_path = manifest_dir.join("manifest.json");
     let report = WxStoreGridExportReport {
@@ -494,12 +598,17 @@ pub fn export_wxstore_grid_bundle(
         generated_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         manifest_path: manifest_path.clone(),
         fields,
+        compositions,
         blockers,
-        timing: WxStoreGridExportTiming {
-            total_ms: total_start.elapsed().as_millis(),
-            load_ms,
-            write_ms,
-        },
+        timing: WxStoreGridExportTiming::from_splits(
+            total_start.elapsed().as_millis(),
+            load_bundle_ms,
+            load_direct_ms,
+            load_derived_ms,
+            load_windowed_ms,
+            write_fields_ms,
+            write_wxa_ms,
+        ),
     };
     atomic_write_json(&manifest_path, &report)?;
     publish_direct_wxa_run_manifest(request, &report, &manifest_path)?;
@@ -562,8 +671,13 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
         classify_wxstore_export_products(request.model, &request.product_slugs);
     let mut blockers = classified_products.blockers.clone();
     let mut fields = Vec::new();
-    let mut load_ms = 0u128;
-    let mut write_ms = 0u128;
+    let mut compositions = Vec::new();
+    let load_bundle_ms = 0u128;
+    let mut load_direct_ms = 0u128;
+    let mut load_derived_ms = 0u128;
+    let mut load_windowed_ms = 0u128;
+    let mut write_fields_ms = 0u128;
+    let mut write_wxa_ms = 0u128;
     let mut geometry_cache = GeometryLatLonCache::default();
     let mut direct_wxa_grids = BTreeMap::<String, Vec<WxaDense2dWriteGrid>>::new();
 
@@ -579,13 +693,50 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
                 loaded,
             ) {
                 Ok(sampled) => {
-                    load_ms += load_start.elapsed().as_millis();
+                    load_direct_ms += load_start.elapsed().as_millis();
                     blockers.extend(
                         sampled
                             .blockers
                             .into_iter()
                             .map(|blocker| export_blocker_from_direct(blocker, forecast_hour)),
                     );
+                    for composite in sampled.composites {
+                        let mut component_records = Vec::with_capacity(composite.components.len());
+                        for component in composite.components {
+                            let component_slug = component.product_slug.clone();
+                            let component_title = component.title.clone();
+                            let (record, elapsed_ms) = write_export_field(
+                                &manifest_dir,
+                                latest,
+                                request,
+                                &run_id,
+                                forecast_hour,
+                                &mut geometry_cache,
+                                &mut direct_wxa_grids,
+                                ExportableSampledField {
+                                    product_slug: component.product_slug,
+                                    title: component.title,
+                                    field: component.field,
+                                    input_fetches: component.input_fetches,
+                                },
+                            )?;
+                            write_fields_ms += elapsed_ms;
+                            fields.push(record);
+                            component_records.push(WxStoreGridExportCompositionComponent {
+                                product_slug: component_slug,
+                                title: component_title,
+                            });
+                        }
+                        compositions.push(WxStoreGridExportComposition {
+                            product_slug: composite.recipe_slug,
+                            title: composite.title,
+                            kind: "direct_composite_panel".to_string(),
+                            forecast_hour,
+                            rows: composite.rows,
+                            columns: composite.columns,
+                            components: component_records,
+                        });
+                    }
                     for sampled_field in sampled.fields {
                         let components = sampled_field.components;
                         let (record, elapsed_ms) = write_export_field(
@@ -603,7 +754,7 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
                                 input_fetches: sampled_field.input_fetches,
                             },
                         )?;
-                        write_ms += elapsed_ms;
+                        write_fields_ms += elapsed_ms;
                         fields.push(record);
                         for component in components {
                             let (record, elapsed_ms) = write_export_field(
@@ -621,13 +772,13 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
                                     input_fetches: component.input_fetches,
                                 },
                             )?;
-                            write_ms += elapsed_ms;
+                            write_fields_ms += elapsed_ms;
                             fields.push(record);
                         }
                     }
                 }
                 Err(err) => {
-                    load_ms += load_start.elapsed().as_millis();
+                    load_direct_ms += load_start.elapsed().as_millis();
                     blockers.extend(lane_failure_blockers(
                         "direct",
                         &classified_products.direct_slugs,
@@ -637,7 +788,7 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
                 }
             }
         } else {
-            load_ms += load_start.elapsed().as_millis();
+            load_direct_ms += load_start.elapsed().as_millis();
             blockers.extend(lane_failure_blockers(
                 "direct",
                 &classified_products.direct_slugs,
@@ -655,7 +806,7 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
                 loaded,
             ) {
                 Ok(sampled) => {
-                    load_ms += load_start.elapsed().as_millis();
+                    load_derived_ms += load_start.elapsed().as_millis();
                     blockers.extend(
                         sampled
                             .blockers
@@ -683,12 +834,12 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
                                 input_fetches: sampled_field.input_fetches,
                             },
                         )?;
-                        write_ms += elapsed_ms;
+                        write_fields_ms += elapsed_ms;
                         fields.push(record);
                     }
                 }
                 Err(err) => {
-                    load_ms += load_start.elapsed().as_millis();
+                    load_derived_ms += load_start.elapsed().as_millis();
                     blockers.extend(lane_failure_blockers(
                         "derived",
                         &classified_products.derived_slugs,
@@ -698,7 +849,7 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
                 }
             }
         } else {
-            load_ms += load_start.elapsed().as_millis();
+            load_derived_ms += load_start.elapsed().as_millis();
             blockers.extend(lane_failure_blockers(
                 "derived",
                 &classified_products.derived_slugs,
@@ -718,7 +869,7 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
             &classified_products.windowed_products,
         ) {
             Ok(sampled) => {
-                load_ms += load_start.elapsed().as_millis();
+                load_windowed_ms += load_start.elapsed().as_millis();
                 blockers.extend(
                     sampled.blockers.into_iter().map(|entry| {
                         export_blocker_from_windowed(entry.blocker, entry.forecast_hour)
@@ -740,12 +891,12 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
                             input_fetches: sampled_field.input_fetches,
                         },
                     )?;
-                    write_ms += elapsed_ms;
+                    write_fields_ms += elapsed_ms;
                     fields.push(record);
                 }
             }
             Err(err) => {
-                load_ms += load_start.elapsed().as_millis();
+                load_windowed_ms += load_start.elapsed().as_millis();
                 let product_slugs = classified_products
                     .windowed_products
                     .iter()
@@ -772,8 +923,13 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
             .then(a.forecast_hour.cmp(&b.forecast_hour))
             .then(a.reason.cmp(&b.reason))
     });
+    compositions.sort_by(|a, b| {
+        a.product_slug
+            .cmp(&b.product_slug)
+            .then(a.forecast_hour.cmp(&b.forecast_hour))
+    });
 
-    write_ms += write_direct_wxa_products(request, &run_id, direct_wxa_grids)?;
+    write_wxa_ms += write_direct_wxa_products(request, &run_id, direct_wxa_grids)?;
 
     let manifest_path = manifest_dir.join("manifest.json");
     let report = WxStoreGridExportReport {
@@ -789,12 +945,17 @@ pub(crate) fn export_wxstore_grid_bundle_from_loaded_parts(
         generated_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         manifest_path: manifest_path.clone(),
         fields,
+        compositions,
         blockers,
-        timing: WxStoreGridExportTiming {
-            total_ms: total_start.elapsed().as_millis(),
-            load_ms,
-            write_ms,
-        },
+        timing: WxStoreGridExportTiming::from_splits(
+            total_start.elapsed().as_millis(),
+            load_bundle_ms,
+            load_direct_ms,
+            load_derived_ms,
+            load_windowed_ms,
+            write_fields_ms,
+            write_wxa_ms,
+        ),
     };
     atomic_write_json(&manifest_path, &report)?;
     publish_direct_wxa_run_manifest(request, &report, &manifest_path)?;
@@ -1137,6 +1298,9 @@ fn direct_fetch_plan_blocker_reason(recipe_slug: &str, model: ModelId) -> Option
 }
 
 fn direct_recipe_exposes_sampled_grid(slug: &str) -> bool {
+    if direct_composite_component_slugs(slug).is_some() {
+        return true;
+    }
     plot_recipe(slug)
         .map(|recipe| recipe.filled.selector.is_some())
         .unwrap_or(false)
