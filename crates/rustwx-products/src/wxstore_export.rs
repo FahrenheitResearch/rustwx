@@ -1427,6 +1427,7 @@ fn write_export_field(
                     y_end: crop.y_end,
                 }),
                 Some(cropped.bounds),
+                Some(&request.domain),
             );
             direct_wxa_grids
                 .entry(sampled_field.product_slug.clone())

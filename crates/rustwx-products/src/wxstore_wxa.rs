@@ -33,6 +33,7 @@ const WXA_DENSE2D_HEADER_LEN: usize = 64;
 const WXA_DENSE2D_INDEX_RECORD_LEN: usize = 64;
 const WXA_SPATIAL_CHUNK_Y: usize = 256;
 const WXA_SPATIAL_CHUNK_X: usize = 256;
+const LEGACY_CONUS_WXA_FRAME_BOUNDS: (f64, f64, f64, f64) = (-127.0, -66.0, 23.0, 51.5);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WxaDense2dMeta {
@@ -356,6 +357,7 @@ pub fn wxa_grid_meta_from_latlon(
     lon: &[f32],
     crop: Option<WxaGridCrop>,
     bounds: Option<[f64; 4]>,
+    requested_domain: Option<&DomainSpec>,
 ) -> Value {
     if matches!(model, "hrrr" | "hrrr_archive")
         && !lat.is_empty()
@@ -376,7 +378,7 @@ pub fn wxa_grid_meta_from_latlon(
         let bounds = bounds
             .map(normalize_bounds)
             .or_else(|| bounds_from_latlon_normalized(lat, lon));
-        return json!({
+        let mut meta = json!({
             "type": "hrrr_lambert_crop",
             "nx": nx,
             "ny": ny,
@@ -395,6 +397,8 @@ pub fn wxa_grid_meta_from_latlon(
             "latin2": hrrr.latin2,
             "lov": hrrr.lov
         });
+        attach_requested_domain_meta(&mut meta, requested_domain);
+        return meta;
     }
 
     if !lat.is_empty() && lat.len() == nx * ny && lon.len() == nx * ny {
@@ -407,7 +411,7 @@ pub fn wxa_grid_meta_from_latlon(
             if let (Some(lat_step), Some(lon_step)) =
                 (linear_axis_step(&lat_axis), linear_axis_step(&lon_axis))
             {
-                return json!({
+                let mut meta = json!({
                     "type": "regular_latlon",
                     "nx": nx,
                     "ny": ny,
@@ -426,8 +430,10 @@ pub fn wxa_grid_meta_from_latlon(
                     },
                     "sample_strategy": "regular_nearest"
                 });
+                attach_requested_domain_meta(&mut meta, requested_domain);
+                return meta;
             }
-            return json!({
+            let mut meta = json!({
                 "type": "rectilinear_latlon",
                 "nx": nx,
                 "ny": ny,
@@ -442,11 +448,17 @@ pub fn wxa_grid_meta_from_latlon(
                 },
                 "sample_strategy": "rectilinear_nearest"
             });
+            attach_requested_domain_meta(&mut meta, requested_domain);
+            return meta;
         }
-        return sampled_curvilinear_meta(nx, ny, lat, lon, bounds, corners);
+        let mut meta = sampled_curvilinear_meta(nx, ny, lat, lon, bounds, corners);
+        attach_requested_domain_meta(&mut meta, requested_domain);
+        return meta;
     }
 
-    fallback_spatial_grid_meta(model, nx, ny)
+    let mut meta = fallback_spatial_grid_meta(model, nx, ny);
+    attach_requested_domain_meta(&mut meta, requested_domain);
+    meta
 }
 
 pub fn write_wxa_dense2d_grids(
@@ -800,12 +812,9 @@ pub fn render_wxa_static_plot(
     let started = Instant::now();
     let wxa = read_wxa_dense2d_grid(&request.wxa_path, request.forecast_hour)?;
     let geometry = geometry_from_wxa_meta(&wxa.meta)?;
-    let bounds = request.bounds_override.unwrap_or((
-        geometry.bounds[0],
-        geometry.bounds[2],
-        geometry.bounds[1],
-        geometry.bounds[3],
-    ));
+    let bounds = request
+        .bounds_override
+        .unwrap_or_else(|| default_wxa_plot_bounds(&wxa.meta, &geometry));
     let model = model_id_from_wxa(&wxa.meta.model);
     let title = request
         .title_override
@@ -908,12 +917,9 @@ pub fn render_wxa_composite_panel(
         );
         let wxa = read_wxa_dense2d_grid(&path, request.forecast_hour)?;
         let geometry = geometry_from_wxa_meta(&wxa.meta)?;
-        let bounds = request.bounds_override.unwrap_or((
-            geometry.bounds[0],
-            geometry.bounds[2],
-            geometry.bounds[1],
-            geometry.bounds[3],
-        ));
+        let bounds = request
+            .bounds_override
+            .unwrap_or_else(|| default_wxa_plot_bounds(&wxa.meta, &geometry));
         let mut map_request = build_wxa_map_request(
             &wxa,
             &geometry,
@@ -1078,9 +1084,103 @@ fn build_wxa_map_request(
 fn apply_wxa_domain_frame_policy(request: &mut MapRenderRequest, meta: &WxaDense2dMeta) {
     if is_sampled_curvilinear_wxa_grid(meta) {
         if let Some(frame) = request.domain_frame.as_mut() {
-            frame.source = DomainFrameSource::RasterAlpha;
+            frame.source = if is_sparse_categorical_wxa_product(&meta.variable) {
+                DomainFrameSource::MapViewport
+            } else {
+                DomainFrameSource::RasterAlpha
+            };
         }
     }
+}
+
+fn is_sparse_categorical_wxa_product(product: &str) -> bool {
+    matches!(
+        product.to_ascii_lowercase().as_str(),
+        "categorical_rain"
+            | "categorical_freezing_rain"
+            | "categorical_ice_pellets"
+            | "categorical_snow"
+    )
+}
+
+fn default_wxa_plot_bounds(
+    meta: &WxaDense2dMeta,
+    geometry: &WxaGridGeometry,
+) -> (f64, f64, f64, f64) {
+    if let Some(bounds) = requested_domain_bounds_from_wxa_meta(meta) {
+        return bounds;
+    }
+    let bounds = geometry_bounds_tuple(geometry);
+    legacy_conus_frame_bounds_for_wxa(meta, bounds).unwrap_or(bounds)
+}
+
+fn geometry_bounds_tuple(geometry: &WxaGridGeometry) -> (f64, f64, f64, f64) {
+    (
+        geometry.bounds[0],
+        geometry.bounds[2],
+        geometry.bounds[1],
+        geometry.bounds[3],
+    )
+}
+
+fn requested_domain_bounds_from_wxa_meta(meta: &WxaDense2dMeta) -> Option<(f64, f64, f64, f64)> {
+    let domain = meta.grid.get("requested_domain")?;
+    let west = domain.get("west").and_then(Value::as_f64);
+    let east = domain.get("east").and_then(Value::as_f64);
+    let south = domain.get("south").and_then(Value::as_f64);
+    let north = domain.get("north").and_then(Value::as_f64);
+    let bounds = match (west, east, south, north) {
+        (Some(west), Some(east), Some(south), Some(north)) => (west, east, south, north),
+        _ => {
+            let values = domain.get("bounds").and_then(value_f64_array)?;
+            if values.len() != 4 {
+                return None;
+            }
+            (values[0], values[2], values[1], values[3])
+        }
+    };
+    valid_plot_bounds(bounds).then_some(bounds)
+}
+
+fn legacy_conus_frame_bounds_for_wxa(
+    meta: &WxaDense2dMeta,
+    bounds: (f64, f64, f64, f64),
+) -> Option<(f64, f64, f64, f64)> {
+    if !legacy_wxa_model_uses_conus_frame(&meta.model)
+        || !valid_plot_bounds(bounds)
+        || !bounds_contain(bounds, LEGACY_CONUS_WXA_FRAME_BOUNDS)
+    {
+        return None;
+    }
+
+    let lat_span = (bounds.3 - bounds.2).abs();
+    let lon_span = longitude_bounds_span_deg(bounds);
+    let conusish_broad_crop = bounds.0 >= -150.0
+        && bounds.1 <= -35.0
+        && bounds.2 >= 5.0
+        && bounds.3 <= 65.0
+        && lat_span <= 60.0
+        && lon_span <= 115.0;
+    conusish_broad_crop.then_some(LEGACY_CONUS_WXA_FRAME_BOUNDS)
+}
+
+fn legacy_wxa_model_uses_conus_frame(model: &str) -> bool {
+    matches!(
+        model.to_ascii_lowercase().as_str(),
+        "rrfs" | "rrfs-a" | "rrfs_a" | "nbm"
+    )
+}
+
+fn bounds_contain(outer: (f64, f64, f64, f64), inner: (f64, f64, f64, f64)) -> bool {
+    outer.0 <= inner.0 && outer.1 >= inner.1 && outer.2 <= inner.2 && outer.3 >= inner.3
+}
+
+fn valid_plot_bounds(bounds: (f64, f64, f64, f64)) -> bool {
+    [bounds.0, bounds.1, bounds.2, bounds.3]
+        .iter()
+        .all(|value| value.is_finite())
+        && bounds.0 < bounds.1
+        && bounds.2 < bounds.3
 }
 
 fn is_sampled_curvilinear_wxa_grid(meta: &WxaDense2dMeta) -> bool {
@@ -1764,15 +1864,7 @@ fn parse_wxa_run_time(run: &str) -> Option<(String, u8)> {
 }
 
 fn model_id_from_wxa(model: &str) -> Option<ModelId> {
-    match model.to_ascii_lowercase().as_str() {
-        "hrrr" => Some(ModelId::Hrrr),
-        "gfs" => Some(ModelId::Gfs),
-        "ecmwf" | "ecmwf-open-data" | "ecmwf_open_data" | "ecmwf_ifs" => {
-            Some(ModelId::EcmwfOpenData)
-        }
-        "aifs" | "aifs_ens" | "aifs_ensemble" => Some(ModelId::Aifs),
-        _ => None,
-    }
+    model.parse().ok()
 }
 
 pub fn common_forecast_hours(paths: &[PathBuf]) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
@@ -2190,6 +2282,25 @@ fn normalize_bounds(bounds: [f64; 4]) -> [f64; 4] {
         west.max(east),
         bounds[1].max(bounds[3]),
     ]
+}
+
+fn attach_requested_domain_meta(meta: &mut Value, requested_domain: Option<&DomainSpec>) {
+    let Some(domain) = requested_domain else {
+        return;
+    };
+    let Some(object) = meta.as_object_mut() else {
+        return;
+    };
+    object.insert(
+        "requested_domain".to_string(),
+        json!({
+            "slug": domain.slug.clone(),
+            "west": domain.bounds.0,
+            "east": domain.bounds.1,
+            "south": domain.bounds.2,
+            "north": domain.bounds.3
+        }),
+    );
 }
 
 fn unwrap_lon_near(lon: f64, reference: f64) -> f64 {
