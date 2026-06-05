@@ -222,6 +222,46 @@ pub fn unpack_message_normalized(msg: &Grib2Message) -> crate::Result<Vec<f64>> 
     Ok(values)
 }
 
+/// Unpack a north-to-south row window without materializing the whole grid.
+///
+/// The returned vector contains `(y_end - y_start) * nx` values in row-major
+/// order, after the same scan-mode normalization as `unpack_message_normalized`.
+/// Missing bitmap cells are emitted as `NaN`.
+pub fn unpack_message_scan_normalized_row_window(
+    msg: &Grib2Message,
+    y_start: usize,
+    y_end: usize,
+) -> crate::Result<Vec<f64>> {
+    let nx = msg.grid.nx as usize;
+    let ny = msg.grid.ny as usize;
+    if nx == 0 || ny == 0 {
+        return Err(crate::GribError::Unpack(
+            "grid has 0 data points".to_string(),
+        ));
+    }
+    if msg.grid.is_reduced {
+        return Err(crate::GribError::Unpack(
+            "row-window unpack does not support reduced grids".to_string(),
+        ));
+    }
+    if y_start > y_end || y_end > ny {
+        return Err(crate::GribError::Unpack(format!(
+            "invalid row window {y_start}..{y_end} for ny={ny}"
+        )));
+    }
+
+    match msg.data_rep.template {
+        0 => unpack_simple_scan_normalized_row_window(msg, nx, ny, y_start, y_end)
+            .map_err(crate::GribError::Unpack),
+        3 => unpack_complex_spatial_scan_normalized_row_window(msg, nx, ny, y_start, y_end)
+            .map_err(crate::GribError::Unpack),
+        template => Err(crate::GribError::UnsupportedTemplate {
+            template,
+            detail: "row-window data representation".to_string(),
+        }),
+    }
+}
+
 /// Apply the GRIB2 scaling formula: Y = (R + X * 2^E) * 10^(-D)
 fn apply_scaling(raw: &[i64], dr: &DataRepresentation) -> Vec<f64> {
     let r = dr.reference_value as f64;
@@ -233,6 +273,242 @@ fn apply_scaling(raw: &[i64], dr: &DataRepresentation) -> Vec<f64> {
     raw.iter()
         .map(|&x| (r + x as f64 * two_e) * ten_neg_d)
         .collect()
+}
+
+fn scale_raw_value(raw: i64, dr: &DataRepresentation) -> f64 {
+    let r = dr.reference_value as f64;
+    let two_e = 2.0_f64.powi(dr.binary_scale as i32);
+    let ten_neg_d = 10.0_f64.powi(-(dr.decimal_scale as i32));
+    (r + raw as f64 * two_e) * ten_neg_d
+}
+
+fn unpack_simple_scan_normalized_row_window(
+    msg: &Grib2Message,
+    nx: usize,
+    ny: usize,
+    y_start: usize,
+    y_end: usize,
+) -> Result<Vec<f64>, String> {
+    let dr = &msg.data_rep;
+    if dr.bits_per_value == 0 {
+        return fill_scan_normalized_row_window_from_dense_values(
+            msg,
+            nx,
+            ny,
+            y_start,
+            y_end,
+            || Some(dr.reference_value as f64),
+        );
+    }
+
+    let bpv = dr.bits_per_value as usize;
+    let mut reader = BitReader::new(&msg.raw_data);
+    fill_scan_normalized_row_window_from_dense_values(msg, nx, ny, y_start, y_end, || {
+        Some(scale_raw_value(reader.read_bits(bpv) as i64, dr))
+    })
+}
+
+fn unpack_complex_spatial_scan_normalized_row_window(
+    msg: &Grib2Message,
+    nx: usize,
+    ny: usize,
+    y_start: usize,
+    y_end: usize,
+) -> Result<Vec<f64>, String> {
+    let dr = &msg.data_rep;
+    let order = dr.spatial_diff_order as usize;
+    let extra_bytes = dr.spatial_diff_bytes as usize;
+
+    if order == 0 || extra_bytes == 0 {
+        let mut groups = ComplexGroups::new(&msg.raw_data, dr)?;
+        return fill_scan_normalized_row_window_from_dense_values(
+            msg,
+            nx,
+            ny,
+            y_start,
+            y_end,
+            || groups.next_raw().map(|raw| scale_raw_value(raw, dr)),
+        );
+    }
+
+    let nbits = extra_bytes * 8;
+    let mut reader = BitReader::new(&msg.raw_data);
+
+    let mut initial_values = Vec::with_capacity(order);
+    for _ in 0..order {
+        initial_values.push(reader.read_bits(nbits) as i64);
+    }
+
+    let sign = reader.read_bits(1);
+    let magnitude = reader.read_bits(nbits - 1) as i64;
+    let minimum = if sign == 1 { -magnitude } else { magnitude };
+
+    reader.align_to_byte();
+    let consumed_bytes = (reader.bit_pos + 7) / 8;
+    let remaining_data = msg
+        .raw_data
+        .get(consumed_bytes..)
+        .ok_or_else(|| "spatial differencing header exceeded data length".to_string())?;
+    let mut groups = ComplexGroups::new(remaining_data, dr)?;
+
+    let mut dense_idx = 0usize;
+    let mut previous = None::<i64>;
+    let mut previous_previous = None::<i64>;
+    fill_scan_normalized_row_window_from_dense_values(msg, nx, ny, y_start, y_end, || {
+        let raw = groups.next_raw()?;
+        let mut reconstructed = raw + minimum;
+        if dense_idx < order {
+            reconstructed = initial_values[dense_idx];
+        } else if order == 1 {
+            reconstructed += previous.unwrap_or(0);
+        } else if order == 2 {
+            reconstructed += 2 * previous.unwrap_or(0) - previous_previous.unwrap_or(0);
+        }
+
+        dense_idx += 1;
+        previous_previous = previous;
+        previous = Some(reconstructed);
+        Some(scale_raw_value(reconstructed, dr))
+    })
+}
+
+struct ComplexGroups<'a> {
+    reader: BitReader<'a>,
+    group_refs: Vec<i64>,
+    group_widths: Vec<usize>,
+    group_lengths: Vec<usize>,
+    group_idx: usize,
+    value_idx_in_group: usize,
+}
+
+impl<'a> ComplexGroups<'a> {
+    fn new(data: &'a [u8], dr: &DataRepresentation) -> Result<Self, String> {
+        let ng = dr.num_groups as usize;
+        if ng == 0 {
+            return Ok(Self {
+                reader: BitReader::new(data),
+                group_refs: Vec::new(),
+                group_widths: Vec::new(),
+                group_lengths: Vec::new(),
+                group_idx: 0,
+                value_idx_in_group: 0,
+            });
+        }
+
+        let mut reader = BitReader::new(data);
+        let bpv = dr.bits_per_value as usize;
+        let mut group_refs = Vec::with_capacity(ng);
+        for _ in 0..ng {
+            group_refs.push(reader.read_bits(bpv) as i64);
+        }
+        reader.align_to_byte();
+
+        let gwb = dr.group_width_bits as usize;
+        let mut group_widths = Vec::with_capacity(ng);
+        for _ in 0..ng {
+            group_widths.push(reader.read_bits(gwb) as usize + dr.group_width_ref as usize);
+        }
+        reader.align_to_byte();
+
+        let glb = dr.group_length_bits as usize;
+        let mut group_lengths = Vec::with_capacity(ng);
+        for _ in 0..ng {
+            let stored = reader.read_bits(glb) as usize;
+            group_lengths
+                .push(stored * dr.group_length_inc as usize + dr.group_length_ref as usize);
+        }
+        if ng > 0 {
+            group_lengths[ng - 1] = dr.last_group_length as usize;
+        }
+        reader.align_to_byte();
+
+        Ok(Self {
+            reader,
+            group_refs,
+            group_widths,
+            group_lengths,
+            group_idx: 0,
+            value_idx_in_group: 0,
+        })
+    }
+
+    fn next_raw(&mut self) -> Option<i64> {
+        while self.group_idx < self.group_lengths.len()
+            && self.value_idx_in_group >= self.group_lengths[self.group_idx]
+        {
+            self.group_idx += 1;
+            self.value_idx_in_group = 0;
+        }
+        if self.group_idx >= self.group_lengths.len() {
+            return None;
+        }
+
+        let width = self.group_widths[self.group_idx];
+        let gref = self.group_refs[self.group_idx];
+        self.value_idx_in_group += 1;
+        if width == 0 {
+            Some(gref)
+        } else {
+            Some(gref + self.reader.read_bits(width) as i64)
+        }
+    }
+}
+
+fn fill_scan_normalized_row_window_from_dense_values<F>(
+    msg: &Grib2Message,
+    nx: usize,
+    ny: usize,
+    y_start: usize,
+    y_end: usize,
+    mut next_value: F,
+) -> Result<Vec<f64>, String>
+where
+    F: FnMut() -> Option<f64>,
+{
+    let total_points = nx
+        .checked_mul(ny)
+        .ok_or_else(|| "grid point count overflow".to_string())?;
+    if total_points > 100_000_000 {
+        return Err(format!(
+            "grid has {total_points} points which exceeds the 100M sanity limit"
+        ));
+    }
+    if let Some(bitmap) = msg.bitmap.as_ref() {
+        if bitmap.len() < total_points {
+            return Err(format!(
+                "row-window bitmap length {} was shorter than grid point count {}",
+                bitmap.len(),
+                total_points
+            ));
+        }
+    }
+
+    let mut window = vec![f64::NAN; (y_end - y_start) * nx];
+    let flip_y = msg.grid.scan_mode & 0x40 != 0;
+    for idx in 0..total_points {
+        let active = msg
+            .bitmap
+            .as_ref()
+            .map(|bitmap| bitmap[idx])
+            .unwrap_or(true);
+        if !active {
+            continue;
+        }
+        let Some(value) = next_value() else {
+            break;
+        };
+
+        let source_y = idx / nx;
+        let normalized_y = if flip_y { ny - 1 - source_y } else { source_y };
+        if normalized_y < y_start || normalized_y >= y_end {
+            continue;
+        }
+        let x = idx % nx;
+        let out_idx = (normalized_y - y_start) * nx + x;
+        window[out_idx] = value;
+    }
+
+    Ok(window)
 }
 
 /// Template 5.0: Simple packing.
@@ -2140,6 +2416,117 @@ mod tests {
 
         let unpacked = unpack_message(&msg).unwrap();
         assert_eq!(unpacked, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn test_row_window_simple_matches_normalized_crop_with_scan_flip() {
+        use crate::grib2::parser::{GridDefinition, ProductDefinition};
+
+        let msg = Grib2Message {
+            discipline: 0,
+            reference_time: chrono::NaiveDate::from_ymd_opt(2026, 4, 14)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+            grid: GridDefinition {
+                nx: 3,
+                ny: 2,
+                num_data_points: 6,
+                scan_mode: 0x40,
+                ..GridDefinition::default()
+            },
+            product: ProductDefinition::default(),
+            data_rep: DataRepresentation {
+                template: 0,
+                bits_per_value: 8,
+                ..make_default_dr()
+            },
+            bitmap: None,
+            raw_data: vec![1, 2, 3, 4, 5, 6],
+        };
+
+        let full = unpack_message_normalized(&msg).unwrap();
+        let window = unpack_message_scan_normalized_row_window(&msg, 0, 1).unwrap();
+        assert_eq!(full[0..3], window);
+    }
+
+    #[test]
+    fn test_row_window_simple_preserves_bitmap_nan_cells() {
+        use crate::grib2::parser::{GridDefinition, ProductDefinition};
+
+        let msg = Grib2Message {
+            discipline: 0,
+            reference_time: chrono::NaiveDate::from_ymd_opt(2026, 4, 14)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+            grid: GridDefinition {
+                nx: 3,
+                ny: 2,
+                num_data_points: 6,
+                ..GridDefinition::default()
+            },
+            product: ProductDefinition::default(),
+            data_rep: DataRepresentation {
+                template: 0,
+                bits_per_value: 8,
+                ..make_default_dr()
+            },
+            bitmap: Some(vec![true, false, true, true, true, false]),
+            raw_data: vec![10, 20, 30, 40],
+        };
+
+        let full = unpack_message_normalized(&msg).unwrap();
+        let window = unpack_message_scan_normalized_row_window(&msg, 0, 2).unwrap();
+        assert_eq!(full.len(), window.len());
+        for (expected, actual) in full.iter().zip(window.iter()) {
+            if expected.is_nan() {
+                assert!(actual.is_nan());
+            } else {
+                assert_eq!(*expected, *actual);
+            }
+        }
+    }
+
+    #[test]
+    fn test_row_window_complex_spatial_matches_normalized_crop() {
+        use crate::grib2::parser::{GridDefinition, ProductDefinition};
+
+        let msg = Grib2Message {
+            discipline: 0,
+            reference_time: chrono::NaiveDate::from_ymd_opt(2026, 4, 14)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+            grid: GridDefinition {
+                nx: 3,
+                ny: 2,
+                num_data_points: 6,
+                scan_mode: 0x40,
+                ..GridDefinition::default()
+            },
+            product: ProductDefinition::default(),
+            data_rep: DataRepresentation {
+                template: 3,
+                bits_per_value: 0,
+                num_groups: 1,
+                group_width_ref: 0,
+                group_width_bits: 0,
+                group_length_ref: 0,
+                group_length_inc: 1,
+                last_group_length: 6,
+                group_length_bits: 0,
+                spatial_diff_order: 2,
+                spatial_diff_bytes: 1,
+                ..make_default_dr()
+            },
+            bitmap: None,
+            raw_data: vec![1, 3, 0],
+        };
+
+        let full = unpack_message_normalized(&msg).unwrap();
+        let window = unpack_message_scan_normalized_row_window(&msg, 0, 1).unwrap();
+        assert_eq!(full[0..3], window);
     }
 
     // Helper to create a default DataRepresentation for testing

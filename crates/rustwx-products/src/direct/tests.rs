@@ -11,6 +11,28 @@ fn sample_grid() -> LatLonGrid {
     .unwrap()
 }
 
+fn regular_geographic_grid_3x3() -> LatLonGrid {
+    LatLonGrid::new(
+        GridShape::new(3, 3).unwrap(),
+        vec![34.0, 34.0, 34.0, 35.0, 35.0, 35.0, 36.0, 36.0, 36.0],
+        vec![
+            -101.0, -100.0, -99.0, -101.0, -100.0, -99.0, -101.0, -100.0, -99.0,
+        ],
+    )
+    .unwrap()
+}
+
+fn skewed_geographic_grid_3x3() -> LatLonGrid {
+    LatLonGrid::new(
+        GridShape::new(3, 3).unwrap(),
+        vec![34.0, 34.1, 34.2, 35.0, 35.1, 35.2, 36.0, 36.1, 36.2],
+        vec![
+            -101.0, -100.0, -99.0, -100.8, -99.8, -98.8, -100.6, -99.6, -98.6,
+        ],
+    )
+    .unwrap()
+}
+
 fn sample_selected_field(
     selector: FieldSelector,
     units: &str,
@@ -300,17 +322,29 @@ fn streamline_auto_mode_disables_regular_latlon_grids() {
 #[test]
 fn inverse_raster_latlon_maps_clip_regional_bounds() {
     let bounds = (110.0, 180.0, -50.0, 0.0);
-    let inverse = inverse_raster_projection_for_grid(
-        Some(&GridProjection::Geographic),
-        bounds,
-        &sample_grid(),
-    )
-    .expect("regional regular lat/lon maps should use inverse raster");
+    let grid = regular_geographic_grid_3x3();
+    let inverse =
+        inverse_raster_projection_for_grid(Some(&GridProjection::Geographic), bounds, &grid)
+            .expect("regional regular lat/lon maps should use inverse raster");
 
     assert!(inverse.clip_bounds.is_some());
     assert_eq!(
         inverse.reference_longitude_deg,
         Some(center_longitude_for_bounds(bounds))
+    );
+}
+
+#[test]
+fn inverse_raster_requires_rectilinear_geographic_mesh() {
+    let bounds = (-127.0, -66.0, 23.0, 51.5);
+    let grid = skewed_geographic_grid_3x3();
+
+    let inverse =
+        inverse_raster_projection_for_grid(Some(&GridProjection::Geographic), bounds, &grid);
+
+    assert!(
+        inverse.is_none(),
+        "rotated or curvilinear grids tagged geographic must not use regular-axis inverse raster"
     );
 }
 
@@ -351,6 +385,45 @@ fn broad_native_projected_grids_use_full_domain_frame_by_default() {
         conus_bounds,
     ));
     assert!(!full_domain_projected_frame_default(None, conus_bounds));
+}
+
+#[test]
+fn requested_projected_map_builder_bypasses_native_full_domain_default() {
+    let lambert = GridProjection::LambertConformal {
+        standard_parallel_1_deg: 33.0,
+        standard_parallel_2_deg: 45.0,
+        central_meridian_deg: -96.0,
+    };
+    let conus_bounds = (-127.0, -66.0, 23.0, 51.5);
+    assert!(full_domain_projected_frame_default(
+        Some(&lambert),
+        conus_bounds
+    ));
+
+    let grid = sample_grid();
+    let full_domain = build_projected_map_with_projection(
+        &grid.lat_deg,
+        &grid.lon_deg,
+        Some(&lambert),
+        conus_bounds,
+        16.0 / 9.0,
+    )
+    .expect("full-domain projected map should build");
+    let requested_domain = build_requested_projected_map_with_projection(
+        &grid.lat_deg,
+        &grid.lon_deg,
+        Some(&lambert),
+        conus_bounds,
+        16.0 / 9.0,
+    )
+    .expect("requested-domain projected map should build");
+
+    let full_width = full_domain.extent.x_max - full_domain.extent.x_min;
+    let requested_width = requested_domain.extent.x_max - requested_domain.extent.x_min;
+    assert!(
+        requested_width > full_width * 10.0,
+        "requested frame should follow map bounds, not the tiny native mesh extent"
+    );
 }
 
 #[test]

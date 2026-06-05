@@ -4,6 +4,7 @@ use crate::shared_context::PreparedProjectedContext;
 use grib_core::grib2::{
     Grib2File, Grib2Message, flip_rows, grid_latlon,
     unpack_message_normalized as unpack_message_scan_normalized,
+    unpack_message_scan_normalized_row_window,
 };
 use rayon::prelude::*;
 use rustwx_calc::{GridShape as CalcGridShape, VolumeShape};
@@ -40,9 +41,7 @@ pub use crop::{
     crop_heavy_domain, crop_heavy_domain_for_projected_extent, crop_latlon_grid, crop_values_f32,
     crop_values_f64,
 };
-use crop::{
-    crop_2d_values, crop_optional_2d_values, crop_rect_for_layout, cropped_decode_cache_path,
-};
+use crop::{crop_2d_values, crop_rect_for_layout, cropped_decode_cache_path};
 pub(crate) use fetch::{
     bundle_fetch_variable_patterns, fetch_family_file, fetch_family_file_with_patterns,
 };
@@ -106,6 +105,7 @@ pub(crate) struct SurfaceGridLayout {
     pub nx: usize,
     pub ny: usize,
     pub projection: Option<GridProjection>,
+    pub longitude_row_wraps: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1101,6 +1101,7 @@ fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Err
         nx,
         ny,
         projection,
+        longitude_row_wraps: _,
     } = decode_surface_grid_from_sample(sample);
 
     let psfc_pa = unpack_message_normalized(find_message(
@@ -1164,53 +1165,72 @@ fn decode_surface_cropped(
         nx,
         ny: _,
         projection,
+        longitude_row_wraps,
     } = decode_surface_grid_from_sample(sample);
 
-    let psfc_pa = crop_2d_values(
-        &unpack_message_normalized(find_message(
+    let psfc_pa = unpack_message_normalized_cropped(
+        find_message(
             &file.messages,
             &[(0, 3, 0, 1, Some(0.0)), (0, 3, 0, 1, None)],
-        )?)?,
+        )?,
         nx,
         crop,
-    );
-    let (orog_m, orog_is_proxy) = match decode_orography(&file.messages) {
-        Ok(values) => (crop_2d_values(&values, nx, crop), false),
-        Err(_) => (vec![0.0; crop.width() * crop.height()], true),
-    };
-    let t2_k = crop_2d_values(
-        &unpack_message_normalized(find_message(&file.messages, &[(0, 0, 0, 103, Some(2.0))])?)?,
+        &longitude_row_wraps,
+    )?;
+    let (orog_m, orog_is_proxy) =
+        match decode_orography_cropped(&file.messages, nx, crop, &longitude_row_wraps) {
+            Ok(values) => (values, false),
+            Err(_) => (vec![0.0; crop.width() * crop.height()], true),
+        };
+    let t2_k = unpack_message_normalized_cropped(
+        find_message(&file.messages, &[(0, 0, 0, 103, Some(2.0))])?,
         nx,
         crop,
-    );
-    let q2_kgkg = decode_surface_mixing_ratio_cropped(&file.messages, &psfc_pa, &t2_k, nx, crop)?;
-    let u10_ms = crop_2d_values(
-        &unpack_message_normalized(find_message(&file.messages, &[(0, 2, 2, 103, Some(10.0))])?)?,
+        &longitude_row_wraps,
+    )?;
+    let q2_kgkg = decode_surface_mixing_ratio_cropped(
+        &file.messages,
+        &psfc_pa,
+        &t2_k,
         nx,
         crop,
-    );
-    let v10_ms = crop_2d_values(
-        &unpack_message_normalized(find_message(&file.messages, &[(0, 2, 3, 103, Some(10.0))])?)?,
+        &longitude_row_wraps,
+    )?;
+    let u10_ms = unpack_message_normalized_cropped(
+        find_message(&file.messages, &[(0, 2, 2, 103, Some(10.0))])?,
         nx,
         crop,
-    );
-    let native_sbcape_jkg = crop_optional_2d_values(
-        &decode_optional_native_cape(&file.messages, NativeCapeLayer::Surface)?,
+        &longitude_row_wraps,
+    )?;
+    let v10_ms = unpack_message_normalized_cropped(
+        find_message(&file.messages, &[(0, 2, 3, 103, Some(10.0))])?,
         nx,
         crop,
-    );
-    let native_mlcape_jkg = crop_optional_2d_values(
-        &decode_optional_native_cape(&file.messages, NativeCapeLayer::MixedLayer)?,
+        &longitude_row_wraps,
+    )?;
+    let native_sbcape_jkg = decode_optional_native_cape_cropped(
+        &file.messages,
+        NativeCapeLayer::Surface,
         nx,
         crop,
-    );
-    let native_mucape_jkg = crop_optional_2d_values(
-        &decode_optional_native_cape(&file.messages, NativeCapeLayer::MostUnstable)?,
+        &longitude_row_wraps,
+    )?;
+    let native_mlcape_jkg = decode_optional_native_cape_cropped(
+        &file.messages,
+        NativeCapeLayer::MixedLayer,
         nx,
         crop,
-    );
+        &longitude_row_wraps,
+    )?;
+    let native_mucape_jkg = decode_optional_native_cape_cropped(
+        &file.messages,
+        NativeCapeLayer::MostUnstable,
+        nx,
+        crop,
+        &longitude_row_wraps,
+    )?;
     let native_pblh_m =
-        crop_optional_2d_values(&decode_optional_native_pblh(&file.messages)?, nx, crop);
+        decode_optional_native_pblh_cropped(&file.messages, nx, crop, &longitude_row_wraps)?;
 
     Ok(SurfaceFields {
         lat: crop_2d_values(&lat, nx, crop),
@@ -1387,25 +1407,61 @@ fn decode_pressure_cropped_with_shape(
     }
     let file = Grib2File::from_bytes(bytes)?;
     let (nx, _ny) = pressure_grid_shape_from_messages(&file.messages)?;
-    let temperature = collect_levels_cropped(&file.messages, 0, 0, 0, 100, nx, crop)?;
-    let u_wind = collect_levels_cropped(&file.messages, 0, 2, 2, 100, nx, crop)?;
-    let v_wind = collect_levels_cropped(&file.messages, 0, 2, 3, 100, nx, crop)?;
-    let gh = decode_height_levels_cropped(&file.messages, nx, crop)?;
-    let moisture =
-        decode_pressure_mixing_ratio_levels_cropped(&file.messages, &temperature, nx, crop)?;
+    let longitude_row_wraps = normalized_longitude_row_wraps_from_messages(&file.messages)?;
+    let temperature =
+        collect_levels_cropped(&file.messages, 0, 0, 0, 100, nx, crop, &longitude_row_wraps)?;
+    let u_wind =
+        collect_levels_cropped(&file.messages, 0, 2, 2, 100, nx, crop, &longitude_row_wraps)?;
+    let v_wind =
+        collect_levels_cropped(&file.messages, 0, 2, 3, 100, nx, crop, &longitude_row_wraps)?;
+    let gh = decode_height_levels_cropped(&file.messages, nx, crop, &longitude_row_wraps)?;
+    let moisture = decode_pressure_mixing_ratio_levels_cropped(
+        &file.messages,
+        &temperature,
+        nx,
+        crop,
+        &longitude_row_wraps,
+    )?;
     let include_optional = pressure_optional_decode_enabled();
     let omega = if include_optional {
-        collect_optional_levels_cropped(&file.messages, 0, 2, 8, 100, nx, crop)?
+        collect_optional_levels_cropped(
+            &file.messages,
+            0,
+            2,
+            8,
+            100,
+            nx,
+            crop,
+            &longitude_row_wraps,
+        )?
     } else {
         None
     };
     let absolute_vorticity = if include_optional {
-        collect_optional_levels_cropped(&file.messages, 0, 2, 10, 100, nx, crop)?
+        collect_optional_levels_cropped(
+            &file.messages,
+            0,
+            2,
+            10,
+            100,
+            nx,
+            crop,
+            &longitude_row_wraps,
+        )?
     } else {
         None
     };
     let cloud_liquid = if include_optional {
-        collect_optional_levels_cropped(&file.messages, 0, 1, 22, 100, nx, crop)?
+        collect_optional_levels_cropped(
+            &file.messages,
+            0,
+            1,
+            22,
+            100,
+            nx,
+            crop,
+            &longitude_row_wraps,
+        )?
     } else {
         None
     };
@@ -1416,17 +1472,36 @@ fn decode_pressure_cropped_with_shape(
             100,
             nx,
             crop,
+            &longitude_row_wraps,
         )?
     } else {
         None
     };
     let rain = if include_optional {
-        collect_optional_levels_cropped(&file.messages, 0, 1, 24, 100, nx, crop)?
+        collect_optional_levels_cropped(
+            &file.messages,
+            0,
+            1,
+            24,
+            100,
+            nx,
+            crop,
+            &longitude_row_wraps,
+        )?
     } else {
         None
     };
     let snow = if include_optional {
-        collect_optional_levels_cropped(&file.messages, 0, 1, 25, 100, nx, crop)?
+        collect_optional_levels_cropped(
+            &file.messages,
+            0,
+            1,
+            25,
+            100,
+            nx,
+            crop,
+            &longitude_row_wraps,
+        )?
     } else {
         None
     };
@@ -1437,6 +1512,7 @@ fn decode_pressure_cropped_with_shape(
             100,
             nx,
             crop,
+            &longitude_row_wraps,
         )?
     } else {
         None
@@ -1523,7 +1599,7 @@ fn decode_surface_grid_from_sample(sample: &Grib2Message) -> SurfaceGridLayout {
             sample.grid.ny as usize,
         );
     }
-    normalize_longitude_rows(
+    let longitude_row_wraps = normalize_longitude_rows(
         &mut lat_raw,
         &mut lon_raw,
         sample.grid.nx as usize,
@@ -1538,6 +1614,7 @@ fn decode_surface_grid_from_sample(sample: &Grib2Message) -> SurfaceGridLayout {
         nx: sample.grid.nx as usize,
         ny: sample.grid.ny as usize,
         projection: grid_projection_from_grib2_grid(&sample.grid),
+        longitude_row_wraps,
     }
 }
 
@@ -1547,6 +1624,62 @@ fn unpack_message_normalized(
     let mut values = unpack_message_scan_normalized(message)?;
     rotate_values_to_normalized_longitude_rows(message, &mut values);
     Ok(values)
+}
+
+fn unpack_message_normalized_cropped(
+    message: &Grib2Message,
+    source_nx: usize,
+    crop: GridCrop,
+    longitude_row_wraps: &[usize],
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    if source_nx == message.grid.nx as usize {
+        if let Ok(mut rows) =
+            unpack_message_scan_normalized_row_window(message, crop.y_start, crop.y_end)
+        {
+            rotate_window_values_to_normalized_longitude_rows(
+                &mut rows,
+                source_nx,
+                crop.y_start,
+                crop.y_end,
+                longitude_row_wraps,
+            );
+            return Ok(crop_window_x_values(&rows, source_nx, crop));
+        }
+    }
+
+    let values = unpack_message_normalized(message)?;
+    Ok(crop_2d_values(&values, source_nx, crop))
+}
+
+fn crop_window_x_values(values: &[f64], source_nx: usize, crop: GridCrop) -> Vec<f64> {
+    let mut cropped = Vec::with_capacity(crop.width() * crop.height());
+    for window_y in 0..crop.height() {
+        let start = window_y * source_nx + crop.x_start;
+        let end = window_y * source_nx + crop.x_end;
+        cropped.extend_from_slice(&values[start..end]);
+    }
+    cropped
+}
+
+fn rotate_window_values_to_normalized_longitude_rows(
+    values: &mut [f64],
+    nx: usize,
+    y_start: usize,
+    y_end: usize,
+    longitude_row_wraps: &[usize],
+) {
+    if nx == 0 || y_start > y_end || values.len() != nx * (y_end - y_start) {
+        return;
+    }
+    for y in y_start..y_end {
+        let wrap_idx = longitude_row_wraps.get(y).copied().unwrap_or(0) % nx;
+        if wrap_idx == 0 {
+            continue;
+        }
+        let row_start = (y - y_start) * nx;
+        let row_end = row_start + nx;
+        values[row_start..row_end].rotate_left(wrap_idx);
+    }
 }
 
 fn rotate_values_to_normalized_longitude_rows(message: &Grib2Message, values: &mut [f64]) {
@@ -1586,6 +1719,34 @@ fn decode_orography(messages: &[Grib2Message]) -> Result<Vec<f64>, Box<dyn std::
     Err("missing surface orography/geopotential-height field".into())
 }
 
+fn decode_orography_cropped(
+    messages: &[Grib2Message],
+    source_nx: usize,
+    crop: GridCrop,
+    longitude_row_wraps: &[usize],
+) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+    if let Ok(message) = find_message(messages, &[(0, 3, 5, 1, Some(0.0)), (0, 3, 5, 1, None)]) {
+        return Ok(unpack_message_normalized_cropped(
+            message,
+            source_nx,
+            crop,
+            longitude_row_wraps,
+        )?);
+    }
+    if let Ok(message) = find_message(messages, &[(0, 3, 4, 1, Some(0.0)), (0, 3, 4, 1, None)]) {
+        return Ok(unpack_message_normalized_cropped(
+            message,
+            source_nx,
+            crop,
+            longitude_row_wraps,
+        )?
+        .into_iter()
+        .map(|value| value * GEOPOTENTIAL_M2S2_TO_M)
+        .collect());
+    }
+    Err("missing surface orography/geopotential-height field".into())
+}
+
 fn decode_surface_mixing_ratio(
     messages: &[Grib2Message],
     psfc_pa: &[f64],
@@ -1620,13 +1781,16 @@ fn decode_surface_mixing_ratio_cropped(
     t2_k: &[f64],
     source_nx: usize,
     crop: GridCrop,
+    longitude_row_wraps: &[usize],
 ) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
     if let Ok(message) = find_message(messages, &[(0, 1, 0, 103, Some(2.0))]) {
-        let values = unpack_message_normalized(message)?;
-        return Ok(q_to_mixing_ratio(&crop_2d_values(&values, source_nx, crop)));
+        let values =
+            unpack_message_normalized_cropped(message, source_nx, crop, longitude_row_wraps)?;
+        return Ok(q_to_mixing_ratio(&values));
     }
     if let Ok(message) = find_message(messages, &[(0, 0, 6, 103, Some(2.0))]) {
-        let dewpoint_k = crop_2d_values(&unpack_message_normalized(message)?, source_nx, crop);
+        let dewpoint_k =
+            unpack_message_normalized_cropped(message, source_nx, crop, longitude_row_wraps)?;
         return Ok(psfc_pa
             .iter()
             .zip(dewpoint_k.iter())
@@ -1634,7 +1798,8 @@ fn decode_surface_mixing_ratio_cropped(
             .collect());
     }
     if let Ok(message) = find_message(messages, &[(0, 1, 1, 103, Some(2.0))]) {
-        let rh_pct = crop_2d_values(&unpack_message_normalized(message)?, source_nx, crop);
+        let rh_pct =
+            unpack_message_normalized_cropped(message, source_nx, crop, longitude_row_wraps)?;
         return Ok(psfc_pa
             .iter()
             .zip(t2_k.iter())
@@ -1699,14 +1864,19 @@ fn decode_pressure_mixing_ratio_levels_cropped(
     temperature: &Vec<(f64, Vec<f64>)>,
     source_nx: usize,
     crop: GridCrop,
+    longitude_row_wraps: &[usize],
 ) -> Result<Vec<(f64, Vec<f64>)>, Box<dyn std::error::Error>> {
-    if let Ok(levels) = collect_levels_cropped(messages, 0, 1, 0, 100, source_nx, crop) {
+    if let Ok(levels) =
+        collect_levels_cropped(messages, 0, 1, 0, 100, source_nx, crop, longitude_row_wraps)
+    {
         return Ok(levels
             .into_iter()
             .map(|(level, values)| (level, q_to_mixing_ratio(&values)))
             .collect());
     }
-    if let Ok(dewpoint) = collect_levels_cropped(messages, 0, 0, 6, 100, source_nx, crop) {
+    if let Ok(dewpoint) =
+        collect_levels_cropped(messages, 0, 0, 6, 100, source_nx, crop, longitude_row_wraps)
+    {
         let mut out = Vec::with_capacity(dewpoint.len());
         for (level, td_k) in dewpoint {
             out.push((
@@ -1720,7 +1890,9 @@ fn decode_pressure_mixing_ratio_levels_cropped(
         }
         return Ok(out);
     }
-    if let Ok(rh) = collect_levels_cropped(messages, 0, 1, 1, 100, source_nx, crop) {
+    if let Ok(rh) =
+        collect_levels_cropped(messages, 0, 1, 1, 100, source_nx, crop, longitude_row_wraps)
+    {
         let mut out = Vec::with_capacity(rh.len());
         for (level, rh_pct) in rh {
             let temperature_k = level_values(temperature, level)
@@ -1772,11 +1944,16 @@ fn decode_height_levels_cropped(
     messages: &[Grib2Message],
     source_nx: usize,
     crop: GridCrop,
+    longitude_row_wraps: &[usize],
 ) -> Result<Vec<(f64, Vec<f64>)>, Box<dyn std::error::Error>> {
-    if let Ok(levels) = collect_levels_cropped(messages, 0, 3, 5, 100, source_nx, crop) {
+    if let Ok(levels) =
+        collect_levels_cropped(messages, 0, 3, 5, 100, source_nx, crop, longitude_row_wraps)
+    {
         return Ok(levels);
     }
-    if let Ok(levels) = collect_levels_cropped(messages, 0, 3, 4, 100, source_nx, crop) {
+    if let Ok(levels) =
+        collect_levels_cropped(messages, 0, 3, 4, 100, source_nx, crop, longitude_row_wraps)
+    {
         return Ok(levels
             .into_iter()
             .map(|(level, values)| {
@@ -1862,6 +2039,7 @@ fn collect_levels_cropped(
     level_type: u8,
     source_nx: usize,
     crop: GridCrop,
+    longitude_row_wraps: &[usize],
 ) -> Result<Vec<(f64, Vec<f64>)>, Box<dyn std::error::Error>> {
     let mut records = messages
         .par_iter()
@@ -1872,13 +2050,8 @@ fn collect_levels_cropped(
                 && msg.product.level_type == level_type
         })
         .map(|msg| {
-            unpack_message_normalized(msg)
-                .map(|values| {
-                    (
-                        msg.product.level_value,
-                        crop_2d_values(&values, source_nx, crop),
-                    )
-                })
+            unpack_message_normalized_cropped(msg, source_nx, crop, longitude_row_wraps)
+                .map(|values| (msg.product.level_value, values))
                 .map_err(|err| err.to_string())
         })
         .collect::<Result<Vec<_>, String>>()
@@ -1902,9 +2075,17 @@ fn collect_optional_levels_cropped(
     level_type: u8,
     source_nx: usize,
     crop: GridCrop,
+    longitude_row_wraps: &[usize],
 ) -> Result<Option<Vec<(f64, Vec<f64>)>>, Box<dyn std::error::Error>> {
     match collect_levels_cropped(
-        messages, discipline, category, number, level_type, source_nx, crop,
+        messages,
+        discipline,
+        category,
+        number,
+        level_type,
+        source_nx,
+        crop,
+        longitude_row_wraps,
     ) {
         Ok(records) => Ok(Some(records)),
         Err(_) => Ok(None),
@@ -1917,10 +2098,18 @@ fn collect_optional_levels_any_cropped(
     level_type: u8,
     source_nx: usize,
     crop: GridCrop,
+    longitude_row_wraps: &[usize],
 ) -> Result<Option<Vec<(f64, Vec<f64>)>>, Box<dyn std::error::Error>> {
     for &(discipline, category, number) in candidates {
         if let Some(records) = collect_optional_levels_cropped(
-            messages, discipline, category, number, level_type, source_nx, crop,
+            messages,
+            discipline,
+            category,
+            number,
+            level_type,
+            source_nx,
+            crop,
+            longitude_row_wraps,
         )? {
             return Ok(Some(records));
         }
@@ -1996,6 +2185,23 @@ fn pressure_grid_shape_from_messages(
     Ok((nx, ny))
 }
 
+fn normalized_longitude_row_wraps_from_messages(
+    messages: &[Grib2Message],
+) -> Result<Vec<usize>, Box<dyn std::error::Error>> {
+    let sample = messages
+        .iter()
+        .find(|msg| msg.product.level_type == 100)
+        .or_else(|| messages.first())
+        .ok_or("GRIB family had no messages for row-wrap detection")?;
+    let nx = sample.grid.nx as usize;
+    let ny = sample.grid.ny as usize;
+    let (_lat_raw, mut lon_raw) = grid_latlon(&sample.grid);
+    if sample.grid.scan_mode & 0x40 != 0 {
+        flip_rows(&mut lon_raw, nx, ny);
+    }
+    Ok(normalized_longitude_row_wraps(&mut lon_raw, nx, ny))
+}
+
 #[derive(Debug, Clone, Copy)]
 enum NativeCapeLayer {
     Surface,
@@ -2023,6 +2229,24 @@ fn decode_optional_native_cape(
     Ok(Some(unpack_message_normalized(message)?))
 }
 
+fn decode_optional_native_cape_cropped(
+    messages: &[Grib2Message],
+    layer: NativeCapeLayer,
+    source_nx: usize,
+    crop: GridCrop,
+    longitude_row_wraps: &[usize],
+) -> Result<Option<Vec<f64>>, Box<dyn std::error::Error>> {
+    let Some(message) = find_optional_message(messages, layer.candidates()) else {
+        return Ok(None);
+    };
+    Ok(Some(unpack_message_normalized_cropped(
+        message,
+        source_nx,
+        crop,
+        longitude_row_wraps,
+    )?))
+}
+
 fn decode_optional_native_pblh(
     messages: &[Grib2Message],
 ) -> Result<Option<Vec<f64>>, Box<dyn std::error::Error>> {
@@ -2036,6 +2260,29 @@ fn decode_optional_native_pblh(
         return Ok(None);
     };
     Ok(Some(unpack_message_normalized(message)?))
+}
+
+fn decode_optional_native_pblh_cropped(
+    messages: &[Grib2Message],
+    source_nx: usize,
+    crop: GridCrop,
+    longitude_row_wraps: &[usize],
+) -> Result<Option<Vec<f64>>, Box<dyn std::error::Error>> {
+    let candidates = &[
+        (0, 3, 18, 1, Some(0.0)),
+        (0, 3, 18, 1, None),
+        (0, 3, 196, 1, Some(0.0)),
+        (0, 3, 196, 1, None),
+    ];
+    let Some(message) = find_optional_message(messages, candidates) else {
+        return Ok(None);
+    };
+    Ok(Some(unpack_message_normalized_cropped(
+        message,
+        source_nx,
+        crop,
+        longitude_row_wraps,
+    )?))
 }
 
 fn find_optional_message<'a>(
@@ -2195,24 +2442,42 @@ fn normalize_longitude_for_bounds(lon: f64) -> f64 {
     lon
 }
 
-fn normalize_longitude_rows(lat: &mut [f64], lon: &mut [f64], nx: usize, ny: usize) {
+fn normalize_longitude_rows(lat: &mut [f64], lon: &mut [f64], nx: usize, ny: usize) -> Vec<usize> {
     if nx == 0 || ny == 0 {
-        return;
+        return Vec::new();
     }
 
+    let row_wraps = normalized_longitude_row_wraps(lon, nx, ny);
     for row in 0..ny {
         let start = row * nx;
         let end = start + nx;
         let lat_row = &mut lat[start..end];
         let lon_row = &mut lon[start..end];
-        for lon_value in lon_row.iter_mut() {
-            *lon_value = normalize_longitude(*lon_value);
-        }
-        if let Some(wrap_idx) = first_longitude_wrap(lon_row) {
+        let wrap_idx = row_wraps[row];
+        if wrap_idx > 0 {
             lat_row.rotate_left(wrap_idx);
             lon_row.rotate_left(wrap_idx);
         }
     }
+    row_wraps
+}
+
+fn normalized_longitude_row_wraps(lon: &mut [f64], nx: usize, ny: usize) -> Vec<usize> {
+    if nx == 0 || ny == 0 {
+        return Vec::new();
+    }
+
+    let mut row_wraps = Vec::with_capacity(ny);
+    for row in 0..ny {
+        let start = row * nx;
+        let end = start + nx;
+        let lon_row = &mut lon[start..end];
+        for lon_value in lon_row.iter_mut() {
+            *lon_value = normalize_longitude(*lon_value);
+        }
+        row_wraps.push(first_longitude_wrap(lon_row).unwrap_or(0));
+    }
+    row_wraps
 }
 
 fn first_longitude_wrap(lon_row: &[f64]) -> Option<usize> {

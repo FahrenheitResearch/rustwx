@@ -163,6 +163,34 @@ fn pressure_decode_cache_name_includes_optional_policy() {
 }
 
 #[test]
+fn cropped_row_window_rotation_matches_full_rotate_then_crop() {
+    let nx = 5usize;
+    let crop = GridCrop {
+        x_start: 1,
+        x_end: 4,
+        y_start: 0,
+        y_end: 2,
+    };
+    let row_wraps = vec![2usize, 1usize];
+    let mut full = (0..10).map(|value| value as f64).collect::<Vec<_>>();
+    full[0..5].rotate_left(row_wraps[0]);
+    full[5..10].rotate_left(row_wraps[1]);
+    let expected = crop_2d_values(&full, nx, crop);
+
+    let mut window = (0..10).map(|value| value as f64).collect::<Vec<_>>();
+    rotate_window_values_to_normalized_longitude_rows(
+        &mut window,
+        nx,
+        crop.y_start,
+        crop.y_end,
+        &row_wraps,
+    );
+    let actual = crop_window_x_values(&window, nx, crop);
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn projected_crop_uses_projected_extent_with_padding() {
     let nx = 4usize;
     let ny = 4usize;

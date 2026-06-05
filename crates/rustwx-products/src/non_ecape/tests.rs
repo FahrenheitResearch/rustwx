@@ -147,6 +147,7 @@ fn nomads_runs_lanes_sequentially() {
         SourceId::Nomads
     ));
     assert!(should_run_lanes_concurrently(ModelId::Hrrr, SourceId::Aws));
+    assert!(should_run_lanes_concurrently(ModelId::RrfsA, SourceId::Aws));
     assert!(should_run_lanes_concurrently(
         ModelId::WrfGdex,
         SourceId::Gdex

@@ -1428,7 +1428,8 @@ fn normalize_requested_products_from_parts(
 }
 
 fn should_run_lanes_concurrently(model: ModelId, source: SourceId) -> bool {
-    matches!(model, ModelId::Hrrr | ModelId::WrfGdex) && !matches!(source, SourceId::Nomads)
+    matches!(model, ModelId::Hrrr | ModelId::RrfsA | ModelId::WrfGdex)
+        && !matches!(source, SourceId::Nomads)
 }
 
 fn should_run_prepared_lanes_concurrently(

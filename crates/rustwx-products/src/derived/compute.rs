@@ -1,16 +1,15 @@
 use rayon::prelude::*;
 use rustwx_calc::{
     CalcError, EcapeVolumeInputs, FixedStpInputs, GridShape as CalcGridShape, SurfaceInputs,
-    TemperatureAdvectionInputs, VolumeShape, WindGridInputs, compute_2m_apparent_temperature,
-    compute_dcape, compute_ehi_01km, compute_ehi_03km, compute_lapse_rate_0_3km,
-    compute_lapse_rate_700_500, compute_lifted_index, compute_mlcape_cin, compute_mucape_cin,
-    compute_sbcape_cin, compute_shear_01km, compute_shear_06km, compute_srh_01km_hemispheric,
-    compute_srh_03km_hemispheric, compute_stp_fixed, compute_surface_thermo,
+    TemperatureAdvectionInputs, VolumeShape, WindGridInputs, compute_dcape, compute_ehi_01km,
+    compute_ehi_03km, compute_lapse_rate_0_3km, compute_lapse_rate_700_500, compute_lifted_index,
+    compute_mlcape_cin, compute_mucape_cin, compute_sbcape_cin, compute_shear_01km,
+    compute_shear_06km, compute_srh_01km_hemispheric, compute_srh_03km_hemispheric,
+    compute_stp_fixed, compute_surface_thermo,
 };
 
 use crate::gridded::{
     PressureFields as GenericPressureFields, SurfaceFields as GenericSurfaceFields,
-    broadcast_levels_pa,
 };
 
 use super::KNOTS_PER_MS;
@@ -237,12 +236,18 @@ where
     } else {
         None
     };
-    let pressure_3d_pa = if requirements.needs_volume() {
+    let pressure_pa = if requirements.needs_volume() {
         Some(
             pressure
                 .pressure_3d_pa()
                 .map(|values| values.to_vec())
-                .unwrap_or_else(|| broadcast_levels_pa(pressure.pressure_levels_hpa(), grid.len())),
+                .unwrap_or_else(|| {
+                    pressure
+                        .pressure_levels_hpa()
+                        .iter()
+                        .map(|level_hpa| level_hpa * 100.0)
+                        .collect()
+                }),
         )
     } else {
         None
@@ -261,7 +266,7 @@ where
     let make_volume = || -> Result<EcapeVolumeInputs<'_>, Box<dyn std::error::Error>> {
         Ok(EcapeVolumeInputs {
             pressure_pa: require_option_ref(
-                &pressure_3d_pa,
+                &pressure_pa,
                 "pressure volume for derived thermodynamics",
             )?,
             temperature_c: pressure.temperature_c_3d(),
@@ -352,8 +357,7 @@ where
             computed.fire_weather_composite = Some(surface_thermo.fire_weather_composite);
         }
         if recipes.contains(&DerivedRecipe::ApparentTemperature2m) {
-            computed.apparent_temperature_2m_c =
-                Some(compute_2m_apparent_temperature(grid, surface_inputs)?);
+            computed.apparent_temperature_2m_c = Some(surface_thermo.apparent_temperature_2m_c);
         }
         if recipes.contains(&DerivedRecipe::HeatIndex2m) {
             computed.heat_index_2m_c = Some(surface_thermo.heat_index_2m_c);

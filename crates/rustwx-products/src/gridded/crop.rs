@@ -143,7 +143,6 @@ pub fn classify_projected_grid_intersection(
         y_start: min_y.saturating_sub(pad_cells),
         y_end: (max_y + 1 + pad_cells).min(ny),
     };
-
     if crop.x_start == 0 && crop.x_end == nx && crop.y_start == 0 && crop.y_end == ny {
         Ok(ProjectedGridIntersection::Full)
     } else {

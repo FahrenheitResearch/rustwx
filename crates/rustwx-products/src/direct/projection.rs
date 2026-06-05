@@ -61,6 +61,38 @@ pub fn build_projected_map_with_projection(
     Ok(projected)
 }
 
+pub fn build_requested_projected_map_with_projection(
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+    projection: Option<&GridProjection>,
+    bounds: (f64, f64, f64, f64),
+    target_ratio: f64,
+) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
+    let variant = projection_presentation_variant();
+    let presentation_projection = presentation_projection_for_bounds(projection, bounds, variant);
+    let frame_bounds = presentation_frame_bounds_for_projection(
+        bounds,
+        presentation_projection.as_ref(),
+        target_ratio,
+    );
+    let mut options = ProjectedMapBuildOptions::from_bounds(frame_bounds, target_ratio);
+    if let Some(presentation_projection) = presentation_projection {
+        let reference_latitude =
+            reference_latitude_for_projection_variant(variant, projection, frame_bounds);
+        options = options.with_projection(presentation_projection);
+        if let Some(reference_latitude) = reference_latitude {
+            options.domain.reference_latitude_deg = Some(reference_latitude);
+        }
+    }
+    options = options.with_basemap_detail(basemap_detail_for_bounds(frame_bounds));
+    options.domain.pad_fraction = presentation_pad_fraction_for_bounds(frame_bounds);
+    let mut projected =
+        rustwx_render::build_projected_map_with_options(lat_deg, lon_deg, &options)?;
+    projected.inverse_raster_projection =
+        inverse_raster_projection_for_latlon_mesh(projection, frame_bounds, lat_deg, lon_deg);
+    Ok(projected)
+}
+
 fn build_full_domain_projected_map_with_projection(
     lat_deg: &[f32],
     lon_deg: &[f32],
@@ -151,8 +183,8 @@ fn inverse_raster_projection_for_latlon_mesh(
     lat_deg: &[f32],
     lon_deg: &[f32],
 ) -> Option<InverseRasterProjection> {
-    let regular_latlon = matches!(projection, Some(GridProjection::Geographic))
-        || (projection.is_none() && rectilinear_latlon_mesh_for_inverse(lat_deg, lon_deg));
+    let regular_latlon = matches!(projection, Some(GridProjection::Geographic) | None)
+        && rectilinear_latlon_mesh_for_inverse(lat_deg, lon_deg);
     if !regular_latlon {
         return None;
     }

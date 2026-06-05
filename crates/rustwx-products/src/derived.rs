@@ -1,6 +1,7 @@
 use crate::custom_poi::apply_custom_poi_overlay;
 use crate::direct::{
-    build_projected_map, build_projected_map_with_projection, inverse_raster_projection_for_grid,
+    build_projected_map, build_projected_map_with_projection,
+    build_requested_projected_map_with_projection, inverse_raster_projection_for_grid,
 };
 use rustwx_core::{CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId};
 use rustwx_render::{
@@ -90,6 +91,27 @@ pub use types::{
 use types::{OUTPUT_HEIGHT, OUTPUT_WIDTH};
 
 const KNOTS_PER_MS: f64 = 1.943_844_5;
+
+fn build_derived_projected_map_with_projection(
+    model: ModelId,
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+    projection: Option<&rustwx_core::GridProjection>,
+    bounds: (f64, f64, f64, f64),
+    target_ratio: f64,
+) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
+    if matches!(model, ModelId::RrfsA) {
+        build_requested_projected_map_with_projection(
+            lat_deg,
+            lon_deg,
+            projection,
+            bounds,
+            target_ratio,
+        )
+    } else {
+        build_projected_map_with_projection(lat_deg, lon_deg, projection, bounds, target_ratio)
+    }
+}
 
 pub fn is_heavy_derived_recipe_slug(slug: &str) -> bool {
     DerivedRecipe::parse(slug)
@@ -357,7 +379,8 @@ fn maybe_load_rrfs_cropped_pair_for_derived(
     let fetch_pressure_ms = pressure_fetch_start.elapsed().as_millis();
 
     let surface_grid = decode_surface_grid(surface_file.bytes.as_slice())?;
-    let projected = build_projected_map_with_projection(
+    let projected = build_derived_projected_map_with_projection(
+        request.model,
         &surface_grid
             .lat
             .iter()
@@ -592,7 +615,8 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
         let surface = &surface_decode.value;
         let surface_grid = surface.core_grid()?;
         let project_start = Instant::now();
-        let surface_projected = build_projected_map_with_projection(
+        let surface_projected = build_derived_projected_map_with_projection(
+            request.model,
             &surface_grid.lat_deg,
             &surface_grid.lon_deg,
             surface.projection.as_ref(),
@@ -625,7 +649,8 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                     }
                     ProjectedGridIntersection::Crop(crop) => {
                         let derived_grid = crop_latlon_grid(&shared.grid, crop)?;
-                        let derived_projected = build_projected_map_with_projection(
+                        let derived_projected = build_derived_projected_map_with_projection(
+                            request.model,
                             &derived_grid.lat_deg,
                             &derived_grid.lon_deg,
                             shared.projection.as_ref(),
@@ -675,7 +700,8 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
         }
         let owned_full_grid = full_surface.core_grid()?;
         let project_start = Instant::now();
-        let full_projected = build_projected_map_with_projection(
+        let full_projected = build_derived_projected_map_with_projection(
+            request.model,
             &owned_full_grid.lat_deg,
             &owned_full_grid.lon_deg,
             full_surface.projection.as_ref(),
@@ -707,7 +733,8 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                     }
                     ProjectedGridIntersection::Crop(crop) => {
                         let derived_grid = crop_latlon_grid(&shared.grid, crop)?;
-                        let derived_projected = build_projected_map_with_projection(
+                        let derived_projected = build_derived_projected_map_with_projection(
+                            request.model,
                             &derived_grid.lat_deg,
                             &derived_grid.lon_deg,
                             full_surface.projection.as_ref(),
@@ -746,7 +773,8 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                     };
 
                     let derived_projected = if cropped.is_some() {
-                        build_projected_map_with_projection(
+                        build_derived_projected_map_with_projection(
+                            request.model,
                             &derived_grid.lat_deg,
                             &derived_grid.lon_deg,
                             surface.projection.as_ref(),
@@ -1148,7 +1176,8 @@ pub fn render_local_wrf_derived_recipes_from_path(
         graupel_kgkg_3d: None,
     };
     let full_grid = full_surface.core_grid()?;
-    let full_projected = build_projected_map_with_projection(
+    let full_projected = build_derived_projected_map_with_projection(
+        local_request.model,
         &full_grid.lat_deg,
         &full_grid.lon_deg,
         full_surface.projection.as_ref(),
@@ -1192,7 +1221,8 @@ pub fn render_local_wrf_derived_recipes_from_path(
             None => (&full_surface, &full_pressure, full_grid.clone()),
         };
         let derived_projected = if cropped.is_some() {
-            build_projected_map_with_projection(
+            build_derived_projected_map_with_projection(
+                local_request.model,
                 &derived_grid.lat_deg,
                 &derived_grid.lon_deg,
                 surface.projection.as_ref(),
@@ -1469,7 +1499,11 @@ fn build_derived_memory_profile(
     let pressure_level_count = pressure.pressure_levels_hpa.len();
     let thermo_volume_points = surface.nx * surface.ny * pressure_level_count;
     let canonical_pressure_3d_pa_bytes_estimate = if requirements.needs_volume() {
-        thermo_volume_points * std::mem::size_of::<f64>()
+        pressure
+            .pressure_3d_pa
+            .as_ref()
+            .map(|values| values.len() * std::mem::size_of::<f64>())
+            .unwrap_or(pressure_level_count * std::mem::size_of::<f64>())
     } else {
         0
     };
@@ -3187,7 +3221,8 @@ fn render_derived_heavy_recipes(
     )?;
     let (surface, pressure, grid) = heavy_domain.bind(full_surface, full_pressure, full_grid);
     let projected = if heavy_domain.cropped.is_some() {
-        build_projected_map_with_projection(
+        build_derived_projected_map_with_projection(
+            model,
             &grid.lat_deg,
             &grid.lon_deg,
             surface.projection.as_ref(),

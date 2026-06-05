@@ -1,7 +1,7 @@
 use rayon::prelude::*;
 use rustwx_core::GridShape;
 
-use crate::ecape::{EcapeVolumeInputs, SurfaceInputs, validate_inputs, validate_len};
+use crate::ecape::{EcapeVolumeInputs, SurfaceInputs, validate_len};
 use crate::error::CalcError;
 use crate::severe::{
     CapeCinOutputs, WindGridInputs, compute_cape_cin, compute_ehi, compute_shear, compute_srh,
@@ -27,6 +27,7 @@ pub struct SurfaceThermoOutputs {
     pub dewpoint_depression_2m_c: Vec<f64>,
     pub vpd_2m_hpa: Vec<f64>,
     pub fire_weather_composite: Vec<f64>,
+    pub apparent_temperature_2m_c: Vec<f64>,
     pub heat_index_2m_c: Vec<f64>,
     pub wind_chill_2m_c: Vec<f64>,
 }
@@ -65,6 +66,7 @@ pub fn compute_surface_thermo(
         dewpoint_depression_2m_c: state.dewpoint_depression_2m_c,
         vpd_2m_hpa: state.vpd_2m_hpa,
         fire_weather_composite: state.fire_weather_composite,
+        apparent_temperature_2m_c: state.apparent_temperature_2m_c,
         heat_index_2m_c: state.heat_index_2m_c,
         wind_chill_2m_c: state.wind_chill_2m_c,
     })
@@ -203,38 +205,35 @@ pub fn compute_lifted_index(
     volume: EcapeVolumeInputs<'_>,
     surface: SurfaceInputs<'_>,
 ) -> Result<Vec<f64>, CalcError> {
-    validate_inputs(grid, volume, surface)?;
+    validate_volume_inputs(grid, volume)?;
+    validate_surface_inputs(grid, surface)?;
 
     let nxy = grid.len();
-    let mut out = Vec::with_capacity(nxy);
+    Ok((0..nxy)
+        .into_par_iter()
+        .map(|ij| {
+            let p_prof =
+                column_with_surface_hpa(volume.pressure_pa, surface.psfc_pa, nxy, volume.nz, ij);
+            if !profile_contains_pressure(&p_prof, 500.0) {
+                return f64::NAN;
+            }
+            let mut t_prof = Vec::with_capacity(volume.nz + 1);
+            let mut td_prof = Vec::with_capacity(volume.nz + 1);
+            t_prof.push(surface.t2_k[ij] - 273.15);
+            td_prof.push(dewpoint_from_mixing_ratio(
+                surface.psfc_pa[ij] / 100.0,
+                surface.q2_kgkg[ij],
+            ));
+            for k in 0..volume.nz {
+                let idx = k * nxy + ij;
+                let p_hpa = pressure_hpa_at(volume, nxy, k, ij);
+                t_prof.push(volume.temperature_c[idx]);
+                td_prof.push(dewpoint_from_mixing_ratio(p_hpa, volume.qvapor_kgkg[idx]));
+            }
 
-    for ij in 0..nxy {
-        let p_prof =
-            column_with_surface_hpa(volume.pressure_pa, surface.psfc_pa, nxy, volume.nz, ij);
-        if !profile_contains_pressure(&p_prof, 500.0) {
-            out.push(f64::NAN);
-            continue;
-        }
-        let mut t_prof = Vec::with_capacity(volume.nz + 1);
-        let mut td_prof = Vec::with_capacity(volume.nz + 1);
-        t_prof.push(surface.t2_k[ij] - 273.15);
-        td_prof.push(dewpoint_from_mixing_ratio(
-            surface.psfc_pa[ij] / 100.0,
-            surface.q2_kgkg[ij],
-        ));
-        for k in 0..volume.nz {
-            let idx = k * nxy + ij;
-            let p_hpa = volume.pressure_pa[idx] / 100.0;
-            t_prof.push(volume.temperature_c[idx]);
-            td_prof.push(dewpoint_from_mixing_ratio(p_hpa, volume.qvapor_kgkg[idx]));
-        }
-
-        out.push(metrust::calc::thermo::lifted_index(
-            &p_prof, &t_prof, &td_prof,
-        ));
-    }
-
-    Ok(out)
+            metrust::calc::thermo::lifted_index(&p_prof, &t_prof, &td_prof)
+        })
+        .collect())
 }
 
 pub fn compute_dcape(
@@ -242,7 +241,8 @@ pub fn compute_dcape(
     volume: EcapeVolumeInputs<'_>,
     surface: SurfaceInputs<'_>,
 ) -> Result<Vec<f64>, CalcError> {
-    validate_inputs(grid, volume, surface)?;
+    validate_volume_inputs(grid, volume)?;
+    validate_surface_inputs(grid, surface)?;
 
     let nxy = grid.len();
     Ok((0..nxy)
@@ -259,7 +259,7 @@ pub fn compute_dcape(
             ));
             for k in 0..volume.nz {
                 let idx = k * nxy + ij;
-                let p_hpa = volume.pressure_pa[idx] / 100.0;
+                let p_hpa = pressure_hpa_at(volume, nxy, k, ij);
                 t_prof.push(volume.temperature_c[idx]);
                 td_prof.push(dewpoint_from_mixing_ratio(p_hpa, volume.qvapor_kgkg[idx]));
             }
@@ -283,60 +283,57 @@ pub fn compute_lapse_rate_700_500(
 ) -> Result<Vec<f64>, CalcError> {
     validate_volume_inputs(grid, volume)?;
     let nxy = grid.len();
-    let mut out = Vec::with_capacity(nxy);
+    Ok((0..nxy)
+        .into_par_iter()
+        .map(|ij| {
+            let pressures_hpa = column_hpa(volume.pressure_pa, nxy, volume.nz, ij);
+            let temperatures_c = column(volume.temperature_c, nxy, volume.nz, ij);
+            let qvapor_kgkg = column(volume.qvapor_kgkg, nxy, volume.nz, ij);
+            let heights_m = column(volume.height_agl_m, nxy, volume.nz, ij);
 
-    for ij in 0..nxy {
-        let pressures_hpa = column_hpa(volume.pressure_pa, nxy, volume.nz, ij);
-        let temperatures_c = column(volume.temperature_c, nxy, volume.nz, ij);
-        let qvapor_kgkg = column(volume.qvapor_kgkg, nxy, volume.nz, ij);
-        let heights_m = column(volume.height_agl_m, nxy, volume.nz, ij);
+            let dewpoints_c = pressures_hpa
+                .iter()
+                .zip(qvapor_kgkg.iter())
+                .map(|(pressure_hpa, mixing_ratio_kgkg)| {
+                    dewpoint_from_mixing_ratio(*pressure_hpa, *mixing_ratio_kgkg)
+                })
+                .collect::<Vec<_>>();
+            let virtual_temperatures_c = pressures_hpa
+                .iter()
+                .zip(temperatures_c.iter())
+                .zip(dewpoints_c.iter())
+                .map(|((pressure_hpa, temperature_c), dewpoint_c)| {
+                    metrust::calc::thermo::virtual_temperature_from_dewpoint(
+                        *temperature_c,
+                        *dewpoint_c,
+                        *pressure_hpa,
+                    )
+                })
+                .collect::<Vec<_>>();
 
-        let dewpoints_c = pressures_hpa
-            .iter()
-            .zip(qvapor_kgkg.iter())
-            .map(|(pressure_hpa, mixing_ratio_kgkg)| {
-                dewpoint_from_mixing_ratio(*pressure_hpa, *mixing_ratio_kgkg)
-            })
-            .collect::<Vec<_>>();
-        let virtual_temperatures_c = pressures_hpa
-            .iter()
-            .zip(temperatures_c.iter())
-            .zip(dewpoints_c.iter())
-            .map(|((pressure_hpa, temperature_c), dewpoint_c)| {
-                metrust::calc::thermo::virtual_temperature_from_dewpoint(
-                    *temperature_c,
-                    *dewpoint_c,
-                    *pressure_hpa,
-                )
-            })
-            .collect::<Vec<_>>();
+            let Some(tv700) = interp_at_pressure(&pressures_hpa, &virtual_temperatures_c, 700.0)
+            else {
+                return f64::NAN;
+            };
+            let Some(tv500) = interp_at_pressure(&pressures_hpa, &virtual_temperatures_c, 500.0)
+            else {
+                return f64::NAN;
+            };
+            let Some(z700) = interp_at_pressure(&pressures_hpa, &heights_m, 700.0) else {
+                return f64::NAN;
+            };
+            let Some(z500) = interp_at_pressure(&pressures_hpa, &heights_m, 500.0) else {
+                return f64::NAN;
+            };
 
-        let Some(tv700) = interp_at_pressure(&pressures_hpa, &virtual_temperatures_c, 700.0) else {
-            out.push(f64::NAN);
-            continue;
-        };
-        let Some(tv500) = interp_at_pressure(&pressures_hpa, &virtual_temperatures_c, 500.0) else {
-            out.push(f64::NAN);
-            continue;
-        };
-        let Some(z700) = interp_at_pressure(&pressures_hpa, &heights_m, 700.0) else {
-            out.push(f64::NAN);
-            continue;
-        };
-        let Some(z500) = interp_at_pressure(&pressures_hpa, &heights_m, 500.0) else {
-            out.push(f64::NAN);
-            continue;
-        };
-
-        let dz_km = (z500 - z700) / 1000.0;
-        out.push(if dz_km > 0.0 {
-            (tv700 - tv500) / dz_km
-        } else {
-            f64::NAN
-        });
-    }
-
-    Ok(out)
+            let dz_km = (z500 - z700) / 1000.0;
+            if dz_km > 0.0 {
+                (tv700 - tv500) / dz_km
+            } else {
+                f64::NAN
+            }
+        })
+        .collect())
 }
 
 pub fn compute_lapse_rate_0_3km(
@@ -344,29 +341,28 @@ pub fn compute_lapse_rate_0_3km(
     volume: EcapeVolumeInputs<'_>,
     surface: SurfaceInputs<'_>,
 ) -> Result<Vec<f64>, CalcError> {
-    validate_inputs(grid, volume, surface)?;
+    validate_volume_inputs(grid, volume)?;
+    validate_surface_inputs(grid, surface)?;
     let nxy = grid.len();
-    let mut out = Vec::with_capacity(nxy);
+    Ok((0..nxy)
+        .into_par_iter()
+        .map(|ij| {
+            let mut heights_m = Vec::with_capacity(volume.nz + 1);
+            let mut temperatures_c = Vec::with_capacity(volume.nz + 1);
+            heights_m.push(0.0);
+            temperatures_c.push(surface.t2_k[ij] - 273.15);
+            for k in 0..volume.nz {
+                let idx = k * nxy + ij;
+                heights_m.push(volume.height_agl_m[idx]);
+                temperatures_c.push(volume.temperature_c[idx]);
+            }
 
-    for ij in 0..nxy {
-        let mut heights_m = Vec::with_capacity(volume.nz + 1);
-        let mut temperatures_c = Vec::with_capacity(volume.nz + 1);
-        heights_m.push(0.0);
-        temperatures_c.push(surface.t2_k[ij] - 273.15);
-        for k in 0..volume.nz {
-            let idx = k * nxy + ij;
-            heights_m.push(volume.height_agl_m[idx]);
-            temperatures_c.push(volume.temperature_c[idx]);
-        }
-
-        let Some(t_3km) = interp_at_height(&heights_m, &temperatures_c, 3000.0) else {
-            out.push(f64::NAN);
-            continue;
-        };
-        out.push((temperatures_c[0] - t_3km) / 3.0);
-    }
-
-    Ok(out)
+            let Some(t_3km) = interp_at_height(&heights_m, &temperatures_c, 3000.0) else {
+                return f64::NAN;
+            };
+            (temperatures_c[0] - t_3km) / 3.0
+        })
+        .collect())
 }
 
 pub fn compute_shear_01km(wind: WindGridInputs<'_>) -> Result<Vec<f64>, CalcError> {
@@ -529,13 +525,29 @@ fn validate_surface_inputs(grid: GridShape, surface: SurfaceInputs<'_>) -> Resul
 
 fn validate_volume_inputs(grid: GridShape, volume: EcapeVolumeInputs<'_>) -> Result<(), CalcError> {
     let n3d = grid.len() * volume.nz;
-    validate_len("pressure_pa", volume.pressure_pa.len(), n3d)?;
+    if pressure_is_levels(volume) {
+        validate_len("pressure_levels_pa", volume.pressure_pa.len(), volume.nz)?;
+    } else {
+        validate_len("pressure_pa", volume.pressure_pa.len(), n3d)?;
+    }
     validate_len("temperature_c", volume.temperature_c.len(), n3d)?;
     validate_len("qvapor_kgkg", volume.qvapor_kgkg.len(), n3d)?;
     validate_len("height_agl_m", volume.height_agl_m.len(), n3d)?;
     validate_len("u_ms", volume.u_ms.len(), n3d)?;
     validate_len("v_ms", volume.v_ms.len(), n3d)?;
     Ok(())
+}
+
+fn pressure_is_levels(volume: EcapeVolumeInputs<'_>) -> bool {
+    volume.pressure_pa.len() == volume.nz
+}
+
+fn pressure_hpa_at(volume: EcapeVolumeInputs<'_>, nxy: usize, k: usize, ij: usize) -> f64 {
+    if pressure_is_levels(volume) {
+        volume.pressure_pa[k] / 100.0
+    } else {
+        volume.pressure_pa[k * nxy + ij] / 100.0
+    }
 }
 
 fn validate_temperature_advection_inputs(
@@ -661,7 +673,11 @@ fn column(values: &[f64], nxy: usize, nz: usize, ij: usize) -> Vec<f64> {
 }
 
 fn column_hpa(values_pa: &[f64], nxy: usize, nz: usize, ij: usize) -> Vec<f64> {
-    (0..nz).map(|k| values_pa[k * nxy + ij] / 100.0).collect()
+    if values_pa.len() == nz {
+        values_pa.iter().map(|value| value / 100.0).collect()
+    } else {
+        (0..nz).map(|k| values_pa[k * nxy + ij] / 100.0).collect()
+    }
 }
 
 fn column_with_surface_hpa(
@@ -673,7 +689,11 @@ fn column_with_surface_hpa(
 ) -> Vec<f64> {
     let mut column = Vec::with_capacity(nz + 1);
     column.push(surface_pa[ij] / 100.0);
-    column.extend((0..nz).map(|k| values_pa[k * nxy + ij] / 100.0));
+    if values_pa.len() == nz {
+        column.extend(values_pa.iter().map(|value| value / 100.0));
+    } else {
+        column.extend((0..nz).map(|k| values_pa[k * nxy + ij] / 100.0));
+    }
     column
 }
 

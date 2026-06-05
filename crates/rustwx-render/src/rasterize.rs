@@ -5,6 +5,10 @@ use crate::projection::ProjectionProjector;
 use crate::request::{GeographicClipBounds, RasterSampleMode};
 use image::RgbaImage;
 
+fn projected_pixel_to_f64(point: (f32, f32)) -> (f64, f64) {
+    (point.0 as f64, point.1 as f64)
+}
+
 /// Below this output-pixel count, the per-call CUDA upload + launch overhead
 /// is not worth the saved CPU work. Tuned so a 224x224 panel still goes GPU.
 #[cfg(feature = "cuda")]
@@ -273,7 +277,7 @@ fn cuda_rasterize_projected_grid(
     data: &[f64],
     ny: usize,
     nx: usize,
-    pixel_points: &[Option<(f64, f64)>],
+    pixel_points: &[Option<(f32, f32)>],
     cmap: &LeveledColormap,
     img_w: u32,
     img_h: u32,
@@ -543,7 +547,7 @@ pub fn rasterize_projected_grid(
     data: &[f64],
     ny: usize,
     nx: usize,
-    pixel_points: &[Option<(f64, f64)>],
+    pixel_points: &[Option<(f32, f32)>],
     cmap: &LeveledColormap,
     img_w: u32,
     img_h: u32,
@@ -597,6 +601,10 @@ pub fn rasterize_projected_grid(
             let v01 = data[idx(j + 1, i)];
             let v11 = data[idx(j + 1, i + 1)];
 
+            let p00 = projected_pixel_to_f64(p00);
+            let p10 = projected_pixel_to_f64(p10);
+            let p01 = projected_pixel_to_f64(p01);
+            let p11 = projected_pixel_to_f64(p11);
             rasterize_triangle(&mut img, p00, v00, p10, v10, p11, v11, cmap);
             rasterize_triangle(&mut img, p00, v00, p11, v11, p01, v01, cmap);
         }
@@ -617,7 +625,7 @@ struct RectilinearPixelAxes {
 fn rectilinear_pixel_axes(
     ny: usize,
     nx: usize,
-    pixel_points: &[Option<(f64, f64)>],
+    pixel_points: &[Option<(f32, f32)>],
 ) -> Option<RectilinearPixelAxes> {
     if ny < 2 || nx < 2 || pixel_points.len() != ny * nx {
         return None;
@@ -625,6 +633,9 @@ fn rectilinear_pixel_axes(
     let first = pixel_points[0]?;
     let east = pixel_points[nx - 1]?;
     let south = pixel_points[(ny - 1) * nx]?;
+    let first = projected_pixel_to_f64(first);
+    let east = projected_pixel_to_f64(east);
+    let south = projected_pixel_to_f64(south);
     let dx = (east.0 - first.0) / (nx - 1) as f64;
     let dy = (south.1 - first.1) / (ny - 1) as f64;
     if !dx.is_finite() || !dy.is_finite() || dx.abs() < 1.0e-9 || dy.abs() < 1.0e-9 {
@@ -636,7 +647,7 @@ fn rectilinear_pixel_axes(
     let sample_cols = [0, nx / 2, nx - 1];
     for &row in &sample_rows {
         for &col in &sample_cols {
-            let point = pixel_points[row * nx + col]?;
+            let point = projected_pixel_to_f64(pixel_points[row * nx + col]?);
             let expected_x = first.0 + dx * col as f64;
             let expected_y = first.1 + dy * row as f64;
             if (point.0 - expected_x).abs() > tolerance || (point.1 - expected_y).abs() > tolerance
@@ -695,7 +706,7 @@ fn rasterize_rectilinear_projected_grid(
     data: &[f64],
     ny: usize,
     nx: usize,
-    pixel_points: &[Option<(f64, f64)>],
+    pixel_points: &[Option<(f32, f32)>],
     cmap: &LeveledColormap,
     img_w: u32,
     img_h: u32,
@@ -1020,7 +1031,7 @@ pub fn rasterize_projected_rgba_grid(
     pixels: &[Rgba],
     ny: usize,
     nx: usize,
-    pixel_points: &[Option<(f64, f64)>],
+    pixel_points: &[Option<(f32, f32)>],
     img_w: u32,
     img_h: u32,
 ) -> RgbaImage {
@@ -1048,6 +1059,10 @@ pub fn rasterize_projected_rgba_grid(
             let c01 = pixels[idx(j + 1, i)];
             let c11 = pixels[idx(j + 1, i + 1)];
 
+            let p00 = projected_pixel_to_f64(p00);
+            let p10 = projected_pixel_to_f64(p10);
+            let p01 = projected_pixel_to_f64(p01);
+            let p11 = projected_pixel_to_f64(p11);
             rasterize_rgba_triangle(&mut img, p00, c00, p10, c10, p11, c11);
             rasterize_rgba_triangle(&mut img, p00, c00, p11, c11, p01, c01);
         }
@@ -1063,7 +1078,7 @@ pub fn rasterize_projected_rgba_grid(
 pub fn rasterize_projected_coverage_mask(
     ny: usize,
     nx: usize,
-    pixel_points: &[Option<(f64, f64)>],
+    pixel_points: &[Option<(f32, f32)>],
     img_w: u32,
     img_h: u32,
 ) -> RgbaImage {
@@ -1086,6 +1101,10 @@ pub fn rasterize_projected_coverage_mask(
                 _ => continue,
             };
 
+            let p00 = projected_pixel_to_f64(p00);
+            let p10 = projected_pixel_to_f64(p10);
+            let p01 = projected_pixel_to_f64(p01);
+            let p11 = projected_pixel_to_f64(p11);
             rasterize_mask_triangle(&mut img, p00, p10, p11);
             rasterize_mask_triangle(&mut img, p00, p11, p01);
         }

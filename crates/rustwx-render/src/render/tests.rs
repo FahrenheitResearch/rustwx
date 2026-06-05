@@ -144,6 +144,29 @@ fn sample_domain_frame(outline_color: crate::request::Color) -> DomainFrame {
     }
 }
 
+#[test]
+fn projected_pixels_keep_nearby_offscreen_points_for_clipping() {
+    let layout = contour_test_layout();
+    let grid = ProjectedGrid {
+        x: vec![-0.05, 1.05, -0.05, 1.05],
+        y: vec![0.0, 0.0, 1.0, 1.0],
+        ny: 2,
+        nx: 2,
+    };
+    let extent = MapExtent {
+        x_min: 0.0,
+        x_max: 1.0,
+        y_min: 0.0,
+        y_max: 1.0,
+    };
+
+    let pixels = projected_grid_to_pixels(&grid, &extent, &layout);
+
+    assert_eq!(pixels.len(), 4);
+    assert!(pixels[0].is_some_and(|(x, _)| x < 0.0));
+    assert!(pixels[1].is_some_and(|(x, _)| x > layout.map_w as f32 - 1.0));
+}
+
 fn visit_rs_files(
     root: &std::path::Path,
     visitor: &mut impl FnMut(&std::path::Path),

@@ -77,7 +77,7 @@ use projection::{
 };
 pub use projection::{
     build_projected_map, build_projected_map_with_projection,
-    model_data_domain_frame_for_projection,
+    build_requested_projected_map_with_projection, model_data_domain_frame_for_projection,
 };
 pub(crate) use query::{
     build_direct_sampled_execution_plan, direct_component_slug,

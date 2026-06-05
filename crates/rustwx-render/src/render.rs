@@ -251,14 +251,13 @@ impl LocalRect {
 
 #[derive(Clone)]
 struct CachedProjectedPixels {
-    grid_x: Vec<f64>,
-    grid_y: Vec<f64>,
+    grid_hash: u64,
     nx: usize,
     ny: usize,
     map_w: u32,
     map_h: u32,
     extent_bits: [u64; 4],
-    pixels: Arc<[Option<(f64, f64)>]>,
+    pixels: Arc<[Option<(f32, f32)>]>,
 }
 
 impl CachedProjectedPixels {
@@ -266,11 +265,10 @@ impl CachedProjectedPixels {
         grid: &ProjectedGrid,
         extent: &MapExtent,
         layout: &Layout,
-        pixels: Arc<[Option<(f64, f64)>]>,
+        pixels: Arc<[Option<(f32, f32)>]>,
     ) -> Self {
         Self {
-            grid_x: grid.x.clone(),
-            grid_y: grid.y.clone(),
+            grid_hash: hash_projected_grid(grid),
             nx: grid.nx,
             ny: grid.ny,
             map_w: layout.map_w,
@@ -286,8 +284,7 @@ impl CachedProjectedPixels {
             && self.map_w == layout.map_w
             && self.map_h == layout.map_h
             && self.extent_bits == extent_bits(extent)
-            && self.grid_x == grid.x
-            && self.grid_y == grid.y
+            && self.grid_hash == hash_projected_grid(grid)
     }
 }
 
@@ -1002,7 +999,10 @@ fn draw_projected_lines(
                     })
                     .unwrap_or(true);
                 if visible {
-                    current.push((layout.map_x as f64 + px, layout.map_y as f64 + py));
+                    current.push((
+                        layout.map_x as f64 + px as f64,
+                        layout.map_y as f64 + py as f64,
+                    ));
                 } else {
                     push_chunk(&mut current, style.color, style.width, &mut chunks);
                 }
@@ -1425,22 +1425,15 @@ fn projected_grid_to_pixels(
     grid: &ProjectedGrid,
     extent: &MapExtent,
     layout: &Layout,
-) -> Vec<Option<(f64, f64)>> {
+) -> Vec<Option<(f32, f32)>> {
     grid.x
         .iter()
         .zip(grid.y.iter())
         .map(|(&x, &y)| {
             extent
                 .to_pixel(x, y, layout.map_w, layout.map_h)
-                .and_then(|(px, py)| {
-                    if (0.0..layout.map_w as f64).contains(&px)
-                        && (0.0..layout.map_h as f64).contains(&py)
-                    {
-                        Some((px, py))
-                    } else {
-                        None
-                    }
-                })
+                .filter(|(px, py)| px.is_finite() && py.is_finite())
+                .map(|(px, py)| (px as f32, py as f32))
         })
         .collect()
 }
@@ -1449,7 +1442,7 @@ fn projected_grid_to_pixels_cached(
     grid: &ProjectedGrid,
     extent: &MapExtent,
     layout: &Layout,
-) -> Arc<[Option<(f64, f64)>]> {
+) -> Arc<[Option<(f32, f32)>]> {
     PROJECTED_PIXEL_CACHE.with(|cache_cell| {
         let mut cache = cache_cell.borrow_mut();
         if let Some(cached) = cache.as_ref() {
@@ -1458,7 +1451,7 @@ fn projected_grid_to_pixels_cached(
             }
         }
 
-        let pixels: Arc<[Option<(f64, f64)>]> =
+        let pixels: Arc<[Option<(f32, f32)>]> =
             projected_grid_to_pixels(grid, extent, layout).into();
         *cache = Some(CachedProjectedPixels::new(
             grid,
@@ -1661,7 +1654,7 @@ fn draw_projected_grid_boundary(
     img: &mut RgbaImage,
     layout: &Layout,
     grid: &ProjectedGrid,
-    pixel_points: &[Option<(f64, f64)>],
+    pixel_points: &[Option<(f32, f32)>],
     color: Rgba,
     width: u32,
 ) -> bool {
@@ -1677,8 +1670,8 @@ fn draw_projected_grid_boundary(
     let mut visible_max_y = f64::NEG_INFINITY;
 
     for &(px, py) in pixel_points.iter().flatten() {
-        let x = layout.map_x as f64 + px;
-        let y = layout.map_y as f64 + py;
+        let x = layout.map_x as f64 + px as f64;
+        let y = layout.map_y as f64 + py as f64;
         visible_min_x = visible_min_x.min(x);
         visible_max_x = visible_max_x.max(x);
         visible_min_y = visible_min_y.min(y);
@@ -1697,7 +1690,10 @@ fn draw_projected_grid_boundary(
                 width,
             );
         };
-        boundary.push((layout.map_x as f64 + px, layout.map_y as f64 + py));
+        boundary.push((
+            layout.map_x as f64 + px as f64,
+            layout.map_y as f64 + py as f64,
+        ));
     }
     for j in 1..grid.ny {
         let Some((px, py)) = pixel_points[idx(j, grid.nx - 1)] else {
@@ -1711,7 +1707,10 @@ fn draw_projected_grid_boundary(
                 width,
             );
         };
-        boundary.push((layout.map_x as f64 + px, layout.map_y as f64 + py));
+        boundary.push((
+            layout.map_x as f64 + px as f64,
+            layout.map_y as f64 + py as f64,
+        ));
     }
     for i in (0..grid.nx.saturating_sub(1)).rev() {
         let Some((px, py)) = pixel_points[idx(grid.ny - 1, i)] else {
@@ -1725,7 +1724,10 @@ fn draw_projected_grid_boundary(
                 width,
             );
         };
-        boundary.push((layout.map_x as f64 + px, layout.map_y as f64 + py));
+        boundary.push((
+            layout.map_x as f64 + px as f64,
+            layout.map_y as f64 + py as f64,
+        ));
     }
     for j in (1..grid.ny.saturating_sub(1)).rev() {
         let Some((px, py)) = pixel_points[idx(j, 0)] else {
@@ -1739,7 +1741,10 @@ fn draw_projected_grid_boundary(
                 width,
             );
         };
-        boundary.push((layout.map_x as f64 + px, layout.map_y as f64 + py));
+        boundary.push((
+            layout.map_x as f64 + px as f64,
+            layout.map_y as f64 + py as f64,
+        ));
     }
 
     if let Some(first) = boundary.first().copied() {
@@ -1939,7 +1944,7 @@ fn inner_rect_from_coverage(mask: &RgbaImage, inset: u32) -> Option<LocalRect> {
 fn compute_projected_domain_frame_rect(
     frame: DomainFrame,
     grid: &ProjectedGrid,
-    pixel_points: &[Option<(f64, f64)>],
+    pixel_points: &[Option<(f32, f32)>],
     map_w: u32,
     map_h: u32,
     _overlay_padding_px: u32,
@@ -2286,6 +2291,21 @@ fn extent_bits(extent: &MapExtent) -> [u64; 4] {
     ]
 }
 
+fn hash_projected_grid(grid: &ProjectedGrid) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    grid.nx.hash(&mut hasher);
+    grid.ny.hash(&mut hasher);
+    grid.x.len().hash(&mut hasher);
+    grid.y.len().hash(&mut hasher);
+    for value in &grid.x {
+        value.to_bits().hash(&mut hasher);
+    }
+    for value in &grid.y {
+        value.to_bits().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 fn interp_point(a: (f64, f64, f64), b: (f64, f64, f64), level: f64) -> Option<(f64, f64)> {
     let (x0, y0, v0) = a;
     let (x1, y1, v1) = b;
@@ -2357,7 +2377,7 @@ fn finite_minmax_4(v0: f64, v1: f64, v2: f64, v3: f64) -> Option<(f64, f64)> {
 fn contour_cell_corners(
     layout: &Layout,
     overlay: &ContourOverlay,
-    pixel_points: Option<&[Option<(f64, f64)>]>,
+    pixel_points: Option<&[Option<(f32, f32)>]>,
     base: usize,
     cell_step: usize,
 ) -> Option<((f64, f64), (f64, f64), (f64, f64), (f64, f64))> {
@@ -2369,8 +2389,12 @@ fn contour_cell_corners(
             points[base + cell_step * overlay.nx + cell_step],
             points[base + cell_step * overlay.nx],
         ) {
-            (Some(a), Some(b), Some(c), Some(d)) if projected_quad_is_continuous(a, b, c, d) => {
-                Some((a, b, c, d))
+            (Some(a), Some(b), Some(c), Some(d)) => {
+                let a = (a.0 as f64, a.1 as f64);
+                let b = (b.0 as f64, b.1 as f64);
+                let c = (c.0 as f64, c.1 as f64);
+                let d = (d.0 as f64, d.1 as f64);
+                projected_quad_is_continuous(a, b, c, d).then_some((a, b, c, d))
             }
             _ => None,
         }
@@ -2448,7 +2472,7 @@ fn emit_interp_point(
 fn contour_cell_intersections(
     layout: &Layout,
     overlay: &ContourOverlay,
-    pixel_points: Option<&[Option<(f64, f64)>]>,
+    pixel_points: Option<&[Option<(f32, f32)>]>,
     base: usize,
     cell_step: usize,
     level: f64,
@@ -2854,7 +2878,7 @@ fn draw_contour_segments_masked(
 
 fn build_contour_buckets(
     overlay: &ContourOverlay,
-    pixel_points: Option<&[Option<(f64, f64)>]>,
+    pixel_points: Option<&[Option<(f32, f32)>]>,
     cell_step: usize,
 ) -> Vec<Vec<u32>> {
     let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); overlay.levels.len()];
@@ -2910,7 +2934,7 @@ fn draw_contours_bucketed(
     img: &mut RgbaImage,
     layout: &Layout,
     overlay: &ContourOverlay,
-    pixel_points: Option<&[Option<(f64, f64)>]>,
+    pixel_points: Option<&[Option<(f32, f32)>]>,
     clip_mask: Option<&RgbaImage>,
     label_placer: &mut ContourLabelPlacer,
     cell_step: usize,
@@ -2991,7 +3015,7 @@ fn draw_contours_legacy(
     img: &mut RgbaImage,
     layout: &Layout,
     overlay: &ContourOverlay,
-    pixel_points: Option<&[Option<(f64, f64)>]>,
+    pixel_points: Option<&[Option<(f32, f32)>]>,
     clip_mask: Option<&RgbaImage>,
     label_placer: &mut ContourLabelPlacer,
     cell_step: usize,
@@ -3055,7 +3079,7 @@ fn draw_contours(
     img: &mut RgbaImage,
     layout: &Layout,
     overlay: &ContourOverlay,
-    pixel_points: Option<&[Option<(f64, f64)>]>,
+    pixel_points: Option<&[Option<(f32, f32)>]>,
     clip_mask: Option<&RgbaImage>,
     label_placer: &mut ContourLabelPlacer,
 ) -> ContourDrawTiming {
@@ -3327,7 +3351,7 @@ fn draw_extrema_labels(
     img: &mut RgbaImage,
     layout: &Layout,
     overlay: &ContourOverlay,
-    pixel_points: Option<&[Option<(f64, f64)>]>,
+    pixel_points: Option<&[Option<(f32, f32)>]>,
     clip_mask: Option<&RgbaImage>,
 ) {
     let source_ny = overlay.ny;
@@ -3585,7 +3609,7 @@ fn draw_streamlines(
     img: &mut RgbaImage,
     layout: &Layout,
     overlay: &StreamlineOverlay,
-    pixel_points: Option<&[Option<(f64, f64)>]>,
+    pixel_points: Option<&[Option<(f32, f32)>]>,
     clip_mask: Option<&RgbaImage>,
 ) {
     if overlay.nx < 2 || overlay.ny < 2 {
@@ -3629,7 +3653,7 @@ fn draw_streamline_direction(
     img: &mut RgbaImage,
     layout: &Layout,
     overlay: &StreamlineOverlay,
-    pixel_points: Option<&[Option<(f64, f64)>]>,
+    pixel_points: Option<&[Option<(f32, f32)>]>,
     clip_mask: Option<&RgbaImage>,
     seed_i: f64,
     seed_j: f64,
@@ -3737,7 +3761,7 @@ fn grid_coord_to_canvas_pixel(
     nx: usize,
     ny: usize,
     layout: &Layout,
-    pixel_points: Option<&[Option<(f64, f64)>]>,
+    pixel_points: Option<&[Option<(f32, f32)>]>,
 ) -> Option<(f64, f64)> {
     if let Some(points) = pixel_points {
         let (local_x, local_y) = projected_pixel_bilinear(points, nx, ny, i, j)?;
@@ -3748,7 +3772,7 @@ fn grid_coord_to_canvas_pixel(
 }
 
 fn projected_pixel_bilinear(
-    points: &[Option<(f64, f64)>],
+    points: &[Option<(f32, f32)>],
     nx: usize,
     ny: usize,
     i: f64,
@@ -3775,6 +3799,10 @@ fn projected_pixel_bilinear(
     {
         return None;
     }
+    let p00 = (p00.0 as f64, p00.1 as f64);
+    let p10 = (p10.0 as f64, p10.1 as f64);
+    let p01 = (p01.0 as f64, p01.1 as f64);
+    let p11 = (p11.0 as f64, p11.1 as f64);
     if !projected_quad_is_continuous(p00, p10, p11, p01) {
         return None;
     }
@@ -3814,7 +3842,7 @@ fn draw_barbs(
     img: &mut RgbaImage,
     layout: &Layout,
     overlay: &BarbOverlay,
-    pixel_points: Option<&[Option<(f64, f64)>]>,
+    pixel_points: Option<&[Option<(f32, f32)>]>,
     clip_mask: Option<&RgbaImage>,
 ) {
     if overlay.nx == 0 || overlay.ny == 0 {
@@ -3835,10 +3863,13 @@ fn draw_barbs(
             let (x, y) = if let Some(points) = pixel_points {
                 match points.get(idx).and_then(|p| *p) {
                     Some((px, py))
-                        if (0.0..layout.map_w as f64).contains(&px)
-                            && (0.0..layout.map_h as f64).contains(&py) =>
+                        if (0.0..layout.map_w as f64).contains(&(px as f64))
+                            && (0.0..layout.map_h as f64).contains(&(py as f64)) =>
                     {
-                        (layout.map_x as f64 + px, layout.map_y as f64 + py)
+                        (
+                            layout.map_x as f64 + px as f64,
+                            layout.map_y as f64 + py as f64,
+                        )
                     }
                     None => continue,
                     _ => continue,
@@ -3994,7 +4025,7 @@ fn draw_variable_layers(
     nx: usize,
     opts: &RenderOpts,
     layout: &Layout,
-    projected_pixels: Option<&[Option<(f64, f64)>]>,
+    projected_pixels: Option<&[Option<(f32, f32)>]>,
     domain_frame_rect: Option<LocalRect>,
     overlay_padding_px: u32,
     polygon_clip_rect: (i32, i32, i32, i32),
@@ -4246,7 +4277,7 @@ fn draw_chrome_and_colorbar(
     img: &mut RgbaImage,
     layout: &Layout,
     opts: &RenderOpts,
-    projected_pixels_ref: Option<&[Option<(f64, f64)>]>,
+    projected_pixels_ref: Option<&[Option<(f32, f32)>]>,
     domain_frame_rect: Option<LocalRect>,
     domain_clip_rect: Option<LocalRect>,
     projection_clip_mask_present: bool,
