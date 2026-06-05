@@ -2,8 +2,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, ValueEnum};
 use rayon::prelude::*;
 use rustwx_products::wxstore_wxa::{
-    WxaRenderedPlot, WxaStaticPlotRequest, available_wxa_products, read_wxa_dense2d_metadata,
-    render_wxa_static_plot, wxa_product_path,
+    WxaCompositePanelRequest, WxaRenderedPlot, WxaStaticPlotRequest, available_wxa_products,
+    read_wxa_dense2d_metadata, render_wxa_composite_panel, render_wxa_static_plot,
+    wxa_composite_panel_component_products, wxa_product_path,
 };
 use rustwx_render::{PngCompressionMode, StaticPlotStyle};
 use serde::Serialize;
@@ -92,6 +93,37 @@ struct WxaShowcaseBlocker {
     reason: String,
 }
 
+#[derive(Debug, Clone)]
+enum ShowcaseTask {
+    Single {
+        product_slug: String,
+        forecast_hour: u32,
+        wxa_path: PathBuf,
+    },
+    Composite {
+        product_slug: String,
+        forecast_hour: u32,
+    },
+}
+
+impl ShowcaseTask {
+    fn product_slug(&self) -> &str {
+        match self {
+            Self::Single { product_slug, .. } | Self::Composite { product_slug, .. } => {
+                product_slug
+            }
+        }
+    }
+
+    fn forecast_hour(&self) -> u32 {
+        match self {
+            Self::Single { forecast_hour, .. } | Self::Composite { forecast_hour, .. } => {
+                *forecast_hour
+            }
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let started = Instant::now();
@@ -124,25 +156,56 @@ fn main() -> Result<()> {
     let tasks = build_tasks(&args, &products, &hours)?;
     let png_compression: PngCompressionMode = args.png_compression.into();
     let plot_style = args.plot_style;
-    let render_task = |task: &(String, u32, PathBuf)| {
-        let (product_slug, hour, wxa_path) = task;
-        let request = WxaStaticPlotRequest {
-            wxa_path: wxa_path.clone(),
-            forecast_hour: *hour,
-            out_dir: plot_dir.clone(),
-            width: args.width,
-            height: args.height,
-            png_compression,
-            plot_style,
-            bounds_override,
-            title_override: None,
-            subtitle_left: None,
-            subtitle_right: None,
-            output_suffix: None,
+    let render_task = |task: &ShowcaseTask| {
+        let result = match task {
+            ShowcaseTask::Single {
+                forecast_hour,
+                wxa_path,
+                ..
+            } => {
+                let request = WxaStaticPlotRequest {
+                    wxa_path: wxa_path.clone(),
+                    forecast_hour: *forecast_hour,
+                    out_dir: plot_dir.clone(),
+                    width: args.width,
+                    height: args.height,
+                    png_compression,
+                    plot_style,
+                    bounds_override,
+                    title_override: None,
+                    subtitle_left: None,
+                    subtitle_right: None,
+                    output_suffix: None,
+                };
+                render_wxa_static_plot(&request)
+            }
+            ShowcaseTask::Composite {
+                product_slug,
+                forecast_hour,
+            } => {
+                let request = WxaCompositePanelRequest {
+                    spatial_root: args.spatial_root.clone(),
+                    model: args.model.clone(),
+                    run: args.run.clone(),
+                    member: Some(args.member.clone()),
+                    product_slug: product_slug.clone(),
+                    forecast_hour: *forecast_hour,
+                    out_dir: plot_dir.clone(),
+                    width: args.width,
+                    height: args.height,
+                    png_compression,
+                    bounds_override,
+                    title_override: None,
+                    subtitle_left: None,
+                    subtitle_right: None,
+                    output_suffix: None,
+                };
+                render_wxa_composite_panel(&request)
+            }
         };
-        render_wxa_static_plot(&request).map_err(|err| WxaShowcaseBlocker {
-            product_slug: product_slug.clone(),
-            forecast_hour: Some(*hour),
+        result.map_err(|err| WxaShowcaseBlocker {
+            product_slug: task.product_slug().to_string(),
+            forecast_hour: Some(task.forecast_hour()),
             reason: err.to_string(),
         })
     };
@@ -248,14 +311,46 @@ fn select_products(args: &Args) -> Result<Vec<String>> {
     Ok(products)
 }
 
-fn build_tasks(
-    args: &Args,
-    products: &[String],
-    hours: &[u32],
-) -> Result<Vec<(String, u32, PathBuf)>> {
+fn build_tasks(args: &Args, products: &[String], hours: &[u32]) -> Result<Vec<ShowcaseTask>> {
     let wanted_hours = hours.iter().copied().collect::<BTreeSet<_>>();
     let mut tasks = Vec::new();
     for product in products {
+        if let Some(component_products) = wxa_composite_panel_component_products(product) {
+            let mut common_hours: Option<BTreeSet<u32>> = None;
+            let mut all_components_present = true;
+            for component in component_products {
+                let path = wxa_product_path(
+                    &args.spatial_root,
+                    &args.model,
+                    &args.run,
+                    Some(args.member.as_str()),
+                    &component,
+                );
+                if !path.is_file() {
+                    all_components_present = false;
+                    break;
+                }
+                let (meta, _) = read_wxa_dense2d_metadata(&path)
+                    .map_err(|err| anyhow!("read WXA metadata {}: {}", path.display(), err))?;
+                let available = meta.forecast_hours.into_iter().collect::<BTreeSet<_>>();
+                common_hours = Some(match common_hours {
+                    Some(existing) => existing.intersection(&available).copied().collect(),
+                    None => available,
+                });
+            }
+            if all_components_present {
+                if let Some(available) = common_hours {
+                    for hour in wanted_hours.intersection(&available) {
+                        tasks.push(ShowcaseTask::Composite {
+                            product_slug: product.clone(),
+                            forecast_hour: *hour,
+                        });
+                    }
+                }
+                continue;
+            }
+        }
+
         let path = wxa_product_path(
             &args.spatial_root,
             &args.model,
@@ -270,7 +365,11 @@ fn build_tasks(
             .map_err(|err| anyhow!("read WXA metadata {}: {}", path.display(), err))?;
         let available = meta.forecast_hours.into_iter().collect::<BTreeSet<_>>();
         for hour in wanted_hours.intersection(&available) {
-            tasks.push((product.clone(), *hour, path.clone()));
+            tasks.push(ShowcaseTask::Single {
+                product_slug: product.clone(),
+                forecast_hour: *hour,
+                wxa_path: path.clone(),
+            });
         }
     }
     Ok(tasks)

@@ -261,6 +261,18 @@ struct Args {
     #[arg(long = "wxstore-product", value_delimiter = ',', num_args = 0..)]
     wxstore_products: Vec<String>,
     #[arg(
+        long = "direct-wxa-root",
+        alias = "wxstore-direct-wxa-root",
+        help = "When --wxstore-out-dir is set, also write native WxStore .wxa dense2d files under this spatial root"
+    )]
+    wxstore_direct_wxa_root: Option<PathBuf>,
+    #[arg(
+        long = "publish-wxa-latest",
+        default_value_t = false,
+        help = "When --direct-wxa-root is set, publish the WXA run as the model latest pointer"
+    )]
+    publish_wxa_latest: bool,
+    #[arg(
         long,
         default_value_t = false,
         help = "When exporting WxStore grids, skip static PNG rendering and write only the WxStore grid manifest"
@@ -573,8 +585,8 @@ fn wxstore_request_for_args(
         out_dir,
         cache_root: cache_root.clone(),
         use_cache: !args.no_cache,
-        direct_wxa_root: None,
-        publish_wxa_latest: false,
+        direct_wxa_root: args.wxstore_direct_wxa_root.clone(),
+        publish_wxa_latest: args.publish_wxa_latest,
     }))
 }
 

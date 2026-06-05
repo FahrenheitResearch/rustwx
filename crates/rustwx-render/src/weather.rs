@@ -202,7 +202,7 @@ impl WeatherProduct {
             "stp_fixed" => Some(Self::StpFixed),
             "stp_effective" => Some(Self::StpEffective),
             "scp" => Some(Self::Scp),
-            "ehi" => Some(Self::Ehi),
+            "ehi" | "ehi_0_1km" | "ehi01km" | "ehi_0_3km" | "ehi03km" => Some(Self::Ehi),
             "tehi" | "tornadic_ehi" | "tornadic_0_1km_ehi" => Some(Self::Tehi),
             "tts" | "tornadic_tilting_stretching" => Some(Self::Tts),
             "vtp_mod" | "modified_vtp" | "vtp" => Some(Self::VtpMod),
@@ -538,7 +538,8 @@ impl WeatherPreset {
             "srh" | "srh1" | "srh3" | "effective_srh" => Some(Self::Srh),
             "stp" | "stp_fixed" | "stp_effective" | "ecape_stp" => Some(Self::Stp),
             "scp" | "ecape_scp" => Some(Self::Scp),
-            "ehi" | "ecape_ehi" | "ecape_ehi_0_1km" | "ecape_ehi_0_3km" => Some(Self::Ehi),
+            "ehi" | "ehi_0_1km" | "ehi01km" | "ehi_0_3km" | "ehi03km" | "ecape_ehi"
+            | "ecape_ehi_0_1km" | "ecape_ehi_0_3km" => Some(Self::Ehi),
             "tehi" | "tornadic_ehi" | "tornadic_0_1km_ehi" => Some(Self::Tehi),
             "tts" | "tornadic_tilting_stretching" => Some(Self::Tts),
             "vtp_mod" | "modified_vtp" | "vtp" => Some(Self::Vtp),

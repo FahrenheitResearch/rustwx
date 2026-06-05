@@ -1,4 +1,7 @@
-use crate::direct::{build_projected_map_with_projection, direct_component_slug};
+use crate::direct::{
+    build_projected_map_with_projection, direct_component_slug, direct_composite_component_slugs,
+    direct_composite_panel_layout,
+};
 use crate::plot_design::{StaticPlotDesign, is_global_scale_domain, longitude_bounds_span_deg};
 use crate::shared_context::{
     DomainSpec, static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
@@ -11,9 +14,10 @@ use rustwx_render::weather::{
 };
 use rustwx_render::{
     Color, ColorScale, DiscreteColorScale, ExtendMode, LegendMode, LineworkRole, MapRenderRequest,
-    PngCompressionMode, PngWriteOptions, ProductVisualMode, StaticPlotStyle, WeatherPalette,
-    WeatherPreset, WeatherProduct, WindBarbLayer, WindStreamlineLayer, palette_scale,
-    save_png_profile_with_options_and_style,
+    PanelGridLayout, PanelPadding, PngCompressionMode, PngWriteOptions, ProductVisualMode,
+    StaticPlotStyle, WeatherPalette, WeatherPreset, WeatherProduct, WindBarbLayer,
+    WindStreamlineLayer, draw_centered_text_line, palette_scale, render_image,
+    save_png_profile_with_options_and_style, save_rgba_png_profile_with_options,
 };
 use rustwx_render::{DerivedProductStyle, ProjectedDomain};
 use serde::{Deserialize, Serialize};
@@ -101,6 +105,25 @@ pub struct WxaStaticPlotRequest {
     pub height: u32,
     pub png_compression: PngCompressionMode,
     pub plot_style: StaticPlotStyle,
+    pub bounds_override: Option<(f64, f64, f64, f64)>,
+    pub title_override: Option<String>,
+    pub subtitle_left: Option<String>,
+    pub subtitle_right: Option<String>,
+    pub output_suffix: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WxaCompositePanelRequest {
+    pub spatial_root: PathBuf,
+    pub model: String,
+    pub run: String,
+    pub member: Option<String>,
+    pub product_slug: String,
+    pub forecast_hour: u32,
+    pub out_dir: PathBuf,
+    pub width: u32,
+    pub height: u32,
+    pub png_compression: PngCompressionMode,
     pub bounds_override: Option<(f64, f64, f64, f64)>,
     pub title_override: Option<String>,
     pub subtitle_left: Option<String>,
@@ -238,24 +261,68 @@ pub fn available_wxa_products(
     member: Option<&str>,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let dir = wxa_member_dir(spatial_root, model, run, member);
-    let mut products = Vec::new();
+    let mut raw_products = BTreeSet::new();
     for entry in fs::read_dir(&dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) == Some("wxa") {
             if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
-                if !is_wxa_component_product(stem) {
-                    products.push(stem.to_string());
-                }
+                raw_products.insert(stem.to_string());
             }
         }
     }
-    products.sort();
-    Ok(products)
+
+    let mut products = raw_products
+        .iter()
+        .filter(|product| !is_wxa_component_product(product))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for product in raw_products
+        .iter()
+        .filter_map(|product| direct_composite_parent_product(product))
+    {
+        if let Some(components) = wxa_composite_panel_component_products(product) {
+            if components
+                .iter()
+                .all(|component| raw_products.contains(component))
+            {
+                products.insert(product.to_string());
+            }
+        }
+    }
+
+    Ok(products.into_iter().collect())
+}
+
+pub fn wxa_composite_panel_component_products(product: &str) -> Option<Vec<String>> {
+    let components = direct_composite_component_slugs(product)?;
+    Some(
+        components
+            .iter()
+            .map(|component| direct_component_slug(product, component))
+            .collect(),
+    )
+}
+
+fn direct_composite_parent_product(product: &str) -> Option<&str> {
+    let (parent, component) = product.split_once("__")?;
+    if direct_composite_component_slugs(parent)?.contains(&component) {
+        Some(parent)
+    } else {
+        None
+    }
+}
+
+fn is_wxa_direct_composite_component_product(product: &str) -> bool {
+    direct_composite_parent_product(product).is_some()
+}
+
+fn is_wxa_companion_product(product: &str) -> bool {
+    product.contains("__contour") || product.contains("__wind_u") || product.contains("__wind_v")
 }
 
 fn is_wxa_component_product(product: &str) -> bool {
-    product.contains("__contour") || product.contains("__wind_u") || product.contains("__wind_v")
+    is_wxa_companion_product(product) || is_wxa_direct_composite_component_product(product)
 }
 
 pub fn wxa_product_path(
@@ -752,6 +819,7 @@ pub fn render_wxa_static_plot(
         request.height,
         &title,
         &request.wxa_path,
+        None,
     )?;
     map_request.subtitle_left = request
         .subtitle_left
@@ -803,6 +871,143 @@ pub fn render_wxa_static_plot(
     })
 }
 
+pub fn render_wxa_composite_panel(
+    request: &WxaCompositePanelRequest,
+) -> Result<WxaRenderedPlot, Box<dyn std::error::Error>> {
+    let started = Instant::now();
+    let layout =
+        direct_composite_panel_layout(&request.product_slug, request.width, request.height)
+            .ok_or_else(|| {
+                format!(
+                    "'{}' is not a WXA composite panel product",
+                    request.product_slug
+                )
+            })?;
+    let panel_layout = PanelGridLayout::new(
+        layout.rows,
+        layout.columns,
+        layout.panel_width,
+        layout.panel_height,
+    )?
+    .with_padding(PanelPadding {
+        top: layout.top_padding,
+        ..Default::default()
+    });
+
+    let mut panels = Vec::with_capacity(layout.component_slugs.len());
+    let mut first_grid: Option<WxaDense2dGrid> = None;
+    let mut first_path: Option<PathBuf> = None;
+    for component in layout.component_slugs {
+        let component_product = direct_component_slug(&request.product_slug, component);
+        let path = wxa_product_path(
+            &request.spatial_root,
+            &request.model,
+            &request.run,
+            request.member.as_deref(),
+            &component_product,
+        );
+        let wxa = read_wxa_dense2d_grid(&path, request.forecast_hour)?;
+        let geometry = geometry_from_wxa_meta(&wxa.meta)?;
+        let bounds = request.bounds_override.unwrap_or((
+            geometry.bounds[0],
+            geometry.bounds[2],
+            geometry.bounds[1],
+            geometry.bounds[3],
+        ));
+        let mut map_request = build_wxa_map_request(
+            &wxa,
+            &geometry,
+            bounds,
+            layout.panel_width,
+            layout.panel_height,
+            &product_title(&component_product),
+            &path,
+            Some(ProductVisualMode::PanelMember),
+        )?;
+        map_request.subtitle_left = None;
+        map_request.subtitle_right = None;
+        panels.push(render_image(&map_request)?);
+        if first_grid.is_none() {
+            first_grid = Some(wxa);
+            first_path = Some(path);
+        }
+    }
+
+    let mut canvas = rustwx_render::compose_panel_images(&panel_layout, &panels)?;
+    let model = model_id_from_wxa(&request.model);
+    let title = request
+        .title_override
+        .clone()
+        .unwrap_or_else(|| product_title(&request.product_slug));
+    draw_centered_text_line(
+        &mut canvas,
+        &static_title_with_suffix(title.as_str()),
+        10,
+        Color::BLACK,
+        2,
+    );
+    let subtitle_left = request
+        .subtitle_left
+        .clone()
+        .or_else(|| subtitle_for_wxa_time(model, &request.run, request.forecast_hour));
+    let subtitle_right = request
+        .subtitle_right
+        .clone()
+        .unwrap_or_else(|| "source: wxstore wxa".to_string());
+    if let Some(subtitle_left) = subtitle_left {
+        draw_centered_text_line(
+            &mut canvas,
+            &format!("{subtitle_left} | {subtitle_right}"),
+            35,
+            Color::BLACK,
+            1,
+        );
+    }
+
+    let suffix = request
+        .output_suffix
+        .as_deref()
+        .map(sanitize_slug)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("_{value}"))
+        .unwrap_or_default();
+    let filename = format!(
+        "rustwx_wxa_{}_{}_f{:03}_{}{}.png",
+        sanitize_slug(&request.model),
+        sanitize_slug(&request.run),
+        request.forecast_hour,
+        sanitize_slug(&request.product_slug),
+        suffix
+    );
+    fs::create_dir_all(&request.out_dir)?;
+    let output_path = request.out_dir.join(filename);
+    save_rgba_png_profile_with_options(
+        &canvas,
+        &output_path,
+        &PngWriteOptions {
+            compression: request.png_compression,
+        },
+    )?;
+
+    let first_grid = first_grid.ok_or("WXA composite panel has no components")?;
+    let bounds = geometry_from_wxa_meta(&first_grid.meta)?.bounds;
+    Ok(WxaRenderedPlot {
+        product_slug: request.product_slug.clone(),
+        title,
+        model: request.model.clone(),
+        run: request.run.clone(),
+        member: request.member.clone(),
+        forecast_hour: request.forecast_hour,
+        units: "panel".to_string(),
+        nx: first_grid.meta.nx,
+        ny: first_grid.meta.ny,
+        bounds,
+        output_path,
+        wxa_path: first_path.unwrap_or_default(),
+        render_ms: started.elapsed().as_millis(),
+    })
+}
+
 fn build_wxa_map_request(
     wxa: &WxaDense2dGrid,
     geometry: &WxaGridGeometry,
@@ -811,6 +1016,7 @@ fn build_wxa_map_request(
     height: u32,
     title: &str,
     wxa_path: &Path,
+    visual_mode_override: Option<ProductVisualMode>,
 ) -> Result<MapRenderRequest, Box<dyn std::error::Error>> {
     let field = Field2D::new(
         ProductKey::named(wxa.meta.variable.clone()),
@@ -818,8 +1024,9 @@ fn build_wxa_map_request(
         geometry.grid.clone(),
         wxa.values.clone(),
     )?;
-    let (scale, visual_mode, tick_step) =
+    let (scale, default_visual_mode, tick_step) =
         plot_style_for_wxa_product(&wxa.meta.variable, field.units.as_str());
+    let visual_mode = visual_mode_override.unwrap_or(default_visual_mode);
     let mut request = MapRenderRequest::from_core_field(field, scale);
     request.title = Some(static_title_with_suffix(title));
     request.width = width;
@@ -1065,18 +1272,6 @@ fn plot_style_for_wxa_product(
     product_slug: &str,
     units: &str,
 ) -> (ColorScale, ProductVisualMode, Option<f64>) {
-    if let Some(recipe) = plot_recipe(product_slug) {
-        if let Some(selector) = recipe.filled.selector {
-            let scale = crate::plot_design::operational_fill_scale_for_recipe(recipe, selector);
-            let visual_mode = visual_mode_for_direct_recipe(recipe, selector);
-            return (
-                scale,
-                visual_mode,
-                direct_recipe_tick_step(recipe, selector),
-            );
-        }
-    }
-
     if let Some(style) = special_wxa_product_style(product_slug) {
         return style;
     }
@@ -1089,6 +1284,14 @@ fn plot_style_for_wxa_product(
         );
     }
 
+    if let Some(style) = DerivedProductStyle::from_product_name(product_slug) {
+        return (
+            ColorScale::Discrete(style.scale()),
+            style.default_visual_mode(),
+            style.default_tick_step(),
+        );
+    }
+
     if let Some(preset) = WeatherPreset::from_product_name(product_slug) {
         return (
             ColorScale::Discrete(preset.scale()),
@@ -1097,12 +1300,16 @@ fn plot_style_for_wxa_product(
         );
     }
 
-    if let Some(style) = DerivedProductStyle::from_product_name(product_slug) {
-        return (
-            ColorScale::Discrete(style.scale()),
-            style.default_visual_mode(),
-            style.default_tick_step(),
-        );
+    if let Some(recipe) = plot_recipe(product_slug) {
+        if let Some(selector) = recipe.filled.selector {
+            let scale = crate::plot_design::operational_fill_scale_for_recipe(recipe, selector);
+            let visual_mode = visual_mode_for_direct_recipe(recipe, selector);
+            return (
+                scale,
+                visual_mode,
+                direct_recipe_tick_step(recipe, selector),
+            );
+        }
     }
 
     let lower = product_slug.to_ascii_lowercase();

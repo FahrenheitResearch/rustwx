@@ -14,9 +14,9 @@ pub(super) struct CompositePanelSpec {
 }
 
 impl CompositePanelSpec {
-    pub(super) fn scaled_for_request(self, request: &DirectBatchRequest) -> Self {
-        let scale_x = request.output_width as f64 / OUTPUT_WIDTH as f64;
-        let scale_y = request.output_height as f64 / OUTPUT_HEIGHT as f64;
+    pub(super) fn scaled_for_output(self, output_width: u32, output_height: u32) -> Self {
+        let scale_x = output_width as f64 / OUTPUT_WIDTH as f64;
+        let scale_y = output_height as f64 / OUTPUT_HEIGHT as f64;
         Self {
             rows: self.rows,
             columns: self.columns,
@@ -25,6 +25,10 @@ impl CompositePanelSpec {
             top_padding: ((self.top_padding as f64) * scale_y).round().max(1.0) as u32,
             component_slugs: self.component_slugs,
         }
+    }
+
+    pub(super) fn scaled_for_request(self, request: &DirectBatchRequest) -> Self {
+        self.scaled_for_output(request.output_width, request.output_height)
     }
 }
 

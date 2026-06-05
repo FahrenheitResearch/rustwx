@@ -72,7 +72,7 @@ fn wxa_derived_styles_do_not_fall_back_to_generic_scale() {
     };
     assert_eq!(mode, ProductVisualMode::SevereDiagnostic);
     assert_eq!(tick_step, Some(1.0));
-    assert_eq!(lapse_scale.levels.first().copied(), Some(3.0));
+    assert_eq!(lapse_scale.levels.first().copied(), Some(2.0));
 
     let (scale, mode, tick_step) = plot_style_for_wxa_product("fire_weather_composite", "index");
     let ColorScale::Discrete(fire_scale) = scale else {
@@ -93,5 +93,25 @@ fn wxa_component_products_are_hidden_from_showcase_selection() {
     assert!(is_wxa_component_product(
         "500mb_temperature_height_winds__wind_u"
     ));
+    assert!(is_wxa_component_product(
+        "cloud_cover_levels__low_cloud_cover"
+    ));
+    assert!(is_wxa_component_product(
+        "precipitation_type__categorical_snow"
+    ));
     assert!(!is_wxa_component_product("mslp_10m_winds"));
+    assert!(!is_wxa_component_product("cloud_cover_levels"));
+}
+
+#[test]
+fn wxa_composite_panel_component_products_match_direct_component_storage() {
+    assert_eq!(
+        wxa_composite_panel_component_products("cloud_cover_levels").unwrap(),
+        vec![
+            "cloud_cover_levels__low_cloud_cover".to_string(),
+            "cloud_cover_levels__middle_cloud_cover".to_string(),
+            "cloud_cover_levels__high_cloud_cover".to_string(),
+        ]
+    );
+    assert!(wxa_composite_panel_component_products("2m_temperature").is_none());
 }
