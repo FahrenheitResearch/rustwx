@@ -1164,7 +1164,7 @@ fn classify_direct_catalog_entry(
         });
         return;
     };
-    if recipe.filled.selector.is_none() {
+    if recipe.filled.selector.is_none() && direct_composite_component_slugs(recipe.slug).is_none() {
         classified.blockers.push(WxStoreGridExportBlocker {
             product_slug: entry.slug.clone(),
             forecast_hour: None,
@@ -1200,7 +1200,7 @@ fn classify_direct_fallback(
         });
         return;
     };
-    if recipe.filled.selector.is_none() {
+    if recipe.filled.selector.is_none() && direct_composite_component_slugs(recipe.slug).is_none() {
         classified.blockers.push(WxStoreGridExportBlocker {
             product_slug: recipe.slug.to_string(),
             forecast_hour: None,

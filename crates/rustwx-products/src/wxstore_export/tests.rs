@@ -93,6 +93,22 @@ fn classification_routes_aliases_and_blocks_ecape() {
 }
 
 #[test]
+fn classification_routes_direct_composite_panel_recipes() {
+    let products = classify_wxstore_export_products(
+        ModelId::Hrrr,
+        &[
+            "cloud_cover_levels".to_string(),
+            "precipitation_type".to_string(),
+        ],
+    );
+    assert_eq!(
+        products.direct_slugs,
+        vec!["cloud_cover_levels", "precipitation_type"]
+    );
+    assert!(products.blockers.is_empty());
+}
+
+#[test]
 fn hour_range_slug_stays_short_for_full_runs() {
     let hrrr = (0..=48).collect::<Vec<_>>();
     assert_eq!(hour_range_slug(&hrrr), "f000_f048");
