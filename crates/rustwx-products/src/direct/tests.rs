@@ -612,7 +612,11 @@ fn adaptive_geographic_regions_use_presentation_projections() {
     .unwrap();
     assert_eq!(
         north_america_projection,
-        rustwx_render::ProjectionSpec::Geographic
+        rustwx_render::ProjectionSpec::LambertConformal {
+            standard_parallel_1_deg: 25.0,
+            standard_parallel_2_deg: 60.0,
+            central_meridian_deg: -100.0,
+        }
     );
 
     assert!(matches!(

@@ -614,6 +614,9 @@ fn regional_presentation_projection(bounds: (f64, f64, f64, f64)) -> rustwx_rend
             south_pole_on_projection_plane: false,
         };
     }
+    if is_north_america_projection_candidate(bounds) {
+        return north_america_lambert_presentation_projection();
+    }
     if is_broad_continent_scale_domain(bounds) {
         return rustwx_render::ProjectionSpec::Geographic;
     }

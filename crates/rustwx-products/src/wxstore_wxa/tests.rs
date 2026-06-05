@@ -1,4 +1,5 @@
 use super::*;
+use std::path::Path;
 
 #[test]
 fn regular_latlon_geometry_reconstructs_mesh() {
@@ -28,6 +29,126 @@ fn regular_latlon_geometry_reconstructs_mesh() {
     let geometry = geometry_from_wxa_meta(&meta).unwrap();
     assert_eq!(geometry.grid.lat_deg, vec![40.0, 40.0, 39.0, 39.0]);
     assert_eq!(geometry.grid.lon_deg, vec![-101.0, -100.0, -101.0, -100.0]);
+}
+
+#[test]
+fn sampled_curvilinear_wxa_static_maps_use_raster_alpha_frame() {
+    let meta = WxaDense2dMeta {
+        schema: "wxstore.wxa.dense2d.v1".to_string(),
+        model: "rrfs-a".to_string(),
+        run: "20260604_rrfs_a_00z".to_string(),
+        member: Some("control".to_string()),
+        variable: "2m_temperature".to_string(),
+        units: "degF".to_string(),
+        nx: 3,
+        ny: 3,
+        forecast_hours: vec![0],
+        chunk_y: 3,
+        chunk_x: 3,
+        dtype: "f32_le".to_string(),
+        codec: "zstd_level_1".to_string(),
+        grid: serde_json::json!({
+            "type": "curvilinear_latlon_sampled",
+            "bounds": [-126.0, 22.0, -66.0, 52.0],
+            "sample": {
+                "nx": 3,
+                "ny": 3,
+                "x": [0, 1, 2],
+                "y": [0, 1, 2],
+                "lat": [
+                    52.0, 50.0, 47.0,
+                    38.0, 37.0, 34.0,
+                    24.0, 23.0, 22.0
+                ],
+                "lon": [
+                    -118.0, -93.0, -66.0,
+                    -124.0, -96.0, -73.0,
+                    -126.0, -101.0, -82.0
+                ]
+            }
+        }),
+    };
+    let wxa = WxaDense2dGrid {
+        meta,
+        forecast_hour: 0,
+        values: vec![70.0; 9],
+    };
+    let geometry = geometry_from_wxa_meta(&wxa.meta).unwrap();
+    let request = build_wxa_map_request(
+        &wxa,
+        &geometry,
+        (
+            geometry.bounds[0],
+            geometry.bounds[2],
+            geometry.bounds[1],
+            geometry.bounds[3],
+        ),
+        800,
+        450,
+        "2m AGL Temperature",
+        Path::new("2m_temperature.wxa"),
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(
+        request.domain_frame.unwrap().source,
+        DomainFrameSource::RasterAlpha
+    );
+}
+
+#[test]
+fn regular_wxa_static_maps_keep_projected_grid_frame() {
+    let meta = WxaDense2dMeta {
+        schema: "wxstore.wxa.dense2d.v1".to_string(),
+        model: "gfs".to_string(),
+        run: "20260506_gfs_18z".to_string(),
+        member: Some("control".to_string()),
+        variable: "2m_temperature".to_string(),
+        units: "degF".to_string(),
+        nx: 2,
+        ny: 2,
+        forecast_hours: vec![0],
+        chunk_y: 2,
+        chunk_x: 2,
+        dtype: "f32_le".to_string(),
+        codec: "zstd_level_1".to_string(),
+        grid: serde_json::json!({
+            "type": "regular_latlon",
+            "lat_start": 40.0,
+            "lat_step": -1.0,
+            "lon_start": -101.0,
+            "lon_step": 1.0,
+            "bounds": [-101.0, 39.0, -100.0, 40.0]
+        }),
+    };
+    let wxa = WxaDense2dGrid {
+        meta,
+        forecast_hour: 0,
+        values: vec![70.0; 4],
+    };
+    let geometry = geometry_from_wxa_meta(&wxa.meta).unwrap();
+    let request = build_wxa_map_request(
+        &wxa,
+        &geometry,
+        (
+            geometry.bounds[0],
+            geometry.bounds[2],
+            geometry.bounds[1],
+            geometry.bounds[3],
+        ),
+        800,
+        450,
+        "2m AGL Temperature",
+        Path::new("2m_temperature.wxa"),
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(
+        request.domain_frame.unwrap().source,
+        DomainFrameSource::ProjectedGrid
+    );
 }
 
 #[test]

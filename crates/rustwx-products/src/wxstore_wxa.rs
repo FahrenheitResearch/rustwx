@@ -13,10 +13,10 @@ use rustwx_render::weather::{
     dewpoint_palette_celsius_for_levels, dewpoint_palette_fahrenheit_for_levels,
 };
 use rustwx_render::{
-    Color, ColorScale, DiscreteColorScale, ExtendMode, LegendMode, LineworkRole, MapRenderRequest,
-    PanelGridLayout, PanelPadding, PngCompressionMode, PngWriteOptions, ProductVisualMode,
-    StaticPlotStyle, WeatherPalette, WeatherPreset, WeatherProduct, WindBarbLayer,
-    WindStreamlineLayer, draw_centered_text_line, palette_scale, render_image,
+    Color, ColorScale, DiscreteColorScale, DomainFrameSource, ExtendMode, LegendMode, LineworkRole,
+    MapRenderRequest, PanelGridLayout, PanelPadding, PngCompressionMode, PngWriteOptions,
+    ProductVisualMode, StaticPlotStyle, WeatherPalette, WeatherPreset, WeatherProduct,
+    WindBarbLayer, WindStreamlineLayer, draw_centered_text_line, palette_scale, render_image,
     save_png_profile_with_options_and_style, save_rgba_png_profile_with_options,
 };
 use rustwx_render::{DerivedProductStyle, ProjectedDomain};
@@ -1036,6 +1036,7 @@ fn build_wxa_map_request(
     request.supersample_sharpen = static_supersample_sharpen();
     request.cbar_tick_step = tick_step;
     StaticPlotDesign::new(bounds, visual_mode).apply_to_request(&mut request);
+    apply_wxa_domain_frame_policy(&mut request, &wxa.meta);
     if wxa.meta.variable.to_ascii_lowercase().contains("dewpoint") {
         request.legend.mode = LegendMode::Stepped;
     }
@@ -1072,6 +1073,18 @@ fn build_wxa_map_request(
     request.inverse_raster_projection = projected.inverse_raster_projection;
     add_wxa_companion_overlays(&mut request, wxa_path, wxa)?;
     Ok(request)
+}
+
+fn apply_wxa_domain_frame_policy(request: &mut MapRenderRequest, meta: &WxaDense2dMeta) {
+    if is_sampled_curvilinear_wxa_grid(meta) {
+        if let Some(frame) = request.domain_frame.as_mut() {
+            frame.source = DomainFrameSource::RasterAlpha;
+        }
+    }
+}
+
+fn is_sampled_curvilinear_wxa_grid(meta: &WxaDense2dMeta) -> bool {
+    meta.grid.get("type").and_then(Value::as_str) == Some("curvilinear_latlon_sampled")
 }
 
 fn add_wxa_companion_overlays(
